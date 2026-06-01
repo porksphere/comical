@@ -1,0 +1,14 @@
+{
+  "name": "@comical/host-web",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Browser host adapter: Function evaluator, proxy-backed network, localStorage storage",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@comical/contract": "workspace:*",
+    "@comical/core": "workspace:*"
+  }
+}

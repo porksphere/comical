@@ -1,5 +1,5 @@
 /**
- * Builds the isolated execution context for a bridge bundle.
+ * NodeVmEvaluator: evaluates a bridge bundle in a fresh `node:vm` context.
  *
  * The bundle is emitted as self-contained CJS (`bun build --format=cjs`), so the only host
  * objects it needs are `module`/`exports` plus a curated set of benign, pure globals. A fresh
@@ -10,11 +10,7 @@
 import vm from "node:vm";
 import type { LogCapability } from "@comical/contract";
 import { BridgeLoadError } from "./errors.ts";
-
-export interface SandboxResult {
-  /** Whatever the bundle assigned to `module.exports`. */
-  exports: unknown;
-}
+import type { BundleEvaluator, EvaluatorResult } from "./evaluator.ts";
 
 /** A CJS module object the bundle writes its exports onto. */
 interface ModuleShim {
@@ -22,11 +18,14 @@ interface ModuleShim {
 }
 
 /**
- * The allow-list of ambient globals exposed to bridge code. All are pure/standalone (no I/O)
- * except `console`, which is routed to the bridge's log capability. Standard ECMAScript globals
- * (Object, Array, JSON, Math, Promise, Map, Set, Date, RegExp, …) come from the vm realm itself.
+ * The allow-list of ambient globals injected into the vm sandbox. All are pure/standalone (no
+ * I/O) except `console`, which is routed to the bridge's log capability. Standard ECMAScript
+ * globals (Object, Array, JSON, Math, Promise, Map, Set, …) come from the vm realm itself.
+ *
+ * Exported so other evaluators (host-web FunctionEvaluator, M3 JSC/QuickJS) can reuse the same
+ * curated list without duplicating it.
  */
-function buildGlobals(log: LogCapability): Record<string, unknown> {
+export function buildBridgeGlobals(log: LogCapability): Record<string, unknown> {
   const sandboxConsole = {
     log: (...a: unknown[]) => log.info(...a),
     info: (...a: unknown[]) => log.info(...a),
@@ -50,38 +49,47 @@ function buildGlobals(log: LogCapability): Record<string, unknown> {
 }
 
 /**
- * Evaluate `code` in a fresh sandbox and return its `module.exports`.
- * @throws {BridgeLoadError} if evaluation fails or exceeds `evalTimeoutMs`.
+ * Bun/Node evaluator: uses `node:vm` createContext for genuine cross-realm isolation.
+ * The fresh context has no `require`, `process`, `fetch`, `Bun`, or filesystem access —
+ * only the `buildBridgeGlobals` allow-list is injected.
  */
+export class NodeVmEvaluator implements BundleEvaluator {
+  constructor(private readonly evalTimeoutMs: number = 5000) {}
+
+  evaluate(code: string, log: LogCapability): EvaluatorResult {
+    const moduleShim: ModuleShim = { exports: {} };
+    const sandbox: Record<string, unknown> = {
+      module: moduleShim,
+      exports: moduleShim.exports,
+      ...buildBridgeGlobals(log),
+    };
+    sandbox.globalThis = sandbox;
+
+    vm.createContext(sandbox, {
+      name: "comical-bridge",
+      codeGeneration: { strings: false, wasm: false },
+    });
+
+    try {
+      vm.runInContext(code, sandbox, {
+        timeout: this.evalTimeoutMs,
+        filename: "bridge.bundle.cjs",
+      });
+    } catch (cause) {
+      throw new BridgeLoadError(
+        `bridge bundle failed to evaluate: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+
+    return { exports: moduleShim.exports };
+  }
+}
+
+/** Legacy function-style export kept for any direct callers. */
 export function evaluateBundle(
   code: string,
   log: LogCapability,
   evalTimeoutMs: number,
-): SandboxResult {
-  const moduleShim: ModuleShim = { exports: {} };
-  const sandbox: Record<string, unknown> = {
-    module: moduleShim,
-    exports: moduleShim.exports,
-    ...buildGlobals(log),
-  };
-  // Self-reference so bundles that touch `globalThis` see the sandbox, not the host realm.
-  sandbox.globalThis = sandbox;
-
-  vm.createContext(sandbox, {
-    name: "comical-bridge",
-    codeGeneration: { strings: false, wasm: false },
-  });
-
-  try {
-    vm.runInContext(code, sandbox, {
-      timeout: evalTimeoutMs,
-      filename: "bridge.bundle.cjs",
-    });
-  } catch (cause) {
-    throw new BridgeLoadError(
-      `bridge bundle failed to evaluate: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
-  }
-
-  return { exports: moduleShim.exports };
+): EvaluatorResult {
+  return new NodeVmEvaluator(evalTimeoutMs).evaluate(code, log);
 }

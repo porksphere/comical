@@ -8,5 +8,6 @@ export * from "./validation.ts";
 export * from "./net/rate-limiter.ts";
 export * from "./net/cache.ts";
 export * from "./net/gated-network.ts";
-export { evaluateBundle } from "./sandbox.ts";
+export * from "./evaluator.ts";
+export { evaluateBundle, NodeVmEvaluator, buildBridgeGlobals } from "./sandbox.ts";
 export { withTimeout, errorMessage } from "./util.ts";

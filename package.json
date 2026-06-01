@@ -1,24 +1,28 @@
 {
   "name": "comical",
   "version": "0.0.0",
-  "private": true,
-  "type": "module",
-  "description": "Configurable, content-neutral bridge runtime for serialized content",
-  "workspaces": [
-    "packages/*",
-    "bridges/*"
-  ],
-  "scripts": {
-    "build": "bun run scripts/build.ts",
-    "test": "bun test",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "cli": "bun run packages/cli/src/index.ts"
-  },
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5.6.0"
   },
+  "description": "Configurable, content-neutral bridge runtime for serialized content",
   "engines": {
     "bun": ">=1.3.0"
-  }
+  },
+  "private": true,
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "cli": "bun run packages/cli/src/index.ts",
+    "demo:proxy": "bun run packages/proxy/src/index.ts",
+    "demo:backend": "bun run demo/fixture-server.ts",
+    "demo:dev": "bun run demo/serve.ts",
+    "proxy:start": "bun run packages/proxy/src/index.ts"
+  },
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "bridges/*"
+  ]
 }

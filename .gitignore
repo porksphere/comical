@@ -5,6 +5,7 @@ dist/
 bun.lock
 *.log
 coverage/
+demo/.out/
 .cache/
 .comical/
 **/.tmp-storage/

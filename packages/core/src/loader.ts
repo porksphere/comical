@@ -28,8 +28,9 @@ import {
   BridgeRuntimeError,
   ComicalError,
 } from "./errors.ts";
+import type { BundleEvaluator } from "./evaluator.ts";
 import { createGatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
-import { evaluateBundle } from "./sandbox.ts";
+import { evaluateBundle, NodeVmEvaluator } from "./sandbox.ts";
 import { errorMessage, withTimeout } from "./util.ts";
 import { validate } from "./validation.ts";
 
@@ -54,6 +55,12 @@ export interface LoadBridgeOptions {
   expectedId?: string;
   limits?: Partial<RuntimeLimits>;
   network?: GatedNetworkOptions;
+  /**
+   * The JS engine used to evaluate the bridge bundle. Defaults to `NodeVmEvaluator` (node:vm).
+   * Supply a platform-specific evaluator for browser (FunctionEvaluator), iOS (JSC), or
+   * Android (QuickJS) hosts.
+   */
+  evaluator?: BundleEvaluator;
   /** Override the runtime contract version (testing). Defaults to CONTRACT_VERSION. */
   runtimeContractVersion?: string;
 }
@@ -66,7 +73,8 @@ export function loadBridge(opts: LoadBridgeOptions): LoadedBridge {
   const runtimeVersion = opts.runtimeContractVersion ?? CONTRACT_VERSION;
 
   // 1. Evaluate the bundle in isolation and extract the factory.
-  const { exports } = evaluateBundle(opts.code, opts.capabilities.log, limits.evalTimeoutMs);
+  const evaluator = opts.evaluator ?? new NodeVmEvaluator(limits.evalTimeoutMs);
+  const { exports } = evaluator.evaluate(opts.code, opts.capabilities.log);
   const factory = extractFactory(exports);
 
   // 2. Gate the network capability (rate-limit + cache) before the bridge can touch it.
