@@ -16,6 +16,7 @@ import {
   recordingNetwork,
   runConformance,
 } from "@comical/testkit";
+import { createServer } from "@comical/host-server";
 import { discoverBridges, readBundle, resolveBridge } from "./discover.ts";
 
 const BRIDGES_DIR = join(import.meta.dir, "..", "..", "..", "bridges");
@@ -24,9 +25,10 @@ const HELP = `comical — content bridge runtime CLI
 
 Usage:
   comical list
+  comical serve                [--port N] [--data-dir DIR] [--origin URL] [--token SECRET]
   comical search <query>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N]
-  comical details <seriesId>    --bridge <id> [--fixture | --set baseUrl=URL]
-  comical chapters <seriesId>   --bridge <id> [--fixture | --set baseUrl=URL]
+  comical details <seriesId>   --bridge <id> [--fixture | --set baseUrl=URL]
+  comical chapters <seriesId>  --bridge <id> [--fixture | --set baseUrl=URL]
   comical pages <seriesId> <chapterId> --bridge <id> [--fixture | --set baseUrl=URL]
   comical test                 --bridge <id> [--fixture | --set baseUrl=URL] [--set query=Q]
   comical record               --bridge <id> [--fixture | --set baseUrl=URL] --scenario search:Q
@@ -35,9 +37,12 @@ Options:
   -b, --bridge <id>   Bridge id (see \`comical list\`)
   --set key=value     Supply a user setting (repeatable), e.g. --set baseUrl=https://…
   --fixture           Run against the built-in legal demo backend
+  --port N            Port for \`comical serve\` (default 3100)
   --page N            Page number for search (default 1)
   --scenario S        Record scenario (repeatable): search:Q | details:ID | home
-  --data-dir DIR      Persistent storage location (default: in-memory)
+  --data-dir DIR      Persistent storage location (default: .comical/)
+  --origin URL        Allowed CORS origin for \`comical serve\`
+  --token SECRET      Bearer token for \`comical serve\`
   --json              Emit raw JSON
 `;
 
@@ -61,8 +66,11 @@ async function main(): Promise<number> {
     options: {
       bridge: { type: "string", short: "b" },
       page: { type: "string" },
+      port: { type: "string" },
       set: { type: "string", multiple: true },
       "data-dir": { type: "string" },
+      origin: { type: "string" },
+      token: { type: "string" },
       scenario: { type: "string", multiple: true },
       fixture: { type: "boolean" },
       json: { type: "boolean" },
@@ -87,6 +95,25 @@ async function main(): Promise<number> {
         console.log(`${b.info.id}  ${b.info.name}  v${b.info.version}  [${b.info.capabilities.join(", ")}]`);
       }
     }
+    return 0;
+  }
+
+  if (command === "serve") {
+    const port = values.port ? Number(values.port) : 3100;
+    const dataDir = values["data-dir"] ?? join(BRIDGES_DIR, "..", ".comical");
+    const serveOpts: Parameters<typeof createServer>[0] = {
+      port,
+      bridgesDir: BRIDGES_DIR,
+      dataDir,
+    };
+    if (values.origin) serveOpts.origin = values.origin;
+    if (values.token) serveOpts.token = values.token;
+    const server = createServer(serveOpts);
+    console.log(`comical-server running on http://localhost:${server.port}`);
+    console.log(`  bridges: ${BRIDGES_DIR}`);
+    console.log(`  data:    ${dataDir}`);
+    if (!values.token) console.warn("  no --token set — server is unauthenticated (LAN use only)");
+    await new Promise(() => {}); // run until killed
     return 0;
   }
 

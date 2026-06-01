@@ -1,20 +1,20 @@
 {
-  "name": "@comical/cli",
+  "name": "@comical/host-server",
   "version": "0.0.0",
   "type": "module",
-  "description": "The `comical` command-line host",
-  "bin": {
-    "comical": "./src/index.ts"
-  },
+  "description": "HTTP server host: exposes the bridge runtime as a REST API for browser and app clients",
   "exports": {
     ".": "./src/index.ts"
   },
   "types": "./src/index.ts",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "dev": "bun --hot src/server.ts"
+  },
   "dependencies": {
     "@comical/contract": "workspace:*",
     "@comical/core": "workspace:*",
     "@comical/host-bun": "workspace:*",
-    "@comical/host-server": "workspace:*",
-    "@comical/testkit": "workspace:*"
+    "hono": "^4.12.23"
   }
 }

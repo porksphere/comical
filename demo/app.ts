@@ -1,21 +1,16 @@
 /**
- * Browser demo: loads the example-bridge bundle, wires it to the web host (proxy-backed), and
- * renders a simple search/details/chapter UI.
+ * Browser demo: a thin REST client for a running `comical serve` instance.
+ * The browser knows nothing about bridges or parsing — it just calls the server's API and
+ * renders the JSON it gets back.
  *
- * The demo uses a local proxy (http://localhost:3100) and the local fixture backend. Start them:
- *   bun run demo:proxy   — starts the proxy on :3100
- *   bun run demo:backend — starts the fixture backend on :3200
- *   bun run demo:dev     — builds app.ts and serves demo/ on :3300
- *
- * Or run all three: bun run demo
+ * Start everything with:
+ *   bun run demo:server   — starts comical-server on :3100 (wired to the fixture backend)
+ *   bun run demo:dev      — builds + serves this page on :3300
+ * Then open http://localhost:3300
  */
-import { loadBridge, type LoadedBridge } from "@comical/core";
-import { FunctionEvaluator } from "@comical/host-web";
-import { createWebHost } from "@comical/host-web";
-import type { Chapter } from "@comical/contract";
 
-const PROXY_URL = (window as unknown as Record<string, string>).COMICAL_PROXY_URL ?? "http://localhost:3100";
-const BACKEND_URL = (window as unknown as Record<string, string>).COMICAL_BACKEND_URL ?? "http://localhost:3200";
+const SERVER = (window as unknown as Record<string, string>).COMICAL_SERVER ?? "http://localhost:3100";
+const BRIDGE = "example";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const status = (msg: string, isError = false) => {
@@ -24,21 +19,24 @@ const status = (msg: string, isError = false) => {
   el.className = isError ? "error" : "";
 };
 
-async function loadExampleBridge(): Promise<LoadedBridge> {
-  const res = await fetch("./bridge.js");
-  if (!res.ok) throw new Error(`failed to fetch bridge bundle: ${res.status}`);
-  const code = await res.text();
+// ── API client ─────────────────────────────────────────────────────────────────
 
-  const host = createWebHost({
-    bridgeId: "example",
-    proxy: { proxyUrl: PROXY_URL },
-    settings: { baseUrl: BACKEND_URL },
-  });
-
-  return loadBridge({ code, capabilities: host, evaluator: new FunctionEvaluator(), expectedId: "example" });
+async function api<T>(path: string): Promise<T> {
+  const res = await fetch(`${SERVER}${path}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
+  return res.json() as Promise<T>;
 }
 
-function renderGrid(items: Array<{ id: string; title: string; thumbnailUrl?: string | undefined; subtitle?: string | undefined }>, onClick: (id: string) => void) {
+interface SeriesEntry { id: string; title: string; thumbnailUrl?: string | undefined; subtitle?: string | undefined }
+interface SeriesInfo { id: string; title: string; author?: string; status?: string; description?: string }
+interface Chapter { id: string; name: string; number?: number }
+interface Page { index: number; imageUrl: string }
+interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
+interface HomeSection { type: string; id: string; title: string; items: SeriesEntry[] }
+
+// ── UI helpers ─────────────────────────────────────────────────────────────────
+
+function renderGrid(items: SeriesEntry[], onClick: (id: string) => void): void {
   const grid = $("#grid");
   grid.innerHTML = "";
   for (const item of items) {
@@ -54,7 +52,7 @@ function renderGrid(items: Array<{ id: string; title: string; thumbnailUrl?: str
   }
 }
 
-async function showDetail(bridge: LoadedBridge, seriesId: string) {
+async function showDetail(seriesId: string): Promise<void> {
   const detail = $("#detail");
   detail.style.display = "block";
   $("#detail-title").textContent = "Loading…";
@@ -62,72 +60,72 @@ async function showDetail(bridge: LoadedBridge, seriesId: string) {
   $("#pages").innerHTML = "";
 
   const [info, chapters] = await Promise.all([
-    bridge.getSeriesDetails(seriesId),
-    bridge.getChapters(seriesId),
+    api<SeriesInfo>(`/bridges/${BRIDGE}/series/${encodeURIComponent(seriesId)}`),
+    api<Chapter[]>(`/bridges/${BRIDGE}/series/${encodeURIComponent(seriesId)}/chapters`),
   ]);
 
   $("#detail-title").textContent = info.title;
   $("#detail-meta").textContent = [
     info.author && `by ${info.author}`,
-    info.status && info.status,
-    info.genres?.join(", "),
+    info.status,
   ].filter(Boolean).join(" · ");
 
   const ul = $("#chapters");
-  for (const ch of chapters as Chapter[]) {
+  for (const ch of chapters) {
     const li = document.createElement("li");
     li.textContent = ch.name;
     li.addEventListener("click", async () => {
       const pagesEl = $("#pages");
       pagesEl.innerHTML = "<p>Loading pages…</p>";
-      const pages = await bridge.getChapterPages(seriesId, ch.id);
+      const pages = await api<Page[]>(
+        `/bridges/${BRIDGE}/series/${encodeURIComponent(seriesId)}/chapters/${encodeURIComponent(ch.id)}/pages`
+      );
       pagesEl.innerHTML = pages.map(p => `<img src="${p.imageUrl}" loading="lazy">`).join("");
     });
     ul.append(li);
   }
 }
 
-const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
+const esc = (s: string): string =>
+  s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
+
+// ── Main ───────────────────────────────────────────────────────────────────────
 
 (async () => {
-  let bridge: LoadedBridge;
+  status("Connecting to server…");
+
   try {
-    status("Loading bridge…");
-    bridge = await loadExampleBridge();
-    status(`Bridge "${bridge.info.name}" loaded. Fetching home…`);
+    await api<{ ok: boolean }>("/health");
   } catch (e) {
-    status(`Failed to load bridge: ${e instanceof Error ? e.message : e}`, true);
+    status(`Cannot reach server at ${SERVER}. Is comical-server running? (bun run demo:server)`, true);
     return;
   }
 
-  // Initial home/popular load.
+  // Initial home load.
   try {
-    if (bridge.getHomeSections) {
-      const sections = await bridge.getHomeSections();
-      const items = sections.flatMap(s => s.items);
-      renderGrid(items, id => showDetail(bridge, id));
-      status(`Home loaded — ${items.length} item(s). Click a title or search.`);
-    } else {
-      const popular = await bridge.getPopular!(1);
-      renderGrid(popular.items, id => showDetail(bridge, id));
-      status("Home loaded.");
-    }
+    const sections = await api<HomeSection[]>(`/bridges/${BRIDGE}/home`);
+    const items = sections.flatMap(s => s.items);
+    renderGrid(items, showDetail);
+    status(`Home loaded — ${items.length} item(s). Click a title or search.`);
   } catch (e) {
     status(`Home load failed: ${e instanceof Error ? e.message : e}`, true);
   }
 
   // Search.
-  const doSearch = async () => {
+  const doSearch = async (): Promise<void> => {
     const q = ($<HTMLInputElement>("#query")).value;
     status("Searching…");
     try {
-      const r = await bridge.getSearchResults(q, 1);
-      renderGrid(r.items, id => showDetail(bridge, id));
+      const r = await api<PagedResults>(`/bridges/${BRIDGE}/search?q=${encodeURIComponent(q)}`);
+      renderGrid(r.items, showDetail);
       status(`${r.items.length} result(s) for "${q}".`);
     } catch (e) {
       status(`Search failed: ${e instanceof Error ? e.message : e}`, true);
     }
   };
+
   $("#searchBtn").addEventListener("click", doSearch);
-  ($<HTMLInputElement>("#query")).addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+  ($<HTMLInputElement>("#query")).addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter") doSearch();
+  });
 })();

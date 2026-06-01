@@ -15,10 +15,9 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "cli": "bun run packages/cli/src/index.ts",
-    "demo:proxy": "bun run packages/proxy/src/index.ts",
-    "demo:backend": "bun run demo/fixture-server.ts",
+    "demo:server": "bun run demo/demo-server.ts",
     "demo:dev": "bun run demo/serve.ts",
-    "proxy:start": "bun run packages/proxy/src/index.ts"
+    "serve": "bun run packages/host-server/src/server.ts"
   },
   "type": "module",
   "workspaces": [
