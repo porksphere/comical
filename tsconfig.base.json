@@ -28,6 +28,7 @@
       "@comical/sdk": ["packages/sdk/src/index.ts"],
       "@comical/host-bun": ["packages/host-bun/src/index.ts"],
       "@comical/host-server": ["packages/host-server/src/index.ts"],
+      "@comical/registry": ["packages/registry/src/index.ts"],
       "@comical/host-web": ["packages/host-web/src/index.ts"],
       "@comical/proxy": ["packages/proxy/src/index.ts"],
       "@comical/testkit": ["packages/testkit/src/index.ts"]

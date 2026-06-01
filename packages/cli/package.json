@@ -15,6 +15,7 @@
     "@comical/core": "workspace:*",
     "@comical/host-bun": "workspace:*",
     "@comical/host-server": "workspace:*",
+    "@comical/registry": "workspace:*",
     "@comical/testkit": "workspace:*"
   }
 }

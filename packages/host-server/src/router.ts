@@ -7,6 +7,7 @@
  */
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import type { RegistryManager } from "@comical/registry";
 import type { BridgeManager } from "./bridge-manager.ts";
 
 export interface RouterOptions {
@@ -14,6 +15,8 @@ export interface RouterOptions {
   origin?: string;
   /** Optional bearer token for simple auth. */
   token?: string;
+  /** Registry manager — enables M4 registry endpoints. */
+  registry?: RegistryManager;
 }
 
 type Bindings = Record<string, never>;
@@ -25,7 +28,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
 
   app.use("*", cors({
     origin: opts.origin ?? "*",
-    allowMethods: ["GET", "PUT", "OPTIONS"],
+    allowMethods: ["GET", "PUT", "POST", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     maxAge: 3600,
   }));
@@ -141,6 +144,92 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       );
     }),
   );
+
+  // ── M4 Registry endpoints ──────────────────────────────────────────────────
+
+  const reg = opts.registry;
+  if (reg) {
+    // List registries the user has added.
+    app.get("/registries", async (c) => {
+      return c.json(await reg.list());
+    });
+
+    // Add a registry by URL (GitHub link or any static URL).
+    app.post("/registries", async (c) => {
+      let body: { url: string; requireSignature?: boolean };
+      try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON" }, 400); }
+      if (!body.url) return c.json({ error: "url is required" }, 400);
+      try {
+        const addOpts: Parameters<typeof reg.add>[1] = {};
+        if (body.requireSignature !== undefined) addOpts.requireSignature = body.requireSignature;
+        const added = await reg.add(body.url, addOpts);
+        return c.json(added, 201);
+      } catch (e) {
+        return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    });
+
+    // Remove a registry (orphans its installed bridges).
+    app.delete("/registries/:encodedUrl", async (c) => {
+      const url = decodeURIComponent(c.req.param("encodedUrl"));
+      await reg.remove(url);
+      manager.refresh();
+      return c.json({ ok: true });
+    });
+
+    // Browse bridges available in a specific registry.
+    app.get("/registries/:encodedUrl/bridges", async (c) => {
+      const url = decodeURIComponent(c.req.param("encodedUrl"));
+      try {
+        return c.json(await reg.browse(url));
+      } catch (e) {
+        return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    });
+
+    // Browse all bridges across all registries.
+    app.get("/registry/bridges", async (c) => {
+      return c.json(await reg.browseAll());
+    });
+
+    // Install a bridge from a registry.
+    app.post("/registries/:encodedUrl/bridges/:id/install", async (c) => {
+      const registryUrl = decodeURIComponent(c.req.param("encodedUrl"));
+      const bridgeId = c.req.param("id");
+      try {
+        const result = await reg.install(registryUrl, bridgeId);
+        manager.invalidate(bridgeId);
+        return c.json(result, 201);
+      } catch (e) {
+        return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    });
+
+    // Update an installed bridge to its latest registry version (manual only).
+    app.post("/bridges/:id/update", async (c) => {
+      const bridgeId = c.req.param("id");
+      try {
+        const result = await reg.update(bridgeId);
+        manager.invalidate(bridgeId);
+        return c.json(result);
+      } catch (e) {
+        return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    });
+
+    // Uninstall a bridge installed from a registry.
+    app.delete("/bridges/:id", async (c) => {
+      const bridgeId = c.req.param("id");
+      await reg.uninstall(bridgeId);
+      manager.invalidate(bridgeId);
+      return c.json({ ok: true });
+    });
+
+    // Check for available updates across all installed registry bridges.
+    app.get("/registry/updates", async (c) => {
+      return c.json(await reg.checkUpdates());
+    });
+  }
 
   return app;
 }

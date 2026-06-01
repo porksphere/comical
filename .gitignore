@@ -9,4 +9,5 @@ demo/.out/
 .cache/
 .comical/
 **/.tmp-storage/
+**/.tmp-registry/
 .comical-demo/

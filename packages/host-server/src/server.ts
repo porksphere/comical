@@ -1,8 +1,8 @@
 /**
- * Assembles the complete server: SettingsStore + BridgeManager + Hono router + Bun.serve.
- * This is the entry point for `comical serve` and `bun run packages/host-server/src/server.ts`.
+ * Assembles the complete server: SettingsStore + BridgeManager + RegistryManager + Hono router.
  */
 import { join } from "node:path";
+import { ManifestStore, RegistryManager } from "@comical/registry";
 import { BridgeManager } from "./bridge-manager.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
 import { SettingsStore } from "./settings-store.ts";
@@ -17,22 +17,24 @@ export interface ServerOptions {
 
 export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> {
   const settings = new SettingsStore(opts.dataDir);
+  const manifest = new ManifestStore(opts.dataDir);
+  const registry = new RegistryManager({
+    cacheDir: join(opts.dataDir, "bridge-cache"),
+    manifest,
+  });
   const manager = new BridgeManager({
     bridgesDir: opts.bridgesDir,
     dataDir: opts.dataDir,
     settings,
+    registry,
   });
-  const routerOpts: RouterOptions = {};
+
+  const routerOpts: RouterOptions = { registry };
   if (opts.origin) routerOpts.origin = opts.origin;
   if (opts.token) routerOpts.token = opts.token;
   const router = createRouter(manager, routerOpts);
 
-  const server = Bun.serve({
-    port: opts.port ?? 3100,
-    fetch: router.fetch,
-  });
-
-  return server;
+  return Bun.serve({ port: opts.port ?? 3100, fetch: router.fetch });
 }
 
 // ── Standalone entry point ────────────────────────────────────────────────────
@@ -48,7 +50,6 @@ if (import.meta.main) {
   });
 
   console.log(`comical-server running on http://localhost:${server.port}`);
-  console.log(`  bridges: ${join(import.meta.dir, "..", "..", "..", "bridges")}`);
   if (!process.env.COMICAL_TOKEN) {
     console.warn("  COMICAL_TOKEN is not set — server is unauthenticated (LAN use only)");
   }
