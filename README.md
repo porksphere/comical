@@ -1,46 +1,538 @@
 # Comical
 
-A configurable, **content-neutral** **bridge runtime** for serialized content (comics, books,
-and the like) that runs the same TypeScript core on the web, iOS, Android, and desktop.
-Connection behaviour is supplied by swappable **bridges**; each bridge talks to a
-**user-supplied backend** (e.g. a self-hosted Komga/Kavita/OPDS library you own, or a site
-you're authorized to use).
+A configurable, **content-neutral bridge runtime** for serialized content (comics, manga,
+books, and the like). The same TypeScript core runs on desktop, web, iOS, and Android.
+Connection behaviour is supplied by swappable **bridges** — each bridge talks to a
+**user-supplied backend** such as a self-hosted [Komga](https://komga.org),
+[Kavita](https://www.kavitareader.com), or [OPDS](https://opds.io) library, or any site
+the user is authorized to use.
 
-> Comical ships no content and no backends, and operates no central bridge registry. It is
-> infrastructure in the same category as a web browser or an OPDS client. You bring your own
-> bridge and your own backend.
+> **Legal posture:** Comical ships no content and no backends, and operates no central
+> bridge registry. It is infrastructure in the same category as a web browser or an official
+> Komga client. You bring your own bridge and your own backend.
+
+---
+
+## Table of contents
+
+- [Vocabulary](#vocabulary)
+- [Architecture](#architecture)
+  - [Layered model](#layered-model)
+  - [The bridge contract](#the-bridge-contract)
+  - [Host capability API](#host-capability-api)
+  - [Sandboxing](#sandboxing)
+  - [HTTP and CORS](#http-and-cors)
+- [Package reference](#package-reference)
+- [Platform support](#platform-support)
+- [Quick start](#quick-start)
+  - [Running the server](#running-the-server)
+  - [Using the CLI](#using-the-cli)
+  - [Running the browser demo](#running-the-browser-demo)
+- [Writing a bridge](#writing-a-bridge)
+- [Registry](#registry)
+  - [Publishing a registry](#publishing-a-registry)
+  - [Adding a registry](#adding-a-registry)
+- [Testing](#testing)
+- [Development](#development)
+
+---
 
 ## Vocabulary
 
 | Term | Meaning |
 |------|---------|
-| **Runtime** | The content-neutral engine. Ships no backends, no content. |
-| **Bridge** | A plugin implementing the connector interface; translates *one* backend into the neutral data model. |
-| **Backend** | The user-supplied server/site a bridge talks to. URL + credentials are user-configured, never baked in. |
-| **Host** | The per-platform adapter providing the capability API (HTTP, storage, parse, log). |
-| **Registry** | An optional, user-added catalog of bridges. The project operates none. |
+| **Runtime** | The content-neutral engine — `@comical/core`. Ships no backends, no content. |
+| **Bridge** | A TypeScript/JS plugin that implements the `Bridge` interface, translating one backend's API or HTML into the neutral data model. What Tachiyomi/Paperback call a "source." |
+| **Backend** | The user-supplied server or site a bridge talks to — a Komga instance, a Kavita library, an OPDS feed, or a site the user is authorized to use. URL and credentials are always user-configured, never baked into a bridge. |
+| **Host adapter** | The per-platform layer that provides real capabilities (HTTP, storage, logging) to the core. One adapter per runtime environment. |
+| **Host capability API** | The interface a host adapter implements (`network.request`, `storage`, `log`). The only contact surface between the sandbox and the outside world. |
+| **Registry** | An optional, user-added catalog of bridges (`index.json` + bundle files on any static host). The project operates none. |
 
-## Layout
+---
+
+## Architecture
+
+### Layered model
 
 ```
-packages/
-  contract/   versioned interfaces + zod models (the stable boundary)
-  core/       loader, sandbox, capability API, cache, rate-limiter
-  sdk/        bridge-author API (Bridge base class, cheerio helpers)
-  testkit/    fixture record/replay, conformance suite, mock host
-  host-bun/   desktop/CLI host adapter (Bun fetch, fs storage, vm loader)
-  cli/        the `comical` command-line host
-bridges/
-  example-bridge/   reference bridge to a legal demo backend
+┌──────────────────────────────────────────────────────────────────────┐
+│  Bridges (TS/JS CJS bundles)                                          │
+│  example-bridge · komga-bridge · opds-bridge · …                     │
+│  authored with @comical/sdk · user-supplied · hot-updatable           │
+├──────────────────────────────────────────────────────────────────────┤
+│  Bridge Contract  @comical/contract                                   │
+│  versioned TS interfaces + zod schemas · the stable boundary         │
+├──────────────────────────────────────────────────────────────────────┤
+│  Core Runtime  @comical/core                                          │
+│  loader · sandbox · BundleEvaluator · capability gate                 │
+│  rate-limiter · response cache · zod boundary validation              │
+├──────────────────────────────────────────────────────────────────────┤
+│  Host Adapters  (one per platform)                                    │
+│  host-bun · host-web · host-server · host-ios · host-android         │
+│  implement HostCapabilities: network · storage · log                  │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Develop
+The core never imports platform APIs (`fs`, `process`, sockets). It only calls the **host
+capability API**, which each host adapter satisfies. Porting Comical to a new platform means
+writing one adapter — nothing else changes.
+
+### The bridge contract
+
+Every bridge default-exports a factory `(host: HostCapabilities) => Bridge`. The `Bridge`
+interface (from `@comical/contract`) defines:
+
+| Method | Required | Description |
+|--------|----------|-------------|
+| `getSeriesDetails(seriesId)` | ✓ | Full metadata for a series |
+| `getChapters(seriesId)` | ✓ | Ordered chapter list |
+| `getChapterPages(seriesId, chapterId)` | ✓ | Absolute image URLs for a chapter |
+| `getSearchResults(query, page, filters?)` | ✓ | Paginated search |
+| `getHomeSections()` | optional | Curated home-page sections (presentation-as-data) |
+| `getPopular(page)` | optional | Popular series |
+| `getLatest(page)` | optional | Recently updated series |
+| `getFilters()` | optional | Declarative search filter descriptors |
+| `getTags()` | optional | Tag/genre catalog |
+| `getSettings()` | optional | Declarative settings (backend URL, credentials) |
+
+Core data models: `SeriesEntry`, `SeriesInfo`, `Chapter`, `Page`, `PagedResults<T>`,
+`HomeSection`, `Filter`, `BridgeInfo`. All are zod-validated at the bridge boundary — a
+misbehaving bridge cannot inject malformed data into the host.
+
+`HomeSection` is an **extensible discriminated union** (`carousel | grid | ranked | hero | …`)
+so per-backend presentation is additive and non-breaking under the versioned contract.
+Presentation is always *data*, never bridge-rendered UI, keeping bridges portable across
+headless and UI environments.
+
+### Host capability API
+
+The **only** things a bridge can do:
+
+```ts
+interface HostCapabilities {
+  network: {
+    // The sole HTTP path. Host applies rate-limiting, caching, cookies.
+    request(req: HttpRequest): Promise<HttpResponse>;
+  };
+  storage: {
+    // Namespaced per-bridge key/value (tokens, ETags, session state).
+    get(key: string): Promise<string | undefined>;
+    set(key: string, value: string): Promise<void>;
+    delete(key: string): Promise<void>;
+    keys(): Promise<string[]>;
+  };
+  log: { debug | info | warn | error };
+  // User-supplied settings (backend URL, credentials). Never baked into the bridge.
+  settings: Readonly<Record<string, string | boolean>>;
+}
+```
+
+Bridges never open sockets, read the filesystem, or see `fetch`, `process`, or `require`.
+They receive a `HostCapabilities` object and work exclusively through it.
+
+### Sandboxing
+
+Bridge bundles are pre-compiled to self-contained **CJS** (`bun build --format=cjs`). Each
+platform evaluates the bundle in isolation via a `BundleEvaluator` — the one platform-specific
+seam inside the loader:
+
+| Platform | Evaluator | Isolation |
+|----------|-----------|-----------|
+| Bun/Node | `NodeVmEvaluator` (`node:vm` createContext) | Cross-realm — `require`, `process`, `fetch`, `Bun` absent from the new realm |
+| Browser | `FunctionEvaluator` (Function constructor + explicit global shadowing) | Function-scope — `fetch`, `XHR`, `WebSocket`, `localStorage`, etc. passed as `undefined` |
+| iOS | JSC `JSContext` (in `host-ios`) | Cross-realm — fresh JSContext with only injected globals |
+| Android | QuickJS runtime (in `host-android`) | Cross-realm — fresh QuickJS context |
+
+Swapping the evaluator is the only change needed to port the loader to a new engine.
+
+The rate-limiter and response cache sit **between** the evaluator and the raw host network,
+so every bridge on every platform benefits uniformly without any per-bridge code.
+
+### HTTP and CORS
+
+| Deployment | How `network.request` is fulfilled |
+|------------|-----------------------------------|
+| `host-bun` (desktop/CLI) | Native Bun `fetch` + cookie jar. Direct to backend, no infrastructure. |
+| `host-server` (LAN server) | Native Bun `fetch` on the server. Browser/app calls the server's REST API instead of fetching directly. |
+| `host-web` (browser, no server) | Routes through a self-hosted `@comical/proxy` instance that adds CORS headers and fetches server-side. |
+| `host-ios` | `URLSession`. Direct to backend. |
+| `host-android` | OkHttp. Direct to backend. |
+
+The **recommended** browser deployment is `host-server` — run `comical serve` on any machine
+on your network and point your browser at `http://host:3100`. The browser never loads bridge
+bundles or needs CORS at all.
+
+---
+
+## Package reference
+
+### Core packages
+
+| Package | Description |
+|---------|-------------|
+| `@comical/contract` | Versioned `Bridge` interface, `HostCapabilities`, zod data models, `contractVersion`. The stable boundary — everything else builds on this. |
+| `@comical/core` | Sandboxed bridge loader, `BundleEvaluator` interface, `NodeVmEvaluator`, gated network (rate-limit + cache), zod boundary validation, typed errors, call timeouts. Pure TS — no platform APIs. |
+| `@comical/sdk` | `BridgeBase` class, cheerio-backed HTML helpers (`fetchHtml`, `parse`), URL resolver, re-exports contract types. What bridge authors import. |
+| `@comical/testkit` | `FixtureBackend` (public-domain demo library), `MockHost`, network record/replay cassettes, `runConformance` suite. |
+| `@comical/registry` | Registry index schema + zod validation, GitHub URL auto-resolution, SHA-256 integrity + Ed25519 signature verification, `ManifestStore`, `RegistryManager` (add/remove/browse/install/update/uninstall). |
+
+### Host adapters
+
+| Package | Platform | Key capabilities |
+|---------|----------|-----------------|
+| `@comical/host-bun` | Desktop / CLI | Bun `fetch` + cookie jar, `FileStorage` / `MemoryStorage`, `node:vm` loader |
+| `@comical/host-server` | LAN / home server | Hono REST API, `BridgeManager` (load on demand, cache, orphan detection), `SettingsStore`, registry-aware |
+| `@comical/host-web` | Browser (no server) | `FunctionEvaluator`, proxy-backed `ProxyNetworkCapability`, `LocalStorageCapability` |
+| `@comical/proxy` | CORS relay | Hono, SSRF guard, optional Ed25519 bearer auth, 10 MB cap. Deployed independently. |
+| `host-ios` (Swift Package) | iOS / macOS | `JSContext` evaluator, `URLSession`, `FileManager`, on-device `ComicalServer` |
+| `host-android` (Kotlin library) | Android | QuickJS (~1 MB), OkHttp, DataStore, on-device `ComicalServer` |
+
+### Applications
+
+| Package | Description |
+|---------|-------------|
+| `@comical/cli` | `comical` command-line host. Commands: `list`, `serve`, `search`, `details`, `chapters`, `pages`, `test`, `record`, `registry ...` |
+| `demo/` | Minimal browser UI — thin REST client for a running `comical serve` instance. |
+
+### Bridges
+
+| Directory | Description |
+|-----------|-------------|
+| `bridges/example-bridge/` | Reference HTML bridge. Targets a user-supplied backend (URL via settings). Tested against the `FixtureBackend` public-domain library. |
+
+---
+
+## Platform support
+
+| Platform | Status | How it runs |
+|----------|--------|-------------|
+| Desktop (Windows/macOS/Linux) | ✅ M1 | `comical serve` or direct CLI — `host-bun` |
+| Web browser | ✅ M2 | REST client → `host-server` (recommended) or `host-web` + proxy (no server) |
+| iOS | ✅ M3 | Native Swift app via `ComicalBridgeContext` (JSC) + optional `ComicalServer` |
+| Android | ✅ M3 | Native Kotlin app via `ComicalBridgeContext` (QuickJS) + optional `ComicalServer` |
+| Bridge registries | ✅ M4 | `comical registry add/install/publish` + `RegistryManager` in `host-server` |
+
+---
+
+## Quick start
+
+**Prerequisites:** [Bun](https://bun.sh) ≥ 1.3.
 
 ```sh
-bun install          # install workspace deps
-bun run build        # bundle bridges → bridges/<id>/dist/bridge.js
-bun test             # run the offline test pyramid
-bun run cli -- list  # run the CLI
+git clone <repo>
+cd comical
+bun install          # install workspace dependencies
+bun run build        # compile bridges → bridges/<id>/dist/bridge.js
+bun test             # run the full offline test suite (63 tests)
 ```
 
-Requires [Bun](https://bun.sh) ≥ 1.3.
+### Running the server
+
+The recommended way to use Comical — runs on any machine on your network, browser and app
+clients just call the REST API.
+
+```sh
+# Start the server wired to the built-in public-domain demo library
+bun run demo:server        # server on :3100, fixture backend pre-configured
+
+# Or start a bare server and configure a bridge's backend yourself
+bun run serve              # server on :3100
+
+# Then configure the example bridge's backend URL
+curl -X PUT http://localhost:3100/bridges/example/settings \
+  -H "Content-Type: application/json" \
+  -d '{"baseUrl": "https://your-komga-instance.example.com"}'
+```
+
+Key REST endpoints:
+
+```
+GET  /health
+GET  /bridges                                      → list of bridges + update badges
+GET  /bridges/:id                                  → bridge info + settings descriptors
+PUT  /bridges/:id/settings                         → configure backend URL / credentials
+GET  /bridges/:id/search?q=&page=
+GET  /bridges/:id/home
+GET  /bridges/:id/series/:seriesId
+GET  /bridges/:id/series/:seriesId/chapters
+GET  /bridges/:id/series/:seriesId/chapters/:chapterId/pages
+
+GET  /registries                                   → user's added registries
+POST /registries                                   → add a registry
+GET  /registry/bridges                             → browse all available bridges
+POST /registries/:url/bridges/:id/install          → install a bridge
+GET  /registry/updates                             → available update versions
+```
+
+### Using the CLI
+
+```sh
+# List built bridges
+bun run cli list
+
+# One-off queries (without the server)
+bun run cli search "alice" --bridge example --fixture
+bun run cli details alice --bridge example --fixture
+bun run cli chapters alice --bridge example --fixture
+bun run cli pages alice alice-1 --bridge example --fixture
+
+# Run the bridge conformance test
+bun run cli test --bridge example --fixture
+
+# Start the server
+bun run cli serve --port 3100 --data-dir ./.comical
+```
+
+### Running the browser demo
+
+```sh
+# Terminal 1 — server + fixture backend
+bun run demo:server
+
+# Terminal 2 — browser UI on :3300
+bun run demo:dev
+```
+
+Open `http://localhost:3300`. The demo is a thin REST client — the browser makes no direct
+network requests to backends, has no bridge bundles, and runs no bridge code.
+
+---
+
+## Writing a bridge
+
+Install the SDK and create a bridge file:
+
+```ts
+// bridges/my-bridge/src/index.ts
+import {
+  BridgeBase,
+  type BridgeInfo,
+  type Chapter,
+  type SeriesEntry,
+  type SeriesInfo,
+  type Page,
+  type PagedResults,
+  type SettingDescriptor,
+  defineBridge,
+} from "@comical/sdk";
+
+class MyBridge extends BridgeBase {
+  readonly info: BridgeInfo = {
+    id: "my-bridge",
+    name: "My Bridge",
+    version: "0.1.0",
+    contractVersion: "1.0.0",
+    languages: ["en"],
+    nsfw: false,
+    capabilities: ["search", "settings"],
+  };
+
+  getSettings(): SettingDescriptor[] {
+    return [
+      { type: "text", key: "baseUrl", label: "Backend URL", required: true },
+    ];
+  }
+
+  private base() { return this.requireSetting("baseUrl"); }
+
+  async getSearchResults(query: string, page: number): Promise<PagedResults<SeriesEntry>> {
+    const $ = await this.fetchHtml(`${this.base()}/search?q=${encodeURIComponent(query)}`);
+    const items = $(".item").toArray().map(el => ({
+      id: $(el).attr("data-id") ?? "",
+      title: $(el).find(".title").text().trim(),
+    }));
+    return { items, page, hasNextPage: false };
+  }
+
+  // ... implement getSeriesDetails, getChapters, getChapterPages
+}
+
+export default defineBridge(host => new MyBridge(host));
+```
+
+Bridge rules:
+- **Never** use `fetch`, `XMLHttpRequest`, or any platform API directly. Only `this.request()` / `this.fetchHtml()` / `this.fetchJson()`.
+- **Never** hardcode a backend URL. Read it from `this.requireSetting("baseUrl")`.
+- All image URLs in `Page.imageUrl` must be absolute.
+- Declare every capability you implement in `info.capabilities`.
+
+Build and test:
+
+```sh
+bun run build                              # compile to bridges/my-bridge/dist/bridge.js
+bun run cli test --bridge my-bridge --set baseUrl=https://your-backend.example.com
+```
+
+---
+
+## Registry
+
+A registry is a static `index.json` + bridge bundle files on any static host (GitHub Pages,
+Cloudflare Pages, S3, self-hosted). The project operates no central registry.
+
+### Publishing a registry
+
+```sh
+# 1. Generate a signing keypair (keep the private key secret — never commit it)
+bun run cli registry keygen --out registry.key.json
+
+# 2. Build bridges and publish
+bun run build
+bun run cli registry publish \
+  --base-url https://my-github-user.github.io/my-bridges \
+  --out ./dist \
+  --key registry.key.json   # optional; unsigned registries are also valid
+
+# 3. Deploy ./dist/ to GitHub Pages, Cloudflare Pages, S3, etc.
+#    The index.json is at the root of the deployed URL.
+```
+
+The published `index.json` shape:
+
+```json
+{
+  "registryVersion": "1",
+  "updated": "2026-06-01T00:00:00Z",
+  "publicKey": "<base64url Ed25519 public key — omit for unsigned>",
+  "bridges": [
+    {
+      "id": "my-bridge",
+      "name": "My Bridge",
+      "version": "0.1.0",
+      "contractVersion": "1.0.0",
+      "languages": ["en"],
+      "nsfw": false,
+      "capabilities": ["search", "settings"],
+      "url": "https://my-github-user.github.io/my-bridges/bridges/my-bridge/0.1.0/bridge.js",
+      "sha256": "<lowercase hex SHA-256 of the bundle>",
+      "signature": "<base64url Ed25519 sig over the sha256 hex — omit for unsigned>"
+    }
+  ]
+}
+```
+
+### Adding a registry
+
+Via the CLI:
+
+```sh
+# GitHub repo URL is auto-resolved to raw.githubusercontent.com/…/main/index.json
+bun run cli registry add github.com/someone/their-bridges
+bun run cli registry browse github.com/someone/their-bridges
+bun run cli registry install github.com/someone/their-bridges my-bridge
+bun run cli registry updates   # check for newer versions (never installs automatically)
+bun run cli registry update my-bridge
+```
+
+Via the REST API (same operations, for the browser/app UI):
+
+```sh
+curl -X POST http://localhost:3100/registries \
+  -H "Content-Type: application/json" \
+  -d '{"url": "github.com/someone/their-bridges"}'
+
+curl http://localhost:3100/registry/bridges
+curl http://localhost:3100/registry/updates
+```
+
+**Integrity + trust model:**
+- SHA-256 checksum is always verified before a bundle is evaluated. Prevents corruption and transit tampering.
+- Ed25519 signature verification is optional — present when the registry operator has generated a keypair. Trust is established when you add the registry (HTTPS identity + the registry operator's identity on GitHub).
+- Updates are **always manual**. `checkUpdates()` / `GET /registry/updates` reports available versions; nothing installs without explicit user action.
+- Removing a registry **orphans** its installed bridges (they are blocked from loading). Re-add the registry or reinstall the bridges to restore them.
+
+---
+
+## Testing
+
+```sh
+bun test                # full offline test suite (63 tests across 10 files)
+bun test ./packages/core/         # core unit + sandbox tests
+bun test ./packages/registry/     # registry: URL resolution, checksums, signing, install cycle
+bun test ./packages/host-bun/     # host-bun integration (real HTTP via fixture backend)
+bun test ./packages/host-server/  # host-server REST API integration
+bun test ./bridges/example-bridge/ # bridge conformance + snapshot tests
+```
+
+**iOS tests** (requires Xcode on macOS):
+```sh
+cd packages/host-ios && swift test
+```
+
+**Android tests** (requires Android SDK):
+```sh
+cd packages/host-android && ./gradlew test
+```
+
+### Test pyramid
+
+| Layer | What it covers | Network |
+|-------|---------------|---------|
+| Unit (core/sdk) | Loader, sandbox, rate-limiter, cache, version compat | None |
+| Bridge conformance | All `Bridge` methods, id round-trips, invariants, against cassettes | None (replay) |
+| Snapshot | Parsed output pinned per bridge | None (replay) |
+| Sandbox/security | `require`/`process`/`fetch` absent, resource guards, eval disabled | None |
+| Robustness/fuzz | Truncated HTML, 5xx, empty bodies, malformed JSON | None |
+| Host-adapter integration | Real fetch + storage + cookie jar against local fixture server | Localhost only |
+| Registry | Checksum, signature, install/orphan/update cycle, URL resolution | Localhost only |
+| Live canary (CI, non-gating) | Real backends, cassette refresh | Live |
+
+---
+
+## Development
+
+### Repo layout
+
+```
+comical/
+├── packages/
+│   ├── contract/      @comical/contract  — versioned interfaces + zod models
+│   ├── core/          @comical/core      — sandboxed loader, BundleEvaluator, gated network
+│   ├── sdk/           @comical/sdk       — BridgeBase, cheerio helpers
+│   ├── testkit/       @comical/testkit   — fixture backend, conformance suite, cassettes
+│   ├── registry/      @comical/registry  — index schema, URL resolution, signing, manager
+│   ├── host-bun/      @comical/host-bun  — desktop/CLI adapter
+│   ├── host-server/   @comical/host-server — REST API server
+│   ├── host-web/      @comical/host-web  — browser adapter (FunctionEvaluator + proxy)
+│   ├── proxy/         @comical/proxy     — self-hostable CORS relay (Hono)
+│   └── cli/           @comical/cli       — comical command-line tool
+├── bridges/
+│   └── example-bridge/                  — reference bridge (public-domain demo backend)
+├── packages/host-ios/                   — Swift Package (JSC evaluator + URLSession)
+├── packages/host-android/               — Kotlin library (QuickJS + OkHttp)
+├── demo/                                — browser demo UI
+├── scripts/build.ts                     — bundles bridges to CJS
+├── package.json                         — Bun workspace root
+├── tsconfig.base.json                   — shared TS config
+└── tsconfig.json                        — root typecheck (all packages)
+```
+
+### Key commands
+
+```sh
+bun install              # install all workspace deps
+bun run build            # bundle bridges → bridges/<id>/dist/bridge.js
+bun test                 # run all tests
+bun run typecheck        # tsc --noEmit across all packages
+bun run serve            # start comical-server on :3100
+bun run demo:server      # start server wired to fixture backend
+bun run demo:dev         # start browser demo UI on :3300
+bun run cli -- --help    # CLI help
+```
+
+### Adding a new host adapter
+
+1. Create `packages/host-<name>/`.
+2. Implement `HostCapabilities` using your platform's HTTP/storage/log APIs.
+3. Implement `BundleEvaluator` using your platform's JS engine (JSC, QuickJS, V8, etc.).
+4. Pass your evaluator to `loadBridge({ ..., evaluator: yourEvaluator })`.
+5. Add a test that loads `example-bridge` and calls `runConformance`.
+
+### Updating the contract
+
+The bridge contract (`@comical/contract`) is semver-versioned. A breaking change to the
+`Bridge` interface or data models requires bumping `CONTRACT_VERSION` in `version.ts`. The
+runtime rejects bridges targeting an incompatible major version at load time.
+
+Additive changes (new optional methods, new `HomeSection` types, new `BridgeCapability`
+values) are non-breaking and can land without a major bump.
