@@ -1,0 +1,6 @@
+# Bun configuration for the Comical monorepo.
+# https://bun.sh/docs/runtime/bunfig
+
+[install]
+# Hoist workspace dependencies to the root node_modules.
+exact = false

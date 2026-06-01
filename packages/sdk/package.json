@@ -1,0 +1,14 @@
+{
+  "name": "@comical/sdk",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Bridge-author SDK: BridgeBase, cheerio parsing helpers, request builders",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@comical/contract": "workspace:*",
+    "cheerio": "1.0.0"
+  }
+}

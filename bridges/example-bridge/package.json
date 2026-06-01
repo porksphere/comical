@@ -1,0 +1,13 @@
+{
+  "name": "example-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Reference bridge: scrapes a user-supplied demo comic-library website via cheerio",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@comical/sdk": "workspace:*"
+  }
+}

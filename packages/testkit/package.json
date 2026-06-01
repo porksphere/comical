@@ -1,0 +1,14 @@
+{
+  "name": "@comical/testkit",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Test framework: fixture backend, mock host, record/replay, conformance suite",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@comical/contract": "workspace:*",
+    "@comical/core": "workspace:*"
+  }
+}

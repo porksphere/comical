@@ -1,0 +1,13 @@
+{
+  "name": "@comical/host-bun",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Desktop/CLI host adapter: Bun fetch + cookie jar + filesystem storage",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@comical/contract": "workspace:*"
+  }
+}

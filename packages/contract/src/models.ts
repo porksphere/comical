@@ -1,0 +1,190 @@
+/**
+ * The neutral data models every bridge produces, as zod schemas with inferred TS types.
+ *
+ * These schemas are the runtime's boundary: `@comical/core` validates whatever a bridge
+ * returns against them before handing data to a host, so a buggy or hostile bridge cannot
+ * inject malformed data. Keep them backend-agnostic — nothing here names a specific service.
+ */
+import { z } from "zod";
+
+/** Publication status of a series, normalized across backends. */
+export const seriesStatusSchema = z.enum([
+  "unknown",
+  "ongoing",
+  "completed",
+  "hiatus",
+  "cancelled",
+]);
+export type SeriesStatus = z.infer<typeof seriesStatusSchema>;
+
+/** A lightweight series entry as returned by search / home / popular / latest. */
+export const seriesEntrySchema = z.object({
+  /** Opaque, bridge-namespaced, stable-across-sessions identifier. */
+  id: z.string().min(1),
+  title: z.string().min(1),
+  thumbnailUrl: z.string().url().optional(),
+  subtitle: z.string().optional(),
+});
+export type SeriesEntry = z.infer<typeof seriesEntrySchema>;
+
+/** Full detail for a single series. */
+export const seriesInfoSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  thumbnailUrl: z.string().url().optional(),
+  author: z.string().optional(),
+  artist: z.string().optional(),
+  description: z.string().optional(),
+  genres: z.array(z.string()).optional(),
+  status: seriesStatusSchema.optional(),
+  languages: z.array(z.string()).optional(),
+});
+export type SeriesInfo = z.infer<typeof seriesInfoSchema>;
+
+/** A single chapter/issue within a series. */
+export const chapterSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  /** Decimal chapter number when known (e.g. 10.5). */
+  number: z.number().optional(),
+  volume: z.number().optional(),
+  languageCode: z.string().optional(),
+  scanlator: z.string().optional(),
+  /** Publication time as epoch milliseconds. */
+  publishedAt: z.number().int().optional(),
+});
+export type Chapter = z.infer<typeof chapterSchema>;
+
+/** A single readable page. `imageUrl` must be absolute; `headers` carry any referer/auth. */
+export const pageSchema = z.object({
+  index: z.number().int().nonnegative(),
+  imageUrl: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional(),
+});
+export type Page = z.infer<typeof pageSchema>;
+
+/** A page of results with cursor-free pagination. */
+export interface PagedResults<T> {
+  items: T[];
+  page: number;
+  hasNextPage: boolean;
+}
+export const pagedResultsSchema = <T extends z.ZodTypeAny>(item: T) =>
+  z.object({
+    items: z.array(item),
+    page: z.number().int().nonnegative(),
+    hasNextPage: z.boolean(),
+  });
+
+/** A simple id/label option used by filters and settings. */
+export const optionSchema = z.object({ id: z.string(), label: z.string() });
+export type Option = z.infer<typeof optionSchema>;
+
+/** Declarative search-filter descriptors a bridge advertises via `getFilters()`. */
+export const filterSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), key: z.string(), label: z.string() }),
+  z.object({ type: z.literal("toggle"), key: z.string(), label: z.string() }),
+  z.object({ type: z.literal("select"), key: z.string(), label: z.string(), options: z.array(optionSchema) }),
+  z.object({ type: z.literal("multiselect"), key: z.string(), label: z.string(), options: z.array(optionSchema) }),
+  z.object({ type: z.literal("sort"), key: z.string(), label: z.string(), options: z.array(optionSchema) }),
+]);
+export type Filter = z.infer<typeof filterSchema>;
+
+/** A concrete filter value supplied to `getSearchResults()`. */
+export const filterValueSchema = z.object({
+  key: z.string(),
+  value: z.union([z.string(), z.array(z.string()), z.boolean()]),
+});
+export type FilterValue = z.infer<typeof filterValueSchema>;
+
+/** A tag/genre a bridge can enumerate via `getTags()`. */
+export const tagSchema = z.object({ id: z.string(), label: z.string() });
+export type Tag = z.infer<typeof tagSchema>;
+
+/**
+ * A section on a backend's home page. Modeled as an EXTENSIBLE discriminated union on `type`
+ * so new presentation styles (and a future rich-layout schema) can be added as additive,
+ * non-breaking changes. Presentation stays *data*: a bridge emits this; the host renders it.
+ */
+const homeSectionFields = {
+  /** Stable id for the section (used for paging into it via getPopular/getLatest etc.). */
+  id: z.string().min(1),
+  title: z.string().min(1),
+  items: z.array(seriesEntrySchema),
+  /** Whether a "view all" affordance should be offered. */
+  more: z.boolean().optional(),
+};
+export const homeSectionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("carousel"), ...homeSectionFields }),
+  z.object({ type: z.literal("grid"), ...homeSectionFields }),
+  z.object({ type: z.literal("ranked"), ...homeSectionFields }),
+  z.object({ type: z.literal("hero"), ...homeSectionFields }),
+]);
+export type HomeSection = z.infer<typeof homeSectionSchema>;
+
+/**
+ * Declarative per-bridge settings descriptors a bridge advertises via `getSettings()`.
+ * THIS is where a backend URL + credentials live — supplied by the user, never baked into
+ * the bridge. The host collects values for these and passes them in via `HostCapabilities`.
+ */
+export const settingDescriptorSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("text"),
+    key: z.string(),
+    label: z.string(),
+    placeholder: z.string().optional(),
+    default: z.string().optional(),
+    required: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("password"),
+    key: z.string(),
+    label: z.string(),
+    required: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("toggle"),
+    key: z.string(),
+    label: z.string(),
+    default: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("select"),
+    key: z.string(),
+    label: z.string(),
+    options: z.array(optionSchema),
+    default: z.string().optional(),
+  }),
+]);
+export type SettingDescriptor = z.infer<typeof settingDescriptorSchema>;
+
+/** Capabilities a bridge advertises so hosts can adapt UI/behaviour. */
+export const bridgeCapabilitySchema = z.enum([
+  "search",
+  "home",
+  "popular",
+  "latest",
+  "filters",
+  "tags",
+  "settings",
+  "richHome",
+]);
+export type BridgeCapability = z.infer<typeof bridgeCapabilitySchema>;
+
+/**
+ * Self-description of a bridge. Note there is deliberately NO backend URL here — the address
+ * and credentials of the user's backend arrive at runtime through settings.
+ */
+export const bridgeInfoSchema = z.object({
+  /** Stable, url-safe, lowercase id. Namespaces every entity id this bridge emits. */
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "id must be lowercase kebab-case"),
+  name: z.string().min(1),
+  /** Semver of the bridge implementation itself. */
+  version: z.string(),
+  /** Semver of the contract this bridge targets (see CONTRACT_VERSION). */
+  contractVersion: z.string(),
+  languages: z.array(z.string()).min(1),
+  nsfw: z.boolean(),
+  capabilities: z.array(bridgeCapabilitySchema),
+});
+export type BridgeInfo = z.infer<typeof bridgeInfoSchema>;

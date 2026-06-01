@@ -1,0 +1,14 @@
+{
+  "name": "@comical/core",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Portable runtime: bridge loader, sandbox, gated capabilities, validation",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@comical/contract": "workspace:*",
+    "zod": "^3.23.8"
+  }
+}

@@ -1,0 +1,6 @@
+/**
+ * `@comical/sdk` — everything a bridge author needs. Re-exports the full contract (types +
+ * schemas) so a bridge imports from one place, and adds `BridgeBase` + helpers.
+ */
+export * from "@comical/contract";
+export * from "./bridge-base.ts";

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+bun.lock
+*.log
+coverage/
+.cache/
+.comical/
+**/.tmp-storage/

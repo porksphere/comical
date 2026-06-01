@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "target": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["bun"],
+
+    "baseUrl": ".",
+    "paths": {
+      "@comical/contract": ["packages/contract/src/index.ts"],
+      "@comical/core": ["packages/core/src/index.ts"],
+      "@comical/sdk": ["packages/sdk/src/index.ts"],
+      "@comical/host-bun": ["packages/host-bun/src/index.ts"],
+      "@comical/testkit": ["packages/testkit/src/index.ts"]
+    }
+  }
+}
