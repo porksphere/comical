@@ -191,4 +191,43 @@ describe("sandbox isolation", () => {
     expect(details.title).toBe("pong");
     expect(seen?.url).toBe("https://backend.test/abc");
   });
+
+  // A bridge that fans out 3 requests at once and reports each request's start timestamp.
+  const SLOW_INFO = `{ id: "smoke", name: "Smoke", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["search"], rateLimit: { maxConcurrent: 1, minIntervalMs: 80 } }`;
+  const FANOUT = bundle(`{
+    info: ${SLOW_INFO},
+    getSeriesDetails: async (id) => ({ id, title: id }),
+    getChapters: async () => [],
+    getChapterPages: async () => [],
+    getSearchResults: async () => {
+      const starts = await Promise.all([0, 1, 2].map((i) =>
+        host.network.request({ url: "https://b.test/" + i }).then((r) => Number(r.body))
+      ));
+      return { items: starts.map((s) => ({ id: String(s), title: String(s) })), page: 1, hasNextPage: false };
+    },
+  }`);
+  const stampHost = () =>
+    mockHost((req) => ({ url: req.url, status: 200, statusText: "OK", headers: {}, body: String(Date.now()) }));
+  const startSpread = (items: Array<{ id: string }>): number => {
+    const t = items.map((i) => Number(i.id)).sort((a, b) => a - b);
+    return t[t.length - 1]! - t[0]!;
+  };
+
+  test("applies the bridge's declared info.rateLimit", async () => {
+    const b = loadBridge({ code: FANOUT, capabilities: stampHost() });
+    const res = await b.getSearchResults!("", 1);
+    // 3 requests, 1 in flight, ≥80ms apart → starts span ≥ ~160ms (allow scheduling slack).
+    expect(startSpread(res.items)).toBeGreaterThanOrEqual(140);
+  });
+
+  test("an explicit host rate-limit overrides the declaration (per key)", async () => {
+    const b = loadBridge({
+      code: FANOUT,
+      capabilities: stampHost(),
+      network: { rateLimit: { maxConcurrent: 10, minIntervalMs: 0 } },
+    });
+    const res = await b.getSearchResults!("", 1);
+    // Host says "no spacing, 10 concurrent" — the declared 1/80ms must not apply.
+    expect(startSpread(res.items)).toBeLessThan(60);
+  });
 });

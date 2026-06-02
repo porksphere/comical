@@ -11,41 +11,13 @@ import vm from "node:vm";
 import type { LogCapability } from "@comical/contract";
 import { BridgeLoadError } from "./errors.ts";
 import type { BundleEvaluator, EvaluatorResult } from "./evaluator.ts";
+import { buildBridgeGlobals } from "./globals.ts";
+
+export { buildBridgeGlobals };
 
 /** A CJS module object the bundle writes its exports onto. */
 interface ModuleShim {
   exports: Record<string, unknown>;
-}
-
-/**
- * The allow-list of ambient globals injected into the vm sandbox. All are pure/standalone (no
- * I/O) except `console`, which is routed to the bridge's log capability. Standard ECMAScript
- * globals (Object, Array, JSON, Math, Promise, Map, Set, …) come from the vm realm itself.
- *
- * Exported so other evaluators (host-web FunctionEvaluator, M3 JSC/QuickJS) can reuse the same
- * curated list without duplicating it.
- */
-export function buildBridgeGlobals(log: LogCapability): Record<string, unknown> {
-  const sandboxConsole = {
-    log: (...a: unknown[]) => log.info(...a),
-    info: (...a: unknown[]) => log.info(...a),
-    debug: (...a: unknown[]) => log.debug(...a),
-    warn: (...a: unknown[]) => log.warn(...a),
-    error: (...a: unknown[]) => log.error(...a),
-  };
-  return {
-    console: sandboxConsole,
-    TextEncoder,
-    TextDecoder,
-    URL,
-    URLSearchParams,
-    atob,
-    btoa,
-    setTimeout,
-    clearTimeout,
-    queueMicrotask,
-    structuredClone,
-  };
 }
 
 /**

@@ -35,6 +35,7 @@ import {
 } from "./errors.ts";
 import type { BundleEvaluator } from "./evaluator.ts";
 import { createGatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
+import type { RateLimitOptions } from "./net/rate-limiter.ts";
 import { evaluateBundle, NodeVmEvaluator } from "./sandbox.ts";
 import { resolveSettings } from "./settings.ts";
 
@@ -99,9 +100,10 @@ export function loadBridge(opts: LoadBridgeOptions): LoadedBridge {
   // 2. Gate the network capability (rate-limit + cache) before the bridge can touch it.
   //    `settings` is a mutable copy so defaults/coercions applied after instantiation are visible
   //    to the bridge, which reads `host.settings` lazily by reference.
+  const gatedNetwork = createGatedNetwork(opts.capabilities.network, opts.network ?? {});
   const gated: HostCapabilities = {
     ...opts.capabilities,
-    network: createGatedNetwork(opts.capabilities.network, opts.network ?? {}),
+    network: gatedNetwork.network,
     settings: { ...opts.capabilities.settings },
   };
 
@@ -129,6 +131,20 @@ export function loadBridge(opts: LoadBridgeOptions): LoadedBridge {
       `bridge "${info.id}" targets contract ${info.contractVersion}, ` +
         `incompatible with runtime ${runtimeVersion}`,
     );
+  }
+
+  // 4b. Apply the bridge's declared rate limit as the default. Precedence per key:
+  //     explicit host override (already set on the limiter) > info.rateLimit > runtime default.
+  if (info.rateLimit) {
+    const hostSet = opts.network?.rateLimit ?? {};
+    const declared: Partial<RateLimitOptions> = {};
+    if (info.rateLimit.maxConcurrent !== undefined && hostSet.maxConcurrent === undefined) {
+      declared.maxConcurrent = info.rateLimit.maxConcurrent;
+    }
+    if (info.rateLimit.minIntervalMs !== undefined && hostSet.minIntervalMs === undefined) {
+      declared.minIntervalMs = info.rateLimit.minIntervalMs;
+    }
+    gatedNetwork.setRateLimit(declared);
   }
 
   // 5. Enforce settings: apply declared defaults + coerce/validate present values (in place, so

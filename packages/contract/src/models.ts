@@ -231,5 +231,19 @@ export const bridgeInfoSchema = z.object({
   languages: z.array(z.string()).min(1),
   nsfw: z.boolean(),
   capabilities: z.array(bridgeCapabilitySchema),
+  /**
+   * Politeness budget for this bridge's backend. The runtime applies it to the gated network as
+   * the default (a host may still override per key). Omit to accept the runtime default. The
+   * bridge author knows the backend's limits; declaring them here means every host — server, web,
+   * iOS, Android — throttles correctly with no per-host configuration.
+   */
+  rateLimit: z
+    .object({
+      /** Maximum requests in flight at once. */
+      maxConcurrent: z.number().int().positive().optional(),
+      /** Minimum milliseconds between successive request starts. */
+      minIntervalMs: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
 });
 export type BridgeInfo = z.infer<typeof bridgeInfoSchema>;

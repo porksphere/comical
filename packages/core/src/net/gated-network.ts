@@ -12,14 +12,24 @@ export interface GatedNetworkOptions {
   cache?: Partial<CacheOptions>;
 }
 
+export interface GatedNetwork {
+  /** The network capability handed to the bridge. */
+  network: NetworkCapability;
+  /**
+   * Adjust the rate limit after creation. The loader uses this to apply a bridge's declared
+   * `info.rateLimit` (read only after the bridge is instantiated with the gated network).
+   */
+  setRateLimit: (opts: Partial<RateLimitOptions>) => void;
+}
+
 export function createGatedNetwork(
   raw: NetworkCapability,
   opts: GatedNetworkOptions = {},
-): NetworkCapability {
+): GatedNetwork {
   const limiter = new RateLimiter(opts.rateLimit);
   const cache = new ResponseCache(opts.cache);
 
-  return {
+  const network: NetworkCapability = {
     async request(req: HttpRequest): Promise<HttpResponse> {
       const cached = cache.get(req);
       if (cached) return cached;
@@ -36,4 +46,6 @@ export function createGatedNetwork(
       return response;
     },
   };
+
+  return { network, setRateLimit: (o) => limiter.reconfigure(o) };
 }

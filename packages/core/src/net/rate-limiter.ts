@@ -25,6 +25,18 @@ export class RateLimiter {
     this.opts = { ...DEFAULT_RATE_LIMIT, ...opts };
   }
 
+  /**
+   * Merge new limits over the current ones (undefined keys are ignored). Safe to call after the
+   * limiter is in use — the next `acquire()`/`drain()` honors the updated values. This is how a
+   * bridge's declared `info.rateLimit` is applied: the network is gated before the bridge's `info`
+   * is known, so the loader reconfigures the live limiter once it reads the declaration.
+   */
+  reconfigure(opts: Partial<RateLimitOptions>): void {
+    if (opts.maxConcurrent !== undefined) this.opts.maxConcurrent = opts.maxConcurrent;
+    if (opts.minIntervalMs !== undefined) this.opts.minIntervalMs = opts.minIntervalMs;
+    this.drain();
+  }
+
   /** Resolves when the caller may start; the caller MUST later call the returned release fn. */
   async acquire(): Promise<() => void> {
     await new Promise<void>((resolve) => {
