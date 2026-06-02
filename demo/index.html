@@ -77,9 +77,12 @@
     </details>
   </section>
 
-  <!-- Filters / tags (only when the bridge supports them) -->
+  <!-- Filters / sort / tags (only when the bridge supports them) -->
   <section class="panel" id="meta-panel" style="display:none">
-    <div id="filters-block" style="display:none"><h3>Filters</h3><div id="filters" class="chips"></div></div>
+    <div id="filters-block" style="display:none"><h3>Filters</h3><div id="filters" class="row"></div></div>
+    <div id="sort-block" style="display:none; margin-top:0.6rem"><h3>Sort</h3>
+      <div class="row"><select id="sort-field"></select><select id="sort-dir"><option value="asc">Asc</option><option value="desc">Desc</option></select></div>
+    </div>
     <div id="tags-block" style="display:none; margin-top:0.6rem"><h3>Tags</h3><div id="tags" class="chips"></div></div>
   </section>
 

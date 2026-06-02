@@ -7,10 +7,12 @@ import {
   type Bridge,
   type BridgeFactory,
   type BridgeInfo,
+  type SearchOptions,
   bridgeInfoSchema,
   CONTRACT_VERSION,
   chapterSchema,
   filterSchema,
+  filterValueSchema,
   type HostCapabilities,
   isContractCompatible,
   pageSchema,
@@ -19,6 +21,8 @@ import {
   seriesInfoSchema,
   seriesListSchema,
   settingDescriptorSchema,
+  sortOptionSchema,
+  sortSelectionSchema,
   tagSchema,
 } from "@comical/contract";
 import { z } from "zod";
@@ -32,6 +36,12 @@ import type { BundleEvaluator } from "./evaluator.ts";
 import { createGatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
 import { evaluateBundle, NodeVmEvaluator } from "./sandbox.ts";
 import { resolveSettings } from "./settings.ts";
+
+/** Boundary schema for the search options bag (filters + sort). */
+const searchOptionsSchema = z.object({
+  filters: z.array(filterValueSchema).optional(),
+  sort: sortSelectionSchema.optional(),
+});
 import { errorMessage, withTimeout } from "./util.ts";
 import { validate } from "./validation.ts";
 
@@ -170,11 +180,19 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
       call("getListItems", entryPage, () => raw.getListItems!(listId, p));
   }
   if (raw.getSearchResults) {
-    bridge.getSearchResults = (q, p, f) =>
-      call("getSearchResults", entryPage, () => raw.getSearchResults!(q, p, f));
+    bridge.getSearchResults = (q, p, opts) => {
+      // Validate the search-options INPUT (filters + sort) at the boundary.
+      const options =
+        opts === undefined ? undefined : (validate(searchOptionsSchema, opts, "search options") as SearchOptions);
+      return call("getSearchResults", entryPage, () => raw.getSearchResults!(q, p, options));
+    };
   }
   if (raw.getFilters) {
     bridge.getFilters = () => call("getFilters", z.array(filterSchema), () => raw.getFilters!());
+  }
+  if (raw.getSortOptions) {
+    bridge.getSortOptions = () =>
+      call("getSortOptions", z.array(sortOptionSchema), () => raw.getSortOptions!());
   }
   if (raw.getTags) {
     bridge.getTags = () => call("getTags", z.array(tagSchema), () => raw.getTags!());

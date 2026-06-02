@@ -131,13 +131,28 @@ export class FixtureBackend {
     );
   }
 
-  private renderSearch(query: string): string {
+  private renderSearch(
+    query: string,
+    opts: { genres?: string[]; sort?: string; ascending?: boolean } = {},
+  ): string {
     const q = query.trim().toLowerCase();
-    const matches = q
+    let matches = q
       ? this.catalog.filter(
           (s) => s.title.toLowerCase().includes(q) || s.author.toLowerCase().includes(q),
         )
-      : this.catalog;
+      : [...this.catalog];
+
+    if (opts.genres && opts.genres.length > 0) {
+      const wanted = new Set(opts.genres.map((g) => g.toLowerCase()));
+      matches = matches.filter((s) => s.genres.some((g) => wanted.has(g.toLowerCase())));
+    }
+
+    if (opts.sort === "title" || opts.sort === "author") {
+      const key = opts.sort;
+      matches.sort((a, b) => a[key].localeCompare(b[key]));
+      if (opts.ascending === false) matches.reverse();
+    }
+
     return layout(
       `Search: ${query}`,
       `<section class="results">${matches.map(seriesCard).join("")}</section>`,
@@ -187,7 +202,19 @@ export class FixtureBackend {
       return html ? this.html(html) : this.html(layout("Not Found", "<p>not found</p>"), 404);
     }
 
-    if (path === "/search") return this.html(this.renderSearch(url.searchParams.get("q") ?? ""));
+    if (path === "/search") {
+      const p = url.searchParams;
+      const genres = p.get("genre")?.split(",").map((g) => g.trim()).filter(Boolean);
+      const sort = p.get("sort") ?? undefined;
+      const ascending = p.get("dir") !== "desc";
+      return this.html(
+        this.renderSearch(p.get("q") ?? "", {
+          ...(genres && genres.length ? { genres } : {}),
+          ...(sort ? { sort } : {}),
+          ascending,
+        }),
+      );
+    }
 
     const chapterMatch = /^\/series\/([^/]+)\/chapter\/([^/]+)$/.exec(path);
     if (chapterMatch) {

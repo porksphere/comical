@@ -11,14 +11,17 @@ import {
   type BridgeInfo,
   type Chapter,
   type CheerioRoot,
+  type Filter,
   type InferSettings,
   type Page,
   type PagedResults,
+  type SearchOptions,
   type SeriesEntry,
   type SeriesInfo,
   type SeriesList,
   type SeriesStatus,
   type SettingDescriptor,
+  type SortOption,
   defineBridge,
   defineSettings,
 } from "@comical/sdk";
@@ -61,7 +64,7 @@ class ExampleBridge extends BridgeBase<Settings> {
     contractVersion: "1.0.0",
     languages: ["en"],
     nsfw: false,
-    capabilities: ["lists", "search", "settings"],
+    capabilities: ["lists", "search", "filters", "sort", "settings"],
   };
 
   getSettings(): SettingDescriptor[] {
@@ -119,8 +122,40 @@ class ExampleBridge extends BridgeBase<Settings> {
     return { items: this.cards($, "section.list-items"), page, hasNextPage: false };
   }
 
-  async getSearchResults(query: string, page: number): Promise<PagedResults<SeriesEntry>> {
+  async getFilters(): Promise<Filter[]> {
+    return [
+      {
+        type: "multiselect",
+        key: "genre",
+        label: "Genres",
+        options: ["Fantasy", "Adventure", "Mystery", "Crime", "Horror", "Gothic"].map((g) => ({
+          value: g,
+          label: g,
+        })),
+      },
+    ];
+  }
+
+  async getSortOptions(): Promise<SortOption[]> {
+    return [
+      { key: "title", label: "Title" },
+      { key: "author", label: "Author" },
+    ];
+  }
+
+  async getSearchResults(
+    query: string,
+    page: number,
+    options?: SearchOptions,
+  ): Promise<PagedResults<SeriesEntry>> {
     const params = new URLSearchParams({ q: query, page: String(page) });
+    for (const f of options?.filters ?? []) {
+      if (f.key === "genre" && Array.isArray(f.value)) params.set("genre", f.value.join(","));
+    }
+    if (options?.sort) {
+      params.set("sort", options.sort.key);
+      params.set("dir", options.sort.ascending ? "asc" : "desc");
+    }
     const $ = await this.fetchHtml(`${this.base()}/search?${params.toString()}`);
     return { items: this.cards($, "section.results"), page, hasNextPage: false };
   }

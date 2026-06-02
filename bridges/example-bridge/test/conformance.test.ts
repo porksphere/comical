@@ -67,4 +67,24 @@ describe("example-bridge", () => {
     expect(items.items.length).toBeGreaterThan(0);
     expect(items.items[0]!.title).toBeTruthy();
   });
+
+  test("filters narrow results; sort (separate) orders them", async () => {
+    const bridge = load();
+    const filters = await bridge.getFilters!();
+    expect(filters.find((f) => f.key === "genre")?.type).toBe("multiselect");
+    const sorts = await bridge.getSortOptions!();
+    expect(sorts.map((s) => s.key)).toContain("title");
+
+    // Unfiltered returns the whole catalog; a genre filter narrows it.
+    const all = await bridge.getSearchResults!("", 1);
+    const mystery = await bridge.getSearchResults!("", 1, { filters: [{ key: "genre", value: ["Mystery"] }] });
+    expect(mystery.items.length).toBeGreaterThan(0);
+    expect(mystery.items.length).toBeLessThan(all.items.length);
+    expect(mystery.items.every((i) => i.id === "sherlock")).toBe(true); // only Sherlock is Mystery
+
+    // Sort by title descending flips the order (sort lives in options.sort, not filters).
+    const asc = await bridge.getSearchResults!("", 1, { sort: { key: "title", ascending: true } });
+    const desc = await bridge.getSearchResults!("", 1, { sort: { key: "title", ascending: false } });
+    expect(asc.items.map((i) => i.id).join()).toBe([...desc.items].reverse().map((i) => i.id).join());
+  });
 });

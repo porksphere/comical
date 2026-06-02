@@ -7,7 +7,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
-import type { HostCapabilities, NetworkCapability, ResolvedSettings } from "@comical/contract";
+import type { FilterValue, HostCapabilities, NetworkCapability, ResolvedSettings } from "@comical/contract";
 import { type LoadedBridge, loadBridge } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
 import {
@@ -37,7 +37,7 @@ Usage:
   comical serve                [--port N] [--data-dir DIR] [--origin URL] [--token SECRET]
   comical lists                --bridge <id> [--fixture | --set baseUrl=URL]   (list catalog)
   comical lists <listId>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N]   (list items)
-  comical search <query>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N]
+  comical search <query>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N] [--filter key=value ...] [--sort key [--desc]]
   comical details <seriesId>   --bridge <id> [--fixture | --set baseUrl=URL]
   comical chapters <seriesId>  --bridge <id> [--fixture | --set baseUrl=URL]
   comical pages <seriesId> <chapterId> --bridge <id> [--fixture | --set baseUrl=URL]
@@ -86,6 +86,19 @@ function print(json: boolean, value: unknown): void {
   console.log(JSON.stringify(value, null, json ? 0 : 2));
 }
 
+/** Parse repeatable `--filter key=value` into FilterValue[] (comma-separated value → string[]). */
+function parseFilters(pairs: string[] | undefined): FilterValue[] {
+  const out: FilterValue[] = [];
+  for (const pair of pairs ?? []) {
+    const eq = pair.indexOf("=");
+    if (eq <= 0) throw new Error(`--filter expects key=value, got "${pair}"`);
+    const key = pair.slice(0, eq);
+    const raw = pair.slice(eq + 1);
+    out.push({ key, value: raw.includes(",") ? raw.split(",").map((s) => s.trim()) : raw });
+  }
+  return out;
+}
+
 async function main(): Promise<number> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -94,6 +107,9 @@ async function main(): Promise<number> {
       page: { type: "string" },
       port: { type: "string" },
       set: { type: "string", multiple: true },
+      filter: { type: "string", multiple: true },
+      sort: { type: "string" },
+      desc: { type: "boolean" },
       "data-dir": { type: "string" },
       origin: { type: "string" },
       token: { type: "string" },
@@ -284,7 +300,11 @@ async function main(): Promise<number> {
       case "search": {
         if (!bridge.getSearchResults) throw new Error(`bridge "${discovered.id}" does not support search`);
         const query = positionals[1] ?? "";
-        print(json, await bridge.getSearchResults(query, page));
+        const filters = parseFilters(values.filter);
+        const options: import("@comical/contract").SearchOptions = {};
+        if (filters.length) options.filters = filters;
+        if (values.sort) options.sort = { key: values.sort, ascending: !values.desc };
+        print(json, await bridge.getSearchResults(query, page, Object.keys(options).length ? options : undefined));
         break;
       }
       case "lists": {

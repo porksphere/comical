@@ -14,8 +14,16 @@ import type {
   SeriesInfo,
   SeriesList,
   SettingDescriptor,
+  SortOption,
+  SortSelection,
   Tag,
 } from "./models.ts";
+
+/** Optional refinements for a search: filters narrow the set, sort orders it. */
+export interface SearchOptions {
+  filters?: FilterValue[];
+  sort?: SortSelection;
+}
 
 export interface Bridge {
   readonly info: BridgeInfo;
@@ -43,14 +51,19 @@ export interface Bridge {
   /** Entries within a list, by the list's id. `page` is 1-based. (capability "lists") */
   getListItems?(listId: string, page: number): Promise<PagedResults<SeriesEntry>>;
 
-  /** Text search across the backend, with optional filters. `page` is 1-based. (capability "search") */
+  /** Text search across the backend. `page` is 1-based. `options` carries filters + sort. (capability "search") */
   getSearchResults?(
     query: string,
     page: number,
-    filters?: FilterValue[],
+    options?: SearchOptions,
   ): Promise<PagedResults<SeriesEntry>>;
 
+  /** Search-filter descriptors (capability "filters"). */
   getFilters?(): Promise<Filter[]>;
+
+  /** Sort fields offered for search ordering (capability "sort"). */
+  getSortOptions?(): Promise<SortOption[]>;
+
   getTags?(): Promise<Tag[]>;
 
   /**

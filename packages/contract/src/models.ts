@@ -76,26 +76,41 @@ export const pagedResultsSchema = <T extends z.ZodTypeAny>(item: T) =>
     hasNextPage: z.boolean(),
   });
 
-/** A simple id/label option used by filters and settings. */
-export const optionSchema = z.object({ id: z.string(), label: z.string() });
+/** A `{ value, label }` choice — shared by filters and settings `enum` (one option shape). */
+export const optionSchema = z.object({ value: z.string(), label: z.string() });
 export type Option = z.infer<typeof optionSchema>;
 
-/** Declarative search-filter descriptors a bridge advertises via `getFilters()`. */
+/**
+ * Declarative search-filter descriptors a bridge advertises via `getFilters()`. The host renders
+ * a control per kind and sends back `FilterValue[]` to `getSearchResults`.
+ */
 export const filterSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), key: z.string(), label: z.string() }),
   z.object({ type: z.literal("toggle"), key: z.string(), label: z.string() }),
+  z.object({ type: z.literal("number"), key: z.string(), label: z.string(), min: z.number().optional(), max: z.number().optional() }),
   z.object({ type: z.literal("select"), key: z.string(), label: z.string(), options: z.array(optionSchema) }),
   z.object({ type: z.literal("multiselect"), key: z.string(), label: z.string(), options: z.array(optionSchema) }),
-  z.object({ type: z.literal("sort"), key: z.string(), label: z.string(), options: z.array(optionSchema) }),
 ]);
 export type Filter = z.infer<typeof filterSchema>;
 
-/** A concrete filter value supplied to `getSearchResults()`. */
+/**
+ * A concrete filter value supplied to a search. `value` shape depends on the filter kind:
+ * text → string, toggle → boolean, number → number, select → string, multiselect → string[].
+ * Sorting is a SEPARATE concern (filters narrow a set; sort orders it) — see SortOption/SortSelection.
+ */
 export const filterValueSchema = z.object({
   key: z.string(),
-  value: z.union([z.string(), z.array(z.string()), z.boolean()]),
+  value: z.union([z.string(), z.array(z.string()), z.number(), z.boolean()]),
 });
 export type FilterValue = z.infer<typeof filterValueSchema>;
+
+/** A sort field a bridge offers via `getSortOptions()` (capability "sort"). */
+export const sortOptionSchema = z.object({ key: z.string(), label: z.string() });
+export type SortOption = z.infer<typeof sortOptionSchema>;
+
+/** A concrete sort selection supplied to a search: a field key + direction. */
+export const sortSelectionSchema = z.object({ key: z.string(), ascending: z.boolean() });
+export type SortSelection = z.infer<typeof sortSelectionSchema>;
 
 /** A tag/genre a bridge can enumerate via `getTags()`. */
 export const tagSchema = z.object({ id: z.string(), label: z.string() });
@@ -193,6 +208,7 @@ export const bridgeCapabilitySchema = z.enum([
   "lists",
   "search",
   "filters",
+  "sort",
   "tags",
   "settings",
 ]);

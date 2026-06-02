@@ -11,12 +11,12 @@
 const SERVER = (window as unknown as Record<string, string>).COMICAL_SERVER ?? "http://localhost:3100";
 
 // ── Types (subset of the contract, for the client's needs) ───────────────────────
-interface Option { value: string; label: string }
+interface Choice { value: string; label: string }
 type SettingDescriptor =
   | { type: "string"; key: string; label: string; description?: string; required?: boolean; default?: string; placeholder?: string; secret?: boolean }
   | { type: "number"; key: string; label: string; description?: string; required?: boolean; default?: number; min?: number; max?: number }
   | { type: "boolean"; key: string; label: string; description?: string; required?: boolean; default?: boolean }
-  | { type: "enum"; key: string; label: string; description?: string; required?: boolean; default?: string | string[]; options: Option[]; multiple?: boolean };
+  | { type: "enum"; key: string; label: string; description?: string; required?: boolean; default?: string | string[]; options: Choice[]; multiple?: boolean };
 interface BridgeInfo { id: string; name: string; capabilities: string[] }
 interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; missingRequired: string[]; configured: boolean }
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
@@ -26,7 +26,9 @@ interface Chapter { id: string; name: string; number?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
 interface SeriesList { id: string; name: string; layout?: string; featured?: boolean }
-interface Filter { type: string; key: string; label: string }
+interface Filter { type: "text" | "toggle" | "number" | "select" | "multiselect"; key: string; label: string; options?: Choice[]; min?: number; max?: number }
+interface FilterValue { key: string; value: string | string[] | number | boolean }
+interface SortOption { key: string; label: string }
 interface Tag { id: string; label: string }
 interface SavedRegistry { url: string; name: string }
 interface AvailableBridge { entry: { id: string; name: string; version: string }; registryUrl: string; installedVersion: string | null; updateAvailable: boolean }
@@ -65,6 +67,68 @@ async function send(method: string, path: string, body?: unknown): Promise<{ ok:
 // ── State ──────────────────────────────────────────────────────────────────────
 let activeBridge = "";
 let currentDescriptors: SettingDescriptor[] = [];
+let currentFilters: Filter[] = [];
+
+// ── Filter controls (rendered from getFilters, applied on Search) ────────────────
+function renderFilterControls(filters: Filter[]): void {
+  const host = $("#filters");
+  host.innerHTML = "";
+  for (const f of filters) {
+    const label = document.createElement("label");
+    label.textContent = f.label;
+    if (f.type === "toggle") {
+      const i = document.createElement("input");
+      i.type = "checkbox"; i.dataset.key = f.key; i.dataset.kind = "toggle";
+      label.append(i);
+    } else if (f.type === "number") {
+      const i = document.createElement("input");
+      i.type = "number"; i.dataset.key = f.key; i.dataset.kind = "number";
+      if (f.min !== undefined) i.min = String(f.min);
+      if (f.max !== undefined) i.max = String(f.max);
+      label.append(i);
+    } else if (f.type === "select" || f.type === "multiselect") {
+      const sel = document.createElement("select");
+      sel.dataset.key = f.key; sel.dataset.kind = f.type;
+      if (f.type === "multiselect") sel.multiple = true;
+      else sel.append(new Option("— any —", ""));
+      for (const o of f.options ?? []) sel.append(new Option(o.label, o.value));
+      label.append(sel);
+    } else {
+      const i = document.createElement("input");
+      i.type = "text"; i.dataset.key = f.key; i.dataset.kind = "text";
+      label.append(i);
+    }
+    host.append(label);
+  }
+}
+
+function collectFilters(): FilterValue[] {
+  const out: FilterValue[] = [];
+  $("#filters").querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-key]").forEach((el) => {
+    const key = el.dataset.key!;
+    const kind = el.dataset.kind!;
+    if (kind === "toggle") { if ((el as HTMLInputElement).checked) out.push({ key, value: true }); }
+    else if (kind === "number") { const v = (el as HTMLInputElement).value.trim(); if (v !== "") out.push({ key, value: Number(v) }); }
+    else if (kind === "multiselect") {
+      const vals = Array.from((el as HTMLSelectElement).selectedOptions).map((o) => o.value).filter(Boolean);
+      if (vals.length) out.push({ key, value: vals });
+    } else if (kind === "select") {
+      const v = (el as HTMLSelectElement).value;
+      if (v) out.push({ key, value: v });
+    } else if (kind === "text") {
+      const v = (el as HTMLInputElement).value.trim();
+      if (v) out.push({ key, value: v });
+    }
+  });
+  return out;
+}
+
+/** The selected sort (field + direction), or undefined if the bridge has no sort options. */
+function collectSort(): { key: string; ascending: boolean } | undefined {
+  const field = $<HTMLSelectElement>("#sort-field");
+  if (!field.value) return undefined;
+  return { key: field.value, ascending: $<HTMLSelectElement>("#sort-dir").value !== "desc" };
+}
 
 // ── Bridge picker ────────────────────────────────────────────────────────────────
 async function loadBridges(): Promise<void> {
@@ -207,20 +271,34 @@ async function saveSettings(): Promise<void> {
   }
 }
 
-// ── Filters / tags (capability-gated, display-only) ──────────────────────────────
+// ── Filters / sort / tags (capability-gated) ─────────────────────────────────────
 async function renderMeta(capabilities: string[]): Promise<void> {
   const panel = $("#meta-panel");
   let any = false;
   const filtersBlock = $("#filters-block");
+  const sortBlock = $("#sort-block");
   const tagsBlock = $("#tags-block");
   filtersBlock.style.display = "none";
+  sortBlock.style.display = "none";
   tagsBlock.style.display = "none";
 
+  currentFilters = [];
   if (capabilities.includes("filters")) {
     try {
-      const filters = await api<Filter[]>(`/bridges/${activeBridge}/filters`);
-      $("#filters").innerHTML = filters.map((f) => `<span class="chip">${esc(f.label)} <span class="muted">(${f.type})</span></span>`).join("");
+      currentFilters = await api<Filter[]>(`/bridges/${activeBridge}/filters`);
+      renderFilterControls(currentFilters);
       filtersBlock.style.display = "";
+      any = true;
+    } catch { /* ignore */ }
+  }
+  if (capabilities.includes("sort")) {
+    try {
+      const sorts = await api<SortOption[]>(`/bridges/${activeBridge}/sort`);
+      const field = $<HTMLSelectElement>("#sort-field");
+      field.innerHTML = "";
+      field.append(new Option("— default —", ""));
+      for (const s of sorts) field.append(new Option(s.label, s.key));
+      sortBlock.style.display = "";
       any = true;
     } catch { /* ignore */ }
   }
@@ -315,12 +393,18 @@ async function showDetail(seriesId: string): Promise<void> {
 
 async function doSearch(): Promise<void> {
   const q = $<HTMLInputElement>("#query").value;
+  const filters = collectFilters();
+  const sort = collectSort();
   status("Searching…");
   try {
-    const r = await api<PagedResults>(`/bridges/${activeBridge}/search?q=${encodeURIComponent(q)}`);
+    let path = `/bridges/${activeBridge}/search?q=${encodeURIComponent(q)}`;
+    if (filters.length) path += `&filters=${encodeURIComponent(JSON.stringify(filters))}`;
+    if (sort) path += `&sort=${encodeURIComponent(sort.key)}&dir=${sort.ascending ? "asc" : "desc"}`;
+    const r = await api<PagedResults>(path);
     $("#list-tabs").querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     renderGrid(r.items);
-    status(`${r.items.length} result(s) for "${q}".`);
+    const notes = [filters.length ? `${filters.length} filter(s)` : "", sort ? `sort:${sort.key}` : ""].filter(Boolean).join(", ");
+    status(`${r.items.length} result(s) for "${q}"${notes ? ` (${notes})` : ""}.`);
   } catch (e) {
     status(`Search failed: ${e instanceof Error ? e.message : e}`, true);
   }

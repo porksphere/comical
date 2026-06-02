@@ -134,6 +134,31 @@ value throws `BridgeSettingsError`. The host won't dispatch content calls to a b
 **required** settings are unset (`GET /bridges/:id` reports `missingRequired`); `PUT
 /bridges/:id/settings` rejects unknown keys / wrong types with `400`.
 
+### Search filters and sort
+
+Filters and sort are **distinct concerns** — filters *narrow* a result set, sort *orders* it —
+and a search receives both in an options bag: `getSearchResults(query, page, { filters?, sort? })`.
+
+A bridge with the `filters` capability advertises filters via `getFilters()`:
+
+| `Filter.type` | `FilterValue.value` |
+|---------------|---------------------|
+| `text` | `string` |
+| `toggle` | `boolean` |
+| `number` (`min?`, `max?`) | `number` |
+| `select` (`options[]`) | `string` (one option value) |
+| `multiselect` (`options[]`) | `string[]` |
+
+`FilterValue` is `{ key, value }`; options are `{ value, label }` (same shape as settings `enum`).
+
+A bridge with the `sort` capability advertises sort fields via `getSortOptions()` →
+`SortOption[]` (`{ key, label }`); the search receives a `SortSelection` (`{ key, ascending }`).
+
+The core validates both inputs at the boundary. Over REST:
+`GET /bridges/:id/search?filters=<url-encoded JSON FilterValue[]>&sort=<key>&dir=asc|desc`, with
+`GET /bridges/:id/filters` and `GET /bridges/:id/sort` returning the descriptors. Via the CLI:
+`--filter key=value` (repeatable; comma → `string[]`) and `--sort key [--desc]`.
+
 ### Host capability API
 
 The **only** things a bridge can do:
@@ -283,7 +308,8 @@ GET  /bridges/:id                                  → bridge info + settings de
 PUT  /bridges/:id/settings                         → configure backend URL / credentials
 GET  /bridges/:id/lists?q=                          → the bridge's list catalog
 GET  /bridges/:id/lists/:listId?page=               → entries within a list
-GET  /bridges/:id/search?q=&page=
+GET  /bridges/:id/search?q=&page=&filters=   → filters is URL-encoded JSON FilterValue[]
+GET  /bridges/:id/filters                    → Filter[] descriptors for the search UI
 GET  /bridges/:id/series/:seriesId
 GET  /bridges/:id/series/:seriesId/chapters
 GET  /bridges/:id/series/:seriesId/chapters/:chapterId/pages
