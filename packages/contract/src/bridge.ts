@@ -8,17 +8,19 @@ import type {
   Chapter,
   Filter,
   FilterValue,
-  HomeSection,
-  SeriesEntry,
-  SeriesInfo,
   Page,
   PagedResults,
+  SeriesEntry,
+  SeriesInfo,
+  SeriesList,
   SettingDescriptor,
   Tag,
 } from "./models.ts";
 
 export interface Bridge {
   readonly info: BridgeInfo;
+
+  // ---- Required read path ----
 
   /** Full detail for a series id previously emitted by this bridge. */
   getSeriesDetails(seriesId: string): Promise<SeriesInfo>;
@@ -29,19 +31,25 @@ export interface Bridge {
   /** Resolve the readable pages (absolute image URLs) for a chapter. */
   getChapterPages(seriesId: string, chapterId: string): Promise<Page[]>;
 
-  /** Search the backend. `page` is 1-based. */
-  getSearchResults(
+  // ---- Optional capabilities (advertise via BridgeInfo.capabilities) ----
+
+  /**
+   * Browse — capability "lists". The bridge's self-defined catalog of browsable collections
+   * (Trending, Recently Updated, a genre, …). `query` optionally filters a large catalog; small
+   * bridges may ignore it.
+   */
+  getLists?(query?: string): Promise<SeriesList[]>;
+
+  /** Entries within a list, by the list's id. `page` is 1-based. (capability "lists") */
+  getListItems?(listId: string, page: number): Promise<PagedResults<SeriesEntry>>;
+
+  /** Text search across the backend, with optional filters. `page` is 1-based. (capability "search") */
+  getSearchResults?(
     query: string,
     page: number,
     filters?: FilterValue[],
   ): Promise<PagedResults<SeriesEntry>>;
 
-  // ---- Optional capabilities (advertise via BridgeInfo.capabilities) ----
-
-  /** Curated home-page sections (presentation-as-data). */
-  getHomeSections?(): Promise<HomeSection[]>;
-  getPopular?(page: number): Promise<PagedResults<SeriesEntry>>;
-  getLatest?(page: number): Promise<PagedResults<SeriesEntry>>;
   getFilters?(): Promise<Filter[]>;
   getTags?(): Promise<Tag[]>;
 

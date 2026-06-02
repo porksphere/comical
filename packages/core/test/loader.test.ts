@@ -46,7 +46,7 @@ const GOOD_BRIDGE = bundle(`{
   getChapters: async (id) => [{ id: "c1", name: "Chapter 1", number: 1 }],
   getChapterPages: async (m, c) => [{ index: 0, imageUrl: "https://img.example.test/" + c + "/0.png" }],
   getSearchResults: async (q, p) => ({ items: [{ id: "m1", title: q }], page: p, hasNextPage: false }),
-  getSettings: () => [{ type: "text", key: "baseUrl", label: "Backend URL", required: true }],
+  getSettings: () => [{ type: "string", key: "baseUrl", label: "Backend URL", required: true }],
 }`);
 
 describe("loadBridge", () => {
@@ -54,7 +54,7 @@ describe("loadBridge", () => {
     const b = loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
     expect(b.info.id).toBe("smoke");
 
-    const results = await b.getSearchResults("naruto", 1);
+    const results = await b.getSearchResults!("naruto", 1);
     expect(results.items).toHaveLength(1);
     const id = results.items[0]!.id;
 
@@ -65,7 +65,7 @@ describe("loadBridge", () => {
   test("only present optional methods are exposed", () => {
     const b = loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
     expect(typeof b.getSettings).toBe("function");
-    expect(b.getHomeSections).toBeUndefined();
+    expect(b.getLists).toBeUndefined();
     expect(b.getTags).toBeUndefined();
   });
 

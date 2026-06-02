@@ -35,12 +35,14 @@ const HELP = `comical — content bridge runtime CLI
 Usage:
   comical list
   comical serve                [--port N] [--data-dir DIR] [--origin URL] [--token SECRET]
+  comical lists                --bridge <id> [--fixture | --set baseUrl=URL]   (list catalog)
+  comical lists <listId>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N]   (list items)
   comical search <query>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N]
   comical details <seriesId>   --bridge <id> [--fixture | --set baseUrl=URL]
   comical chapters <seriesId>  --bridge <id> [--fixture | --set baseUrl=URL]
   comical pages <seriesId> <chapterId> --bridge <id> [--fixture | --set baseUrl=URL]
   comical test                 --bridge <id> [--fixture | --set baseUrl=URL] [--set query=Q]
-  comical record               --bridge <id> [--fixture | --set baseUrl=URL] --scenario search:Q
+  comical record               --bridge <id> [--fixture | --set baseUrl=URL] --scenario list:ID
 
   Registry (M4):
   comical registry list                          list added registries
@@ -280,8 +282,20 @@ async function main(): Promise<number> {
 
     switch (command) {
       case "search": {
+        if (!bridge.getSearchResults) throw new Error(`bridge "${discovered.id}" does not support search`);
         const query = positionals[1] ?? "";
         print(json, await bridge.getSearchResults(query, page));
+        break;
+      }
+      case "lists": {
+        const listId = positionals[1];
+        if (listId) {
+          if (!bridge.getListItems) throw new Error(`bridge "${discovered.id}" does not support lists`);
+          print(json, await bridge.getListItems(listId, page));
+        } else {
+          if (!bridge.getLists) throw new Error(`bridge "${discovered.id}" does not support lists`);
+          print(json, await bridge.getLists());
+        }
         break;
       }
       case "details": {
@@ -333,9 +347,10 @@ async function runScenarios(bridge: LoadedBridge, scenarios: string[]): Promise<
   if (scenarios.length === 0) throw new Error("record requires at least one --scenario");
   for (const scenario of scenarios) {
     const [kind, arg] = splitScenario(scenario);
-    if (kind === "search") await bridge.getSearchResults(arg ?? "", 1);
+    if (kind === "search") await bridge.getSearchResults?.(arg ?? "", 1);
     else if (kind === "details") await bridge.getSeriesDetails(requireArg(arg, "details:<id>"));
-    else if (kind === "home") await bridge.getHomeSections?.();
+    else if (kind === "lists") await bridge.getLists?.();
+    else if (kind === "list") await bridge.getListItems?.(requireArg(arg, "list:<id>"), 1);
     else throw new Error(`unknown scenario "${scenario}"`);
   }
 }

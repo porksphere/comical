@@ -71,10 +71,16 @@ describe("content endpoints", () => {
     expect(data.items[0]!.id).toBe("alice");
   });
 
-  test("GET /bridges/:id/home returns carousel sections", async () => {
-    const sections = await fetch(`${baseUrl}/bridges/example/home`).then(r => r.json()) as Array<{ type: string; items: unknown[] }>;
-    expect(sections.length).toBeGreaterThan(0);
-    expect(sections[0]!.type).toBe("carousel");
+  test("GET /bridges/:id/lists returns the list catalog", async () => {
+    const lists = await fetch(`${baseUrl}/bridges/example/lists`).then(r => r.json()) as Array<{ id: string; name: string; layout?: string; featured?: boolean }>;
+    expect(lists.length).toBeGreaterThan(0);
+    expect(lists[0]!.id).toBeTruthy();
+    expect(lists[0]!.layout).toBe("carousel");
+  });
+
+  test("GET /bridges/:id/lists/:listId returns series entries", async () => {
+    const data = await fetch(`${baseUrl}/bridges/example/lists/popular`).then(r => r.json()) as { items: Array<{ id: string }> };
+    expect(data.items.length).toBeGreaterThan(0);
   });
 
   test("GET /bridges/:id/series/:id returns series details", async () => {

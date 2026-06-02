@@ -102,72 +102,99 @@ export const tagSchema = z.object({ id: z.string(), label: z.string() });
 export type Tag = z.infer<typeof tagSchema>;
 
 /**
- * A section on a backend's home page. Modeled as an EXTENSIBLE discriminated union on `type`
- * so new presentation styles (and a future rich-layout schema) can be added as additive,
- * non-breaking changes. Presentation stays *data*: a bridge emits this; the host renders it.
+ * A browsable collection a bridge offers — its own self-defined "list" (Trending, Recently
+ * Updated, a genre, Staff Picks, …). The catalog is returned by `getLists()`; a list's paginated
+ * entries are fetched with `getListItems(listId, page)`.
+ *
+ * Lists replace the old prescriptive `getPopular`/`getLatest`/`getHomeSections` — each backend
+ * declares whatever lists make sense for it. Optional presentation hints (`layout`, `featured`)
+ * let a host build a home view as data, without the contract dictating sections.
  */
-const homeSectionFields = {
-  /** Stable id for the section (used for paging into it via getPopular/getLatest etc.). */
+export const seriesListSchema = z.object({
+  /** Stable, bridge-namespaced id passed back to `getListItems`. */
   id: z.string().min(1),
-  title: z.string().min(1),
-  items: z.array(seriesEntrySchema),
-  /** Whether a "view all" affordance should be offered. */
-  more: z.boolean().optional(),
-};
-export const homeSectionSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("carousel"), ...homeSectionFields }),
-  z.object({ type: z.literal("grid"), ...homeSectionFields }),
-  z.object({ type: z.literal("ranked"), ...homeSectionFields }),
-  z.object({ type: z.literal("hero"), ...homeSectionFields }),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  /** Presentation hint for hosts building a home view. */
+  layout: z.enum(["carousel", "grid", "ranked", "hero"]).optional(),
+  /** Whether the host should surface this list prominently (e.g. on a home screen). */
+  featured: z.boolean().optional(),
+});
+export type SeriesList = z.infer<typeof seriesListSchema>;
+
+/**
+ * A concrete value a user supplies for a setting. Kinds, not widgets: a host decides how to
+ * render each (a `secret` string as a masked field, an `enum` as a picker), but the contract
+ * only describes data.
+ */
+export const settingValueSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.array(z.string()),
 ]);
-export type HomeSection = z.infer<typeof homeSectionSchema>;
+export type SettingValue = z.infer<typeof settingValueSchema>;
+
+/** An allowed value for an `enum` setting. */
+export const settingOptionSchema = z.object({ value: z.string(), label: z.string() });
+export type SettingOption = z.infer<typeof settingOptionSchema>;
 
 /**
  * Declarative per-bridge settings descriptors a bridge advertises via `getSettings()`.
  * THIS is where a backend URL + credentials live — supplied by the user, never baked into
  * the bridge. The host collects values for these and passes them in via `HostCapabilities`.
+ *
+ * Descriptors are keyed by **value kind**, not by widget. A `string` may be flagged `secret`
+ * (API key, token, cookie, password — the host masks it); an `enum` carries the list of
+ * expected values so a host can render a picker.
  */
+const settingBase = {
+  /** Stable key the value is stored under and read back via `host.settings[key]`. */
+  key: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().optional(),
+  required: z.boolean().optional(),
+};
 export const settingDescriptorSchema = z.discriminatedUnion("type", [
   z.object({
-    type: z.literal("text"),
-    key: z.string(),
-    label: z.string(),
-    placeholder: z.string().optional(),
+    type: z.literal("string"),
+    ...settingBase,
     default: z.string().optional(),
-    required: z.boolean().optional(),
+    placeholder: z.string().optional(),
+    /** Mask in UIs and treat as a credential (API key, token, cookie, password, …). */
+    secret: z.boolean().optional(),
   }),
   z.object({
-    type: z.literal("password"),
-    key: z.string(),
-    label: z.string(),
-    required: z.boolean().optional(),
+    type: z.literal("number"),
+    ...settingBase,
+    default: z.number().optional(),
+    min: z.number().optional(),
+    max: z.number().optional(),
   }),
   z.object({
-    type: z.literal("toggle"),
-    key: z.string(),
-    label: z.string(),
+    type: z.literal("boolean"),
+    ...settingBase,
     default: z.boolean().optional(),
   }),
   z.object({
-    type: z.literal("select"),
-    key: z.string(),
-    label: z.string(),
-    options: z.array(optionSchema),
-    default: z.string().optional(),
+    type: z.literal("enum"),
+    ...settingBase,
+    options: z.array(settingOptionSchema).min(1),
+    /** Default is a single value, or an array when `multiple` is set. */
+    default: z.union([z.string(), z.array(z.string())]).optional(),
+    /** When true, the value is a `string[]` (multi-select). */
+    multiple: z.boolean().optional(),
   }),
 ]);
 export type SettingDescriptor = z.infer<typeof settingDescriptorSchema>;
 
 /** Capabilities a bridge advertises so hosts can adapt UI/behaviour. */
 export const bridgeCapabilitySchema = z.enum([
+  "lists",
   "search",
-  "home",
-  "popular",
-  "latest",
   "filters",
   "tags",
   "settings",
-  "richHome",
 ]);
 export type BridgeCapability = z.infer<typeof bridgeCapabilitySchema>;
 

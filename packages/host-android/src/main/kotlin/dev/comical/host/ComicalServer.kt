@@ -79,8 +79,9 @@ class ComicalServer(private val context: ComicalBridgeContext) {
             p == "/health" -> """{"ok":true}"""
             p == "/info" -> toJson(context.call("info"))
             p == "/search" -> toJson(context.call("getSearchResults", listOf(query["q"] ?: "", (query["page"] ?: "1").toInt())))
-            p == "/home" -> toJson(context.call("getHomeSections"))
-            p == "/popular" -> toJson(context.call("getPopular", listOf((query["page"] ?: "1").toInt())))
+            p == "/lists" -> toJson(context.call("getLists"))
+            Regex("^/lists/([^/]+)$").matches(p) ->
+                toJson(context.call("getListItems", listOf(p.split("/")[2], (query["page"] ?: "1").toInt())))
             Regex("^/series/([^/]+)/chapters/([^/]+)/pages$").matches(p) -> {
                 val parts = p.split("/")
                 toJson(context.call("getChapterPages", listOf(parts[2], parts[4])))

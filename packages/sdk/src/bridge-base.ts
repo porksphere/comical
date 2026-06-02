@@ -18,16 +18,22 @@ import type {
   HttpRequest,
   HttpResponse,
   LogCapability,
-  SeriesEntry,
-  SeriesInfo,
   Page,
-  PagedResults,
-  ResolvedSettings,
+  SeriesInfo,
+  SettingValue,
 } from "@comical/contract";
 
 export type CheerioRoot = cheerio.CheerioAPI;
 
-export abstract class BridgeBase implements Bridge {
+/**
+ * Base class for bridge authors. The optional `TSettings` type parameter — produced by
+ * `InferSettings<typeof SETTINGS>` — types the settings accessors: `this.setting("baseUrl")` and
+ * `this.requireSetting("baseUrl")` return the inferred value type, and `this.settings` is the
+ * typed record. Untyped subclasses (`extends BridgeBase`) keep the loose `SettingValue` shape.
+ */
+export abstract class BridgeBase<
+  TSettings extends Record<string, SettingValue> = Record<string, SettingValue>,
+> implements Bridge {
   abstract readonly info: BridgeInfo;
 
   constructor(protected readonly host: HostCapabilities) {}
@@ -36,20 +42,29 @@ export abstract class BridgeBase implements Bridge {
     return this.host.log;
   }
 
-  protected get settings(): ResolvedSettings {
-    return this.host.settings;
+  protected get settings(): Readonly<Partial<TSettings>> {
+    return this.host.settings as Readonly<Partial<TSettings>>;
   }
 
-  /** Read a user-supplied setting (e.g. backend URL); returns undefined if unset. */
-  protected setting(key: string): string | boolean | undefined {
-    return this.host.settings[key];
+  /** Read a user-supplied setting; returns undefined if unset. */
+  protected setting<K extends keyof TSettings & string>(key: K): TSettings[K] | undefined {
+    return this.host.settings[key] as TSettings[K] | undefined;
   }
 
-  /** Read a required string setting, throwing a clear error if it is missing/blank. */
-  protected requireSetting(key: string): string {
+  /** Read a setting that must be present (host guarantees required settings before content calls). */
+  protected requireSetting<K extends keyof TSettings & string>(key: K): NonNullable<TSettings[K]> {
+    const value = this.host.settings[key];
+    if (value === undefined || value === null || value === "") {
+      throw new Error(`required setting "${key}" is not configured`);
+    }
+    return value as NonNullable<TSettings[K]>;
+  }
+
+  /** Read a required setting as a non-empty string, throwing otherwise. Convenience for URLs/keys. */
+  protected requireString(key: string): string {
     const value = this.host.settings[key];
     if (typeof value !== "string" || value.length === 0) {
-      throw new Error(`required setting "${key}" is not configured`);
+      throw new Error(`required string setting "${key}" is not configured`);
     }
     return value;
   }
@@ -89,15 +104,12 @@ export abstract class BridgeBase implements Bridge {
     return new URL(href, base).toString();
   }
 
-  // Required interface methods — implemented by the concrete bridge.
+  // Required read-path methods — implemented by the concrete bridge. Browse (getLists/
+  // getListItems) and search (getSearchResults) are optional: a subclass declares them when its
+  // capabilities include "lists"/"search", typed against the re-exported contract types.
   abstract getSeriesDetails(seriesId: string): Promise<SeriesInfo>;
   abstract getChapters(seriesId: string): Promise<Chapter[]>;
   abstract getChapterPages(seriesId: string, chapterId: string): Promise<Page[]>;
-  abstract getSearchResults(
-    query: string,
-    page: number,
-    filters?: Parameters<Bridge["getSearchResults"]>[2],
-  ): Promise<PagedResults<SeriesEntry>>;
 }
 
 /** Identity helper that gives a bridge factory the correct type and a single obvious export. */

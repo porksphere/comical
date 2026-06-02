@@ -7,6 +7,8 @@
  */
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import type { SettingValue } from "@comical/contract";
+import { BridgeSettingsError, validateSettingsInput } from "@comical/core";
 import type { RegistryManager } from "@comical/registry";
 import type { BridgeManager } from "./bridge-manager.ts";
 
@@ -60,85 +62,91 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
 
   app.get("/bridges/:id", async (c) => {
     return withBridge(c, async (bridge) => {
+      const manager = c.get("manager") as BridgeManager;
       const settings = bridge.getSettings?.() ?? [];
-      return c.json({ info: bridge.info, settings });
+      const missingRequired = await manager.missingRequired(bridge.info.id);
+      return c.json({ info: bridge.info, settings, missingRequired, configured: missingRequired.length === 0 });
     });
   });
 
-  /** Update user settings for a bridge (e.g. set baseUrl, credentials). */
+  /** Update user settings for a bridge (e.g. set baseUrl, credentials). Validates against descriptors. */
   app.put("/bridges/:id/settings", async (c) => {
     const id = c.req.param("id");
-    let body: Record<string, string | boolean>;
+    let body: Record<string, SettingValue>;
     try {
-      body = await c.req.json<Record<string, string | boolean>>();
+      body = await c.req.json<Record<string, SettingValue>>();
     } catch {
       return c.json({ error: "invalid JSON" }, 400);
     }
-    const updated = await (c.get("manager") as BridgeManager).updateSettings(id, body);
-    return c.json({ settings: updated });
+    const manager = c.get("manager") as BridgeManager;
+    try {
+      const bridge = await manager.get(id);
+      const descriptors = bridge.getSettings?.() ?? [];
+      const coerced = validateSettingsInput(body, descriptors);
+      const updated = await manager.updateSettings(id, coerced);
+      return c.json({ settings: updated });
+    } catch (e) {
+      if (e instanceof BridgeSettingsError) return c.json({ error: e.message, issues: e.issues }, 400);
+      const msg = e instanceof Error ? e.message : String(e);
+      return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
+    }
   });
 
   // ── Content endpoints ────────────────────────────────────────────────────────
 
   app.get("/bridges/:id/search", (c) =>
-    withBridge(c, async (bridge) => {
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.getSearchResults) return c.json({ error: "not supported" }, 400);
       const q = c.req.query("q") ?? "";
       const page = Number(c.req.query("page") ?? "1");
       return c.json(await bridge.getSearchResults(q, page));
     }),
   );
 
-  app.get("/bridges/:id/popular", (c) =>
-    withBridge(c, async (bridge) => {
-      if (!bridge.getPopular) return c.json({ error: "not supported" }, 400);
-      const page = Number(c.req.query("page") ?? "1");
-      return c.json(await bridge.getPopular(page));
+  app.get("/bridges/:id/lists", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.getLists) return c.json({ error: "not supported" }, 400);
+      const q = c.req.query("q");
+      return c.json(await bridge.getLists(q ?? undefined));
     }),
   );
 
-  app.get("/bridges/:id/latest", (c) =>
-    withBridge(c, async (bridge) => {
-      if (!bridge.getLatest) return c.json({ error: "not supported" }, 400);
+  app.get("/bridges/:id/lists/:listId", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.getListItems) return c.json({ error: "not supported" }, 400);
       const page = Number(c.req.query("page") ?? "1");
-      return c.json(await bridge.getLatest(page));
-    }),
-  );
-
-  app.get("/bridges/:id/home", (c) =>
-    withBridge(c, async (bridge) => {
-      if (!bridge.getHomeSections) return c.json({ error: "not supported" }, 400);
-      return c.json(await bridge.getHomeSections());
+      return c.json(await bridge.getListItems(c.req.param("listId"), page));
     }),
   );
 
   app.get("/bridges/:id/filters", (c) =>
-    withBridge(c, async (bridge) => {
+    withContentBridge(c, async (bridge) => {
       if (!bridge.getFilters) return c.json({ error: "not supported" }, 400);
       return c.json(await bridge.getFilters());
     }),
   );
 
   app.get("/bridges/:id/tags", (c) =>
-    withBridge(c, async (bridge) => {
+    withContentBridge(c, async (bridge) => {
       if (!bridge.getTags) return c.json({ error: "not supported" }, 400);
       return c.json(await bridge.getTags());
     }),
   );
 
   app.get("/bridges/:id/series/:seriesId", (c) =>
-    withBridge(c, async (bridge) => {
+    withContentBridge(c, async (bridge) => {
       return c.json(await bridge.getSeriesDetails(c.req.param("seriesId")));
     }),
   );
 
   app.get("/bridges/:id/series/:seriesId/chapters", (c) =>
-    withBridge(c, async (bridge) => {
+    withContentBridge(c, async (bridge) => {
       return c.json(await bridge.getChapters(c.req.param("seriesId")));
     }),
   );
 
   app.get("/bridges/:id/series/:seriesId/chapters/:chapterId/pages", (c) =>
-    withBridge(c, async (bridge) => {
+    withContentBridge(c, async (bridge) => {
       return c.json(
         await bridge.getChapterPages(c.req.param("seriesId"), c.req.param("chapterId")),
       );
@@ -250,4 +258,25 @@ async function withBridge(
     if (msg.includes("not found")) return c.json({ error: msg }, 404);
     return c.json({ error: msg }, 500);
   }
+}
+
+/** Like `withBridge`, but refuses to dispatch a content call to a bridge missing required settings. */
+async function withContentBridge(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  fn: (bridge: Awaited<ReturnType<BridgeManager["get"]>>) => Promise<Response>,
+): Promise<Response> {
+  const id = c.req.param("id") as string;
+  const manager = c.get("manager") as BridgeManager;
+  try {
+    await manager.get(id); // surface load/orphan/404 errors via withBridge's handling below
+    const missing = await manager.missingRequired(id);
+    if (missing.length > 0) {
+      return c.json({ error: `bridge not configured: missing ${missing.join(", ")}` }, 400);
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
+  }
+  return withBridge(c, fn);
 }

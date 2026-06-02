@@ -23,7 +23,7 @@ function load() {
 describe("example-bridge", () => {
   test("cheerio parsing runs inside the sandbox (search returns entries)", async () => {
     const bridge = load();
-    const results = await bridge.getSearchResults("", 1);
+    const results = await bridge.getSearchResults!("", 1);
     expect(results.items.length).toBeGreaterThan(0);
     expect(results.items[0]!.title).toBeTruthy();
     expect(results.items[0]!.thumbnailUrl).toStartWith("http://fixture.local/img/");
@@ -55,11 +55,16 @@ describe("example-bridge", () => {
     expect(pages).toMatchSnapshot("sherlock-1-pages");
   });
 
-  test("home sections are presentation-as-data (typed carousel)", async () => {
+  test("lists catalog + items (presentation-as-data)", async () => {
     const bridge = load();
-    const sections = await bridge.getHomeSections!();
-    expect(sections.length).toBeGreaterThan(0);
-    expect(sections[0]!.type).toBe("carousel");
-    expect(sections[0]!.items.length).toBeGreaterThan(0);
+    const lists = await bridge.getLists!();
+    expect(lists.length).toBeGreaterThan(0);
+    expect(lists[0]!.id).toBeTruthy();
+    expect(lists[0]!.layout).toBe("carousel");
+    expect(lists[0]!.featured).toBe(true);
+
+    const items = await bridge.getListItems!(lists[0]!.id, 1);
+    expect(items.items.length).toBeGreaterThan(0);
+    expect(items.items[0]!.title).toBeTruthy();
   });
 });

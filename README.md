@@ -82,27 +82,57 @@ writing one adapter — nothing else changes.
 Every bridge default-exports a factory `(host: HostCapabilities) => Bridge`. The `Bridge`
 interface (from `@comical/contract`) defines:
 
-| Method | Required | Description |
-|--------|----------|-------------|
-| `getSeriesDetails(seriesId)` | ✓ | Full metadata for a series |
-| `getChapters(seriesId)` | ✓ | Ordered chapter list |
-| `getChapterPages(seriesId, chapterId)` | ✓ | Absolute image URLs for a chapter |
-| `getSearchResults(query, page, filters?)` | ✓ | Paginated search |
-| `getHomeSections()` | optional | Curated home-page sections (presentation-as-data) |
-| `getPopular(page)` | optional | Popular series |
-| `getLatest(page)` | optional | Recently updated series |
-| `getFilters()` | optional | Declarative search filter descriptors |
-| `getTags()` | optional | Tag/genre catalog |
-| `getSettings()` | optional | Declarative settings (backend URL, credentials) |
+| Method | Required | Capability | Description |
+|--------|----------|-----------|-------------|
+| `getSeriesDetails(seriesId)` | ✓ | — | Full metadata for a series |
+| `getChapters(seriesId)` | ✓ | — | Ordered chapter list |
+| `getChapterPages(seriesId, chapterId)` | ✓ | — | Absolute image URLs for a chapter |
+| `getLists(query?)` | optional | `lists` | The bridge's self-defined browsable collections |
+| `getListItems(listId, page)` | optional | `lists` | Paginated entries within a list |
+| `getSearchResults(query, page, filters?)` | optional | `search` | Paginated text search |
+| `getFilters()` | optional | `filters` | Declarative search filter descriptors |
+| `getTags()` | optional | `tags` | Tag/genre catalog |
+| `getSettings()` | optional | `settings` | Declarative settings (backend URL, credentials) |
+
+Only the read path (details/chapters/pages) is mandatory. **Browse** and **search** are separate
+optional capabilities — a bridge may offer lists, search, both, or neither.
 
 Core data models: `SeriesEntry`, `SeriesInfo`, `Chapter`, `Page`, `PagedResults<T>`,
-`HomeSection`, `Filter`, `BridgeInfo`. All are zod-validated at the bridge boundary — a
+`SeriesList`, `Filter`, `BridgeInfo`. All are zod-validated at the bridge boundary — a
 misbehaving bridge cannot inject malformed data into the host.
 
-`HomeSection` is an **extensible discriminated union** (`carousel | grid | ranked | hero | …`)
-so per-backend presentation is additive and non-breaking under the versioned contract.
-Presentation is always *data*, never bridge-rendered UI, keeping bridges portable across
-headless and UI environments.
+**Lists, not prescribed sections.** Rather than hardcoded `popular`/`latest`/`home` methods, a
+bridge declares its *own* lists via `getLists()` (Trending, Recently Updated, a genre, Staff
+Picks, …). Each `SeriesList` is `{ id, name, description?, layout?, featured? }` where `layout`
+is `carousel | grid | ranked | hero`. Home becomes "render the featured lists" — presentation is
+always *data*, never bridge-rendered UI, keeping bridges portable across headless and UI
+environments.
+
+### Settings
+
+Settings are declared by **value kind**, not UI widget — `getSettings()` returns
+`SettingDescriptor[]`:
+
+| `type` | Value | Extras |
+|--------|-------|--------|
+| `string` | `string` | `secret?` (API key / token / cookie / password — masked), `placeholder?`, `default?` |
+| `number` | `number` | `min?`, `max?`, `default?` |
+| `boolean` | `boolean` | `default?` |
+| `enum` | one of `options[].value` (or `string[]` if `multiple`) | `options: {value,label}[]`, `default?` |
+
+All share `key`, `label`, `description?`, `required?`. There is no `password` type — any `string`
+sets `secret: true`; the host masks it. An `enum` carries the expected-values list so a UI can
+render a picker.
+
+**Strict typing:** wrap descriptors in `defineSettings([...])` and `InferSettings<typeof SETTINGS>`
+to derive the typed settings shape, then `extends BridgeBase<Settings>` — `this.settings.baseUrl`
+is `string`, an enum is its literal union, required vs optional is enforced.
+
+**Host enforcement:** the runtime applies declared `default`s, coerces simple inputs
+(`"40"→40`, `"true"→true`), and validates submitted values (type + enum membership) — an invalid
+value throws `BridgeSettingsError`. The host won't dispatch content calls to a bridge whose
+**required** settings are unset (`GET /bridges/:id` reports `missingRequired`); `PUT
+/bridges/:id/settings` rejects unknown keys / wrong types with `400`.
 
 ### Host capability API
 
@@ -251,8 +281,9 @@ GET  /health
 GET  /bridges                                      → list of bridges + update badges
 GET  /bridges/:id                                  → bridge info + settings descriptors
 PUT  /bridges/:id/settings                         → configure backend URL / credentials
+GET  /bridges/:id/lists?q=                          → the bridge's list catalog
+GET  /bridges/:id/lists/:listId?page=               → entries within a list
 GET  /bridges/:id/search?q=&page=
-GET  /bridges/:id/home
 GET  /bridges/:id/series/:seriesId
 GET  /bridges/:id/series/:seriesId/chapters
 GET  /bridges/:id/series/:seriesId/chapters/:chapterId/pages
@@ -307,16 +338,26 @@ Install the SDK and create a bridge file:
 import {
   BridgeBase,
   type BridgeInfo,
-  type Chapter,
-  type SeriesEntry,
-  type SeriesInfo,
-  type Page,
+  type InferSettings,
   type PagedResults,
+  type SeriesEntry,
+  type SeriesList,
   type SettingDescriptor,
   defineBridge,
+  defineSettings,
 } from "@comical/sdk";
 
-class MyBridge extends BridgeBase {
+// Strictly-typed settings: `InferSettings` derives the value shape from the descriptors.
+const SETTINGS = defineSettings([
+  { type: "string", key: "baseUrl", label: "Backend URL", required: true },
+  { type: "string", key: "apiKey",  label: "API key", secret: true },        // any string can be secret
+  { type: "enum",   key: "region",  label: "Region",
+    options: [{ value: "us", label: "US" }, { value: "eu", label: "EU" }], default: "us" },
+]);
+type Settings = InferSettings<typeof SETTINGS>;
+// → { baseUrl: string; apiKey?: string; region?: "us" | "eu" }
+
+class MyBridge extends BridgeBase<Settings> {
   readonly info: BridgeInfo = {
     id: "my-bridge",
     name: "My Bridge",
@@ -324,19 +365,26 @@ class MyBridge extends BridgeBase {
     contractVersion: "1.0.0",
     languages: ["en"],
     nsfw: false,
-    capabilities: ["search", "settings"],
+    capabilities: ["lists", "settings"],
   };
 
   getSettings(): SettingDescriptor[] {
+    return [...SETTINGS];
+  }
+
+  // this.settings.baseUrl is typed `string`; this.settings.region is `"us" | "eu" | undefined`.
+  private base() { return this.requireSetting("baseUrl"); }
+
+  // Browse — declare your own lists (capability "lists")
+  async getLists(): Promise<SeriesList[]> {
     return [
-      { type: "text", key: "baseUrl", label: "Backend URL", required: true },
+      { id: "popular", name: "Popular", layout: "carousel", featured: true },
+      { id: "new",     name: "New",     layout: "grid" },
     ];
   }
 
-  private base() { return this.requireSetting("baseUrl"); }
-
-  async getSearchResults(query: string, page: number): Promise<PagedResults<SeriesEntry>> {
-    const $ = await this.fetchHtml(`${this.base()}/search?q=${encodeURIComponent(query)}`);
+  async getListItems(listId: string, page: number): Promise<PagedResults<SeriesEntry>> {
+    const $ = await this.fetchHtml(`${this.base()}/${listId}?page=${page}`);
     const items = $(".item").toArray().map(el => ({
       id: $(el).attr("data-id") ?? "",
       title: $(el).find(".title").text().trim(),
@@ -345,6 +393,7 @@ class MyBridge extends BridgeBase {
   }
 
   // ... implement getSeriesDetails, getChapters, getChapterPages
+  // ... optionally add getSearchResults for the "search" capability
 }
 
 export default defineBridge(host => new MyBridge(host));
@@ -531,8 +580,10 @@ bun run cli -- --help    # CLI help
 ### Updating the contract
 
 The bridge contract (`@comical/contract`) is semver-versioned. A breaking change to the
-`Bridge` interface or data models requires bumping `CONTRACT_VERSION` in `version.ts`. The
-runtime rejects bridges targeting an incompatible major version at load time.
+`Bridge` interface or data models would normally bump `CONTRACT_VERSION` in `version.ts`, and the
+runtime rejects bridges targeting an incompatible major version at load time. **During local
+development (pre-deployment) we change the contract in place without bumping** — there are no
+external bridges to migrate yet.
 
-Additive changes (new optional methods, new `HomeSection` types, new `BridgeCapability`
-values) are non-breaking and can land without a major bump.
+Additive changes (new optional methods, new `SeriesList` layouts, new `BridgeCapability` values)
+are non-breaking.

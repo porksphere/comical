@@ -5,6 +5,7 @@
 export * from "./errors.ts";
 export * from "./loader.ts";
 export * from "./validation.ts";
+export * from "./settings.ts";
 export * from "./net/rate-limiter.ts";
 export * from "./net/cache.ts";
 export * from "./net/gated-network.ts";

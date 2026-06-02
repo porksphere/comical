@@ -40,3 +40,14 @@ export class BridgeRuntimeError extends ComicalError {
     super(message);
   }
 }
+
+/** A user-supplied setting value is present but invalid for its descriptor (wrong type / enum). */
+export class BridgeSettingsError extends ComicalError {
+  override readonly name = "BridgeSettingsError";
+  constructor(
+    message: string,
+    readonly issues: string[],
+  ) {
+    super(message);
+  }
+}

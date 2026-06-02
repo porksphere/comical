@@ -12,12 +12,12 @@ import {
   chapterSchema,
   filterSchema,
   type HostCapabilities,
-  homeSectionSchema,
   isContractCompatible,
-  seriesEntrySchema,
-  seriesInfoSchema,
   pageSchema,
   pagedResultsSchema,
+  seriesEntrySchema,
+  seriesInfoSchema,
+  seriesListSchema,
   settingDescriptorSchema,
   tagSchema,
 } from "@comical/contract";
@@ -31,6 +31,7 @@ import {
 import type { BundleEvaluator } from "./evaluator.ts";
 import { createGatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
 import { evaluateBundle, NodeVmEvaluator } from "./sandbox.ts";
+import { resolveSettings } from "./settings.ts";
 import { errorMessage, withTimeout } from "./util.ts";
 import { validate } from "./validation.ts";
 
@@ -78,9 +79,12 @@ export function loadBridge(opts: LoadBridgeOptions): LoadedBridge {
   const factory = extractFactory(exports);
 
   // 2. Gate the network capability (rate-limit + cache) before the bridge can touch it.
+  //    `settings` is a mutable copy so defaults/coercions applied after instantiation are visible
+  //    to the bridge, which reads `host.settings` lazily by reference.
   const gated: HostCapabilities = {
     ...opts.capabilities,
     network: createGatedNetwork(opts.capabilities.network, opts.network ?? {}),
+    settings: { ...opts.capabilities.settings },
   };
 
   // 3. Instantiate the bridge.
@@ -109,7 +113,16 @@ export function loadBridge(opts: LoadBridgeOptions): LoadedBridge {
     );
   }
 
-  // 5. Wrap every method with timeout + output validation.
+  // 5. Enforce settings: apply declared defaults + coerce/validate present values (in place, so
+  //    the bridge's lazy `host.settings` reads see the result). Throws on an invalid present value;
+  //    a merely-missing required setting is NOT fatal here (discovery must still load the bridge).
+  if (raw.getSettings) {
+    const descriptors = validate(z.array(settingDescriptorSchema), raw.getSettings(), "getSettings");
+    const { values } = resolveSettings(gated.settings, descriptors);
+    gated.settings = values;
+  }
+
+  // 6. Wrap every method with timeout + output validation.
   return wrapBridge(raw, info, limits.callTimeoutMs);
 }
 
@@ -147,19 +160,18 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
     getChapters: (id) => call("getChapters", z.array(chapterSchema), () => raw.getChapters(id)),
     getChapterPages: (m, c) =>
       call("getChapterPages", z.array(pageSchema), () => raw.getChapterPages(m, c)),
-    getSearchResults: (q, p, f) =>
-      call("getSearchResults", entryPage, () => raw.getSearchResults(q, p, f)),
   };
 
-  if (raw.getHomeSections) {
-    bridge.getHomeSections = () =>
-      call("getHomeSections", z.array(homeSectionSchema), () => raw.getHomeSections!());
+  if (raw.getLists) {
+    bridge.getLists = (q) => call("getLists", z.array(seriesListSchema), () => raw.getLists!(q));
   }
-  if (raw.getPopular) {
-    bridge.getPopular = (p) => call("getPopular", entryPage, () => raw.getPopular!(p));
+  if (raw.getListItems) {
+    bridge.getListItems = (listId, p) =>
+      call("getListItems", entryPage, () => raw.getListItems!(listId, p));
   }
-  if (raw.getLatest) {
-    bridge.getLatest = (p) => call("getLatest", entryPage, () => raw.getLatest!(p));
+  if (raw.getSearchResults) {
+    bridge.getSearchResults = (q, p, f) =>
+      call("getSearchResults", entryPage, () => raw.getSearchResults!(q, p, f));
   }
   if (raw.getFilters) {
     bridge.getFilters = () => call("getFilters", z.array(filterSchema), () => raw.getFilters!());

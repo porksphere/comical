@@ -32,7 +32,7 @@ interface SeriesInfo { id: string; title: string; author?: string; status?: stri
 interface Chapter { id: string; name: string; number?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
-interface HomeSection { type: string; id: string; title: string; items: SeriesEntry[] }
+interface SeriesList { id: string; name: string; layout?: string; featured?: boolean }
 
 // ── UI helpers ─────────────────────────────────────────────────────────────────
 
@@ -101,14 +101,20 @@ const esc = (s: string): string =>
     return;
   }
 
-  // Initial home load.
+  // Initial load: fetch the bridge's lists and show the featured ones (first by default).
   try {
-    const sections = await api<HomeSection[]>(`/bridges/${BRIDGE}/home`);
-    const items = sections.flatMap(s => s.items);
-    renderGrid(items, showDetail);
-    status(`Home loaded — ${items.length} item(s). Click a title or search.`);
+    const lists = await api<SeriesList[]>(`/bridges/${BRIDGE}/lists`);
+    const featured = lists.filter(l => l.featured);
+    const chosen = (featured.length > 0 ? featured : lists)[0];
+    if (chosen) {
+      const r = await api<PagedResults>(`/bridges/${BRIDGE}/lists/${encodeURIComponent(chosen.id)}`);
+      renderGrid(r.items, showDetail);
+      status(`List "${chosen.name}" — ${r.items.length} item(s). Click a title or search.`);
+    } else {
+      status("No lists available. Try searching.");
+    }
   } catch (e) {
-    status(`Home load failed: ${e instanceof Error ? e.message : e}`, true);
+    status(`List load failed: ${e instanceof Error ? e.message : e}`, true);
   }
 
   // Search.

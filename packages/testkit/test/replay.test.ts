@@ -43,7 +43,7 @@ describe("record / replay", () => {
     // Record: drive the bridge against the in-process backend through a recording network.
     const recording = recordingNetwork({ request: async (req) => backend.handle(req) }, entries);
     const recorded = loadBridge({ code: BUNDLE, capabilities: host(recording), expectedId: "example" });
-    await recorded.getSearchResults("sherlock", 1);
+    await recorded.getSearchResults!("sherlock", 1);
     await recorded.getSeriesDetails("sherlock");
     expect(entries.length).toBe(2);
 
@@ -53,7 +53,7 @@ describe("record / replay", () => {
       capabilities: host(replayNetwork({ entries })),
       expectedId: "example",
     });
-    const results = await replayed.getSearchResults("sherlock", 1);
+    const results = await replayed.getSearchResults!("sherlock", 1);
     expect(results.items[0]!.id).toBe("sherlock");
     const details = await replayed.getSeriesDetails("sherlock");
     expect(details.title).toContain("Sherlock");
@@ -65,6 +65,6 @@ describe("record / replay", () => {
       capabilities: host(replayNetwork({ entries: [] })),
       expectedId: "example",
     });
-    await expect(replayed.getSearchResults("anything", 1)).rejects.toThrow(/no cassette entry/);
+    await expect(replayed.getSearchResults!("anything", 1)).rejects.toThrow(/no cassette entry/);
   });
 });

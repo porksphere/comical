@@ -107,10 +107,11 @@ public final class ComicalServer {
             return try await callBridge("getSearchResults", args: [q, page])
         }
 
-        if p == "/home" { return try await callBridge("getHomeSections") }
-        if p == "/popular" {
+        if p == "/lists" { return try await callBridge("getLists") }
+        if let m = p.range(of: #"^/lists/([^/]+)$"#, options: .regularExpression) {
+            let listId = String(p[m]).components(separatedBy: "/")[2]
             let page = Int(query.first(where: { $0.name == "page" })?.value ?? "1") ?? 1
-            return try await callBridge("getPopular", args: [page])
+            return try await callBridge("getListItems", args: [listId, page])
         }
 
         // /series/:id

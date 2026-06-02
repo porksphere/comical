@@ -23,7 +23,7 @@ module.exports = {
         contractVersion: "1.0.0",
         languages: ["en"],
         nsfw: false,
-        capabilities: ["search"]
+        capabilities: ["lists", "search"]
       },
       getSeriesDetails: async function(id) {
         return { id: id, title: "Title " + id };
@@ -33,8 +33,11 @@ module.exports = {
       getSearchResults: async function(q, p) {
         return { items: [{ id: "m1", title: q }], page: p, hasNextPage: false };
       },
-      getHomeSections: async function() {
-        return [{ type: "carousel", id: "popular", title: "Popular", items: [], more: false }];
+      getLists: async function() {
+        return [{ id: "popular", name: "Popular", layout: "carousel", featured: true }];
+      },
+      getListItems: async function(listId, p) {
+        return { items: [{ id: "m1", title: "Item" }], page: p, hasNextPage: false };
       }
     };
   }

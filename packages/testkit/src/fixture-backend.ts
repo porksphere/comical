@@ -99,11 +99,35 @@ export class FixtureBackend {
     };
   }
 
-  private renderHome(): string {
-    const popular = this.catalog.map(seriesCard).join("");
+  /** The backend's self-defined lists. `popular` = all; `completed` = finished series. */
+  private lists(): Array<{ id: string; name: string; series: FixtureSeries[] }> {
+    return [
+      { id: "popular", name: "Popular", series: this.catalog },
+      {
+        id: "completed",
+        name: "Completed",
+        series: this.catalog.filter((s) => s.status === "completed"),
+      },
+    ];
+  }
+
+  private renderLists(): string {
+    const items = this.lists()
+      .map(
+        (l) =>
+          `<li class="list-card" data-id="${esc(l.id)}" data-layout="carousel">` +
+          `<a class="list-name" href="/list/${esc(l.id)}">${esc(l.name)}</a></li>`,
+      )
+      .join("");
+    return layout("Demo Comic Library", `<ul class="lists">${items}</ul>`);
+  }
+
+  private renderList(id: string): string | undefined {
+    const list = this.lists().find((l) => l.id === id);
+    if (!list) return undefined;
     return layout(
-      "Demo Comic Library",
-      `<section class="home-section" data-section="popular"><h2>Popular</h2>${popular}</section>`,
+      list.name,
+      `<section class="list-items" data-id="${esc(list.id)}">${list.series.map(seriesCard).join("")}</section>`,
     );
   }
 
@@ -155,7 +179,13 @@ export class FixtureBackend {
     const url = new URL(req.url, "http://fixture.local");
     const path = url.pathname;
 
-    if (path === "/" || path === "") return this.html(this.renderHome());
+    if (path === "/" || path === "" || path === "/lists") return this.html(this.renderLists());
+
+    const listMatch = /^\/list\/([^/]+)$/.exec(path);
+    if (listMatch) {
+      const html = this.renderList(decodeURIComponent(listMatch[1]!));
+      return html ? this.html(html) : this.html(layout("Not Found", "<p>not found</p>"), 404);
+    }
 
     if (path === "/search") return this.html(this.renderSearch(url.searchParams.get("q") ?? ""));
 

@@ -10,8 +10,8 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BridgeInfo, SettingDescriptor } from "@comical/contract";
-import { type LoadedBridge, loadBridge } from "@comical/core";
+import type { BridgeInfo, SettingDescriptor, SettingValue } from "@comical/contract";
+import { type LoadedBridge, loadBridge, resolveSettings } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
 import type { RegistryManager } from "@comical/registry";
 import {
@@ -35,6 +35,8 @@ export interface BridgeSummary {
   info: BridgeInfo;
   settings: SettingDescriptor[];
   configured: boolean;
+  /** Required setting keys with neither a value nor a default — the bridge can't serve content yet. */
+  missingRequired: string[];
   source: BridgeSource;
   /** Version available in the registry, if newer than installed. */
   availableVersion?: string;
@@ -57,9 +59,9 @@ export class BridgeManager {
 
   async updateSettings(
     id: string,
-    patch: Record<string, string | boolean>,
-  ): Promise<Record<string, string | boolean>> {
-    const updated = await this.opts.settings.patch(id, patch) as Record<string, string | boolean>;
+    patch: Record<string, SettingValue>,
+  ): Promise<Record<string, SettingValue>> {
+    const updated = (await this.opts.settings.patch(id, patch)) as Record<string, SettingValue>;
     this.invalidate(id);
     return updated;
   }
@@ -80,6 +82,7 @@ export class BridgeManager {
         info: bridge.info,
         settings: bridge.getSettings?.() ?? [],
         configured: Object.keys(userSettings).length > 0,
+        missingRequired: await this.missingRequired(d.id),
         source: "local",
       });
     }
@@ -127,6 +130,15 @@ export class BridgeManager {
     const bridge = loadBridge({ code, capabilities, expectedId: id });
     this.loaded.set(id, bridge);
     return bridge;
+  }
+
+  /** Required setting keys this bridge still needs before it can serve content. */
+  async missingRequired(id: string): Promise<string[]> {
+    const bridge = await this.get(id);
+    const descriptors = bridge.getSettings?.();
+    if (!descriptors || descriptors.length === 0) return [];
+    const stored = await this.opts.settings.get(id);
+    return resolveSettings(stored, descriptors).missingRequired;
   }
 
   private async resolveCode(id: string): Promise<string> {

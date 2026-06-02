@@ -36,12 +36,12 @@ const JSON_BRIDGE = `module.exports = { default: (host) => ({
 describe("robustness", () => {
   test("malformed JSON body surfaces as a typed BridgeRuntimeError, not a crash", async () => {
     const b = loadBridge({ code: JSON_BRIDGE, capabilities: hostReturning("<html>not json</html>") });
-    await expect(b.getSearchResults("x", 1)).rejects.toBeInstanceOf(BridgeRuntimeError);
+    await expect(b.getSearchResults!("x", 1)).rejects.toBeInstanceOf(BridgeRuntimeError);
   });
 
   test("empty body surfaces as a typed error", async () => {
     const b = loadBridge({ code: JSON_BRIDGE, capabilities: hostReturning("") });
-    await expect(b.getSearchResults("x", 1)).rejects.toBeInstanceOf(BridgeRuntimeError);
+    await expect(b.getSearchResults!("x", 1)).rejects.toBeInstanceOf(BridgeRuntimeError);
   });
 
   test("a bridge that tolerates 5xx by returning empty resolves cleanly", async () => {
@@ -57,7 +57,7 @@ describe("robustness", () => {
       },
     }) };`;
     const b = loadBridge({ code: tolerant, capabilities: hostReturning("upstream error", 503) });
-    const results = await b.getSearchResults("x", 1);
+    const results = await b.getSearchResults!("x", 1);
     expect(results.items).toHaveLength(0);
   });
 });

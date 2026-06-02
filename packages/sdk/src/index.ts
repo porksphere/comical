@@ -4,3 +4,4 @@
  */
 export * from "@comical/contract";
 export * from "./bridge-base.ts";
+export * from "./settings.ts";

@@ -23,9 +23,8 @@ export interface ConformanceReport {
 }
 
 const CAPABILITY_METHOD: Partial<Record<BridgeCapability, keyof Bridge>> = {
-  home: "getHomeSections",
-  popular: "getPopular",
-  latest: "getLatest",
+  lists: "getLists",
+  search: "getSearchResults",
   filters: "getFilters",
   tags: "getTags",
   settings: "getSettings",
@@ -51,48 +50,78 @@ export async function runConformance(
       fail(`capability "${cap}" declared but method ${String(method)} is not implemented`);
     }
   }
-  if (bridge.info.capabilities.includes("search")) {
-    if (typeof bridge.getSearchResults !== "function") fail('capability "search" but no getSearchResults');
+  // "lists" requires BOTH getLists and getListItems.
+  if (bridge.info.capabilities.includes("lists") && typeof bridge.getListItems !== "function") {
+    fail('capability "lists" declared but getListItems is not implemented');
   }
   ok("capabilities match implemented methods");
 
-  // --- Search ---
-  const query = options.searchQuery ?? "";
   const report: ConformanceReport = { checks };
   let firstId: string | undefined;
-  try {
-    const results = await bridge.getSearchResults(query, 1);
-    if (results.page !== 1) fail(`search page should echo 1, got ${results.page}`);
-    if (typeof results.hasNextPage !== "boolean") fail("search hasNextPage must be boolean");
-    if (results.items.length === 0) {
-      fail(`search returned no items for query "${query}" (provide options.searchQuery)`);
-    } else {
+
+  // --- Lists (browse) ---
+  if (bridge.info.capabilities.includes("lists") && bridge.getLists && bridge.getListItems) {
+    try {
+      const lists = await bridge.getLists();
+      if (!Array.isArray(lists) || lists.length === 0) {
+        fail("getLists returned no lists despite the 'lists' capability");
+      } else {
+        for (const l of lists) {
+          if (!l.id) fail("a list has an empty id");
+          if (!l.name) fail("a list has an empty name");
+        }
+        ok(`getLists returned ${lists.length} list(s)`);
+
+        const first = lists[0]!;
+        const items = await bridge.getListItems(first.id, 1);
+        if (items.page !== 1) fail(`getListItems page should echo 1, got ${items.page}`);
+        if (typeof items.hasNextPage !== "boolean") fail("getListItems hasNextPage must be boolean");
+        if (items.items.length === 0) {
+          fail(`list "${first.id}" returned no items`);
+        } else {
+          firstId = items.items[0]!.id;
+          ok(`list "${first.id}" returned ${items.items.length} item(s)`);
+        }
+
+        // Id stability across identical calls (proxy for across-sessions).
+        const again = await bridge.getListItems(first.id, 1);
+        if (items.items.map((i) => i.id).join(",") !== again.items.map((i) => i.id).join(",")) {
+          fail(`list "${first.id}" item ids are not stable across identical calls`);
+        } else ok("list item ids are stable across calls");
+      }
+    } catch (e) {
+      fail(`lists browse threw: ${msg(e)}`);
+    }
+  }
+
+  // --- Search ---
+  if (bridge.info.capabilities.includes("search") && bridge.getSearchResults) {
+    const query = options.searchQuery ?? "";
+    try {
+      const results = await bridge.getSearchResults(query, 1);
+      if (results.page !== 1) fail(`search page should echo 1, got ${results.page}`);
+      if (typeof results.hasNextPage !== "boolean") fail("search hasNextPage must be boolean");
       for (const item of results.items) {
         if (!item.id) fail("a search item has an empty id");
         if (!item.title) fail("a search item has an empty title");
       }
-      firstId = results.items[0]!.id;
-      ok(`search returned ${results.items.length} item(s)`);
+      if (results.items.length > 0) {
+        firstId ??= results.items[0]!.id;
+        ok(`search returned ${results.items.length} item(s)`);
+      }
+    } catch (e) {
+      fail(`getSearchResults threw: ${msg(e)}`);
     }
-
-    // --- Id stability across calls (proxy for across-sessions) ---
-    const again = await bridge.getSearchResults(query, 1);
-    const a = results.items.map((i) => i.id).join(",");
-    const b = again.items.map((i) => i.id).join(",");
-    if (a !== b) fail("search result ids are not stable across identical calls");
-    else ok("search ids are stable across calls");
-  } catch (e) {
-    fail(`getSearchResults threw: ${msg(e)}`);
   }
 
-  // --- Round-trip: search id → details → chapters → pages ---
+  // --- Round-trip: sampled id → details → chapters → pages ---
   if (firstId) {
     report.sampledSeriesId = firstId;
     try {
       const details = await bridge.getSeriesDetails(firstId);
       if (details.id !== firstId) {
         fail(`getSeriesDetails id round-trip failed: sent "${firstId}", got "${details.id}"`);
-      } else ok("details round-trip the search id");
+      } else ok("details round-trip the sampled id");
 
       const chapters = await bridge.getChapters(firstId);
       if (!Array.isArray(chapters)) fail("getChapters did not return an array");
@@ -113,17 +142,6 @@ export async function runConformance(
       }
     } catch (e) {
       fail(`round-trip threw: ${msg(e)}`);
-    }
-  }
-
-  // --- Optional: home sections shape ---
-  if (bridge.getHomeSections) {
-    try {
-      const sections = await bridge.getHomeSections();
-      if (!Array.isArray(sections)) fail("getHomeSections did not return an array");
-      else ok(`home returned ${sections.length} section(s)`);
-    } catch (e) {
-      fail(`getHomeSections threw: ${msg(e)}`);
     }
   }
 

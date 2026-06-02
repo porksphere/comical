@@ -9,6 +9,7 @@
  * Note: HTML parsing is NOT a host capability — it is pure JS (cheerio) bundled in
  * `@comical/sdk` and runs inside the sandbox, so it needs no platform support.
  */
+import type { SettingValue } from "./models.ts";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
 
@@ -52,7 +53,7 @@ export interface LogCapability {
 }
 
 /** Resolved user-supplied setting values (e.g. backend URL, credentials), keyed by setting key. */
-export type ResolvedSettings = Readonly<Record<string, string | boolean>>;
+export type ResolvedSettings = Readonly<Record<string, SettingValue>>;
 
 export interface HostCapabilities {
   network: NetworkCapability;

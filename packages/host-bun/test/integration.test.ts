@@ -29,7 +29,7 @@ describe("host-bun integration (real HTTP)", () => {
       expectedId: "example",
     });
 
-    const results = await bridge.getSearchResults("sherlock", 1);
+    const results = await bridge.getSearchResults!("sherlock", 1);
     expect(results.items.length).toBeGreaterThan(0);
     expect(results.items[0]!.id).toBe("sherlock");
 

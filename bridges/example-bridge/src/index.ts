@@ -11,14 +11,16 @@ import {
   type BridgeInfo,
   type Chapter,
   type CheerioRoot,
-  type HomeSection,
-  type SeriesEntry,
-  type SeriesInfo,
-  type SeriesStatus,
+  type InferSettings,
   type Page,
   type PagedResults,
+  type SeriesEntry,
+  type SeriesInfo,
+  type SeriesList,
+  type SeriesStatus,
   type SettingDescriptor,
   defineBridge,
+  defineSettings,
 } from "@comical/sdk";
 
 const STATUSES: ReadonlySet<string> = new Set<SeriesStatus>([
@@ -29,7 +31,29 @@ const STATUSES: ReadonlySet<string> = new Set<SeriesStatus>([
   "cancelled",
 ]);
 
-class ExampleBridge extends BridgeBase {
+/** Typed settings: `baseUrl` (required string) + a `sort` enum to exercise the picker kind. */
+const SETTINGS = defineSettings([
+  {
+    type: "string",
+    key: "baseUrl",
+    label: "Backend base URL",
+    placeholder: "https://library.example",
+    required: true,
+  },
+  {
+    type: "enum",
+    key: "sort",
+    label: "Sort order",
+    options: [
+      { value: "title", label: "Title" },
+      { value: "recent", label: "Recently added" },
+    ],
+    default: "title",
+  },
+]);
+type Settings = InferSettings<typeof SETTINGS>;
+
+class ExampleBridge extends BridgeBase<Settings> {
   readonly info: BridgeInfo = {
     id: "example",
     name: "Example (Demo Library)",
@@ -37,19 +61,11 @@ class ExampleBridge extends BridgeBase {
     contractVersion: "1.0.0",
     languages: ["en"],
     nsfw: false,
-    capabilities: ["search", "home", "popular", "settings"],
+    capabilities: ["lists", "search", "settings"],
   };
 
   getSettings(): SettingDescriptor[] {
-    return [
-      {
-        type: "text",
-        key: "baseUrl",
-        label: "Backend base URL",
-        placeholder: "https://library.example",
-        required: true,
-      },
-    ];
+    return [...SETTINGS];
   }
 
   private base(): string {
@@ -78,7 +94,32 @@ class ExampleBridge extends BridgeBase {
       .filter((e) => e.id.length > 0);
   }
 
-  override async getSearchResults(query: string, page: number): Promise<PagedResults<SeriesEntry>> {
+  async getLists(): Promise<SeriesList[]> {
+    const $ = await this.fetchHtml(`${this.base()}/lists`);
+    return $("ul.lists > li.list-card")
+      .toArray()
+      .map((el) => {
+        const node = $(el);
+        const layout = node.attr("data-layout");
+        const list: SeriesList = {
+          id: node.attr("data-id") ?? "",
+          name: node.find("a.list-name").first().text().trim(),
+          featured: true,
+        };
+        if (layout === "carousel" || layout === "grid" || layout === "ranked" || layout === "hero") {
+          list.layout = layout;
+        }
+        return list;
+      })
+      .filter((l) => l.id.length > 0);
+  }
+
+  async getListItems(listId: string, page: number): Promise<PagedResults<SeriesEntry>> {
+    const $ = await this.fetchHtml(`${this.base()}/list/${encodeURIComponent(listId)}`);
+    return { items: this.cards($, "section.list-items"), page, hasNextPage: false };
+  }
+
+  async getSearchResults(query: string, page: number): Promise<PagedResults<SeriesEntry>> {
     const params = new URLSearchParams({ q: query, page: String(page) });
     const $ = await this.fetchHtml(`${this.base()}/search?${params.toString()}`);
     return { items: this.cards($, "section.results"), page, hasNextPage: false };
@@ -137,28 +178,6 @@ class ExampleBridge extends BridgeBase {
       .filter((p) => p.imageUrl.length > 0);
   }
 
-  async getHomeSections(): Promise<HomeSection[]> {
-    const $ = await this.fetchHtml(`${this.base()}/`);
-    return $("section.home-section")
-      .toArray()
-      .map((el) => {
-        const node = $(el);
-        const id = node.attr("data-section") ?? "section";
-        return {
-          type: "carousel" as const,
-          id,
-          title: node.find("h2").first().text().trim() || "Section",
-          items: this.cards($, `section.home-section[data-section="${id}"]`),
-          more: true,
-        };
-      });
-  }
-
-  async getPopular(page: number): Promise<PagedResults<SeriesEntry>> {
-    const sections = await this.getHomeSections();
-    const popular = sections.find((s) => s.id === "popular") ?? sections[0];
-    return { items: popular?.items ?? [], page, hasNextPage: false };
-  }
 }
 
 export default defineBridge((host) => new ExampleBridge(host));

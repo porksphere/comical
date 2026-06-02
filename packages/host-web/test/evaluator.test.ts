@@ -40,7 +40,7 @@ describe("FunctionEvaluator", () => {
   test("loads a bridge and executes a method", async () => {
     const b = loadBridge({ code: GOOD, capabilities: mockHost(), evaluator: new FunctionEvaluator() });
     expect(b.info.id).toBe("web");
-    const r = await b.getSearchResults("hello", 1);
+    const r = await b.getSearchResults!("hello", 1);
     expect(r.items[0]!.title).toBe("hello");
   });
 

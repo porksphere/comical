@@ -11,3 +11,7 @@ demo/.out/
 **/.tmp-storage/
 **/.tmp-registry/
 .comical-demo/
+
+# Isolated dev sandbox — bridges targeting specific real sites are NEVER committed
+# (preserves the content-neutral posture). Build/test them here only.
+sandbox/
