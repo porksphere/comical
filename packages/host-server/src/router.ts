@@ -65,7 +65,28 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       const manager = c.get("manager") as BridgeManager;
       const settings = bridge.getSettings?.() ?? [];
       const missingRequired = await manager.missingRequired(bridge.info.id);
-      return c.json({ info: bridge.info, settings, missingRequired, configured: missingRequired.length === 0 });
+
+      // Return current stored values so a UI can prefill the form, but never expose secret
+      // string values — instead report which secret keys are set.
+      const stored = await manager.storedSettings(bridge.info.id);
+      const secretKeys = new Set(
+        settings.filter((d) => d.type === "string" && d.secret).map((d) => d.key),
+      );
+      const values: Record<string, SettingValue> = {};
+      const secretsSet: string[] = [];
+      for (const [k, v] of Object.entries(stored)) {
+        if (secretKeys.has(k)) { if (v !== undefined && v !== "") secretsSet.push(k); }
+        else values[k] = v;
+      }
+
+      return c.json({
+        info: bridge.info,
+        settings,
+        values,
+        secretsSet,
+        missingRequired,
+        configured: missingRequired.length === 0,
+      });
     });
   });
 

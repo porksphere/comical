@@ -132,6 +132,11 @@ export class BridgeManager {
     return bridge;
   }
 
+  /** The raw stored user settings for a bridge (no defaults applied). */
+  async storedSettings(id: string): Promise<Record<string, SettingValue>> {
+    return (await this.opts.settings.get(id)) as Record<string, SettingValue>;
+  }
+
   /** Required setting keys this bridge still needs before it can serve content. */
   async missingRequired(id: string): Promise<string[]> {
     const bridge = await this.get(id);

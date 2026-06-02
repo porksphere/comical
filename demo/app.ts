@@ -8,7 +8,11 @@
  *   bun run demo:dev      — builds + serves this page on :3300
  */
 
-const SERVER = (window as unknown as Record<string, string>).COMICAL_SERVER ?? "http://localhost:3100";
+// Default the API host to the same host the page was loaded from (so it works over LAN / from a
+// phone), on the server port 3100. Override with window.COMICAL_SERVER if needed.
+const SERVER =
+  (window as unknown as Record<string, string>).COMICAL_SERVER ??
+  `${location.protocol}//${location.hostname}:3100`;
 
 // ── Types (subset of the contract, for the client's needs) ───────────────────────
 interface Choice { value: string; label: string }
@@ -18,7 +22,7 @@ type SettingDescriptor =
   | { type: "boolean"; key: string; label: string; description?: string; required?: boolean; default?: boolean }
   | { type: "enum"; key: string; label: string; description?: string; required?: boolean; default?: string | string[]; options: Choice[]; multiple?: boolean };
 interface BridgeInfo { id: string; name: string; capabilities: string[] }
-interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; missingRequired: string[]; configured: boolean }
+interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values: Record<string, string | number | boolean | string[]>; secretsSet: string[]; missingRequired: string[]; configured: boolean }
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
 interface SeriesInfo { id: string; title: string; author?: string; status?: string; description?: string }
@@ -200,24 +204,30 @@ function renderSettings(detail: BridgeDetail): void {
     const label = document.createElement("label");
     label.textContent = d.label + (d.required ? " *" : "");
     if (d.description) label.title = d.description;
-    label.append(buildInput(d));
+    label.append(buildInput(d, detail.values[d.key], detail.secretsSet.includes(d.key)));
     wrap.append(label);
     form.append(wrap);
   }
   $("#settings-msg").textContent = "";
 }
 
-function buildInput(d: SettingDescriptor): HTMLElement {
+/** Build a control prefilled with the current stored value (falling back to the descriptor default). */
+function buildInput(
+  d: SettingDescriptor,
+  current: string | number | boolean | string[] | undefined,
+  secretSet: boolean,
+): HTMLElement {
   if (d.type === "enum") {
     const sel = document.createElement("select");
     sel.dataset.key = d.key;
     sel.dataset.kind = "enum";
     if (d.multiple) sel.multiple = true;
+    const selected = current ?? d.default;
     for (const o of d.options) {
       const opt = document.createElement("option");
       opt.value = o.value;
       opt.textContent = o.label;
-      if (d.default === o.value || (Array.isArray(d.default) && d.default.includes(o.value))) opt.selected = true;
+      if (selected === o.value || (Array.isArray(selected) && selected.includes(o.value))) opt.selected = true;
       sel.append(opt);
     }
     return sel;
@@ -227,16 +237,23 @@ function buildInput(d: SettingDescriptor): HTMLElement {
   input.dataset.kind = d.type;
   if (d.type === "boolean") {
     input.type = "checkbox";
-    input.checked = d.default ?? false;
+    input.checked = typeof current === "boolean" ? current : (d.default ?? false);
   } else if (d.type === "number") {
     input.type = "number";
     if (d.min !== undefined) input.min = String(d.min);
     if (d.max !== undefined) input.max = String(d.max);
-    if (d.default !== undefined) input.value = String(d.default);
+    const v = current ?? d.default;
+    if (v !== undefined) input.value = String(v);
   } else {
     input.type = d.secret ? "password" : "text";
-    if (d.placeholder) input.placeholder = d.placeholder;
-    if (d.default !== undefined) input.value = d.default;
+    if (d.secret) {
+      // Never echo a stored secret; show it's set and keep it if left blank.
+      input.placeholder = secretSet ? "•••••• (saved — leave blank to keep)" : (d.placeholder ?? "");
+    } else {
+      if (d.placeholder) input.placeholder = d.placeholder;
+      const v = current ?? d.default;
+      if (v !== undefined) input.value = String(v);
+    }
   }
   return input;
 }
