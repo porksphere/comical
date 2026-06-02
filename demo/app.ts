@@ -1,42 +1,273 @@
 /**
- * Browser demo: a thin REST client for a running `comical serve` instance.
- * The browser knows nothing about bridges or parsing — it just calls the server's API and
- * renders the JSON it gets back.
+ * Browser console: a thin REST client for a running `comical serve` instance. It renders the
+ * full host-server surface — bridge picker, settings form (typed descriptors + validation),
+ * list tabs, search, series detail, filters/tags, and the M4 registry panel. The browser knows
+ * nothing about bridges or parsing; it only calls the API and renders JSON.
  *
- * Start everything with:
- *   bun run demo:server   — starts comical-server on :3100 (wired to the fixture backend)
+ *   bun run demo:server   — comical-server on :3100 (wired to the fixture backend)
  *   bun run demo:dev      — builds + serves this page on :3300
- * Then open http://localhost:3300
  */
 
 const SERVER = (window as unknown as Record<string, string>).COMICAL_SERVER ?? "http://localhost:3100";
-const BRIDGE = "example";
 
-const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
-const status = (msg: string, isError = false) => {
-  const el = $("#status");
-  el.textContent = msg;
-  el.className = isError ? "error" : "";
-};
-
-// ── API client ─────────────────────────────────────────────────────────────────
-
-async function api<T>(path: string): Promise<T> {
-  const res = await fetch(`${SERVER}${path}`);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
-  return res.json() as Promise<T>;
-}
-
-interface SeriesEntry { id: string; title: string; thumbnailUrl?: string | undefined; subtitle?: string | undefined }
+// ── Types (subset of the contract, for the client's needs) ───────────────────────
+interface Option { value: string; label: string }
+type SettingDescriptor =
+  | { type: "string"; key: string; label: string; description?: string; required?: boolean; default?: string; placeholder?: string; secret?: boolean }
+  | { type: "number"; key: string; label: string; description?: string; required?: boolean; default?: number; min?: number; max?: number }
+  | { type: "boolean"; key: string; label: string; description?: string; required?: boolean; default?: boolean }
+  | { type: "enum"; key: string; label: string; description?: string; required?: boolean; default?: string | string[]; options: Option[]; multiple?: boolean };
+interface BridgeInfo { id: string; name: string; capabilities: string[] }
+interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; missingRequired: string[]; configured: boolean }
+interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
+interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
 interface SeriesInfo { id: string; title: string; author?: string; status?: string; description?: string }
 interface Chapter { id: string; name: string; number?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
 interface SeriesList { id: string; name: string; layout?: string; featured?: boolean }
+interface Filter { type: string; key: string; label: string }
+interface Tag { id: string; label: string }
+interface SavedRegistry { url: string; name: string }
+interface AvailableBridge { entry: { id: string; name: string; version: string }; registryUrl: string; installedVersion: string | null; updateAvailable: boolean }
 
-// ── UI helpers ─────────────────────────────────────────────────────────────────
+// ── DOM + API helpers ────────────────────────────────────────────────────────────
+const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
+const esc = (s: string): string =>
+  s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
 
-function renderGrid(items: SeriesEntry[], onClick: (id: string) => void): void {
+function status(msg: string, isError = false): void {
+  const el = $("#status");
+  el.textContent = msg;
+  el.className = isError ? "error" : "";
+}
+
+async function api<T>(path: string): Promise<T> {
+  const res = await fetch(`${SERVER}${path}`);
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+async function send(method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; data: unknown }> {
+  const init: RequestInit = { method };
+  if (body !== undefined) {
+    init.headers = { "content-type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
+  const res = await fetch(`${SERVER}${path}`, init);
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let activeBridge = "";
+let currentDescriptors: SettingDescriptor[] = [];
+
+// ── Bridge picker ────────────────────────────────────────────────────────────────
+async function loadBridges(): Promise<void> {
+  const bridges = await api<BridgeSummary[]>("/bridges");
+  const select = $<HTMLSelectElement>("#bridge");
+  select.innerHTML = "";
+  for (const b of bridges) {
+    const opt = document.createElement("option");
+    opt.value = b.info.id;
+    opt.textContent = b.info.name + (b.availableVersion ? ` (update: ${b.availableVersion})` : "");
+    select.append(opt);
+  }
+  select.onchange = () => void selectBridge(select.value);
+  if (bridges.length > 0) {
+    select.value = bridges[0]!.info.id;
+    await selectBridge(bridges[0]!.info.id);
+  } else {
+    status("No bridges installed. Add a registry below, or build one locally.");
+  }
+}
+
+// ── Select a bridge: load info, settings, meta, lists ────────────────────────────
+async function selectBridge(id: string): Promise<void> {
+  activeBridge = id;
+  $("#detail").style.display = "none";
+  const detail = await api<BridgeDetail>(`/bridges/${id}`);
+  currentDescriptors = detail.settings;
+  $("#caps").textContent = `[${detail.info.capabilities.join(", ")}]`;
+
+  renderSettings(detail);
+  await renderMeta(detail.info.capabilities);
+
+  const canSearch = detail.info.capabilities.includes("search");
+  $("#query").style.display = canSearch ? "" : "none";
+  $("#searchBtn").style.display = canSearch ? "" : "none";
+
+  // Content needs the bridge configured.
+  if (detail.missingRequired.length > 0) {
+    $("#list-tabs").innerHTML = "";
+    $("#grid").innerHTML = "";
+    status(`"${detail.info.name}" needs configuration: ${detail.missingRequired.join(", ")}`, true);
+    $<HTMLDetailsElement>("#settings-details").open = true;
+    return;
+  }
+
+  if (detail.info.capabilities.includes("lists")) await loadLists();
+  else { $("#list-tabs").innerHTML = ""; $("#grid").innerHTML = ""; }
+  status(`Loaded "${detail.info.name}".`);
+}
+
+// ── Settings form ────────────────────────────────────────────────────────────────
+function renderSettings(detail: BridgeDetail): void {
+  const panel = $("#settings-panel");
+  const form = $("#settings-form");
+  form.innerHTML = "";
+  if (detail.settings.length === 0) {
+    panel.style.display = "none";
+    return;
+  }
+  panel.style.display = "";
+  $("#settings-state").textContent = detail.missingRequired.length
+    ? `— needs: ${detail.missingRequired.join(", ")}`
+    : "— configured";
+  $("#settings-state").className = detail.missingRequired.length ? "warn" : "ok";
+
+  for (const d of detail.settings) {
+    const wrap = document.createElement("div");
+    if (d.type === "string" && d.secret) wrap.className = "field-secret";
+    const label = document.createElement("label");
+    label.textContent = d.label + (d.required ? " *" : "");
+    if (d.description) label.title = d.description;
+    label.append(buildInput(d));
+    wrap.append(label);
+    form.append(wrap);
+  }
+  $("#settings-msg").textContent = "";
+}
+
+function buildInput(d: SettingDescriptor): HTMLElement {
+  if (d.type === "enum") {
+    const sel = document.createElement("select");
+    sel.dataset.key = d.key;
+    sel.dataset.kind = "enum";
+    if (d.multiple) sel.multiple = true;
+    for (const o of d.options) {
+      const opt = document.createElement("option");
+      opt.value = o.value;
+      opt.textContent = o.label;
+      if (d.default === o.value || (Array.isArray(d.default) && d.default.includes(o.value))) opt.selected = true;
+      sel.append(opt);
+    }
+    return sel;
+  }
+  const input = document.createElement("input");
+  input.dataset.key = d.key;
+  input.dataset.kind = d.type;
+  if (d.type === "boolean") {
+    input.type = "checkbox";
+    input.checked = d.default ?? false;
+  } else if (d.type === "number") {
+    input.type = "number";
+    if (d.min !== undefined) input.min = String(d.min);
+    if (d.max !== undefined) input.max = String(d.max);
+    if (d.default !== undefined) input.value = String(d.default);
+  } else {
+    input.type = d.secret ? "password" : "text";
+    if (d.placeholder) input.placeholder = d.placeholder;
+    if (d.default !== undefined) input.value = d.default;
+  }
+  return input;
+}
+
+async function saveSettings(): Promise<void> {
+  const body: Record<string, string | number | boolean | string[]> = {};
+  $("#settings-form").querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-key]").forEach((el) => {
+    const key = el.dataset.key!;
+    const kind = el.dataset.kind!;
+    if (kind === "boolean") {
+      body[key] = (el as HTMLInputElement).checked;
+    } else if (kind === "enum" && (el as HTMLSelectElement).multiple) {
+      body[key] = Array.from((el as HTMLSelectElement).selectedOptions).map((o) => o.value);
+    } else if (kind === "number") {
+      const v = (el as HTMLInputElement).value.trim();
+      if (v !== "") body[key] = Number(v);
+    } else {
+      const v = (el as HTMLInputElement).value.trim();
+      if (v !== "") body[key] = v;
+    }
+  });
+  const msg = $("#settings-msg");
+  const res = await send("PUT", `/bridges/${activeBridge}/settings`, body);
+  if (res.ok) {
+    msg.textContent = "Saved ✓";
+    msg.className = "ok";
+    await selectBridge(activeBridge); // refresh missingRequired + reload content
+  } else {
+    const err = res.data as { error?: string };
+    msg.textContent = err.error ?? `error ${res.status}`;
+    msg.className = "err";
+  }
+}
+
+// ── Filters / tags (capability-gated, display-only) ──────────────────────────────
+async function renderMeta(capabilities: string[]): Promise<void> {
+  const panel = $("#meta-panel");
+  let any = false;
+  const filtersBlock = $("#filters-block");
+  const tagsBlock = $("#tags-block");
+  filtersBlock.style.display = "none";
+  tagsBlock.style.display = "none";
+
+  if (capabilities.includes("filters")) {
+    try {
+      const filters = await api<Filter[]>(`/bridges/${activeBridge}/filters`);
+      $("#filters").innerHTML = filters.map((f) => `<span class="chip">${esc(f.label)} <span class="muted">(${f.type})</span></span>`).join("");
+      filtersBlock.style.display = "";
+      any = true;
+    } catch { /* ignore */ }
+  }
+  if (capabilities.includes("tags")) {
+    try {
+      const tags = await api<Tag[]>(`/bridges/${activeBridge}/tags`);
+      $("#tags").innerHTML = tags.map((t) => `<span class="chip">${esc(t.label)}</span>`).join("");
+      tagsBlock.style.display = "";
+      any = true;
+    } catch { /* ignore */ }
+  }
+  panel.style.display = any ? "" : "none";
+}
+
+// ── Lists + grid ─────────────────────────────────────────────────────────────────
+async function loadLists(): Promise<void> {
+  const lists = await api<SeriesList[]>(`/bridges/${activeBridge}/lists`);
+  const tabs = $("#list-tabs");
+  tabs.innerHTML = "";
+  if (lists.length === 0) return;
+  const initial = lists.find((l) => l.featured)?.id ?? lists[0]!.id;
+  for (const l of lists) {
+    const tab = document.createElement("div");
+    tab.className = "tab" + (l.id === initial ? " active" : "");
+    tab.textContent = l.name;
+    tab.onclick = () => {
+      tabs.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      void loadList(l.id);
+    };
+    tabs.append(tab);
+  }
+  await loadList(initial);
+}
+
+async function loadList(listId: string): Promise<void> {
+  status(`Loading list "${listId}"…`);
+  try {
+    const r = await api<PagedResults>(`/bridges/${activeBridge}/lists/${encodeURIComponent(listId)}`);
+    renderGrid(r.items);
+    status(`${r.items.length} item(s) in "${listId}".`);
+  } catch (e) {
+    status(`List load failed: ${e instanceof Error ? e.message : e}`, true);
+  }
+}
+
+function renderGrid(items: SeriesEntry[]): void {
   const grid = $("#grid");
   grid.innerHTML = "";
   for (const item of items) {
@@ -45,9 +276,8 @@ function renderGrid(items: SeriesEntry[], onClick: (id: string) => void): void {
     card.innerHTML = `
       <img src="${item.thumbnailUrl ?? ""}" alt="" loading="lazy" onerror="this.style.display='none'">
       <div class="card-title">${esc(item.title)}</div>
-      ${item.subtitle ? `<div class="card-sub">${esc(item.subtitle)}</div>` : ""}
-    `;
-    card.addEventListener("click", () => onClick(item.id));
+      ${item.subtitle ? `<div class="card-sub">${esc(item.subtitle)}</div>` : ""}`;
+    card.onclick = () => void showDetail(item.id);
     grid.append(card);
   }
 }
@@ -60,78 +290,123 @@ async function showDetail(seriesId: string): Promise<void> {
   $("#pages").innerHTML = "";
 
   const [info, chapters] = await Promise.all([
-    api<SeriesInfo>(`/bridges/${BRIDGE}/series/${encodeURIComponent(seriesId)}`),
-    api<Chapter[]>(`/bridges/${BRIDGE}/series/${encodeURIComponent(seriesId)}/chapters`),
+    api<SeriesInfo>(`/bridges/${activeBridge}/series/${encodeURIComponent(seriesId)}`),
+    api<Chapter[]>(`/bridges/${activeBridge}/series/${encodeURIComponent(seriesId)}/chapters`),
   ]);
 
   $("#detail-title").textContent = info.title;
-  $("#detail-meta").textContent = [
-    info.author && `by ${info.author}`,
-    info.status,
-  ].filter(Boolean).join(" · ");
+  $("#detail-meta").textContent = [info.author && `by ${info.author}`, info.status].filter(Boolean).join(" · ");
 
   const ul = $("#chapters");
   for (const ch of chapters) {
     const li = document.createElement("li");
     li.textContent = ch.name;
-    li.addEventListener("click", async () => {
+    li.onclick = async () => {
       const pagesEl = $("#pages");
       pagesEl.innerHTML = "<p>Loading pages…</p>";
       const pages = await api<Page[]>(
-        `/bridges/${BRIDGE}/series/${encodeURIComponent(seriesId)}/chapters/${encodeURIComponent(ch.id)}/pages`
+        `/bridges/${activeBridge}/series/${encodeURIComponent(seriesId)}/chapters/${encodeURIComponent(ch.id)}/pages`,
       );
-      pagesEl.innerHTML = pages.map(p => `<img src="${p.imageUrl}" loading="lazy">`).join("");
-    });
+      pagesEl.innerHTML = pages.map((p) => `<img src="${p.imageUrl}" loading="lazy">`).join("");
+    };
     ul.append(li);
   }
 }
 
-const esc = (s: string): string =>
-  s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
+async function doSearch(): Promise<void> {
+  const q = $<HTMLInputElement>("#query").value;
+  status("Searching…");
+  try {
+    const r = await api<PagedResults>(`/bridges/${activeBridge}/search?q=${encodeURIComponent(q)}`);
+    $("#list-tabs").querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    renderGrid(r.items);
+    status(`${r.items.length} result(s) for "${q}".`);
+  } catch (e) {
+    status(`Search failed: ${e instanceof Error ? e.message : e}`, true);
+  }
+}
+
+// ── Registry panel (M4) ──────────────────────────────────────────────────────────
+async function loadRegistry(): Promise<void> {
+  const registries = await api<SavedRegistry[]>("/registries");
+  const list = $("#reg-list");
+  list.innerHTML = registries
+    .map((r) => `<div class="reg-item"><span>${esc(r.name)}<br><span class="muted">${esc(r.url)}</span></span>
+      <button class="secondary" data-remove="${esc(r.url)}">Remove</button></div>`)
+    .join("");
+  list.querySelectorAll<HTMLButtonElement>("[data-remove]").forEach((btn) => {
+    btn.onclick = async () => {
+      await send("DELETE", `/registries/${encodeURIComponent(btn.dataset.remove!)}`);
+      await refreshAll();
+    };
+  });
+
+  const browse = $("#reg-browse");
+  if (registries.length === 0) {
+    browse.innerHTML = '<span class="muted">No registries added.</span>';
+    return;
+  }
+  const available = await api<AvailableBridge[]>("/registry/bridges");
+  if (available.length === 0) {
+    browse.innerHTML = '<span class="muted">No bridges found in the added registries.</span>';
+    return;
+  }
+  browse.innerHTML = available
+    .map((b) => {
+      const action = b.updateAvailable
+        ? `<button data-update="${esc(b.entry.id)}">Update → ${esc(b.entry.version)}</button>`
+        : b.installedVersion
+          ? `<button class="secondary" data-uninstall="${esc(b.entry.id)}">Uninstall</button>`
+          : `<button data-install-reg="${esc(b.registryUrl)}" data-install-id="${esc(b.entry.id)}">Install</button>`;
+      const tag = b.installedVersion ? `<span class="ok">installed ${esc(b.installedVersion)}</span>` : "";
+      return `<div class="reg-item"><span>${esc(b.entry.name)} <span class="muted">v${esc(b.entry.version)}</span> ${tag}</span>${action}</div>`;
+    })
+    .join("");
+  browse.querySelectorAll<HTMLButtonElement>("[data-install-id]").forEach((btn) => {
+    btn.onclick = async () => {
+      await send("POST", `/registries/${encodeURIComponent(btn.dataset.installReg!)}/bridges/${btn.dataset.installId}/install`);
+      await refreshAll();
+    };
+  });
+  browse.querySelectorAll<HTMLButtonElement>("[data-update]").forEach((btn) => {
+    btn.onclick = async () => { await send("POST", `/bridges/${btn.dataset.update}/update`); await refreshAll(); };
+  });
+  browse.querySelectorAll<HTMLButtonElement>("[data-uninstall]").forEach((btn) => {
+    btn.onclick = async () => { await send("DELETE", `/bridges/${btn.dataset.uninstall}`); await refreshAll(); };
+  });
+}
+
+async function refreshAll(): Promise<void> {
+  await loadBridges();
+  await loadRegistry();
+}
 
 // ── Main ───────────────────────────────────────────────────────────────────────
-
 (async () => {
   status("Connecting to server…");
-
   try {
     await api<{ ok: boolean }>("/health");
-  } catch (e) {
+  } catch {
     status(`Cannot reach server at ${SERVER}. Is comical-server running? (bun run demo:server)`, true);
     return;
   }
 
-  // Initial load: fetch the bridge's lists and show the featured ones (first by default).
-  try {
-    const lists = await api<SeriesList[]>(`/bridges/${BRIDGE}/lists`);
-    const featured = lists.filter(l => l.featured);
-    const chosen = (featured.length > 0 ? featured : lists)[0];
-    if (chosen) {
-      const r = await api<PagedResults>(`/bridges/${BRIDGE}/lists/${encodeURIComponent(chosen.id)}`);
-      renderGrid(r.items, showDetail);
-      status(`List "${chosen.name}" — ${r.items.length} item(s). Click a title or search.`);
-    } else {
-      status("No lists available. Try searching.");
-    }
-  } catch (e) {
-    status(`List load failed: ${e instanceof Error ? e.message : e}`, true);
-  }
-
-  // Search.
-  const doSearch = async (): Promise<void> => {
-    const q = ($<HTMLInputElement>("#query")).value;
-    status("Searching…");
-    try {
-      const r = await api<PagedResults>(`/bridges/${BRIDGE}/search?q=${encodeURIComponent(q)}`);
-      renderGrid(r.items, showDetail);
-      status(`${r.items.length} result(s) for "${q}".`);
-    } catch (e) {
-      status(`Search failed: ${e instanceof Error ? e.message : e}`, true);
-    }
+  $("#settings-save").onclick = () => void saveSettings();
+  $("#searchBtn").onclick = () => void doSearch();
+  $<HTMLInputElement>("#query").addEventListener("keydown", (e) => { if (e.key === "Enter") void doSearch(); });
+  $("#reg-add").onclick = async () => {
+    const url = $<HTMLInputElement>("#reg-url").value.trim();
+    if (!url) return;
+    const res = await send("POST", "/registries", { url });
+    const msg = $("#reg-msg");
+    if (res.ok) { msg.textContent = "Added ✓"; msg.className = "ok"; $<HTMLInputElement>("#reg-url").value = ""; await refreshAll(); }
+    else { const e = res.data as { error?: string }; msg.textContent = e.error ?? `error ${res.status}`; msg.className = "err"; }
   };
 
-  $("#searchBtn").addEventListener("click", doSearch);
-  ($<HTMLInputElement>("#query")).addEventListener("keydown", (e: KeyboardEvent) => {
-    if (e.key === "Enter") doSearch();
-  });
+  try {
+    await loadBridges();
+    await loadRegistry();
+  } catch (e) {
+    status(`Init failed: ${e instanceof Error ? e.message : e}`, true);
+  }
 })();
