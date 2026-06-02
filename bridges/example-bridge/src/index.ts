@@ -13,6 +13,7 @@ import {
   type CheerioRoot,
   type Filter,
   type InferSettings,
+  type ListOptions,
   type Page,
   type PagedResults,
   type SearchOptions,
@@ -22,6 +23,7 @@ import {
   type SeriesStatus,
   type SettingDescriptor,
   type SortOption,
+  type SortSelection,
   defineBridge,
   defineSettings,
 } from "@comical/sdk";
@@ -34,7 +36,7 @@ const STATUSES: ReadonlySet<string> = new Set<SeriesStatus>([
   "cancelled",
 ]);
 
-/** Typed settings: `baseUrl` (required string) + a `sort` enum to exercise the picker kind. */
+/** Typed settings: `baseUrl` (required string) + a `defaultSort` enum (the picker kind). */
 const SETTINGS = defineSettings([
   {
     type: "string",
@@ -45,11 +47,12 @@ const SETTINGS = defineSettings([
   },
   {
     type: "enum",
-    key: "sort",
-    label: "Sort order",
+    key: "defaultSort",
+    label: "Default sort",
+    description: "Applied to lists and search when no explicit sort is chosen.",
     options: [
       { value: "title", label: "Title" },
-      { value: "recent", label: "Recently added" },
+      { value: "author", label: "Author" },
     ],
     default: "title",
   },
@@ -73,6 +76,13 @@ class ExampleBridge extends BridgeBase<Settings> {
 
   private base(): string {
     return this.requireSetting("baseUrl").replace(/\/+$/, "");
+  }
+
+  /** Use the caller's sort if given, else fall back to the `defaultSort` setting. */
+  private effectiveSort(sort?: SortSelection): SortSelection | undefined {
+    if (sort) return sort;
+    const fallback = this.setting("defaultSort");
+    return fallback ? { key: fallback, ascending: true } : undefined;
   }
 
   /** Collect every `.series-card` under `scope` into SeriesEntry list. */
@@ -108,6 +118,7 @@ class ExampleBridge extends BridgeBase<Settings> {
           id: node.attr("data-id") ?? "",
           name: node.find("a.list-name").first().text().trim(),
           featured: true,
+          searchable: true, // the fixture's /list/:id accepts q + sort
         };
         if (layout === "carousel" || layout === "grid" || layout === "ranked" || layout === "hero") {
           list.layout = layout;
@@ -117,8 +128,20 @@ class ExampleBridge extends BridgeBase<Settings> {
       .filter((l) => l.id.length > 0);
   }
 
-  async getListItems(listId: string, page: number): Promise<PagedResults<SeriesEntry>> {
-    const $ = await this.fetchHtml(`${this.base()}/list/${encodeURIComponent(listId)}`);
+  async getListItems(
+    listId: string,
+    page: number,
+    options?: ListOptions,
+  ): Promise<PagedResults<SeriesEntry>> {
+    const params = new URLSearchParams();
+    if (options?.query) params.set("q", options.query);
+    const sort = this.effectiveSort(options?.sort);
+    if (sort) {
+      params.set("sort", sort.key);
+      params.set("dir", sort.ascending ? "asc" : "desc");
+    }
+    const qs = params.toString();
+    const $ = await this.fetchHtml(`${this.base()}/list/${encodeURIComponent(listId)}${qs ? `?${qs}` : ""}`);
     return { items: this.cards($, "section.list-items"), page, hasNextPage: false };
   }
 
@@ -152,9 +175,10 @@ class ExampleBridge extends BridgeBase<Settings> {
     for (const f of options?.filters ?? []) {
       if (f.key === "genre" && Array.isArray(f.value)) params.set("genre", f.value.join(","));
     }
-    if (options?.sort) {
-      params.set("sort", options.sort.key);
-      params.set("dir", options.sort.ascending ? "asc" : "desc");
+    const sort = this.effectiveSort(options?.sort);
+    if (sort) {
+      params.set("sort", sort.key);
+      params.set("dir", sort.ascending ? "asc" : "desc");
     }
     const $ = await this.fetchHtml(`${this.base()}/search?${params.toString()}`);
     return { items: this.cards($, "section.results"), page, hasNextPage: false };

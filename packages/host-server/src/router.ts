@@ -7,7 +7,7 @@
  */
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import type { FilterValue, SearchOptions, SettingValue } from "@comical/contract";
+import type { FilterValue, ListOptions, SearchOptions, SettingValue } from "@comical/contract";
 import { BridgeSettingsError, validateSettingsInput } from "@comical/core";
 import type { RegistryManager } from "@comical/registry";
 import type { BridgeManager } from "./bridge-manager.ts";
@@ -156,7 +156,20 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     withContentBridge(c, async (bridge) => {
       if (!bridge.getListItems) return c.json({ error: "not supported" }, 400);
       const page = Number(c.req.query("page") ?? "1");
-      return c.json(await bridge.getListItems(c.req.param("listId"), page));
+      const options: ListOptions = {};
+      const q = c.req.query("q");
+      if (q) options.query = q;
+      const rawFilters = c.req.query("filters");
+      if (rawFilters) {
+        try {
+          options.filters = JSON.parse(rawFilters) as FilterValue[];
+        } catch {
+          return c.json({ error: "invalid filters: expected URL-encoded JSON array" }, 400);
+        }
+      }
+      const sortKey = c.req.query("sort");
+      if (sortKey) options.sort = { key: sortKey, ascending: c.req.query("dir") !== "desc" };
+      return c.json(await bridge.getListItems(c.req.param("listId"), page, options));
     }),
   );
 

@@ -29,7 +29,7 @@ interface SeriesInfo { id: string; title: string; author?: string; status?: stri
 interface Chapter { id: string; name: string; number?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
-interface SeriesList { id: string; name: string; layout?: string; featured?: boolean }
+interface SeriesList { id: string; name: string; layout?: string; featured?: boolean; searchable?: boolean }
 interface Filter { type: "text" | "toggle" | "number" | "select" | "multiselect"; key: string; label: string; options?: Choice[]; min?: number; max?: number }
 interface FilterValue { key: string; value: string | string[] | number | boolean }
 interface SortOption { key: string; label: string }
@@ -72,6 +72,8 @@ async function send(method: string, path: string, body?: unknown): Promise<{ ok:
 let activeBridge = "";
 let currentDescriptors: SettingDescriptor[] = [];
 let currentFilters: Filter[] = [];
+let currentLists: SeriesList[] = [];
+let activeListId: string | null = null;
 
 // ── Filter controls (rendered from getFilters, applied on Search) ────────────────
 function renderFilterControls(filters: Filter[]): void {
@@ -333,15 +335,24 @@ async function renderMeta(capabilities: string[]): Promise<void> {
 // ── Lists + grid ─────────────────────────────────────────────────────────────────
 async function loadLists(): Promise<void> {
   const lists = await api<SeriesList[]>(`/bridges/${activeBridge}/lists`);
+  currentLists = lists;
   const tabs = $("#list-tabs");
   tabs.innerHTML = "";
-  if (lists.length === 0) return;
+  if (lists.length === 0) { activeListId = null; return; }
   const initial = lists.find((l) => l.featured)?.id ?? lists[0]!.id;
   for (const l of lists) {
     const tab = document.createElement("div");
     tab.className = "tab" + (l.id === initial ? " active" : "");
     tab.textContent = l.name;
     tab.onclick = () => {
+      if (tab.classList.contains("active")) {
+        // Toggle off → deselect the list; search reverts to global, grid cleared.
+        tab.classList.remove("active");
+        activeListId = null;
+        $("#grid").innerHTML = "";
+        status(`Deselected "${l.name}". Search is now global.`);
+        return;
+      }
       tabs.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
       void loadList(l.id);
@@ -352,11 +363,13 @@ async function loadLists(): Promise<void> {
 }
 
 async function loadList(listId: string): Promise<void> {
+  activeListId = listId;
   status(`Loading list "${listId}"…`);
   try {
     const r = await api<PagedResults>(`/bridges/${activeBridge}/lists/${encodeURIComponent(listId)}`);
     renderGrid(r.items);
-    status(`${r.items.length} item(s) in "${listId}".`);
+    const searchable = currentLists.find((l) => l.id === listId)?.searchable;
+    status(`${r.items.length} item(s) in "${listId}".${searchable ? " (search box scopes to this list)" : ""}`);
   } catch (e) {
     status(`List load failed: ${e instanceof Error ? e.message : e}`, true);
   }
@@ -369,7 +382,8 @@ function renderGrid(items: SeriesEntry[]): void {
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `
-      <img src="${item.thumbnailUrl ?? ""}" alt="" loading="lazy" onerror="this.style.display='none'">
+      <img src="${item.thumbnailUrl ?? ""}" alt="${esc(item.title)}" loading="lazy"
+        onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
       <div class="card-title">${esc(item.title)}</div>
       ${item.subtitle ? `<div class="card-sub">${esc(item.subtitle)}</div>` : ""}`;
     card.onclick = () => void showDetail(item.id);
@@ -402,7 +416,13 @@ async function showDetail(seriesId: string): Promise<void> {
       const pages = await api<Page[]>(
         `/bridges/${activeBridge}/series/${encodeURIComponent(seriesId)}/chapters/${encodeURIComponent(ch.id)}/pages`,
       );
-      pagesEl.innerHTML = pages.map((p) => `<img src="${p.imageUrl}" loading="lazy">`).join("");
+      pagesEl.innerHTML = pages
+        .map(
+          (p) =>
+            `<img src="${p.imageUrl}" loading="lazy"` +
+            ` onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${p.index + 1}'">`,
+        )
+        .join("");
     };
     ul.append(li);
   }
@@ -412,16 +432,26 @@ async function doSearch(): Promise<void> {
   const q = $<HTMLInputElement>("#query").value;
   const filters = collectFilters();
   const sort = collectSort();
-  status("Searching…");
+
+  // If the active list is searchable, scope the query to it (getListItems); else global search.
+  const activeList = currentLists.find((l) => l.id === activeListId);
+  const scoped = activeList?.searchable ? activeList : undefined;
+
+  const qs = [`q=${encodeURIComponent(q)}`];
+  if (filters.length) qs.push(`filters=${encodeURIComponent(JSON.stringify(filters))}`);
+  if (sort) qs.push(`sort=${encodeURIComponent(sort.key)}&dir=${sort.ascending ? "asc" : "desc"}`);
+
+  status(scoped ? `Searching in "${scoped.name}"…` : "Searching…");
   try {
-    let path = `/bridges/${activeBridge}/search?q=${encodeURIComponent(q)}`;
-    if (filters.length) path += `&filters=${encodeURIComponent(JSON.stringify(filters))}`;
-    if (sort) path += `&sort=${encodeURIComponent(sort.key)}&dir=${sort.ascending ? "asc" : "desc"}`;
+    const path = scoped
+      ? `/bridges/${activeBridge}/lists/${encodeURIComponent(scoped.id)}?${qs.join("&")}`
+      : `/bridges/${activeBridge}/search?${qs.join("&")}`;
     const r = await api<PagedResults>(path);
-    $("#list-tabs").querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    if (!scoped) $("#list-tabs").querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     renderGrid(r.items);
+    const where = scoped ? ` in "${scoped.name}"` : "";
     const notes = [filters.length ? `${filters.length} filter(s)` : "", sort ? `sort:${sort.key}` : ""].filter(Boolean).join(", ");
-    status(`${r.items.length} result(s) for "${q}"${notes ? ` (${notes})` : ""}.`);
+    status(`${r.items.length} result(s) for "${q}"${where}${notes ? ` (${notes})` : ""}.`);
   } catch (e) {
     status(`Search failed: ${e instanceof Error ? e.message : e}`, true);
   }

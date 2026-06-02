@@ -103,10 +103,17 @@ misbehaving bridge cannot inject malformed data into the host.
 
 **Lists, not prescribed sections.** Rather than hardcoded `popular`/`latest`/`home` methods, a
 bridge declares its *own* lists via `getLists()` (Trending, Recently Updated, a genre, Staff
-Picks, …). Each `SeriesList` is `{ id, name, description?, layout?, featured? }` where `layout`
-is `carousel | grid | ranked | hero`. Home becomes "render the featured lists" — presentation is
-always *data*, never bridge-rendered UI, keeping bridges portable across headless and UI
-environments.
+Picks, …). Each `SeriesList` is `{ id, name, description?, layout?, featured?, searchable? }` where
+`layout` is `carousel | grid | ranked | hero`. Home becomes "render the featured lists" —
+presentation is always *data*, never bridge-rendered UI, keeping bridges portable across headless
+and UI environments.
+
+**Searching within a list.** `getListItems(listId, page, options?)` takes a `ListOptions` bag —
+`{ query?, filters?, sort? }` — so a host can search/filter/sort *inside* one list. A list opts in
+by setting `searchable: true` (the `query` is only honored for those); a list whose backend can't
+be queried (e.g. an infinite "trending" feed) simply omits the flag and ignores `options`. Over
+REST it's `?q=&filters=&sort=&dir=` on the list-items route; via the CLI, `comical lists <listId>
+--query Q [--filter k=v] [--sort key]`.
 
 ### Settings
 
@@ -307,7 +314,7 @@ GET  /bridges                                      → list of bridges + update 
 GET  /bridges/:id                                  → bridge info + settings descriptors
 PUT  /bridges/:id/settings                         → configure backend URL / credentials
 GET  /bridges/:id/lists?q=                          → the bridge's list catalog
-GET  /bridges/:id/lists/:listId?page=               → entries within a list
+GET  /bridges/:id/lists/:listId?page=&q=&filters=&sort=&dir=   → entries within a list (q/filters/sort if searchable)
 GET  /bridges/:id/search?q=&page=&filters=   → filters is URL-encoded JSON FilterValue[]
 GET  /bridges/:id/filters                    → Filter[] descriptors for the search UI
 GET  /bridges/:id/series/:seriesId

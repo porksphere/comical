@@ -7,6 +7,7 @@ import {
   type Bridge,
   type BridgeFactory,
   type BridgeInfo,
+  type ListOptions,
   type SearchOptions,
   bridgeInfoSchema,
   CONTRACT_VERSION,
@@ -39,6 +40,13 @@ import { resolveSettings } from "./settings.ts";
 
 /** Boundary schema for the search options bag (filters + sort). */
 const searchOptionsSchema = z.object({
+  filters: z.array(filterValueSchema).optional(),
+  sort: sortSelectionSchema.optional(),
+});
+
+/** Boundary schema for the list options bag (in-list query + filters + sort). */
+const listOptionsSchema = z.object({
+  query: z.string().optional(),
   filters: z.array(filterValueSchema).optional(),
   sort: sortSelectionSchema.optional(),
 });
@@ -176,8 +184,11 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
     bridge.getLists = (q) => call("getLists", z.array(seriesListSchema), () => raw.getLists!(q));
   }
   if (raw.getListItems) {
-    bridge.getListItems = (listId, p) =>
-      call("getListItems", entryPage, () => raw.getListItems!(listId, p));
+    bridge.getListItems = (listId, p, opts) => {
+      const options =
+        opts === undefined ? undefined : (validate(listOptionsSchema, opts, "list options") as ListOptions);
+      return call("getListItems", entryPage, () => raw.getListItems!(listId, p, options));
+    };
   }
   if (raw.getSearchResults) {
     bridge.getSearchResults = (q, p, opts) => {

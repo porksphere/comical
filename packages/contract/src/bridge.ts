@@ -25,6 +25,13 @@ export interface SearchOptions {
   sort?: SortSelection;
 }
 
+/** Optional refinements for browsing a list: an in-list text query, plus filters/sort. */
+export interface ListOptions {
+  query?: string;
+  filters?: FilterValue[];
+  sort?: SortSelection;
+}
+
 export interface Bridge {
   readonly info: BridgeInfo;
 
@@ -48,8 +55,11 @@ export interface Bridge {
    */
   getLists?(query?: string): Promise<SeriesList[]>;
 
-  /** Entries within a list, by the list's id. `page` is 1-based. (capability "lists") */
-  getListItems?(listId: string, page: number): Promise<PagedResults<SeriesEntry>>;
+  /**
+   * Entries within a list, by the list's id. `page` is 1-based. `options` carries an in-list
+   * `query` (only honored for lists flagged `searchable`) plus filters/sort. (capability "lists")
+   */
+  getListItems?(listId: string, page: number, options?: ListOptions): Promise<PagedResults<SeriesEntry>>;
 
   /** Text search across the backend. `page` is 1-based. `options` carries filters + sort. (capability "search") */
   getSearchResults?(

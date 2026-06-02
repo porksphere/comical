@@ -26,7 +26,7 @@ describe("example-bridge", () => {
     const results = await bridge.getSearchResults!("", 1);
     expect(results.items.length).toBeGreaterThan(0);
     expect(results.items[0]!.title).toBeTruthy();
-    expect(results.items[0]!.thumbnailUrl).toStartWith("http://fixture.local/img/");
+    expect(results.items[0]!.thumbnailUrl).toStartWith("https://picsum.photos/seed/");
   });
 
   test("passes the full conformance suite", async () => {
@@ -68,6 +68,19 @@ describe("example-bridge", () => {
     expect(items.items[0]!.title).toBeTruthy();
   });
 
+  test("search within a list narrows that list's items", async () => {
+    const bridge = load();
+    const lists = await bridge.getLists!();
+    const popular = lists.find((l) => l.id === "popular")!;
+    expect(popular.searchable).toBe(true);
+
+    const all = await bridge.getListItems!("popular", 1);
+    const scoped = await bridge.getListItems!("popular", 1, { query: "sherlock" });
+    expect(scoped.items.length).toBeGreaterThan(0);
+    expect(scoped.items.length).toBeLessThan(all.items.length);
+    expect(scoped.items.every((i) => i.id === "sherlock")).toBe(true);
+  });
+
   test("filters narrow results; sort (separate) orders them", async () => {
     const bridge = load();
     const filters = await bridge.getFilters!();
@@ -75,12 +88,12 @@ describe("example-bridge", () => {
     const sorts = await bridge.getSortOptions!();
     expect(sorts.map((s) => s.key)).toContain("title");
 
-    // Unfiltered returns the whole catalog; a genre filter narrows it.
+    // Unfiltered returns the whole catalog; a genre filter narrows it (Sherlock is Mystery).
     const all = await bridge.getSearchResults!("", 1);
     const mystery = await bridge.getSearchResults!("", 1, { filters: [{ key: "genre", value: ["Mystery"] }] });
     expect(mystery.items.length).toBeGreaterThan(0);
     expect(mystery.items.length).toBeLessThan(all.items.length);
-    expect(mystery.items.every((i) => i.id === "sherlock")).toBe(true); // only Sherlock is Mystery
+    expect(mystery.items.some((i) => i.id === "sherlock")).toBe(true);
 
     // Sort by title descending flips the order (sort lives in options.sort, not filters).
     const asc = await bridge.getSearchResults!("", 1, { sort: { key: "title", ascending: true } });

@@ -7,7 +7,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
-import type { FilterValue, HostCapabilities, NetworkCapability, ResolvedSettings } from "@comical/contract";
+import type { FilterValue, HostCapabilities, ListOptions, NetworkCapability, ResolvedSettings } from "@comical/contract";
 import { type LoadedBridge, loadBridge } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
 import {
@@ -36,7 +36,7 @@ Usage:
   comical list
   comical serve                [--port N] [--data-dir DIR] [--origin URL] [--token SECRET]
   comical lists                --bridge <id> [--fixture | --set baseUrl=URL]   (list catalog)
-  comical lists <listId>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N]   (list items)
+  comical lists <listId>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N] [--query Q] [--filter k=v] [--sort key]
   comical search <query>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N] [--filter key=value ...] [--sort key [--desc]]
   comical details <seriesId>   --bridge <id> [--fixture | --set baseUrl=URL]
   comical chapters <seriesId>  --bridge <id> [--fixture | --set baseUrl=URL]
@@ -110,6 +110,7 @@ async function main(): Promise<number> {
       filter: { type: "string", multiple: true },
       sort: { type: "string" },
       desc: { type: "boolean" },
+      query: { type: "string" },
       "data-dir": { type: "string" },
       origin: { type: "string" },
       token: { type: "string" },
@@ -311,7 +312,12 @@ async function main(): Promise<number> {
         const listId = positionals[1];
         if (listId) {
           if (!bridge.getListItems) throw new Error(`bridge "${discovered.id}" does not support lists`);
-          print(json, await bridge.getListItems(listId, page));
+          const listOpts: ListOptions = {};
+          if (values.query) listOpts.query = values.query;
+          const lf = parseFilters(values.filter);
+          if (lf.length) listOpts.filters = lf;
+          if (values.sort) listOpts.sort = { key: values.sort, ascending: !values.desc };
+          print(json, await bridge.getListItems(listId, page, Object.keys(listOpts).length ? listOpts : undefined));
         } else {
           if (!bridge.getLists) throw new Error(`bridge "${discovered.id}" does not support lists`);
           print(json, await bridge.getLists());

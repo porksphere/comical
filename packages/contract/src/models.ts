@@ -134,6 +134,8 @@ export const seriesListSchema = z.object({
   layout: z.enum(["carousel", "grid", "ranked", "hero"]).optional(),
   /** Whether the host should surface this list prominently (e.g. on a home screen). */
   featured: z.boolean().optional(),
+  /** Whether `getListItems` accepts a `query` (and filters/sort) to search within this list. */
+  searchable: z.boolean().optional(),
 });
 export type SeriesList = z.infer<typeof seriesListSchema>;
 
