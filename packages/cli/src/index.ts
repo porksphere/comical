@@ -12,7 +12,9 @@ import { type LoadedBridge, loadBridge } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
 import {
   type CassetteEntry,
+  type EvaluationReport,
   FixtureBackend,
+  evaluateBridge,
   recordingNetwork,
   runConformance,
 } from "@comical/testkit";
@@ -42,6 +44,7 @@ Usage:
   comical chapters <seriesId>  --bridge <id> [--fixture | --set baseUrl=URL]
   comical pages <seriesId> <chapterId> --bridge <id> [--fixture | --set baseUrl=URL]
   comical test                 --bridge <id> [--fixture | --set baseUrl=URL] [--set query=Q]
+  comical evaluate             --bridge <id> [--fixture | --set baseUrl=URL] [--query Q] [--json] [--strict]
   comical record               --bridge <id> [--fixture | --set baseUrl=URL] --scenario list:ID
 
   Registry (M4):
@@ -69,6 +72,8 @@ Options:
   --base-url URL      Base URL for \`registry publish\` (e.g. https://me.github.io/bridges)
   --out DIR           Output directory for \`registry publish\`
   --key FILE          Path to private key file for \`registry publish\`
+  --query Q           Search query for the \`evaluate\` probe
+  --strict            \`evaluate\`: treat warnings as failures (non-zero exit)
   --json              Emit raw JSON
 `;
 
@@ -115,6 +120,7 @@ async function main(): Promise<number> {
       origin: { type: "string" },
       token: { type: "string" },
       scenario: { type: "string", multiple: true },
+      strict: { type: "boolean" },
       "base-url": { type: "string" },
       out: { type: "string" },
       key: { type: "string" },
@@ -274,6 +280,7 @@ async function main(): Promise<number> {
 
   const json = values.json ?? false;
   const page = values.page ? Number(values.page) : 1;
+  let resultCode = 0;
 
   try {
     // For `record` we must intercept the raw network before the core gates it.
@@ -347,6 +354,20 @@ async function main(): Promise<number> {
         for (const c of report.checks) console.log(`  - ${c}`);
         break;
       }
+      case "evaluate": {
+        const query = values.query ?? settings.query ?? "";
+        const report = await evaluateBridge(bridge, { searchQuery: query });
+        if (json) {
+          console.log(JSON.stringify(report));
+        } else {
+          printEvaluation(report);
+        }
+        // Fail the run on any hard failure, or on warnings under --strict.
+        if (report.summary.verdict === "fail" || (values.strict && report.summary.warn > 0)) {
+          resultCode = 1;
+        }
+        break;
+      }
       case "record": {
         await runScenarios(bridge, values.scenario ?? []);
         const outPath = join(BRIDGES_DIR, discovered.dir, "__fixtures__", "cassette.json");
@@ -361,7 +382,31 @@ async function main(): Promise<number> {
   } finally {
     fixture?.stop();
   }
-  return 0;
+  return resultCode;
+}
+
+/** Human-readable evaluation report: results grouped by capability + a summary & coverage line. */
+function printEvaluation(report: EvaluationReport): void {
+  const icon = { pass: "✓", warn: "⚠", fail: "✗" } as const;
+  const order = ["core", ...report.summary.capabilitiesDeclared];
+  const groups = [...new Set(report.results.map((r) => r.capability))]
+    .sort((a, b) => order.indexOf(a) - order.indexOf(b));
+
+  console.log(`\nEvaluating ${report.bridgeId} …\n`);
+  for (const group of groups) {
+    console.log(group);
+    for (const r of report.results.filter((x) => x.capability === group)) {
+      console.log(`  ${icon[r.severity]} ${r.message}`);
+    }
+  }
+  const s = report.summary;
+  const verdict = s.verdict === "pass" ? "PASS" : "FAIL";
+  console.log(`\nSummary: ${s.pass} pass · ${s.warn} warn · ${s.fail} fail — ${verdict}`);
+  console.log(
+    `Coverage: ${s.capabilitiesExercised.length}/${s.capabilitiesDeclared.length} declared ` +
+      `capabilities exercised, ${s.capabilitiesPassing.length} passing` +
+      (s.capabilitiesDeclared.length ? `  [${s.capabilitiesDeclared.join(", ")}]` : ""),
+  );
 }
 
 function requireArg(value: string | undefined, name: string): string {

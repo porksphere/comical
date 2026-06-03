@@ -235,7 +235,7 @@ bundles or needs CORS at all.
 | `@comical/contract` | Versioned `Bridge` interface, `HostCapabilities`, zod data models, `contractVersion`. The stable boundary — everything else builds on this. |
 | `@comical/core` | Sandboxed bridge loader, `BundleEvaluator` interface, `NodeVmEvaluator`, gated network (rate-limit + cache), zod boundary validation, typed errors, call timeouts. Pure TS — no platform APIs. |
 | `@comical/sdk` | `BridgeBase` class, cheerio-backed HTML helpers (`fetchHtml`, `parse`), URL resolver, re-exports contract types. What bridge authors import. |
-| `@comical/testkit` | `FixtureBackend` (public-domain demo library), `MockHost`, network record/replay cassettes, `runConformance` suite. |
+| `@comical/testkit` | `FixtureBackend` (public-domain demo library), `MockHost`, network record/replay cassettes, the `evaluateBridge` coverage report + `runConformance` strict gate. |
 | `@comical/registry` | Registry index schema + zod validation, GitHub URL auto-resolution, SHA-256 integrity + Ed25519 signature verification, `ManifestStore`, `RegistryManager` (add/remove/browse/install/update/uninstall). |
 
 ### Host adapters
@@ -340,8 +340,11 @@ bun run cli details alice --bridge example --fixture
 bun run cli chapters alice --bridge example --fixture
 bun run cli pages alice alice-1 --bridge example --fixture
 
-# Run the bridge conformance test
+# Strict conformance gate (throws on the first failure)
 bun run cli test --bridge example --fixture
+
+# Coverage report — what works, what's missing (see "Evaluating a bridge")
+bun run cli evaluate --bridge example --fixture
 
 # Start the server
 bun run cli serve --port 3100 --data-dir ./.comical
@@ -444,6 +447,69 @@ Build and test:
 bun run build                              # compile to bridges/my-bridge/dist/bridge.js
 bun run cli test --bridge my-bridge --set baseUrl=https://your-backend.example.com
 ```
+
+---
+
+## Evaluating a bridge
+
+`comical evaluate` runs your built bridge against a backend and prints a **coverage report** —
+which declared capabilities actually work, plus behavioral probes and data-quality checks. It's
+the developer-facing companion to `comical test` (which is a strict pass/fail gate).
+
+```sh
+bun run cli evaluate --bridge my-bridge --set baseUrl=https://your-backend.example.com
+bun run cli evaluate --bridge my-bridge --fixture --json     # machine-readable for CI
+```
+
+```
+Evaluating my-bridge …
+
+core
+  ✓ details round-trip the sampled id
+  ⚠ series details have no genres
+search
+  ✓ search returned 22 item(s)
+filters
+  ✓ filter "genre" changed results (22→5)
+sort
+  ✓ sort "title" reorders results (asc ≠ desc)
+
+Summary: 14 pass · 1 warn · 0 fail — PASS
+Coverage: 5/5 declared capabilities exercised, 5 passing  [lists, search, filters, sort, settings]
+```
+
+What it checks: capability↔method agreement, the `details → chapters → pages` round trip (id
+stability, chapter ordering/uniqueness), and behavioral probes — **filters narrow** results,
+**sort reorders** them, **in-list search** narrows a searchable list, and **settings** descriptors
+are well-formed. Missing-but-optional data (covers, authors, genres) is a `warn`, not a `fail`.
+
+- **Coverage here means contract/capability coverage + data-quality heuristics** — not code
+  coverage, and not semantic correctness (it can't tell if a title is *right*, only that it's present).
+- **Severities:** hard contract violations `fail` (non-zero exit); quality/behavioral-no-effect
+  `warn`. Use `--strict` to fail the run on warnings too. `--query Q` seeds the search probe.
+
+### In CI
+
+Bridges run against a **live** backend, so this is non-deterministic — best as a scheduled job
+(catches site drift) and/or a non-blocking PR check, rather than a hard gate:
+
+```yaml
+# .github/workflows/bridges.yml
+on:
+  pull_request:
+  schedule: [{ cron: "0 6 * * *" }]   # daily — catch upstream site changes
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install && bun run build
+      - run: bun run cli evaluate --bridge my-bridge --set baseUrl=${{ secrets.BACKEND_URL }} --json
+```
+
+The JSON report (`{ bridgeId, results[], summary }`) is stable to aggregate into a per-bridge
+status table or badge across a repo of bridges.
 
 ---
 
