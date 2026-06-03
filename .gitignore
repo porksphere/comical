@@ -16,6 +16,13 @@ demo/.out/
 packages/host-ios/Sources/ComicalHostIOS/Resources/harness.js
 packages/host-android/src/main/assets/comical_harness.js
 
+# Gradle / Android build artifacts
+.gradle/
+build/
+**/build/
+local.properties
+.kotlin/
+
 # Isolated dev sandbox — bridges targeting specific real sites are NEVER committed
 # (preserves the content-neutral posture). Build/test them here only.
 sandbox/

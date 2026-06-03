@@ -1,8 +1,8 @@
 # @comical/host-android
 
 Android host adapter for the Comical bridge runtime. Runs bridge bundles in **QuickJS**
-(~1 MB embed via `quickjs-android`) with native Kotlin capabilities (OkHttp, DataStore,
-Android Log). No Hermes or V8 dependency required.
+(via `io.github.dokar3:quickjs-kt-android` 1.x) through the shared `@comical/core`, with native
+Kotlin capabilities (OkHttp, file storage, Android Log). No Hermes or V8 dependency required.
 
 ## Why QuickJS
 
@@ -52,18 +52,28 @@ ctx.close()
 
 ## Running tests
 
-```sh
-./gradlew :host-android:test
-```
-
-Uses Robolectric — runs on JVM without a device or emulator.
-
-## harness.js
-
-The `src/main/assets/comical_harness.js` file is shared with `host-ios` and generated
-from the same source. Regenerate after core changes:
+Instrumented tests run on a device/emulator against the **real** `quickjs-kt-android` artifact
+(Robolectric can't load QuickJS's native `.so`, so there are no JVM unit tests for the engine):
 
 ```sh
-cp packages/host-ios/Sources/ComicalHostIOS/Resources/harness.js \
-   packages/host-android/src/main/assets/comical_harness.js
+# 1. (re)generate the bundled runtime asset
+bun run build:native
+# 2. boot an emulator/AVD (or connect a device), then:
+./gradlew :host-android:connectedDebugAndroidTest
 ```
+
+Local toolchain: JDK 17, Android SDK (platform 36 — required by quickjs-kt-android 1.x), an AVD,
+and hardware acceleration (WHPX on Windows). Build matrix: AGP 8.9.2 / Gradle 8.11.1 / Kotlin 2.3.x.
+
+## comical_harness.js
+
+`src/main/assets/comical_harness.js` is the **generated** bundle of `@comical/host-native`
+(`@comical/core` + glue + the async capability adapter), shared in spirit with `host-ios`. It is
+gitignored and produced by `bun run build:native` — regenerate it after core/host-native changes.
+
+## Isolation note
+
+`__comical_native_eval` currently evaluates the bridge in the **same** QuickJS context (no app/DOM
+globals; core bundled as an IIFE). Full separate-context isolation (a second QuickJS context with the
+`eval` intrinsic omitted) needs QuickJS C-API access the quickjs-kt binding doesn't expose — tracked
+as a future JNI upgrade.

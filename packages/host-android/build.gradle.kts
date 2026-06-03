@@ -5,10 +5,10 @@ plugins {
 
 android {
     namespace = "dev.comical.host"
-    compileSdk = 35
+    compileSdk = 36 // required by quickjs-kt-android 1.0.5
 
     defaultConfig {
-        minSdk = 26          // QuickJS-Android requires API 26+
+        minSdk = 26 // QuickJS-kt requires a recent NDK runtime; 26+ is safe
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -17,27 +17,39 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions { jvmTarget = "17" }
+    testOptions {
+        // Gradle-managed emulator: `./gradlew :host-android:pixel6Api35DebugAndroidTest` boots a
+        // headless ATD emulator, runs the tests, and tears it down. Used for CI + hands-off runs;
+        // `connectedDebugAndroidTest` still works against a manually-booted device for fast loops.
+        managedDevices {
+            localDevices {
+                create("pixel6Api35") {
+                    device = "Pixel 6"
+                    apiLevel = 35
+                    systemImageSource = "aosp-atd"
+                }
+            }
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
 }
 
 dependencies {
-    // QuickJS Android binding (~1 MB vs V8's ~30 MB / Hermes' ~4 MB)
-    implementation("io.github.dokar3:quickjs-android:0.1.1")
+    // QuickJS binding (idiomatic Kotlin, coroutine/suspend API)
+    implementation("io.github.dokar3:quickjs-kt-android:1.0.5")
 
-    // HTTP
+    // HTTP + coroutines (org.json is provided by the Android platform — no dependency needed)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-
-    // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // JSON
-    implementation("org.json:json:20240303")
-
-    // Storage
-    implementation("androidx.datastore:datastore-preferences:1.1.1")
-
-    // Testing
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
-    testImplementation("org.robolectric:robolectric:4.13")
+    // Instrumented tests (run on a device/emulator via connectedAndroidTest)
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }
