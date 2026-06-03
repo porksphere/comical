@@ -241,6 +241,15 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
   if (raw.getTags) {
     bridge.getTags = () => call("getTags", z.array(tagSchema), () => raw.getTags!());
   }
+  if (raw.getFavorites) {
+    bridge.getFavorites = (p) => call("getFavorites", entryPage, () => raw.getFavorites!(p));
+  }
+  if (raw.addFavorite) {
+    bridge.addFavorite = (id) => call("addFavorite", z.void(), () => raw.addFavorite!(id));
+  }
+  if (raw.removeFavorite) {
+    bridge.removeFavorite = (id) => call("removeFavorite", z.void(), () => raw.removeFavorite!(id));
+  }
   if (raw.getSettings) {
     const getSettings = raw.getSettings.bind(raw);
     bridge.getSettings = () =>

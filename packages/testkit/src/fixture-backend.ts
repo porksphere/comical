@@ -8,7 +8,7 @@
  *
  * The HTML shape here is the de-facto contract between this backend and `example-bridge`.
  */
-import type { HttpRequest, HttpResponse } from "@comical/contract";
+import type { HttpMethod, HttpRequest, HttpResponse } from "@comical/contract";
 
 export interface FixtureChapter {
   id: string;
@@ -126,6 +126,9 @@ function seriesCard(s: FixtureSeries): string {
 
 export class FixtureBackend {
   constructor(readonly catalog: FixtureSeries[] = DEFAULT_CATALOG) {}
+
+  /** In-memory per-instance "account" favorites (exercises the backend-synced favorites capability). */
+  private readonly favorites = new Set<string>();
 
   private find(id: string): FixtureSeries | undefined {
     return this.catalog.find((s) => s.id === id);
@@ -284,6 +287,32 @@ export class FixtureBackend {
       );
     }
 
+    // Favorites (capability "favorites") — require any non-empty Authorization, like a logged-in API.
+    if (path === "/favorites" || path.startsWith("/favorites/")) {
+      const auth = req.headers?.Authorization ?? req.headers?.authorization;
+      if (!auth) return this.html(layout("Unauthorized", "<p>auth required</p>"), 401);
+      const method = (req.method ?? "GET").toUpperCase();
+      const idMatch = /^\/favorites\/([^/]+)$/.exec(path);
+      if (idMatch) {
+        const id = decodeURIComponent(idMatch[1]!);
+        if (method === "PUT") {
+          if (this.find(id)) this.favorites.add(id);
+          return this.html(layout("ok", "<p>ok</p>"));
+        }
+        if (method === "DELETE") {
+          this.favorites.delete(id);
+          return this.html(layout("ok", "<p>ok</p>"));
+        }
+        return this.html(layout("Not Found", "<p>not found</p>"), 404);
+      }
+      const series = [...this.favorites]
+        .map((id) => this.find(id))
+        .filter((s): s is FixtureSeries => s !== undefined);
+      return this.html(
+        layout("Favorites", `<section class="favorites">${series.map(seriesCard).join("")}</section>`),
+      );
+    }
+
     const chapterMatch = /^\/series\/([^/]+)\/chapter\/([^/]+)$/.exec(path);
     if (chapterMatch) {
       const s = this.find(decodeURIComponent(chapterMatch[1]!));
@@ -319,7 +348,15 @@ export class FixtureBackend {
     const server = Bun.serve({
       port: 0,
       async fetch(request) {
-        const res = backend.handle({ url: new URL(request.url).pathname + new URL(request.url).search });
+        const headers: Record<string, string> = {};
+        request.headers.forEach((v, k) => { headers[k] = v; });
+        const req: HttpRequest = {
+          url: new URL(request.url).pathname + new URL(request.url).search,
+          method: request.method as HttpMethod,
+          headers,
+        };
+        if (request.method !== "GET" && request.method !== "HEAD") req.body = await request.text();
+        const res = backend.handle(req);
         return new Response(res.body, { status: res.status, headers: res.headers });
       },
     });

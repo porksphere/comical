@@ -58,6 +58,13 @@ const SETTINGS = defineSettings([
     ],
     default: "title",
   },
+  {
+    type: "string",
+    key: "sessionToken",
+    label: "Session token",
+    description: "Auth token for favorites. Browsing works without it; favorites require it.",
+    secret: true,
+  },
 ]);
 type Settings = InferSettings<typeof SETTINGS>;
 
@@ -69,7 +76,7 @@ class ExampleBridge extends BridgeBase<Settings> {
     contractVersion: "1.0.0",
     languages: ["en"],
     nsfw: false,
-    capabilities: ["lists", "search", "filters", "sort", "settings"],
+    capabilities: ["lists", "search", "filters", "sort", "settings", "favorites"],
   };
 
   getSettings(): SettingDescriptor[] {
@@ -254,6 +261,35 @@ class ExampleBridge extends BridgeBase<Settings> {
       .filter((p) => p.imageUrl.length > 0);
   }
 
+  // ── Favorites (capability "favorites") — backend-synced, requires the sessionToken setting ──
+
+  /** Authorization headers from the session token; throws a clear error when unauthenticated. */
+  private authHeaders(): Record<string, string> {
+    const token = this.setting("sessionToken");
+    if (!token) throw new Error("favorites require authentication — set the sessionToken setting");
+    return { Authorization: `Bearer ${token}` };
+  }
+
+  async getFavorites(page: number): Promise<PagedResults<SeriesEntry>> {
+    const $ = await this.fetchHtml(`${this.base()}/favorites`, this.authHeaders());
+    return { items: this.cards($, "section.favorites"), page, hasNextPage: false };
+  }
+
+  async addFavorite(seriesId: string): Promise<void> {
+    await this.request({
+      url: `${this.base()}/favorites/${encodeURIComponent(seriesId)}`,
+      method: "PUT",
+      headers: this.authHeaders(),
+    });
+  }
+
+  async removeFavorite(seriesId: string): Promise<void> {
+    await this.request({
+      url: `${this.base()}/favorites/${encodeURIComponent(seriesId)}`,
+      method: "DELETE",
+      headers: this.authHeaders(),
+    });
+  }
 }
 
 export default defineBridge((host) => new ExampleBridge(host));

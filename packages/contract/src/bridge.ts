@@ -82,6 +82,21 @@ export interface Bridge {
    * through `HostCapabilities.settings`.
    */
   getSettings?(): SettingDescriptor[];
+
+  // ---- Favorites — capability "favorites" ----
+  // Backed by the backend's own account bookmarks/follows, so these need auth: the bridge declares
+  // an (optional) secret setting and these methods throw a clear error when it's absent — browsing
+  // stays anonymous. `getFavorites` is the minimum for the capability; the mutations are independently
+  // optional (a backend may expose follows read-only).
+
+  /** The signed-in account's favorited series. `page` is 1-based. */
+  getFavorites?(page: number): Promise<PagedResults<SeriesEntry>>;
+
+  /** Add a series to the account's favorites. */
+  addFavorite?(seriesId: string): Promise<void>;
+
+  /** Remove a series from the account's favorites. */
+  removeFavorite?(seriesId: string): Promise<void>;
 }
 
 /**

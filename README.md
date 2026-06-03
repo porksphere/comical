@@ -166,6 +166,22 @@ The core validates both inputs at the boundary. Over REST:
 `GET /bridges/:id/filters` and `GET /bridges/:id/sort` returning the descriptors. Via the CLI:
 `--filter key=value` (repeatable; comma → `string[]`) and `--sort key [--desc]`.
 
+### Favorites
+
+A bridge with the `favorites` capability syncs with the **backend's own account bookmarks/follows**
+(not a local library). Three methods — `getFavorites(page)` (the minimum), plus the optional mutations
+`addFavorite(seriesId)` / `removeFavorite(seriesId)`. These are the contract's only **write** methods.
+
+Favorites need **auth**, but browsing is anonymous — so auth is *not* all-or-nothing gating. The
+bridge declares an optional `secret` setting (e.g. a session token) and the favorites methods throw a
+clear error when it's absent; everything else keeps working logged-out. (No OAuth — credentials are a
+user-supplied token/cookie in settings, reusing the secret-setting machinery.)
+
+Over REST: `GET /bridges/:id/favorites?page=`, `PUT /bridges/:id/favorites/:seriesId` (add),
+`DELETE /bridges/:id/favorites/:seriesId` (remove). Via the CLI: `comical favorites`,
+`comical favorite <id>`, `comical unfavorite <id>` (with `--set sessionToken=…`). The evaluator probes
+`getFavorites` read-only and **never** auto-calls the mutations (they hit a real account).
+
 ### Host capability API
 
 The **only** things a bridge can do:

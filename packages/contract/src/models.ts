@@ -236,6 +236,7 @@ export const bridgeCapabilitySchema = z.enum([
   "sort",
   "tags",
   "settings",
+  "favorites",
 ]);
 export type BridgeCapability = z.infer<typeof bridgeCapabilitySchema>;
 

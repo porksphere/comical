@@ -69,6 +69,7 @@ const CAPABILITY_METHOD: Partial<Record<BridgeCapability, keyof Bridge>> = {
   sort: "getSortOptions",
   tags: "getTags",
   settings: "getSettings",
+  favorites: "getFavorites",
 };
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -246,6 +247,25 @@ export async function evaluateBridge(
       pass("settings", "settings.descriptors", `getSettings returned ${descriptors.length} descriptor(s)`);
     } catch (e) {
       fail("settings", "settings.threw", `getSettings threw: ${msg(e)}`);
+    }
+  }
+
+  // ── Favorites (read-only probe; mutations are never auto-called — they hit a real account) ──
+  if (has("favorites") && bridge.getFavorites) {
+    exercised.add("favorites");
+    if (typeof bridge.addFavorite !== "function" || typeof bridge.removeFavorite !== "function") {
+      warn("favorites", "favorites.mutations", "favorites is read-only (no add/removeFavorite)");
+    }
+    try {
+      const favs = await bridge.getFavorites(1);
+      if (favs.page !== 1) fail("favorites", "favorites.page", `getFavorites page should echo 1, got ${favs.page}`);
+      for (const item of favs.items) {
+        if (!item.id) fail("favorites", "favorites.item.id", "a favorite has an empty id");
+        if (!item.title) fail("favorites", "favorites.item.title", "a favorite has an empty title");
+      }
+      pass("favorites", "favorites.read", `getFavorites returned ${favs.items.length} item(s)`);
+    } catch (e) {
+      warn("favorites", "favorites.read", `getFavorites could not be read (authentication required?): ${msg(e)}`);
     }
   }
 

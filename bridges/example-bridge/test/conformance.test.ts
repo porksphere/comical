@@ -100,4 +100,26 @@ describe("example-bridge", () => {
     const desc = await bridge.getSearchResults!("", 1, { sort: { key: "title", ascending: false } });
     expect(asc.items.map((i) => i.id).join()).toBe([...desc.items].reverse().map((i) => i.id).join());
   });
+
+  test("favorites: round-trip add → list → remove (authenticated)", async () => {
+    const backend = new FixtureBackend();
+    const bridge = loadBridge({
+      code: BUNDLE,
+      capabilities: fixtureHost(backend, { sessionToken: "demo" }),
+      expectedId: "example",
+    });
+    expect((await bridge.getFavorites!(1)).items.length).toBe(0);
+
+    await bridge.addFavorite!("dracula");
+    const after = await bridge.getFavorites!(1);
+    expect(after.items.map((i) => i.id)).toContain("dracula");
+
+    await bridge.removeFavorite!("dracula");
+    expect((await bridge.getFavorites!(1)).items.map((i) => i.id)).not.toContain("dracula");
+  });
+
+  test("favorites require authentication (no sessionToken → throws)", async () => {
+    const bridge = load(); // load() wires baseUrl but no sessionToken
+    await expect(bridge.getFavorites!(1)).rejects.toThrow();
+  });
 });

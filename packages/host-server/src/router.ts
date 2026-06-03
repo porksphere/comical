@@ -187,6 +187,32 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     }),
   );
 
+  // ── Favorites (capability "favorites") — backend-synced; the bridge handles auth ──────────────
+
+  app.get("/bridges/:id/favorites", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.getFavorites) return c.json({ error: "not supported" }, 400);
+      const page = Number(c.req.query("page") ?? "1");
+      return c.json(await bridge.getFavorites(page));
+    }),
+  );
+
+  app.put("/bridges/:id/favorites/:seriesId", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.addFavorite) return c.json({ error: "not supported" }, 400);
+      await bridge.addFavorite(c.req.param("seriesId"));
+      return c.json({ ok: true });
+    }),
+  );
+
+  app.delete("/bridges/:id/favorites/:seriesId", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.removeFavorite) return c.json({ error: "not supported" }, 400);
+      await bridge.removeFavorite(c.req.param("seriesId"));
+      return c.json({ ok: true });
+    }),
+  );
+
   app.get("/bridges/:id/series/:seriesId", (c) =>
     withContentBridge(c, async (bridge) => {
       return c.json(await bridge.getSeriesDetails(c.req.param("seriesId")));

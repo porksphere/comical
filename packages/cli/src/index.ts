@@ -43,6 +43,9 @@ Usage:
   comical details <seriesId>   --bridge <id> [--fixture | --set baseUrl=URL]
   comical chapters <seriesId>  --bridge <id> [--fixture | --set baseUrl=URL]
   comical pages <seriesId> <chapterId> --bridge <id> [--fixture | --set baseUrl=URL]
+  comical favorites            --bridge <id> [--fixture | --set baseUrl=URL] --set sessionToken=TOKEN [--page N]
+  comical favorite <seriesId>  --bridge <id> [--fixture] --set sessionToken=TOKEN     (add)
+  comical unfavorite <seriesId> --bridge <id> [--fixture] --set sessionToken=TOKEN    (remove)
   comical test                 --bridge <id> [--fixture | --set baseUrl=URL] [--set query=Q]
   comical evaluate             --bridge <id> [--fixture | --set baseUrl=URL] [--query Q] [--json] [--strict]
   comical record               --bridge <id> [--fixture | --set baseUrl=URL] --scenario list:ID
@@ -345,6 +348,25 @@ async function main(): Promise<number> {
         const id = requireArg(positionals[1], "seriesId");
         const chapterId = requireArg(positionals[2], "chapterId");
         print(json, await bridge.getChapterPages(id, chapterId));
+        break;
+      }
+      case "favorites": {
+        if (!bridge.getFavorites) throw new Error(`bridge "${discovered.id}" does not support favorites`);
+        print(json, await bridge.getFavorites(page));
+        break;
+      }
+      case "favorite": {
+        const id = requireArg(positionals[1], "seriesId");
+        if (!bridge.addFavorite) throw new Error(`bridge "${discovered.id}" cannot add favorites`);
+        await bridge.addFavorite(id);
+        console.log(`✓ favorited ${id}`);
+        break;
+      }
+      case "unfavorite": {
+        const id = requireArg(positionals[1], "seriesId");
+        if (!bridge.removeFavorite) throw new Error(`bridge "${discovered.id}" cannot remove favorites`);
+        await bridge.removeFavorite(id);
+        console.log(`✓ unfavorited ${id}`);
         break;
       }
       case "test": {

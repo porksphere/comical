@@ -71,6 +71,7 @@ async function send(method: string, path: string, body?: unknown): Promise<{ ok:
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let activeBridge = "";
+let activeCaps: string[] = [];
 let currentDescriptors: SettingDescriptor[] = [];
 let currentFilters: Filter[] = [];
 let currentLists: SeriesList[] = [];
@@ -160,8 +161,10 @@ async function loadBridges(): Promise<void> {
 // ── Select a bridge: load info, settings, meta, lists ────────────────────────────
 async function selectBridge(id: string): Promise<void> {
   activeBridge = id;
+  activeCaps = [];
   $("#detail").style.display = "none";
   const detail = await api<BridgeDetail>(`/bridges/${id}`);
+  activeCaps = detail.info.capabilities;
   currentDescriptors = detail.settings;
   $("#caps").textContent = `[${detail.info.capabilities.join(", ")}]`;
 
@@ -183,7 +186,34 @@ async function selectBridge(id: string): Promise<void> {
 
   if (detail.info.capabilities.includes("lists")) await loadLists();
   else { $("#list-tabs").innerHTML = ""; $("#grid").innerHTML = ""; }
+  if (activeCaps.includes("favorites")) addFavoritesTab();
   status(`Loaded "${detail.info.name}".`);
+}
+
+/** A "★ Favorites" pseudo-tab (capability "favorites") that loads the account's favorites. */
+function addFavoritesTab(): void {
+  const tabs = $("#list-tabs");
+  const tab = document.createElement("div");
+  tab.className = "tab";
+  tab.textContent = "★ Favorites";
+  tab.onclick = () => {
+    tabs.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    void loadFavorites();
+  };
+  tabs.append(tab);
+}
+
+async function loadFavorites(): Promise<void> {
+  try {
+    const r = await api<PagedResults>(`/bridges/${activeBridge}/favorites`);
+    activeListId = null;
+    renderGrid(r.items);
+    status(`Favorites: ${r.items.length} item(s).`);
+  } catch (e) {
+    $("#grid").innerHTML = "";
+    status(`Favorites unavailable — set a session token in settings? (${e instanceof Error ? e.message : String(e)})`, true);
+  }
 }
 
 // ── Settings form ────────────────────────────────────────────────────────────────
@@ -427,6 +457,27 @@ async function showDetail(seriesId: string): Promise<void> {
       cover.src = `https://placehold.co/200x300?text=${encodeURIComponent(info.title)}`;
     };
   }
+  const favBtn = $("#fav-toggle") as HTMLButtonElement;
+  if (activeCaps.includes("favorites")) {
+    favBtn.hidden = false;
+    let favorited = false;
+    favBtn.textContent = "☆ Favorite";
+    favBtn.onclick = async () => {
+      const r = await send(
+        favorited ? "DELETE" : "PUT",
+        `/bridges/${activeBridge}/favorites/${encodeURIComponent(seriesId)}`,
+      );
+      if (r.ok) {
+        favorited = !favorited;
+        favBtn.textContent = favorited ? "★ Favorited" : "☆ Favorite";
+      } else {
+        status(`Favorite failed — set a session token? (${(r.data as { error?: string })?.error ?? r.status})`, true);
+      }
+    };
+  } else {
+    favBtn.hidden = true;
+  }
+
   $("#detail-genres").innerHTML = (info.genres ?? []).map((g) => `<span class="chip">${esc(g)}</span>`).join("");
   $("#detail-taggroups").innerHTML = (info.tagGroups ?? [])
     .map(
