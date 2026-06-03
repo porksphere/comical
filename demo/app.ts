@@ -25,7 +25,7 @@ interface BridgeInfo { id: string; name: string; capabilities: string[] }
 interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values: Record<string, string | number | boolean | string[]>; secretsSet: string[]; missingRequired: string[]; configured: boolean }
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
-interface SeriesInfo { id: string; title: string; author?: string; status?: string; description?: string }
+interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; artist?: string; status?: string; description?: string; genres?: string[]; languages?: string[] }
 interface Chapter { id: string; name: string; number?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
@@ -395,6 +395,10 @@ async function showDetail(seriesId: string): Promise<void> {
   const detail = $("#detail");
   detail.style.display = "block";
   $("#detail-title").textContent = "Loading…";
+  $("#detail-meta").textContent = "";
+  $("#detail-genres").innerHTML = "";
+  $("#detail-description").textContent = "";
+  ($("#detail-cover") as HTMLImageElement).style.display = "none";
   $("#chapters").innerHTML = "";
   $("#pages").innerHTML = "";
 
@@ -404,7 +408,25 @@ async function showDetail(seriesId: string): Promise<void> {
   ]);
 
   $("#detail-title").textContent = info.title;
-  $("#detail-meta").textContent = [info.author && `by ${info.author}`, info.status].filter(Boolean).join(" · ");
+  const creator = info.author || info.artist;
+  $("#detail-meta").textContent = [
+    creator && `by ${creator}`,
+    info.status,
+    info.languages?.length ? info.languages.join(" / ") : undefined,
+  ].filter(Boolean).join(" · ");
+
+  const cover = $("#detail-cover") as HTMLImageElement;
+  if (info.thumbnailUrl) {
+    cover.src = info.thumbnailUrl;
+    cover.alt = info.title;
+    cover.style.display = "";
+    cover.onerror = () => {
+      cover.onerror = null;
+      cover.src = `https://placehold.co/200x300?text=${encodeURIComponent(info.title)}`;
+    };
+  }
+  $("#detail-genres").innerHTML = (info.genres ?? []).map((g) => `<span class="chip">${esc(g)}</span>`).join("");
+  $("#detail-description").textContent = info.description ?? "";
 
   const ul = $("#chapters");
   for (const ch of chapters) {

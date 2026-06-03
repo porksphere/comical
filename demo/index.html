@@ -43,6 +43,10 @@
     #detail { background: #1c1c1e; border-radius: 8px; padding: 1rem; margin-top: 1rem; display: none; }
     #detail h2 { margin: 0 0 0.4rem; }
     #detail .meta { font-size: 0.82rem; color: #888; margin-bottom: 0.75rem; }
+    .detail-head { display: flex; gap: 1rem; margin-bottom: 1rem; }
+    #detail-cover { width: 120px; height: 180px; object-fit: cover; border-radius: 6px; background: #333; flex-shrink: 0; }
+    #detail-genres { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+    #detail-description { font-size: 0.88rem; line-height: 1.5; color: #ccc; margin: 0; }
     #chapters { list-style: none; padding: 0; margin: 0; }
     #chapters li { padding: 0.4rem 0; border-bottom: 1px solid #2a2a2e; font-size: 0.88rem; cursor: pointer; }
     #chapters li:hover { color: #60a5fa; }
@@ -97,6 +101,13 @@
   <div id="detail">
     <h2 id="detail-title"></h2>
     <div class="meta" id="detail-meta"></div>
+    <div class="detail-head">
+      <img id="detail-cover" alt="" />
+      <div>
+        <div class="genres" id="detail-genres"></div>
+        <p class="description" id="detail-description"></p>
+      </div>
+    </div>
     <ul id="chapters"></ul>
     <div id="pages"></div>
   </div>
