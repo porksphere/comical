@@ -23,6 +23,8 @@ export interface FixtureSeries {
   author: string;
   description: string;
   genres: string[];
+  /** Other taxonomies beyond genres — each a labeled group (optional). */
+  tagGroups?: Array<{ label: string; kind?: string; tags: string[] }>;
   status: "ongoing" | "completed" | "hiatus";
   chapters: FixtureChapter[];
 }
@@ -75,12 +77,12 @@ export const DEFAULT_CATALOG: FixtureSeries[] = [
     chapters: [{ id: "frankenstein-1", name: "Letters", number: 1, pages: 2 }],
   },
   // — additional public-domain titles for a fuller demo —
-  { id: "dracula", title: "Dracula", author: "Bram Stoker", description: "A vampire count's move to England.", genres: ["Horror", "Gothic"], status: "completed", chapters: chaps("dracula", 3) },
+  { id: "dracula", title: "Dracula", author: "Bram Stoker", description: "A vampire count's move to England.", genres: ["Horror", "Gothic"], tagGroups: [{ label: "Themes", kind: "theme", tags: ["vampire", "epistolary"] }, { label: "Setting", tags: ["Victorian England"] }], status: "completed", chapters: chaps("dracula", 3) },
   { id: "moby-dick", title: "Moby-Dick", author: "Herman Melville", description: "A captain's obsessive hunt for a white whale.", genres: ["Adventure"], status: "completed", chapters: chaps("moby-dick", 3) },
   { id: "treasure-island", title: "Treasure Island", author: "Robert Louis Stevenson", description: "A boy, a map, and buried pirate gold.", genres: ["Adventure"], status: "completed", chapters: chaps("treasure-island") },
   { id: "war-of-the-worlds", title: "The War of the Worlds", author: "H. G. Wells", description: "Martians invade Victorian England.", genres: ["Sci-Fi", "Horror"], status: "completed", chapters: chaps("war-of-the-worlds") },
   { id: "time-machine", title: "The Time Machine", author: "H. G. Wells", description: "A traveler journeys to the far future.", genres: ["Sci-Fi", "Adventure"], status: "completed", chapters: chaps("time-machine") },
-  { id: "jekyll", title: "The Strange Case of Dr Jekyll and Mr Hyde", author: "Robert Louis Stevenson", description: "A doctor's dark experiment on his own nature.", genres: ["Horror", "Mystery"], status: "completed", chapters: chaps("jekyll") },
+  { id: "jekyll", title: "The Strange Case of Dr Jekyll and Mr Hyde", author: "Robert Louis Stevenson", description: "A doctor's dark experiment on his own nature.", genres: ["Horror", "Mystery"], tagGroups: [{ label: "Themes", kind: "theme", tags: ["dual-identity", "science-gone-wrong"] }], status: "completed", chapters: chaps("jekyll") },
   { id: "tom-sawyer", title: "The Adventures of Tom Sawyer", author: "Mark Twain", description: "Mischief along the Mississippi.", genres: ["Adventure"], status: "completed", chapters: chaps("tom-sawyer", 3) },
   { id: "huck-finn", title: "Adventures of Huckleberry Finn", author: "Mark Twain", description: "A raft journey down the great river.", genres: ["Adventure"], status: "ongoing", chapters: chaps("huck-finn", 4) },
   { id: "wuthering", title: "Wuthering Heights", author: "Emily Bronte", description: "A doomed romance on the moors.", genres: ["Gothic", "Drama"], status: "completed", chapters: chaps("wuthering") },
@@ -92,7 +94,7 @@ export const DEFAULT_CATALOG: FixtureSeries[] = [
   { id: "wizard-of-oz", title: "The Wonderful Wizard of Oz", author: "L. Frank Baum", description: "A Kansas girl swept to a magical land.", genres: ["Fantasy", "Adventure"], status: "hiatus", chapters: chaps("wizard-of-oz", 3) },
   { id: "gulliver", title: "Gulliver's Travels", author: "Jonathan Swift", description: "Voyages to strange and satirical lands.", genres: ["Adventure", "Fantasy"], status: "completed", chapters: chaps("gulliver", 4) },
   { id: "monte-cristo", title: "The Count of Monte Cristo", author: "Alexandre Dumas", description: "An innocent man's elaborate revenge.", genres: ["Adventure", "Drama"], status: "ongoing", chapters: chaps("monte-cristo", 4) },
-  { id: "hound", title: "The Hound of the Baskervilles", author: "Arthur Conan Doyle", description: "A spectral hound stalks the moors.", genres: ["Mystery", "Crime"], status: "completed", chapters: chaps("hound", 3) },
+  { id: "hound", title: "The Hound of the Baskervilles", author: "Arthur Conan Doyle", description: "A spectral hound stalks the moors.", genres: ["Mystery", "Crime"], tagGroups: [{ label: "Themes", kind: "theme", tags: ["detective", "moors"] }, { label: "Audience", kind: "demographic", tags: ["Adult"] }], status: "completed", chapters: chaps("hound", 3) },
   { id: "turn-of-the-screw", title: "The Turn of the Screw", author: "Henry James", description: "A governess and two unsettling children.", genres: ["Horror", "Gothic"], status: "hiatus", chapters: chaps("turn-of-the-screw") },
 ];
 
@@ -229,6 +231,14 @@ export class FixtureBackend {
         `<div class="status">${esc(s.status)}</div>` +
         `<p class="description">${esc(s.description)}</p>` +
         `<ul class="genres">${s.genres.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>` +
+        (s.tagGroups ?? [])
+          .map(
+            (grp) =>
+              `<ul class="tag-group" data-label="${esc(grp.label)}"${grp.kind ? ` data-kind="${esc(grp.kind)}"` : ""}>` +
+              grp.tags.map((t) => `<li>${esc(t)}</li>`).join("") +
+              `</ul>`,
+          )
+          .join("") +
         `<ul class="chapters">${chapters}</ul>` +
         `</article>`,
     );

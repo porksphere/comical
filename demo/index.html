@@ -46,6 +46,10 @@
     .detail-head { display: flex; gap: 1rem; margin-bottom: 1rem; }
     #detail-cover { width: 120px; height: 180px; object-fit: cover; border-radius: 6px; background: #333; flex-shrink: 0; }
     #detail-genres { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+    .tag-group { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.4rem; }
+    .tag-group-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #777; margin-right: 0.25rem; }
+    .chip.tag { color: #8ab4f8; border-color: #2c4060; }
+    .chip.tag::before { content: "#"; opacity: 0.6; }
     #detail-description { font-size: 0.88rem; line-height: 1.5; color: #ccc; margin: 0; }
     #chapters { list-style: none; padding: 0; margin: 0; }
     #chapters li { padding: 0.4rem 0; border-bottom: 1px solid #2a2a2e; font-size: 0.88rem; cursor: pointer; }
@@ -105,6 +109,7 @@
       <img id="detail-cover" alt="" />
       <div>
         <div class="genres" id="detail-genres"></div>
+        <div id="detail-taggroups"></div>
         <p class="description" id="detail-description"></p>
       </div>
     </div>

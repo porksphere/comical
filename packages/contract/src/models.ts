@@ -27,6 +27,23 @@ export const seriesEntrySchema = z.object({
 });
 export type SeriesEntry = z.infer<typeof seriesEntrySchema>;
 
+/** Optional semantic hint so hosts that care can treat a group specially; free-form `label` drives display. */
+export const tagKindSchema = z.enum(["genre", "theme", "demographic", "format", "content-warning", "other"]);
+export type TagKind = z.infer<typeof tagKindSchema>;
+
+/**
+ * A labeled group of series tags. Sites categorize differently (genres / themes / demographics /
+ * format / content-warnings / free-form tags); a bridge surfaces each grouping faithfully. `genres`
+ * remains the one normalized axis on `SeriesInfo`; everything else lives here.
+ */
+export const tagGroupSchema = z.object({
+  /** Display label, e.g. "Themes", "Demographics", "Content Warnings". */
+  label: z.string().min(1),
+  kind: tagKindSchema.optional(),
+  tags: z.array(z.string()),
+});
+export type TagGroup = z.infer<typeof tagGroupSchema>;
+
 /** Full detail for a single series. */
 export const seriesInfoSchema = z.object({
   id: z.string().min(1),
@@ -36,6 +53,8 @@ export const seriesInfoSchema = z.object({
   artist: z.string().optional(),
   description: z.string().optional(),
   genres: z.array(z.string()).optional(),
+  /** Other site taxonomies beyond genres (themes, demographics, format, content warnings, …). */
+  tagGroups: z.array(tagGroupSchema).optional(),
   status: seriesStatusSchema.optional(),
   languages: z.array(z.string()).optional(),
 });

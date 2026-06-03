@@ -24,6 +24,8 @@ import {
   type SettingDescriptor,
   type SortOption,
   type SortSelection,
+  type TagGroup,
+  type TagKind,
   defineBridge,
   defineSettings,
 } from "@comical/sdk";
@@ -190,11 +192,23 @@ class ExampleBridge extends BridgeBase<Settings> {
     const statusText = article.find(".status").first().text().trim().toLowerCase();
     const status: SeriesStatus = (STATUSES.has(statusText) ? statusText : "unknown") as SeriesStatus;
     const cover = article.find("img.cover").first().attr("src");
-    const genres = article
-      .find("ul.genres > li")
+    const liText = (selector: string): string[] =>
+      article.find(selector).toArray().map((el) => $(el).text().trim()).filter(Boolean);
+    const genres = liText("ul.genres > li");
+    const tagGroups: TagGroup[] = article
+      .find("ul.tag-group")
       .toArray()
-      .map((el) => $(el).text().trim())
-      .filter(Boolean);
+      .map((el) => {
+        const node = $(el);
+        const group: TagGroup = {
+          label: node.attr("data-label") ?? "Tags",
+          tags: node.find("li").toArray().map((li) => $(li).text().trim()).filter(Boolean),
+        };
+        const kind = node.attr("data-kind");
+        if (kind) group.kind = kind as TagKind;
+        return group;
+      })
+      .filter((g) => g.tags.length > 0);
 
     const info: SeriesInfo = {
       id: seriesId,
@@ -207,6 +221,7 @@ class ExampleBridge extends BridgeBase<Settings> {
     if (description) info.description = description;
     if (cover) info.thumbnailUrl = this.resolve(this.base(), cover);
     if (genres.length > 0) info.genres = genres;
+    if (tagGroups.length > 0) info.tagGroups = tagGroups;
     return info;
   }
 

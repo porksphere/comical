@@ -25,7 +25,8 @@ interface BridgeInfo { id: string; name: string; capabilities: string[] }
 interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values: Record<string, string | number | boolean | string[]>; secretsSet: string[]; missingRequired: string[]; configured: boolean }
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
-interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; artist?: string; status?: string; description?: string; genres?: string[]; languages?: string[] }
+interface TagGroup { label: string; kind?: string; tags: string[] }
+interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; artist?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[] }
 interface Chapter { id: string; name: string; number?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
@@ -397,6 +398,7 @@ async function showDetail(seriesId: string): Promise<void> {
   $("#detail-title").textContent = "Loading…";
   $("#detail-meta").textContent = "";
   $("#detail-genres").innerHTML = "";
+  $("#detail-taggroups").innerHTML = "";
   $("#detail-description").textContent = "";
   ($("#detail-cover") as HTMLImageElement).style.display = "none";
   $("#chapters").innerHTML = "";
@@ -426,6 +428,14 @@ async function showDetail(seriesId: string): Promise<void> {
     };
   }
   $("#detail-genres").innerHTML = (info.genres ?? []).map((g) => `<span class="chip">${esc(g)}</span>`).join("");
+  $("#detail-taggroups").innerHTML = (info.tagGroups ?? [])
+    .map(
+      (grp) =>
+        `<div class="tag-group"><span class="tag-group-label">${esc(grp.label)}</span>` +
+        grp.tags.map((t) => `<span class="chip tag">${esc(t)}</span>`).join("") +
+        `</div>`,
+    )
+    .join("");
   $("#detail-description").textContent = info.description ?? "";
 
   const ul = $("#chapters");
