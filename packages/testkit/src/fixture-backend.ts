@@ -218,7 +218,7 @@ export class FixtureBackend {
     const chapters = s.chapters
       .map(
         (c) =>
-          `<li class="chapter" data-id="${esc(c.id)}" data-number="${c.number}">` +
+          `<li class="chapter" data-id="${esc(c.id)}" data-number="${c.number}" data-pages="${c.pages}">` +
           `<a href="/series/${esc(s.id)}/chapter/${esc(c.id)}">${esc(c.name)}</a></li>`,
       )
       .join("");

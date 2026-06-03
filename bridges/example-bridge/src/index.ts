@@ -237,6 +237,8 @@ class ExampleBridge extends BridgeBase<Settings> {
         };
         const number = Number(node.attr("data-number"));
         if (Number.isFinite(number)) chapter.number = number;
+        const pageCount = Number(node.attr("data-pages"));
+        if (Number.isFinite(pageCount) && pageCount > 0) chapter.pageCount = pageCount;
         return chapter;
       })
       .filter((c) => c.id.length > 0);

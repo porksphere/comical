@@ -27,7 +27,7 @@ interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: s
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
 interface TagGroup { label: string; kind?: string; tags: string[] }
 interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; artist?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[] }
-interface Chapter { id: string; name: string; number?: number }
+interface Chapter { id: string; name: string; number?: number; pageCount?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
 interface SeriesList { id: string; name: string; layout?: string; featured?: boolean; searchable?: boolean }
@@ -441,7 +441,7 @@ async function showDetail(seriesId: string): Promise<void> {
   const ul = $("#chapters");
   for (const ch of chapters) {
     const li = document.createElement("li");
-    li.textContent = ch.name;
+    li.textContent = ch.pageCount ? `${ch.name} · ${ch.pageCount}p` : ch.name;
     li.onclick = async () => {
       const pagesEl = $("#pages");
       pagesEl.innerHTML = "<p>Loading pages…</p>";

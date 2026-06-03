@@ -68,7 +68,11 @@ export const chapterSchema = z.object({
   number: z.number().optional(),
   volume: z.number().optional(),
   languageCode: z.string().optional(),
-  scanlator: z.string().optional(),
+  /** The party that produced this version (translation team, publisher, …); disambiguates when a
+   *  site carries multiple versions of the same chapter number. Content-neutral by design. */
+  group: z.string().optional(),
+  /** Number of pages, when the backend exposes it without opening the chapter. */
+  pageCount: z.number().int().nonnegative().optional(),
   /** Publication time as epoch milliseconds. */
   publishedAt: z.number().int().optional(),
 });
