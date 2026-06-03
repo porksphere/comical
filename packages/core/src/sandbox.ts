@@ -13,8 +13,6 @@ import { BridgeLoadError } from "./errors.ts";
 import type { BundleEvaluator, EvaluatorResult } from "./evaluator.ts";
 import { buildBridgeGlobals } from "./globals.ts";
 
-export { buildBridgeGlobals };
-
 /** A CJS module object the bundle writes its exports onto. */
 interface ModuleShim {
   exports: Record<string, unknown>;

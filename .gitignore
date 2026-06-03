@@ -12,6 +12,10 @@ demo/.out/
 **/.tmp-registry/
 .comical-demo/
 
+# Generated native runtime bundles — built by `bun run build:native` (and in CI), never committed.
+packages/host-ios/Sources/ComicalHostIOS/Resources/harness.js
+packages/host-android/src/main/assets/comical_harness.js
+
 # Isolated dev sandbox — bridges targeting specific real sites are NEVER committed
 # (preserves the content-neutral posture). Build/test them here only.
 sandbox/

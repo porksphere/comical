@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      - name: Build bridges
+        run: bun run build
+
+      # Generated runtime assets (gitignored): produced here, not committed. This is the build
+      # step native (iOS/Android) packaging would run before bundling the asset into the app.
+      - name: Build native runtime
+        run: bun run build:native

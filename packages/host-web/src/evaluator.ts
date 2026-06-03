@@ -15,9 +15,9 @@
  * The Worker-based evaluator (future hardening) provides cross-realm isolation in the browser.
  */
 import type { LogCapability } from "@comical/contract";
-import type { BundleEvaluator, EvaluatorResult } from "@comical/core";
-import { buildBridgeGlobals } from "@comical/core";
-import { BridgeLoadError } from "@comical/core";
+import type { BundleEvaluator, EvaluatorResult } from "@comical/core/evaluator";
+import { buildBridgeGlobals } from "@comical/core/globals";
+import { BridgeLoadError } from "@comical/core/errors";
 
 /** Browser globals to shadow (pass undefined) so the bridge can't reach them directly. */
 const SHADOWED_GLOBALS = [

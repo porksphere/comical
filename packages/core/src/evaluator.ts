@@ -8,8 +8,12 @@
  *   - iOS:       JavaScriptCore JSContext (M3)
  *   - Android:   QuickJS runtime (M3)
  *
- * `loadBridge` accepts an optional `evaluator`; when omitted it defaults to `NodeVmEvaluator`.
- * Swapping the evaluator is the only change needed to port the loader to a new engine.
+ * `loadBridge` accepts an optional `evaluator`; when omitted it uses the registered default
+ * (`NodeVmEvaluator`, wired by the core barrel). Swapping the evaluator is the only change needed
+ * to port the loader to a new engine.
+ *
+ * This module is pure types (no `node:vm`), so non-Node targets can import it freely.
+ * `NodeVmEvaluator` itself is exported from `./sandbox.ts` (and re-exported by the core barrel).
  */
 import type { LogCapability } from "@comical/contract";
 
@@ -20,10 +24,3 @@ export interface EvaluatorResult {
 export interface BundleEvaluator {
   evaluate(code: string, log: LogCapability): EvaluatorResult;
 }
-
-/**
- * Bun/Node evaluator: uses `node:vm` createContext for genuine cross-realm isolation.
- * `require`, `process`, `fetch`, `Bun`, and the filesystem are absent from the fresh realm;
- * only the curated global allow-list is injected.
- */
-export { NodeVmEvaluator } from "./sandbox.ts";

@@ -4,7 +4,11 @@
   "type": "module",
   "description": "Portable runtime: bridge loader, sandbox, gated capabilities, validation",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./loader": "./src/loader.ts",
+    "./globals": "./src/globals.ts",
+    "./evaluator": "./src/evaluator.ts",
+    "./errors": "./src/errors.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {

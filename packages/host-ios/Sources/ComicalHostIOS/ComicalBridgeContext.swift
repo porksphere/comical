@@ -1,14 +1,25 @@
 /**
  * ComicalBridgeContext — the iOS JSC evaluator and host adapter.
  *
- * Wraps a JavaScriptCore `JSContext`, evaluates the harness.js runtime shim, then loads and
- * runs a bridge bundle. Injects native Swift callbacks for network (URLSession), storage
- * (FileManager), and logging (os.log) as JSC globals before calling `comical_init`.
+ * The host context A evaluates `harness.js` — the bundled @comical/host-native runtime (core +
+ * glue). `comical_init` runs the bridge through @comical/core's `loadBridge`, which uses the
+ * NativeContextEvaluator: it calls back into `__comical_native_eval(code)` (injected below), which
+ * evaluates the bridge bundle in a SEPARATE child `JSContext` (context B) sharing this VM. Because
+ * B has its own fresh global object holding only the curated allow-list + the host object, a
+ * bridge's `eval`/`Function` can only reach B — never the app. This is real realm isolation,
+ * stronger than the old `new Function` shim.
+ *
+ * Injects native Swift callbacks for network (URLSession), storage (FileManager), and logging
+ * (os.log) into context A; the bundled runtime wraps them into core's HostCapabilities.
  *
  * Usage:
  *   let ctx = try ComicalBridgeContext(bridgeBundle: bundleCode, settings: ["baseUrl": "https://…"])
  *   let info  = ctx.bridgeInfo                             // BridgeInfo (Decodable)
  *   let items = try await ctx.call("getSearchResults", args: ["naruto", 1])
+ *
+ * ⚠️ UNVERIFIED: the separate-context evaluator and curated-global polyfills below have NOT been
+ * compiled or run on a device/simulator yet. See `// TODO(device)` markers. The JS layer
+ * (@comical/host-native) is tested under Bun; the native wiring is validated on-device later.
  */
 import Foundation
 import JavaScriptCore
@@ -40,6 +51,10 @@ public final class ComicalBridgeContext {
         // Inject native callbacks before evaluating the harness.
         try injectNativeCallbacks()
 
+        // Inject the separate-context bundle evaluator (`__comical_native_eval`) that
+        // @comical/core's NativeContextEvaluator calls. Must exist before `comical_init`.
+        injectBundleEvaluator()
+
         // Evaluate the harness shim (bundled resource).
         guard let harnessURL = Bundle.module.url(forResource: "harness", withExtension: "js"),
               let harnessCode = try? String(contentsOf: harnessURL, encoding: .utf8)
@@ -65,6 +80,12 @@ public final class ComicalBridgeContext {
         public let languages: [String]
         public let nsfw: Bool
         public let capabilities: [String]
+        public let rateLimit: RateLimit?
+
+        public struct RateLimit: Decodable {
+            public let maxConcurrent: Int?
+            public let minIntervalMs: Int?
+        }
     }
 
     public var bridgeInfo: BridgeInfo? {
@@ -181,6 +202,94 @@ public final class ComicalBridgeContext {
         js.setObject(nativeSet,  forKeyedSubscript: "_native_storage_set"    as NSString)
         js.setObject(nativeDel,  forKeyedSubscript: "_native_storage_delete" as NSString)
         js.setObject(nativeKeys, forKeyedSubscript: "_native_storage_keys"   as NSString)
+    }
+
+    // MARK: - Separate-context bundle evaluator  ⚠️ UNVERIFIED (device test pending)
+
+    // Live timers for the curated `setTimeout`, retained until they fire or are cleared.
+    private var timers: [Int: JSValue] = [:]
+    private var timerSeq = 0
+
+    /// Injects `__comical_native_eval(code)` into context A. It evaluates a CJS bridge bundle in a
+    /// fresh child `JSContext` (context B) sharing this `JSVirtualMachine`, so B has its own global
+    /// object (no app globals — a bridge's eval/Function reach only B). Returns the bundle's
+    /// `module.exports` as a JSValue, usable from context A because they share the VM.
+    private func injectBundleEvaluator() {
+        let vm = js.virtualMachine
+        let nativeEval: @convention(block) (String) -> JSValue? = { [weak self] code in
+            guard let self, let b = JSContext(virtualMachine: vm) else { return nil }
+            b.exceptionHandler = { [weak self] _, exc in
+                self?.log.error("bridge context: \(exc?.toString() ?? "unknown")")
+            }
+            self.bootstrapCuratedGlobals(in: b)
+            // CJS shim: provide module/exports, evaluate the bundle, return module.exports.
+            let wrapped = "(function(){var module={exports:{}};var exports=module.exports;\n"
+                + code + "\n;return module.exports;})()"
+            return b.evaluateScript(wrapped)
+        }
+        js.setObject(nativeEval, forKeyedSubscript: "__comical_native_eval" as NSString)
+    }
+
+    /// Curated globals for a bridge context B. Mirrors `buildBridgeGlobals`
+    /// (packages/core/src/globals.ts) — keep this allow-list in lockstep with that file.
+    private func bootstrapCuratedGlobals(in ctx: JSContext) {
+        let log = self.log
+
+        // console → host log
+        let consoleLog: @convention(block) (String, String) -> Void = { level, msg in
+            switch level {
+            case "debug": log.debug("\(msg)")
+            case "warn":  log.warning("\(msg)")
+            case "error": log.error("\(msg)")
+            default:      log.info("\(msg)")
+            }
+        }
+        ctx.setObject(consoleLog, forKeyedSubscript: "__comical_log" as NSString)
+
+        // setTimeout / clearTimeout backed by the run loop (the rate limiter needs real timers).
+        let setTimeoutBlock: @convention(block) (JSValue, Double) -> Int = { [weak self] fn, ms in
+            guard let self else { return 0 }
+            self.timerSeq += 1
+            let id = self.timerSeq
+            self.timers[id] = fn
+            DispatchQueue.main.asyncAfter(deadline: .now() + ms / 1000.0) { [weak self] in
+                guard let self, self.timers[id] != nil else { return }
+                self.timers[id] = nil
+                fn.call(withArguments: [])
+            }
+            return id
+        }
+        let clearTimeoutBlock: @convention(block) (Int) -> Void = { [weak self] id in
+            self?.timers[id] = nil
+        }
+        ctx.setObject(setTimeoutBlock, forKeyedSubscript: "setTimeout" as NSString)
+        ctx.setObject(clearTimeoutBlock, forKeyedSubscript: "clearTimeout" as NSString)
+
+        // atob / btoa
+        let atobBlock: @convention(block) (String) -> String = { s in
+            guard let d = Data(base64Encoded: s) else { return "" }
+            return String(data: d, encoding: .utf8) ?? ""
+        }
+        let btoaBlock: @convention(block) (String) -> String = { s in
+            (s.data(using: .utf8) ?? Data()).base64EncodedString()
+        }
+        ctx.setObject(atobBlock, forKeyedSubscript: "atob" as NSString)
+        ctx.setObject(btoaBlock, forKeyedSubscript: "btoa" as NSString)
+
+        // JS-implementable globals + the console wrapper.
+        // TODO(device): URL, URLSearchParams, TextEncoder, TextDecoder are NOT built into JSC —
+        // bundle real polyfills and evaluate them here, or bridges using them throw ReferenceError.
+        ctx.evaluateScript("""
+        var console = {
+          log:   (...a) => __comical_log("info",  a.join(" ")),
+          info:  (...a) => __comical_log("info",  a.join(" ")),
+          debug: (...a) => __comical_log("debug", a.join(" ")),
+          warn:  (...a) => __comical_log("warn",  a.join(" ")),
+          error: (...a) => __comical_log("error", a.join(" ")),
+        };
+        var queueMicrotask = (cb) => { Promise.resolve().then(cb); };
+        var structuredClone = (v) => JSON.parse(JSON.stringify(v));
+        """)
     }
 
     // MARK: - URLSession

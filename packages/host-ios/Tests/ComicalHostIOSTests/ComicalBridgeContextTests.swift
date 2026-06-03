@@ -7,6 +7,11 @@
  *
  * The bridge bundle used here is a minimal synthetic CJS bundle (not the real example-bridge)
  * so these tests have no external dependencies.
+ *
+ * The context now drives @comical/core (loadBridge + the separate-context evaluator), so loading
+ * also enforces contract-version compatibility, settings, call timeouts, and rate limiting —
+ * `testFetchIsUnavailableToBridgeCode` is satisfied by context B's fresh global; the new
+ * `testIncompatibleContractVersionThrows` covers the contract check core adds.
  */
 import XCTest
 @testable import ComicalHostIOS
@@ -110,5 +115,21 @@ final class ComicalBridgeContextTests: XCTestCase {
         XCTAssertThrowsError(
             try ComicalBridgeContext(bridgeBundle: "not a module at all }{")
         )
+    }
+
+    // Core rejects a bridge that targets an incompatible contract version (enforced at load now
+    // that the context routes through @comical/core).
+    func testIncompatibleContractVersionThrows() {
+        let bundle = """
+        module.exports = { default: function(host) { return {
+          info: { id: "t", name: "T", version: "0", contractVersion: "999.0.0",
+                  languages: ["en"], nsfw: false, capabilities: ["search"] },
+          getSeriesDetails: async function(id) { return { id: id, title: id }; },
+          getChapters: async function() { return []; },
+          getChapterPages: async function() { return []; },
+          getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
+        }; } };
+        """
+        XCTAssertThrowsError(try ComicalBridgeContext(bridgeBundle: bundle))
     }
 }

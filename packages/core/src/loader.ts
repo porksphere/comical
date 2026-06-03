@@ -36,8 +36,19 @@ import {
 import type { BundleEvaluator } from "./evaluator.ts";
 import { createGatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
 import type { RateLimitOptions } from "./net/rate-limiter.ts";
-import { evaluateBundle, NodeVmEvaluator } from "./sandbox.ts";
 import { resolveSettings } from "./settings.ts";
+
+/**
+ * The evaluator used when a caller doesn't pass one. Registered by the Node entry (`index.ts`,
+ * which wires `NodeVmEvaluator`) so that importing the core barrel keeps the zero-config default.
+ * Non-Node hosts import the node-free `@comical/core/loader` subpath and pass their own evaluator,
+ * so they never pull `node:vm`.
+ */
+let defaultEvaluatorFactory: ((evalTimeoutMs: number) => BundleEvaluator) | undefined;
+
+export function setDefaultEvaluator(factory: (evalTimeoutMs: number) => BundleEvaluator): void {
+  defaultEvaluatorFactory = factory;
+}
 
 /** Boundary schema for the search options bag (filters + sort). */
 const searchOptionsSchema = z.object({
@@ -76,9 +87,9 @@ export interface LoadBridgeOptions {
   limits?: Partial<RuntimeLimits>;
   network?: GatedNetworkOptions;
   /**
-   * The JS engine used to evaluate the bridge bundle. Defaults to `NodeVmEvaluator` (node:vm).
-   * Supply a platform-specific evaluator for browser (FunctionEvaluator), iOS (JSC), or
-   * Android (QuickJS) hosts.
+   * The JS engine used to evaluate the bridge bundle. Defaults to the registered default
+   * (`NodeVmEvaluator`, wired when the `@comical/core` barrel is imported). Supply a
+   * platform-specific evaluator for browser (FunctionEvaluator) or native (JSC/QuickJS) hosts.
    */
   evaluator?: BundleEvaluator;
   /** Override the runtime contract version (testing). Defaults to CONTRACT_VERSION. */
@@ -93,7 +104,13 @@ export function loadBridge(opts: LoadBridgeOptions): LoadedBridge {
   const runtimeVersion = opts.runtimeContractVersion ?? CONTRACT_VERSION;
 
   // 1. Evaluate the bundle in isolation and extract the factory.
-  const evaluator = opts.evaluator ?? new NodeVmEvaluator(limits.evalTimeoutMs);
+  const evaluator = opts.evaluator ?? defaultEvaluatorFactory?.(limits.evalTimeoutMs);
+  if (!evaluator) {
+    throw new BridgeLoadError(
+      "no bundle evaluator: pass `evaluator` to loadBridge, or import from `@comical/core` " +
+        "(which registers the Node default), or call setDefaultEvaluator().",
+    );
+  }
   const { exports } = evaluator.evaluate(opts.code, opts.capabilities.log);
   const factory = extractFactory(exports);
 

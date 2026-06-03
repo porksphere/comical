@@ -1,17 +1,27 @@
 /**
  * ComicalBridgeContext — the Android QuickJS evaluator and host adapter.
  *
- * Wraps a QuickJS runtime, evaluates the harness.js shim (bundled in assets), then loads and
- * runs a CJS bridge bundle. Injects native Kotlin callbacks for network (OkHttp), storage
- * (DataStore), and logging (Android Log) before calling `comical_init`.
+ * Context A evaluates `comical_harness.js` — the bundled @comical/host-native runtime (core +
+ * glue). `comical_init` runs the bridge through @comical/core's `loadBridge` + NativeContextEvaluator,
+ * which calls `__comical_native_eval(code)` to evaluate the bundle in a SEPARATE QuickJS context B
+ * (its own global → a bridge's eval/Function can't reach the app; eval intrinsic omitted).
  *
- * QuickJS is used rather than V8 or Hermes: at ~1 MB it adds the least to APK size, supports
- * ES2020, and runs our engine-agnostic bridge bundles without modification.
+ * Injects native Kotlin callbacks for network (OkHttp), storage (DataStore), and logging
+ * (Android Log); the bundled runtime's async adapter wraps them into core's HostCapabilities.
+ *
+ * QuickJS is used rather than V8 or Hermes: at ~1 MB it adds the least to APK size and supports
+ * ES2020.
  *
  * Usage:
  *   val ctx = ComicalBridgeContext(context, bundleCode, mapOf("baseUrl" to "https://…"))
  *   val info = ctx.bridgeInfo          // BridgeInfo (data class)
  *   val result = ctx.call("getSearchResults", listOf("naruto", 1))
+ *
+ * ⚠️ UNVERIFIED + INCOMPLETE: `__comical_native_eval` is a documented stub. The dokar/quickjs-kt
+ * binding doesn't expose a second JSContext within the runtime, nor a way to return a JS object
+ * (the bundle's exports, which hold functions) from a Kotlin function — both are required for the
+ * separate-context evaluator. Per the "native-context only" decision (no `new Function` fallback),
+ * loading a bridge currently throws until that binding support exists. See `injectBundleEvaluator`.
  */
 package dev.comical.host
 
@@ -43,8 +53,11 @@ data class BridgeInfo(
     val contractVersion: String,
     val languages: List<String>,
     val nsfw: Boolean,
-    val capabilities: List<String>
-)
+    val capabilities: List<String>,
+    val rateLimit: RateLimit? = null
+) {
+    data class RateLimit(val maxConcurrent: Int?, val minIntervalMs: Int?)
+}
 
 class ComicalError(message: String) : Exception(message)
 
@@ -68,6 +81,7 @@ class ComicalBridgeContext(
 
         js = QuickJs.create()
         injectNativeCallbacks()
+        injectBundleEvaluator()
 
         // Evaluate the harness shim from assets.
         val harness = androidContext.assets.open("comical_harness.js").bufferedReader().readText()
@@ -97,6 +111,12 @@ class ComicalBridgeContext(
             nsfw = obj.getBoolean("nsfw"),
             capabilities = (0 until obj.getJSONArray("capabilities").length()).map {
                 obj.getJSONArray("capabilities").getString(it)
+            },
+            rateLimit = obj.optJSONObject("rateLimit")?.let { rl ->
+                BridgeInfo.RateLimit(
+                    maxConcurrent = if (rl.has("maxConcurrent")) rl.getInt("maxConcurrent") else null,
+                    minIntervalMs = if (rl.has("minIntervalMs")) rl.getInt("minIntervalMs") else null
+                )
             }
         )
     }
@@ -183,6 +203,36 @@ class ComicalBridgeContext(
         }
         js.asyncFunction("_native_storage_keys") { _: Array<Any?> ->
             JSONArray(readStorage().keys.toList()).toString()
+        }
+    }
+
+    // MARK: - Separate-context bundle evaluator  ⚠️ UNVERIFIED + INCOMPLETE
+
+    /**
+     * Registers `__comical_native_eval(code)`, which @comical/core's NativeContextEvaluator calls to
+     * evaluate a bridge bundle in an isolated context and return its `module.exports`.
+     *
+     * Intended implementation (pending QuickJS binding support):
+     *   1. Create a SECOND JSContext within this JSRuntime, WITHOUT the eval intrinsic
+     *      (`JS_AddIntrinsicEval` is opt-in) so bridges can't eval/Function-construct at runtime.
+     *   2. Inject curated globals — mirror `buildBridgeGlobals` (packages/core/src/globals.ts):
+     *      console→_native_log, setTimeout/clearTimeout (Handler-backed), atob/btoa, queueMicrotask,
+     *      structuredClone, and polyfills for URL/URLSearchParams/TextEncoder/TextDecoder.
+     *   3. Evaluate the CJS bundle in context B via the engine eval API and return its
+     *      `module.exports` as a JS object handle usable from context A (same JSRuntime → values cross).
+     *
+     * The current dokar/quickjs-kt binding exposes neither a second context nor a way to return a JS
+     * object (the exports hold functions) from a Kotlin function — so #1 and #3 need binding work.
+     * Per the "native-context only" decision we deliberately do NOT add a same-context `new Function`
+     * fallback; loading a bridge therefore throws until that support lands.
+     */
+    private fun injectBundleEvaluator() {
+        js.function("__comical_native_eval") { _: Array<Any?> ->
+            throw ComicalError(
+                "Android separate-context evaluator not implemented: needs a second QuickJS context " +
+                    "(eval intrinsic omitted) and a JS-object return from native. See class docs. " +
+                    "(No new Function fallback, by design.)"
+            )
         }
     }
 

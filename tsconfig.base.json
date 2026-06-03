@@ -25,6 +25,11 @@
     "paths": {
       "@comical/contract": ["packages/contract/src/index.ts"],
       "@comical/core": ["packages/core/src/index.ts"],
+      "@comical/core/loader": ["packages/core/src/loader.ts"],
+      "@comical/core/globals": ["packages/core/src/globals.ts"],
+      "@comical/core/evaluator": ["packages/core/src/evaluator.ts"],
+      "@comical/core/errors": ["packages/core/src/errors.ts"],
+      "@comical/host-native": ["packages/host-native/src/index.ts"],
       "@comical/sdk": ["packages/sdk/src/index.ts"],
       "@comical/host-bun": ["packages/host-bun/src/index.ts"],
       "@comical/host-server": ["packages/host-server/src/index.ts"],

@@ -1,6 +1,12 @@
 /**
  * Unit tests for ComicalBridgeContext (Robolectric — runs on JVM, no device needed).
  * Run with: ./gradlew :host-android:test
+ *
+ * ⚠️ CURRENTLY EXPECTED TO FAIL AT LOAD: the context now routes through @comical/core via
+ * `__comical_native_eval`, which is an unimplemented stub on Android (the dokar/quickjs-kt binding
+ * can't yet create a second context or return a JS object from native — see ComicalBridgeContext).
+ * Once that binding support lands, these tests should pass and also gain a contract-version
+ * rejection case (mirroring the iOS spec). Until then, constructing the context throws by design.
  */
 package dev.comical.host
 

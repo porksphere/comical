@@ -1,0 +1,14 @@
+{
+  "name": "@comical/host-native",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Shared JS runtime bundled into the iOS (JSC) and Android (QuickJS) hosts: runs @comical/core with a native separate-context evaluator. No platform APIs — the native layer injects _native_* callbacks and __comical_native_eval.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@comical/contract": "workspace:*",
+    "@comical/core": "workspace:*"
+  }
+}

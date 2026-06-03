@@ -12,6 +12,7 @@
   "private": true,
   "scripts": {
     "build": "bun run scripts/build.ts",
+    "build:native": "bun run scripts/build-native-runtime.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "cli": "bun run packages/cli/src/index.ts",
