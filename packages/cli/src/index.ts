@@ -59,7 +59,7 @@ Usage:
   comical registry update <bridgeId>             update an installed bridge
   comical registry uninstall <bridgeId>          uninstall a registry bridge
   comical registry updates                       check for available updates
-  comical registry publish --base-url URL --out DIR [--key FILE]   generate index.json
+  comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR]   generate index.json
   comical registry keygen --out FILE             generate an Ed25519 keypair
 
 Options:
@@ -74,6 +74,7 @@ Options:
   --token SECRET      Bearer token for \`comical serve\`
   --base-url URL      Base URL for \`registry publish\` (e.g. https://me.github.io/bridges)
   --out DIR           Output directory for \`registry publish\`
+  --bridges-dir DIR   Bridges dir to publish from (external bridge repos); defaults to this repo's
   --key FILE          Path to private key file for \`registry publish\`
   --query Q           Search query for the \`evaluate\` probe
   --strict            \`evaluate\`: treat warnings as failures (non-zero exit)
@@ -125,6 +126,7 @@ async function main(): Promise<number> {
       scenario: { type: "string", multiple: true },
       strict: { type: "boolean" },
       "base-url": { type: "string" },
+      "bridges-dir": { type: "string" },
       out: { type: "string" },
       key: { type: "string" },
       fixture: { type: "boolean" },
@@ -261,6 +263,7 @@ async function main(): Promise<number> {
       const outDir = requireArg(values.out, "out");
       const pubOpts: PublishOpts = { baseUrl, outDir };
       if (values.key) pubOpts.keyFile = values.key;
+      if (values["bridges-dir"]) pubOpts.bridgesDir = values["bridges-dir"];
       await publishRegistry(pubOpts);
       return 0;
     }
@@ -460,9 +463,11 @@ interface PublishOpts {
   baseUrl: string;
   outDir: string;
   keyFile?: string;
+  /** Where built bridges live; defaults to this repo's bridges/. External bridge repos pass their own. */
+  bridgesDir?: string;
 }
 
-async function publishRegistry({ baseUrl, outDir, keyFile }: PublishOpts): Promise<void> {
+async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir }: PublishOpts): Promise<void> {
   const { mkdirSync, readFileSync, copyFileSync } = await import("node:fs");
   const { join: pjoin } = await import("node:path");
 
@@ -474,8 +479,8 @@ async function publishRegistry({ baseUrl, outDir, keyFile }: PublishOpts): Promi
     publicKey = pair.publicKey;
   }
 
-  const bridges = discoverBridges(BRIDGES_DIR);
-  if (bridges.length === 0) throw new Error("no built bridges found — run `bun run build` first");
+  const bridges = discoverBridges(bridgesDir ?? BRIDGES_DIR);
+  if (bridges.length === 0) throw new Error("no built bridges found — run the build first");
 
   mkdirSync(outDir, { recursive: true });
 
