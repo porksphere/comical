@@ -1,7 +1,8 @@
 /**
  * A minimal cookie jar: stores cookies per host and replays them on same-host requests.
- * Intentionally simple (no path/expiry/secure semantics) — enough for typical session cookies a
- * backend sets. Hosts that need full RFC 6265 behaviour can supply their own implementation.
+ * Intentionally simple (no path/expiry/secure semantics) — enough for the session cookies a backend
+ * sets after login. Lives in the gated network so every host gets uniform session handling; a host
+ * with stricter needs can still attach cookies itself.
  */
 export class CookieJar {
   private readonly byHost = new Map<string, Map<string, string>>();
@@ -16,7 +17,7 @@ export class CookieJar {
   }
 
   /** Record `Set-Cookie` header values returned for `url`. */
-  store(url: string, setCookies: string[]): void {
+  store(url: string, setCookies: readonly string[]): void {
     const host = hostOf(url);
     if (!host || setCookies.length === 0) return;
     const jar = this.byHost.get(host) ?? new Map<string, string>();

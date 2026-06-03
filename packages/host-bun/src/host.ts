@@ -1,11 +1,11 @@
 /**
- * Assembles a full `HostCapabilities` for the Bun/desktop runtime: native network (+ cookie jar),
- * filesystem or in-memory storage namespaced per bridge, a console logger, and the user-supplied
- * settings (backend URL, credentials) for the bridge being loaded.
+ * Assembles a full `HostCapabilities` for the Bun/desktop runtime: native network, filesystem or
+ * in-memory storage namespaced per bridge, a console logger, and the user-supplied settings (backend
+ * URL, credentials) for the bridge being loaded. The cookie jar / session state lives in core's
+ * gated network, so this host just reports Set-Cookie via the raw network.
  */
 import { join } from "node:path";
 import type { HostCapabilities, LogCapability, ResolvedSettings } from "@comical/contract";
-import { CookieJar } from "./cookie-jar.ts";
 import { createBunNetwork } from "./network.ts";
 import { FileStorage, MemoryStorage } from "./storage.ts";
 
@@ -28,9 +28,8 @@ export const consoleLog: LogCapability = {
 };
 
 export function createBunHost(opts: BunHostOptions): HostCapabilities {
-  const cookieJar = new CookieJar();
   const network = createBunNetwork(
-    opts.userAgent !== undefined ? { cookieJar, userAgent: opts.userAgent } : { cookieJar },
+    opts.userAgent !== undefined ? { userAgent: opts.userAgent } : {},
   );
   const storage =
     opts.dataDir !== undefined

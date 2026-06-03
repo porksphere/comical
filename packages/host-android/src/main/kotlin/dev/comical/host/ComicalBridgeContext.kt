@@ -167,11 +167,15 @@ class ComicalBridgeContext private constructor(
             val response = withContext(Dispatchers.IO) { http.newCall(builder.build()).execute() }
             val responseHeaders = JSONObject()
             response.headers.forEach { (k, v) -> responseHeaders.put(k.lowercase(), v) }
+            // OkHttp keeps no CookieJar by default, so core's gated network owns the session;
+            // surface Set-Cookie for it to store.
+            val setCookies = response.headers("Set-Cookie")
             JSONObject().apply {
                 put("url", response.request.url.toString())
                 put("status", response.code)
                 put("statusText", response.message)
                 put("headers", responseHeaders)
+                if (setCookies.isNotEmpty()) put("setCookies", JSONArray(setCookies))
                 put("body", response.body?.string() ?: "")
             }.toString()
         }

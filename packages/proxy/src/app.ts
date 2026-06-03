@@ -49,6 +49,8 @@ export interface ForwardedResponse {
   status: number;
   statusText: string;
   headers: Record<string, string>;
+  /** Raw Set-Cookie values, surfaced separately so the core cookie jar can hold the session. */
+  setCookies?: string[];
   body: string;
 }
 
@@ -137,6 +139,9 @@ export function createProxyApp(envOrOpts: ProxyEnv | ProxyOptions = {}): Hono {
       headers: responseHeaders,
       body,
     };
+    // Set-Cookie is stripped from `headers` above; surface it separately for the core cookie jar.
+    const setCookies = upstream.headers.getSetCookie();
+    if (setCookies.length > 0) result.setCookies = setCookies;
     return c.json(result);
   });
 

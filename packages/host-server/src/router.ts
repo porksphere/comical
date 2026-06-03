@@ -332,7 +332,9 @@ async function withBridge(
   const id = c.req.param("id") as string;
   try {
     const bridge = await (c.get("manager") as BridgeManager).get(id);
-    return fn(bridge);
+    // `await` so a handler's async rejection (e.g. a bridge throwing "auth required") is caught
+    // here and returned as a clean JSON error rather than a bare 500.
+    return await fn(bridge);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.includes("not found")) return c.json({ error: msg }, 404);

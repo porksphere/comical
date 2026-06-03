@@ -306,8 +306,18 @@ public final class ComicalBridgeContext {
         let status: Int
         let statusText: String
         let headers: [String: String]
+        let setCookies: [String]?
         let body: String
     }
+
+    // Non-cookie-storing session: core's gated network owns the cookie jar, so URLSession must not
+    // keep its own (otherwise sessions would be handled twice, inconsistently with other hosts).
+    private let urlSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.httpCookieStorage = nil
+        cfg.httpShouldSetCookies = false
+        return URLSession(configuration: cfg)
+    }()
 
     private func fetchURLSession(_ req: NativeRequest) async throws -> NativeResponse {
         guard let url = URL(string: req.url) else {
@@ -318,18 +328,28 @@ public final class ComicalBridgeContext {
         req.headers?.forEach { urlReq.setValue($1, forHTTPHeaderField: $0) }
         if let body = req.body { urlReq.httpBody = body.data(using: .utf8) }
 
-        let (data, response) = try await URLSession.shared.data(for: urlReq)
+        let (data, response) = try await urlSession.data(for: urlReq)
         let http = response as! HTTPURLResponse
         let body = String(data: data, encoding: .utf8) ?? ""
         var headers: [String: String] = [:]
+        var headerFields: [String: String] = [:]
         http.allHeaderFields.forEach { k, v in
-            if let ks = k as? String, let vs = v as? String { headers[ks.lowercased()] = vs }
+            if let ks = k as? String, let vs = v as? String {
+                headers[ks.lowercased()] = vs
+                headerFields[ks] = vs
+            }
         }
+        // Surface Set-Cookie as name=value pairs for core's cookie jar (allHeaderFields combines
+        // multiple Set-Cookie lines, so parse via HTTPCookie). TODO(device): verify multi-cookie.
+        let setCookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: url)
+            .map { "\($0.name)=\($0.value)" }
+
         return NativeResponse(
             url: http.url?.absoluteString ?? req.url,
             status: http.statusCode,
             statusText: HTTPURLResponse.localizedString(forStatusCode: http.statusCode),
             headers: headers,
+            setCookies: setCookies.isEmpty ? nil : setCookies,
             body: body
         )
     }

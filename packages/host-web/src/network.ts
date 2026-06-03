@@ -21,6 +21,7 @@ interface ForwardedResponse {
   status: number;
   statusText: string;
   headers: Record<string, string>;
+  setCookies?: string[];
   body: string;
 }
 
@@ -59,13 +60,15 @@ export function createProxyNetwork(opts: ProxyNetworkOptions): NetworkCapability
       }
 
       const data = (await res.json()) as ForwardedResponse;
-      return {
+      const response: HttpResponse = {
         url: data.url,
         status: data.status,
         statusText: data.statusText,
         headers: data.headers,
         body: data.body,
       };
+      if (data.setCookies && data.setCookies.length > 0) response.setCookies = data.setCookies;
+      return response;
     },
   };
 }

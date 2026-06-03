@@ -27,6 +27,12 @@ export interface HttpResponse {
   status: number;
   statusText: string;
   headers: Record<string, string>;
+  /**
+   * Raw `Set-Cookie` header values, if any. A flat `headers` record can't represent multiple
+   * Set-Cookie lines, so hosts surface them here. The core's gated network consumes these to keep a
+   * per-bridge cookie jar (session auth) uniformly across platforms.
+   */
+  setCookies?: string[];
   /** Decoded text body. (Binary assets are referenced by URL in `Page`, never inlined.) */
   body: string;
 }

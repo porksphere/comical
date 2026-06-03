@@ -173,9 +173,14 @@ A bridge with the `favorites` capability syncs with the **backend's own account 
 `addFavorite(seriesId)` / `removeFavorite(seriesId)`. These are the contract's only **write** methods.
 
 Favorites need **auth**, but browsing is anonymous — so auth is *not* all-or-nothing gating. The
-bridge declares an optional `secret` setting (e.g. a session token) and the favorites methods throw a
-clear error when it's absent; everything else keeps working logged-out. (No OAuth — credentials are a
-user-supplied token/cookie in settings, reusing the secret-setting machinery.)
+bridge declares optional `secret` settings (a token, or a username + password) and the favorites
+methods throw a clear error when they're absent; everything else keeps working logged-out. (No OAuth.)
+
+**Cookie sessions are a core concern.** A bridge can `POST` a login and the runtime holds the session
+for it: core's gated network keeps a per-bridge **cookie jar** (attaches `Cookie`, stores
+`Set-Cookie`), and hosts merely *report* `Set-Cookie` via `HttpResponse.setCookies`. So a
+login-then-reuse flow works identically on every host that runs core (token/bearer auth needs no jar —
+the bridge keeps the token in `host.storage`).
 
 Over REST: `GET /bridges/:id/favorites?page=`, `PUT /bridges/:id/favorites/:seriesId` (add),
 `DELETE /bridges/:id/favorites/:seriesId` (remove). Via the CLI: `comical favorites`,
