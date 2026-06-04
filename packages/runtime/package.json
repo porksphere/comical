@@ -1,0 +1,15 @@
+{
+  "name": "@comical/runtime",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Host-agnostic bridge-library coordination: addToLibrary, read-sync, favorites import, background sync",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@comical/contract": "workspace:*",
+    "@comical/core": "workspace:*",
+    "@comical/library": "workspace:*"
+  }
+}

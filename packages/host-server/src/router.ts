@@ -12,6 +12,7 @@ import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } f
 import { BridgeSettingsError, validateSettingsInput } from "@comical/core";
 import { entryKey, type Library } from "@comical/library";
 import type { RegistryManager } from "@comical/registry";
+import type { ComicalRuntime } from "@comical/runtime";
 import type { BridgeManager } from "./bridge-manager.ts";
 
 export interface RouterOptions {
@@ -23,6 +24,8 @@ export interface RouterOptions {
   registry?: RegistryManager;
   /** Local library service — enables the optional `/library` tracking endpoints when provided. */
   library?: Library;
+  /** Runtime orchestration layer — required alongside `library` for read-sync and richer addToLibrary. */
+  runtime?: ComicalRuntime;
 }
 
 type Bindings = Record<string, never>;
@@ -284,6 +287,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
   // Mounted only when a Library service is supplied; cross-bridge, keyed by (bridgeId, seriesId).
 
   const lib = opts.library;
+  const runtime = opts.runtime;
   if (lib) {
     const keyOf = (c: { req: { param: (k: string) => string } }) =>
       entryKey(c.req.param("bridgeId"), c.req.param("seriesId"));
@@ -329,24 +333,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     app.post("/library/import/bridges/:id/favorites", (c) =>
       withContentBridge(c, async (bridge) => {
         if (!bridge.getFavorites) return c.json({ error: "bridge does not support favorites" }, 400);
-        const bridgeId = c.req.param("id");
-        let page = 1;
-        let imported = 0;
-        let skipped = 0;
-        while (true) {
-          const result = await bridge.getFavorites(page);
-          for (const entry of result.items) {
-            const existing = await lib.getEntry(entryKey(bridgeId, entry.id));
-            if (existing) { skipped++; continue; }
-            const snap: Parameters<Library["addSeries"]>[0] = { bridgeId, seriesId: entry.id, title: entry.title };
-            if (entry.thumbnailUrl !== undefined) snap.thumbnailUrl = entry.thumbnailUrl;
-            await lib.addSeries(snap);
-            imported++;
-          }
-          if (!result.hasNextPage) break;
-          page++;
-        }
-        return c.json({ imported, skipped });
+        return c.json(await runtime!.importBridgeFavorites(c.req.param("id")));
       }),
     );
 
@@ -357,16 +344,22 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
         author?: string; categoryIds?: string[];
         externalIds?: { anilist?: number; mal?: number; mu?: string };
       }>(c);
-      if (!b?.bridgeId || !b.seriesId || !b.title) {
-        return c.json({ error: "bridgeId, seriesId and title are required" }, 400);
+      if (!b?.bridgeId || !b.seriesId) {
+        return c.json({ error: "bridgeId and seriesId are required" }, 400);
       }
-      const snap: Parameters<Library["addSeries"]>[0] = { bridgeId: b.bridgeId, seriesId: b.seriesId, title: b.title };
-      if (b.thumbnailUrl !== undefined) snap.thumbnailUrl = b.thumbnailUrl;
-      if (b.author !== undefined) snap.author = b.author;
-      if (b.categoryIds !== undefined) snap.categoryIds = b.categoryIds;
-      if (b.externalIds !== undefined) snap.externalIds = b.externalIds;
-      const result = await lib.addSeries(snap);
-      return c.json(result, 201);
+      try {
+        const result = await runtime!.addToLibrary(b.bridgeId, b.seriesId, {
+          ...(b.title !== undefined && { title: b.title }),
+          ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
+          ...(b.author !== undefined && { author: b.author }),
+          ...(b.categoryIds !== undefined && { categoryIds: b.categoryIds }),
+          ...(b.externalIds !== undefined && { externalIds: b.externalIds }),
+        });
+        return c.json(result, 201);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
+      }
     });
 
     app.get("/library/entries/:bridgeId/:seriesId", async (c) => {
@@ -400,16 +393,22 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     app.put("/library/entries/:bridgeId/:seriesId/progress/:chapterId", async (c) => {
       const b = (await body<{ read?: boolean; lastPage?: number; pageCount?: number; chapterName?: string }>(c)) ?? {};
       const chapterId = c.req.param("chapterId");
+      const bridgeId = c.req.param("bridgeId");
+      const seriesId = c.req.param("seriesId");
       return withLibraryEntry(c, () => {
-        if (b.lastPage !== undefined) return lib.setProgress(keyOf(c), chapterId, b.lastPage, b.pageCount, b.chapterName);
-        return lib.markRead(keyOf(c), chapterId, b.read ?? true, b.chapterName);
+        if (b.lastPage !== undefined) {
+          return runtime!.setProgress(bridgeId, seriesId, chapterId, b.lastPage, b.pageCount, b.chapterName);
+        }
+        return runtime!.markRead(bridgeId, seriesId, chapterId, b.read ?? true, b.chapterName);
       });
     });
 
     app.post("/library/entries/:bridgeId/:seriesId/read-up-to", async (c) => {
       const b = await body<{ chapters?: Chapter[]; chapterId?: string }>(c);
       if (!b?.chapters || !b.chapterId) return c.json({ error: "chapters and chapterId are required" }, 400);
-      return withLibraryEntry(c, () => lib.markReadUpTo(keyOf(c), b.chapters!, b.chapterId!));
+      const bridgeId = c.req.param("bridgeId");
+      const seriesId = c.req.param("seriesId");
+      return withLibraryEntry(c, () => runtime!.markReadUpTo(bridgeId, seriesId, b.chapters!, b.chapterId!));
     });
 
     // Groups
@@ -448,6 +447,8 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       await lib.leaveGroup(keyOf(c));
       return c.json({ ok: true });
     });
+
+    app.post("/library/sync", async (c) => c.json(await runtime!.backgroundSync()));
   }
 
   // ── M4 Registry endpoints ──────────────────────────────────────────────────
