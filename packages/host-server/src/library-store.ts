@@ -10,7 +10,7 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Category, ChapterProgress, LibraryEntry, LibraryStore } from "@comical/library";
+import type { Category, ChapterProgress, LibraryEntry, LibraryStore, SeriesGroup } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -23,6 +23,7 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
 export class FileLibraryStore implements LibraryStore {
   private entriesCache?: Map<string, LibraryEntry>;
   private categoriesCache?: Category[];
+  private groupsCache?: Map<string, SeriesGroup>;
   private progressCache = new Map<string, Map<string, ChapterProgress>>();
 
   constructor(private readonly dir: string) {}
@@ -32,6 +33,9 @@ export class FileLibraryStore implements LibraryStore {
   }
   private get categoriesPath(): string {
     return join(this.dir, "categories.json");
+  }
+  private get groupsPath(): string {
+    return join(this.dir, "groups.json");
   }
   private progressPath(key: string): string {
     return join(this.dir, "progress", `${encodeURIComponent(key)}.json`);
@@ -124,5 +128,32 @@ export class FileLibraryStore implements LibraryStore {
   async deleteCategory(id: string): Promise<void> {
     this.categoriesCache = (await this.categories()).filter((c) => c.id !== id);
     await this.flushCategories();
+  }
+
+  // ── Groups ───────────────────────────────────────────────────────────────────────
+
+  private async groups(): Promise<Map<string, SeriesGroup>> {
+    if (!this.groupsCache) {
+      const obj = await readJson<Record<string, SeriesGroup>>(this.groupsPath, {});
+      this.groupsCache = new Map(Object.entries(obj));
+    }
+    return this.groupsCache;
+  }
+
+  private async flushGroups(): Promise<void> {
+    const obj = Object.fromEntries((await this.groups()).entries());
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(this.groupsPath, JSON.stringify(obj, null, 2), "utf8");
+  }
+
+  async listGroups(): Promise<SeriesGroup[]> {
+    return [...(await this.groups()).values()];
+  }
+  async putGroup(group: SeriesGroup): Promise<void> {
+    (await this.groups()).set(group.id, group);
+    await this.flushGroups();
+  }
+  async deleteGroup(id: string): Promise<void> {
+    if ((await this.groups()).delete(id)) await this.flushGroups();
   }
 }

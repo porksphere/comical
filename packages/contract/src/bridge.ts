@@ -5,6 +5,7 @@
 import type { HostCapabilities } from "./capabilities.ts";
 import type {
   BridgeInfo,
+  BridgeSeriesStatus,
   Chapter,
   Filter,
   FilterValue,
@@ -50,6 +51,19 @@ export interface Bridge {
 
   /** Flat page list for a series with no chapter structure. (capability "direct") */
   getSeriesPages?(seriesId: string): Promise<Page[]>;
+
+  // ---- Read-sync (capability "read-sync") ----
+  // Bridges that can write reading state back to their source implement these.
+  // The host calls them when local progress is recorded so the source stays in sync.
+
+  /** Push a chapter-read event to the source. (capability "read-sync") */
+  markChapterRead?(seriesId: string, chapterId: string): Promise<void>;
+
+  /** Mark a chapter unread on the source. (capability "read-sync") */
+  markChapterUnread?(seriesId: string, chapterId: string): Promise<void>;
+
+  /** Update the series reading status on the source. (capability "read-sync") */
+  setSeriesStatus?(seriesId: string, status: BridgeSeriesStatus): Promise<void>;
 
   // ---- Optional capabilities (advertise via BridgeInfo.capabilities) ----
 

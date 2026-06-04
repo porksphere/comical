@@ -26,7 +26,7 @@ interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
 interface TagGroup { label: string; kind?: string; tags: string[] }
-interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; artist?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[] }
+interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; artist?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[]; externalIds?: { anilist?: number; mal?: number; mu?: string } }
 interface Chapter { id: string; name: string; number?: number; pageCount?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
@@ -40,9 +40,11 @@ interface AvailableBridge { entry: { id: string; name: string; version: string }
 // Library (optional /library module)
 interface ProgressItem { chapterId: string; read: boolean; lastPage?: number; pageCount?: number }
 interface Category { id: string; name: string; order: number }
-interface LibEntry { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; author?: string; categoryIds: string[]; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt?: number }
+interface LibEntry { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; author?: string; categoryIds: string[]; seriesGroupId?: string; externalIds?: { anilist?: number; mal?: number; mu?: string }; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt?: number }
 interface LibEntryView extends LibEntry { unreadCount: number }
 interface HistoryItem { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt: number }
+interface SeriesGroup { id: string; title: string; primaryKey: string; memberKeys: string[]; createdAt: number }
+interface AddSeriesResult { entry: LibEntry; autoLinked?: { matchedKey: string; sharedId: { service: string; value: number | string } } }
 
 // ── DOM + API helpers ────────────────────────────────────────────────────────────
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -202,6 +204,32 @@ async function selectBridge(id: string): Promise<void> {
   if (detail.info.capabilities.includes("lists")) await loadLists();
   else { $("#list-tabs").innerHTML = ""; $("#grid").innerHTML = ""; }
   if (activeCaps.includes("favorites")) addFavoritesTab();
+
+  const importBtn = $<HTMLButtonElement>("#import-favorites-btn");
+  const importMsg = $("#import-favorites-msg");
+  if (detail.info.capabilities.includes("favorites")) {
+    importBtn.hidden = false;
+    importMsg.textContent = "";
+    importBtn.onclick = async () => {
+      importBtn.disabled = true;
+      importMsg.textContent = "Importing…";
+      importMsg.className = "muted";
+      const res = await send("POST", `/library/import/bridges/${id}/favorites`);
+      importBtn.disabled = false;
+      if (res.ok) {
+        const { imported, skipped } = res.data as { imported: number; skipped: number };
+        importMsg.textContent = `Done — ${imported} added, ${skipped} already in library.`;
+        importMsg.className = "ok";
+      } else {
+        importMsg.textContent = (res.data as { error?: string })?.error ?? `error ${res.status}`;
+        importMsg.className = "err";
+      }
+    };
+  } else {
+    importBtn.hidden = true;
+    importMsg.textContent = "";
+  }
+
   status(`Loaded "${detail.info.name}".`);
 }
 
@@ -558,11 +586,76 @@ async function refreshLibraryStatus(): Promise<void> {
     const added = (sync.data as { added?: Chapter[] }).added ?? [];
     if (added.length) { newBadge.hidden = false; newBadge.textContent = `${added.length} new`; }
     await renderCategoryPicker(detail.entry.categoryIds);
+    await renderGroupPanel(bridgeId, seriesId, detail.entry.seriesGroupId);
   } catch {
     currentSeries.inLibrary = false;
     currentSeries.progress = new Map();
     libBtn.textContent = "＋ Library";
     $("#lib-category-picker").hidden = true;
+    $("#group-panel").hidden = true;
+  }
+}
+
+async function renderGroupPanel(bridgeId: string, seriesId: string, groupId?: string): Promise<void> {
+  const panel = $("#group-panel");
+  if (!groupId) { panel.hidden = true; return; }
+  const groups = await api<SeriesGroup[]>("/library/groups").catch(() => [] as SeriesGroup[]);
+  const group = groups.find((g) => g.id === groupId);
+  if (!group) { panel.hidden = true; return; }
+  panel.hidden = false;
+  panel.innerHTML = "";
+  const heading = document.createElement("div");
+  heading.className = "muted";
+  heading.style.fontSize = "0.75rem";
+  heading.style.marginBottom = "0.35rem";
+  heading.textContent = "Sources";
+  panel.append(heading);
+  for (const key of group.memberKeys) {
+    const [bid, ...sidParts] = key.split(":");
+    const sid = sidParts.join(":");
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:0.25rem 0;";
+    const isCurrent = bid === bridgeId && sid === seriesId;
+    const isPrimary = key === group.primaryKey;
+    row.innerHTML = `<span style="font-size:0.85rem">${esc(bid ?? "")}${isPrimary ? " <span class=\"ok\" style=\"font-size:0.7rem\">primary</span>" : ""}</span>`;
+    const actions = document.createElement("span");
+    actions.style.display = "flex";
+    actions.style.gap = "0.4rem";
+    if (!isCurrent) {
+      const switchBtn = document.createElement("button");
+      switchBtn.className = "secondary";
+      switchBtn.style.fontSize = "0.75rem";
+      switchBtn.style.padding = "0.15rem 0.5rem";
+      switchBtn.textContent = "Switch";
+      switchBtn.onclick = () => void openSeries(bid ?? "", sid);
+      actions.append(switchBtn);
+    }
+    if (!isPrimary) {
+      const primaryBtn = document.createElement("button");
+      primaryBtn.className = "secondary";
+      primaryBtn.style.fontSize = "0.75rem";
+      primaryBtn.style.padding = "0.15rem 0.5rem";
+      primaryBtn.textContent = "Set primary";
+      primaryBtn.onclick = async () => {
+        await send("PUT", `/library/groups/${groupId}/primary`, { primaryKey: key });
+        await refreshLibraryStatus();
+      };
+      actions.append(primaryBtn);
+    }
+    if (isCurrent) {
+      const unlinkBtn = document.createElement("button");
+      unlinkBtn.className = "secondary";
+      unlinkBtn.style.fontSize = "0.75rem";
+      unlinkBtn.style.padding = "0.15rem 0.5rem";
+      unlinkBtn.textContent = "Unlink";
+      unlinkBtn.onclick = async () => {
+        await send("DELETE", `/library/entries/${bridgeId}/${enc(seriesId)}/leave-group`);
+        await refreshLibraryStatus();
+      };
+      actions.append(unlinkBtn);
+    }
+    row.append(actions);
+    panel.append(row);
   }
 }
 
@@ -575,12 +668,21 @@ async function toggleLibrary(): Promise<void> {
     const snap: Record<string, unknown> = { bridgeId, seriesId, title: info.title };
     if (info.thumbnailUrl) snap.thumbnailUrl = info.thumbnailUrl;
     if (info.author) snap.author = info.author;
-    await send("POST", "/library/entries", snap);
+    if (info.externalIds) snap.externalIds = info.externalIds;
+    const r = await send("POST", "/library/entries", snap);
+    if (r.ok) {
+      const result = r.data as AddSeriesResult;
+      if (result.autoLinked) {
+        const [linkedBridge] = result.autoLinked.matchedKey.split(":");
+        status(`Added and auto-linked with "${linkedBridge}" (same ${result.autoLinked.sharedId.service} id).`);
+      }
+    }
     await send("POST", `/library/entries/${bridgeId}/${enc(seriesId)}/sync`, { chapters: currentSeries.chapters });
   }
   await refreshLibraryStatus();
   renderChapters();
 }
+
 
 async function renderCategoryPicker(selectedIds: string[]): Promise<void> {
   const picker = $("#lib-category-picker");
@@ -826,7 +928,10 @@ async function refreshAll(): Promise<void> {
 let libActiveCategory: string | null = null;
 
 async function loadLibrary(): Promise<void> {
-  const cats = await api<Category[]>("/library/categories");
+  const [cats, groups] = await Promise.all([
+    api<Category[]>("/library/categories"),
+    api<SeriesGroup[]>("/library/groups").catch(() => [] as SeriesGroup[]),
+  ]);
   renderCategoryChips(cats);
   renderCategoryManager(cats);
   const path = libActiveCategory ? `/library?category=${enc(libActiveCategory)}` : "/library";
@@ -834,14 +939,31 @@ async function loadLibrary(): Promise<void> {
   const grid = $("#library-grid");
   grid.innerHTML = "";
   if (entries.length === 0) {
-    grid.innerHTML = '<p class="muted">Your library is empty. Open a series and tap "＋ Library".</p>';
+    grid.innerHTML = "<p class=\"muted\">Your library is empty. Open a series and tap \"＋ Library\".</p>";
     return;
   }
+
+  // Build group map and track which entry keys are non-primary group members (to skip them).
+  const groupById = new Map(groups.map((g) => [g.id, g]));
+  const hiddenKeys = new Set<string>();
+  for (const g of groups) {
+    for (const k of g.memberKeys) {
+      if (k !== g.primaryKey) hiddenKeys.add(k);
+    }
+  }
+
   for (const e of entries) {
+    const key = `${e.bridgeId}:${e.seriesId}`;
+    if (hiddenKeys.has(key)) continue; // covered by primary card
+
+    const group = e.seriesGroupId ? groupById.get(e.seriesGroupId) : undefined;
+    const sourceCount = group ? group.memberKeys.length : 0;
+
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `
       ${e.unreadCount > 0 ? `<span class="badge-unread">${e.unreadCount}</span>` : ""}
+      ${sourceCount > 1 ? `<span class="badge-sources">${sourceCount} sources</span>` : ""}
       <img src="${e.thumbnailUrl ?? ""}" alt="${esc(e.title)}" loading="lazy"
         onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
       <div class="card-title">${esc(e.title)}</div>

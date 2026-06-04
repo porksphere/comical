@@ -57,6 +57,17 @@ export const seriesInfoSchema = z.object({
   tagGroups: z.array(tagGroupSchema).optional(),
   status: seriesStatusSchema.optional(),
   languages: z.array(z.string()).optional(),
+  /**
+   * Known cross-service identifiers for this series. Populated by bridges that know their
+   * backend's external IDs (e.g. Komga stores MAL IDs via metadata enrichment; example-bridge exposes
+   * both its own UUID and a MAL mapping). Used by sync providers (AniList, MAL) to match
+   * local library entries to external tracking entries without manual linking.
+   */
+  externalIds: z.object({
+    anilist: z.number().int().positive().optional(),
+    mal: z.number().int().positive().optional(),
+    mu: z.string().optional(),
+  }).optional(),
 });
 export type SeriesInfo = z.infer<typeof seriesInfoSchema>;
 
@@ -238,8 +249,23 @@ export const bridgeCapabilitySchema = z.enum([
   "settings",
   "favorites",
   "direct",
+  "read-sync",
 ]);
 export type BridgeCapability = z.infer<typeof bridgeCapabilitySchema>;
+
+/**
+ * Reading status values a bridge may report or receive when the bridge supports `"read-sync"`.
+ * Maps naturally onto the tracking status systems of example-bridge, Komga, AniList, and MAL.
+ */
+export const bridgeSeriesStatusSchema = z.enum([
+  "reading",
+  "completed",
+  "on_hold",
+  "dropped",
+  "planning",
+  "rereading",
+]);
+export type BridgeSeriesStatus = z.infer<typeof bridgeSeriesStatusSchema>;
 
 /**
  * Self-description of a bridge. Note there is deliberately NO backend URL here — the address

@@ -51,8 +51,40 @@ export const libraryEntrySchema = z.object({
   /** Chapter ids known at the last `syncChapters`, for new-chapter detection + unread counts. */
   knownChapterIds: z.array(z.string()).default([]),
   chaptersSyncedAt: z.number().int().optional(),
+  /**
+   * If set, this entry belongs to a `SeriesGroup` (same title from a different bridge). The group
+   * id is the UUID of the group; use the store to resolve it to a `SeriesGroup`.
+   */
+  seriesGroupId: z.string().optional(),
+  /**
+   * Cross-service identifiers persisted from `SeriesInfo.externalIds` at add-time. Used for
+   * automatic group-suggestion when adding a second bridge entry for the same title, and for
+   * future AniList/MAL sync provider matching.
+   */
+  externalIds: z.object({
+    anilist: z.number().int().positive().optional(),
+    mal: z.number().int().positive().optional(),
+    mu: z.string().optional(),
+  }).optional(),
 });
 export type LibraryEntry = z.infer<typeof libraryEntrySchema>;
+
+/**
+ * A user-created or auto-detected grouping of library entries that represent the same series
+ * across different bridges. One entry is the `primary` (preferred source for reading); all are
+ * `members`. Progress propagation and library grid deduplication use the group.
+ */
+export const seriesGroupSchema = z.object({
+  id: z.string().min(1),
+  /** Display title (snapshot from the primary entry at group creation time). */
+  title: z.string().min(1),
+  /** `entryKey` of the preferred source for reading. Must be in `memberKeys`. */
+  primaryKey: z.string().min(1),
+  /** All `entryKey` values in this group (includes primary). */
+  memberKeys: z.array(z.string().min(1)).min(2),
+  createdAt: z.number().int(),
+});
+export type SeriesGroup = z.infer<typeof seriesGroupSchema>;
 
 /** Read state for a single chapter of a tracked series. */
 export const chapterProgressSchema = z.object({

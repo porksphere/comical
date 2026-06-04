@@ -13,6 +13,7 @@ import type {
   Bridge,
   BridgeFactory,
   BridgeInfo,
+  BridgeSeriesStatus,
   Chapter,
   HostCapabilities,
   HttpRequest,
@@ -120,6 +121,11 @@ export abstract class BridgeBase<
 
   // Direct-read path (capability "direct"): override when the series has no chapter structure.
   getSeriesPages?(_seriesId: string): Promise<Page[]>;
+
+  // Read-sync path (capability "read-sync"): override to push progress back to the source.
+  markChapterRead?(_seriesId: string, _chapterId: string): Promise<void>;
+  markChapterUnread?(_seriesId: string, _chapterId: string): Promise<void>;
+  setSeriesStatus?(_seriesId: string, _status: BridgeSeriesStatus): Promise<void>;
 }
 
 /** Identity helper that gives a bridge factory the correct type and a single obvious export. */

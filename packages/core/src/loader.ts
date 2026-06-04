@@ -264,6 +264,18 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
     bridge.getSeriesPages = (id) =>
       call("getSeriesPages", z.array(pageSchema), () => raw.getSeriesPages!(id));
   }
+  if (raw.markChapterRead) {
+    bridge.markChapterRead = (seriesId, chapterId) =>
+      call("markChapterRead", z.void(), () => raw.markChapterRead!(seriesId, chapterId));
+  }
+  if (raw.markChapterUnread) {
+    bridge.markChapterUnread = (seriesId, chapterId) =>
+      call("markChapterUnread", z.void(), () => raw.markChapterUnread!(seriesId, chapterId));
+  }
+  if (raw.setSeriesStatus) {
+    bridge.setSeriesStatus = (seriesId, status) =>
+      call("setSeriesStatus", z.void(), () => raw.setSeriesStatus!(seriesId, status));
+  }
 
   return bridge;
 }

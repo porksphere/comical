@@ -7,6 +7,7 @@
  */
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { bridgeSeriesStatusSchema } from "@comical/contract";
 import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } from "@comical/contract";
 import { BridgeSettingsError, validateSettingsInput } from "@comical/core";
 import { entryKey, type Library } from "@comical/library";
@@ -249,6 +250,36 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     }),
   );
 
+  // ── Read-sync (capability "read-sync") ────────────────────────────────────────
+
+  app.post("/bridges/:id/series/:seriesId/chapters/:chapterId/read", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.markChapterRead) return c.json({ error: "not supported" }, 400);
+      await bridge.markChapterRead(c.req.param("seriesId"), c.req.param("chapterId"));
+      return c.json({ ok: true });
+    }),
+  );
+
+  app.delete("/bridges/:id/series/:seriesId/chapters/:chapterId/read", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.markChapterUnread) return c.json({ error: "not supported" }, 400);
+      await bridge.markChapterUnread(c.req.param("seriesId"), c.req.param("chapterId"));
+      return c.json({ ok: true });
+    }),
+  );
+
+  app.put("/bridges/:id/series/:seriesId/status", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.setSeriesStatus) return c.json({ error: "not supported" }, 400);
+      const b = await c.req.json<{ status?: string }>().catch(() => ({ status: undefined }));
+      if (!b.status) return c.json({ error: "status is required" }, 400);
+      const parsed = bridgeSeriesStatusSchema.safeParse(b.status);
+      if (!parsed.success) return c.json({ error: `invalid status: ${b.status}` }, 400);
+      await bridge.setSeriesStatus(c.req.param("seriesId"), parsed.data);
+      return c.json({ ok: true });
+    }),
+  );
+
   // ── Library (optional local tracking module) ──────────────────────────────────
   // Mounted only when a Library service is supplied; cross-bridge, keyed by (bridgeId, seriesId).
 
@@ -294,9 +325,38 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       return c.json({ ok: true });
     });
 
+    // Import from bridge favorites — fetches all pages and bulk-adds to library
+    app.post("/library/import/bridges/:id/favorites", (c) =>
+      withContentBridge(c, async (bridge) => {
+        if (!bridge.getFavorites) return c.json({ error: "bridge does not support favorites" }, 400);
+        const bridgeId = c.req.param("id");
+        let page = 1;
+        let imported = 0;
+        let skipped = 0;
+        while (true) {
+          const result = await bridge.getFavorites(page);
+          for (const entry of result.items) {
+            const existing = await lib.getEntry(entryKey(bridgeId, entry.id));
+            if (existing) { skipped++; continue; }
+            const snap: Parameters<Library["addSeries"]>[0] = { bridgeId, seriesId: entry.id, title: entry.title };
+            if (entry.thumbnailUrl !== undefined) snap.thumbnailUrl = entry.thumbnailUrl;
+            await lib.addSeries(snap);
+            imported++;
+          }
+          if (!result.hasNextPage) break;
+          page++;
+        }
+        return c.json({ imported, skipped });
+      }),
+    );
+
     // Entries
     app.post("/library/entries", async (c) => {
-      const b = await body<{ bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string; author?: string; categoryIds?: string[] }>(c);
+      const b = await body<{
+        bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string;
+        author?: string; categoryIds?: string[];
+        externalIds?: { anilist?: number; mal?: number; mu?: string };
+      }>(c);
       if (!b?.bridgeId || !b.seriesId || !b.title) {
         return c.json({ error: "bridgeId, seriesId and title are required" }, 400);
       }
@@ -304,7 +364,9 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       if (b.thumbnailUrl !== undefined) snap.thumbnailUrl = b.thumbnailUrl;
       if (b.author !== undefined) snap.author = b.author;
       if (b.categoryIds !== undefined) snap.categoryIds = b.categoryIds;
-      return c.json(await lib.addSeries(snap), 201);
+      if (b.externalIds !== undefined) snap.externalIds = b.externalIds;
+      const result = await lib.addSeries(snap);
+      return c.json(result, 201);
     });
 
     app.get("/library/entries/:bridgeId/:seriesId", async (c) => {
@@ -348,6 +410,43 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       const b = await body<{ chapters?: Chapter[]; chapterId?: string }>(c);
       if (!b?.chapters || !b.chapterId) return c.json({ error: "chapters and chapterId are required" }, 400);
       return withLibraryEntry(c, () => lib.markReadUpTo(keyOf(c), b.chapters!, b.chapterId!));
+    });
+
+    // Groups
+    app.get("/library/groups", async (c) => c.json(await lib.listGroups()));
+
+    app.post("/library/groups", async (c) => {
+      const b = await body<{ memberKeys?: string[]; primaryKey?: string }>(c);
+      if (!b?.memberKeys || !b.primaryKey) return c.json({ error: "memberKeys and primaryKey are required" }, 400);
+      try { return c.json(await lib.createGroup(b.memberKeys, b.primaryKey), 201); }
+      catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 400); }
+    });
+
+    app.delete("/library/groups/:id", async (c) => {
+      const groups = await lib.listGroups();
+      const group = groups.find((g) => g.id === c.req.param("id"));
+      if (!group) return c.json({ error: "group not found" }, 404);
+      for (const key of group.memberKeys) await lib.leaveGroup(key);
+      return c.json({ ok: true });
+    });
+
+    app.put("/library/groups/:id/primary", async (c) => {
+      const b = await body<{ primaryKey?: string }>(c);
+      if (!b?.primaryKey) return c.json({ error: "primaryKey is required" }, 400);
+      try { await lib.setPrimarySource(c.req.param("id"), b.primaryKey); return c.json({ ok: true }); }
+      catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
+    });
+
+    app.post("/library/entries/:bridgeId/:seriesId/join-group", async (c) => {
+      const b = await body<{ groupId?: string }>(c);
+      if (!b?.groupId) return c.json({ error: "groupId is required" }, 400);
+      try { await lib.joinGroup(b.groupId, keyOf(c)); return c.json({ ok: true }); }
+      catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 400); }
+    });
+
+    app.delete("/library/entries/:bridgeId/:seriesId/leave-group", async (c) => {
+      await lib.leaveGroup(keyOf(c));
+      return c.json({ ok: true });
     });
   }
 
