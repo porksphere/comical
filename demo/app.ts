@@ -45,6 +45,10 @@ interface LibEntryView extends LibEntry { unreadCount: number }
 interface HistoryItem { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt: number }
 interface SeriesGroup { id: string; title: string; primaryKey: string; memberKeys: string[]; createdAt: number }
 interface AddSeriesResult { entry: LibEntry; autoLinked?: { matchedKey: string; sharedId: { service: string; value: number | string } } }
+// Trackers
+interface TrackerSummary { info: { id: string; name: string; capabilities: string[] }; settings: SettingDescriptor[]; values: Record<string, string | number | boolean | string[]>; secretsSet: string[]; configured: boolean; missingRequired: string[] }
+interface TrackerLink { trackerId: string; externalId: string | number; status?: string; chaptersRead?: number; lastSyncAt?: number }
+interface TrackerSearchPageResult { items: Array<{ externalId: string | number; title: string; thumbnailUrl?: string }>; page: number; hasNextPage: boolean }
 
 // ── DOM + API helpers ────────────────────────────────────────────────────────────
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -587,12 +591,14 @@ async function refreshLibraryStatus(): Promise<void> {
     if (added.length) { newBadge.hidden = false; newBadge.textContent = `${added.length} new`; }
     await renderCategoryPicker(detail.entry.categoryIds);
     await renderGroupPanel(bridgeId, seriesId, detail.entry);
+    await renderTrackerPanel(bridgeId, seriesId);
   } catch {
     currentSeries.inLibrary = false;
     currentSeries.progress = new Map();
     libBtn.textContent = "＋ Library";
     $("#lib-category-picker").hidden = true;
     $("#group-panel").hidden = true;
+    $("#tracker-panel").hidden = true;
   }
 }
 
@@ -681,6 +687,242 @@ async function renderGroupPanel(bridgeId: string, seriesId: string, entry: LibEn
       }));
       panel.append(makeRow(c.bridgeId, false, acts));
     }
+  }
+}
+
+// ── Tracker panel (per-series) ────────────────────────────────────────────────
+let availableTrackers: TrackerSummary[] = [];
+
+async function fetchTrackers(): Promise<TrackerSummary[]> {
+  try { return await api<TrackerSummary[]>("/trackers"); }
+  catch { return []; }
+}
+
+async function renderTrackerPanel(bridgeId: string, seriesId: string): Promise<void> {
+  const panel = $("#tracker-panel");
+  panel.hidden = true;
+  panel.innerHTML = "";
+
+  if (availableTrackers.length === 0) return;
+
+  const links = await api<TrackerLink[]>(
+    `/library/entries/${bridgeId}/${enc(seriesId)}/tracker-links`,
+  ).catch(() => [] as TrackerLink[]);
+
+  panel.hidden = false;
+
+  const heading = document.createElement("div");
+  heading.className = "muted";
+  heading.style.cssText = "font-size:0.75rem;margin-bottom:0.35rem";
+  heading.textContent = "Trackers";
+  panel.append(heading);
+
+  // Render each existing link.
+  for (const link of links) {
+    const tracker = availableTrackers.find((t) => t.info.id === link.trackerId);
+    const name = tracker?.info.name ?? link.trackerId;
+    const row = document.createElement("div");
+    row.className = "tracker-row";
+    const ago = link.lastSyncAt ? ` · synced ${relativeTime(link.lastSyncAt)}` : "";
+    const progress = link.chaptersRead !== undefined ? ` · ${link.chaptersRead} read` : "";
+    row.innerHTML = `<span><strong>${esc(name)}</strong><span class="muted"> ${esc(String(link.externalId))}${progress}${ago}</span></span>`;
+    const acts = document.createElement("span");
+    acts.className = "tracker-row-acts";
+
+    const syncBtn = document.createElement("button");
+    syncBtn.className = "secondary";
+    syncBtn.style.cssText = "font-size:0.75rem;padding:0.15rem 0.5rem";
+    syncBtn.textContent = "Sync";
+    syncBtn.onclick = async () => {
+      syncBtn.disabled = true;
+      // background sync re-runs syncEntryToTrackers for every library entry
+      await send("POST", "/library/sync");
+      syncBtn.disabled = false;
+      await renderTrackerPanel(bridgeId, seriesId);
+      status("Synced to trackers.");
+    };
+
+    const unlinkBtn = document.createElement("button");
+    unlinkBtn.className = "secondary";
+    unlinkBtn.style.cssText = "font-size:0.75rem;padding:0.15rem 0.5rem";
+    unlinkBtn.textContent = "Unlink";
+    unlinkBtn.onclick = async () => {
+      await send("DELETE", `/library/entries/${bridgeId}/${enc(seriesId)}/tracker-links/${enc(link.trackerId)}`);
+      await renderTrackerPanel(bridgeId, seriesId);
+    };
+    acts.append(syncBtn, unlinkBtn);
+    row.append(acts);
+    panel.append(row);
+  }
+
+  // "Link tracker" toggle.
+  const linkBtn = document.createElement("button");
+  linkBtn.className = "secondary";
+  linkBtn.style.cssText = "font-size:0.75rem;margin-top:0.35rem";
+  linkBtn.textContent = "+ Link tracker";
+  panel.append(linkBtn);
+
+  const searchArea = document.createElement("div");
+  searchArea.style.display = "none";
+  searchArea.style.marginTop = "0.5rem";
+
+  // Tracker picker + search input.
+  const trackerSel = document.createElement("select");
+  trackerSel.style.cssText = "font-size:0.82rem;margin-right:0.4rem";
+  for (const t of availableTrackers) {
+    if (!t.info.capabilities.includes("search")) continue;
+    const opt = document.createElement("option");
+    opt.value = t.info.id;
+    opt.textContent = t.info.name;
+    trackerSel.append(opt);
+  }
+
+  const searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.placeholder = "Search title…";
+  searchInput.style.cssText = "font-size:0.82rem;width:14rem;margin-right:0.4rem";
+
+  const goBtn = document.createElement("button");
+  goBtn.textContent = "Search";
+  goBtn.style.cssText = "font-size:0.82rem;padding:0.3rem 0.6rem";
+
+  const resultsDiv = document.createElement("div");
+  resultsDiv.style.marginTop = "0.4rem";
+
+  if (trackerSel.options.length === 0) {
+    // No tracker supports search — skip the search UI.
+    searchArea.innerHTML = '<span class="muted">No configured trackers support search.</span>';
+  } else {
+    searchArea.append(trackerSel, searchInput, goBtn, resultsDiv);
+    const doSearch = async () => {
+      const q = searchInput.value.trim();
+      if (!q) return;
+      goBtn.disabled = true;
+      resultsDiv.innerHTML = '<span class="muted">Searching…</span>';
+      try {
+        const r = await api<TrackerSearchPageResult>(
+          `/trackers/${enc(trackerSel.value)}/search?q=${enc(q)}`,
+        );
+        resultsDiv.innerHTML = "";
+        if (r.items.length === 0) {
+          resultsDiv.innerHTML = '<span class="muted">No results.</span>';
+        }
+        for (const item of r.items) {
+          const row = document.createElement("div");
+          row.className = "tracker-search-result";
+          row.innerHTML =
+            (item.thumbnailUrl ? `<img src="${esc(item.thumbnailUrl)}" alt="" onerror="this.style.display='none'">` : "") +
+            esc(item.title) +
+            `<span class="muted"> (${esc(String(item.externalId))})</span>`;
+          row.onclick = async () => {
+            await send("POST", `/library/entries/${bridgeId}/${enc(seriesId)}/tracker-links`, {
+              trackerId: trackerSel.value,
+              externalId: item.externalId,
+            });
+            searchArea.style.display = "none";
+            linkBtn.textContent = "+ Link tracker";
+            await renderTrackerPanel(bridgeId, seriesId);
+          };
+          resultsDiv.append(row);
+        }
+      } catch (e) {
+        resultsDiv.innerHTML = `<span class="err">${esc(e instanceof Error ? e.message : String(e))}</span>`;
+      }
+      goBtn.disabled = false;
+    };
+    goBtn.onclick = () => void doSearch();
+    searchInput.addEventListener("keydown", (e) => { if (e.key === "Enter") void doSearch(); });
+  }
+
+  panel.append(searchArea);
+  linkBtn.onclick = () => {
+    const open = searchArea.style.display !== "none";
+    searchArea.style.display = open ? "none" : "";
+    linkBtn.textContent = open ? "+ Link tracker" : "Cancel";
+  };
+}
+
+function relativeTime(ts: number): string {
+  const secs = Math.floor((Date.now() - ts) / 1000);
+  if (secs < 60) return "just now";
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
+// ── Tracker config panel (global, like Registry) ──────────────────────────────
+async function loadTrackerConfig(): Promise<void> {
+  const section = $("#trackers-config-panel");
+  const list = $("#trackers-config-list");
+
+  if (availableTrackers.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+
+  section.style.display = "";
+  list.innerHTML = "";
+
+  for (const t of availableTrackers) {
+    const item = document.createElement("div");
+    item.className = "tracker-config-item";
+
+    const stateText = t.missingRequired.length
+      ? `— needs: ${t.missingRequired.join(", ")}`
+      : "— configured";
+    const stateClass = t.missingRequired.length ? "warn" : "ok";
+
+    const det = document.createElement("details");
+    det.innerHTML = `<summary style="font-size:0.88rem;font-weight:600">${esc(t.info.name)} <span class="${stateClass}" style="font-size:0.8rem">${esc(stateText)}</span></summary>`;
+
+    if (t.settings.length > 0) {
+      const form = document.createElement("div");
+      form.className = "tracker-config-form";
+
+      for (const d of t.settings) {
+        const wrap = document.createElement("div");
+        const label = document.createElement("label");
+        label.textContent = d.label + (d.required ? " *" : "");
+        if (d.description) label.title = d.description;
+        label.append(buildInput(d, t.values[d.key], t.secretsSet.includes(d.key)));
+        wrap.append(label);
+        form.append(wrap);
+      }
+
+      const row = document.createElement("div");
+      row.className = "row";
+      row.style.marginTop = "0.5rem";
+      const saveBtn = document.createElement("button");
+      saveBtn.textContent = "Save";
+      saveBtn.style.cssText = "font-size:0.82rem;padding:0.3rem 0.7rem";
+      const msg = document.createElement("span");
+      msg.style.fontSize = "0.8rem";
+      saveBtn.onclick = async () => {
+        const body: Record<string, string | number | boolean | string[]> = {};
+        form.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-key]").forEach((el) => {
+          const key = el.dataset.key!;
+          const kind = el.dataset.kind!;
+          if (kind === "boolean") { body[key] = (el as HTMLInputElement).checked; }
+          else if (kind === "enum" && (el as HTMLSelectElement).multiple) {
+            body[key] = Array.from((el as HTMLSelectElement).selectedOptions).map((o) => o.value);
+          } else if (kind === "number") {
+            const v = (el as HTMLInputElement).value.trim(); if (v !== "") body[key] = Number(v);
+          } else {
+            const v = (el as HTMLInputElement).value.trim(); if (v !== "") body[key] = v;
+          }
+        });
+        const res = await send("PUT", `/trackers/${enc(t.info.id)}/settings`, body);
+        if (res.ok) { msg.textContent = "Saved ✓"; msg.className = "ok"; availableTrackers = await fetchTrackers(); await loadTrackerConfig(); }
+        else { const e = res.data as { error?: string }; msg.textContent = e.error ?? `error ${res.status}`; msg.className = "err"; }
+      };
+      row.append(saveBtn, msg);
+      det.append(form, row);
+    } else {
+      det.innerHTML += '<span class="muted" style="font-size:0.82rem">No settings required.</span>';
+    }
+
+    item.append(det);
+    list.append(item);
   }
 }
 
@@ -1168,8 +1410,8 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
   };
 
   try {
-    await loadBridges();
-    await loadRegistry();
+    availableTrackers = await fetchTrackers();
+    await Promise.all([loadBridges(), loadRegistry(), loadTrackerConfig()]);
   } catch (e) {
     status(`Init failed: ${e instanceof Error ? e.message : e}`, true);
   }
