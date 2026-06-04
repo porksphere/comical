@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Browser console: a thin REST client for a running `comical serve` instance. It renders the
  * full host-server surface — bridge picker, settings form (typed descriptors + validation),
  * list tabs, search, series detail, filters/tags, and the M4 registry panel. The browser knows
@@ -37,9 +37,16 @@ interface SortOption { key: string; label: string }
 interface Tag { id: string; label: string }
 interface SavedRegistry { url: string; name: string }
 interface AvailableBridge { entry: { id: string; name: string; version: string }; registryUrl: string; installedVersion: string | null; updateAvailable: boolean }
+// Library (optional /library module)
+interface ProgressItem { chapterId: string; read: boolean; lastPage?: number; pageCount?: number }
+interface Category { id: string; name: string; order: number }
+interface LibEntry { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; author?: string; categoryIds: string[]; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt?: number }
+interface LibEntryView extends LibEntry { unreadCount: number }
+interface HistoryItem { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt: number }
 
 // ── DOM + API helpers ────────────────────────────────────────────────────────────
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
+const enc = encodeURIComponent;
 const esc = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
 
@@ -76,6 +83,14 @@ let currentDescriptors: SettingDescriptor[] = [];
 let currentFilters: Filter[] = [];
 let currentLists: SeriesList[] = [];
 let activeListId: string | null = null;
+let currentView: "browse" | "library" | "history" | "detail" | "reader" = "browse";
+let previousView: "browse" | "library" | "history" = "browse";
+let loadMoreFn: (() => Promise<void>) | null = null;
+
+function setLoadMore(hasMore: boolean, fn: () => Promise<void>): void {
+  loadMoreFn = hasMore ? fn : null;
+  $<HTMLButtonElement>("#load-more").style.display = hasMore ? "" : "none";
+}
 
 // ── Filter controls (rendered from getFilters, applied on Search) ────────────────
 function renderFilterControls(filters: Filter[]): void {
@@ -162,7 +177,7 @@ async function loadBridges(): Promise<void> {
 async function selectBridge(id: string): Promise<void> {
   activeBridge = id;
   activeCaps = [];
-  $("#detail").style.display = "none";
+  switchView("browse");
   const detail = await api<BridgeDetail>(`/bridges/${id}`);
   activeCaps = detail.info.capabilities;
   currentDescriptors = detail.settings;
@@ -204,14 +219,15 @@ function addFavoritesTab(): void {
   tabs.append(tab);
 }
 
-async function loadFavorites(): Promise<void> {
+async function loadFavorites(page = 1): Promise<void> {
   try {
-    const r = await api<PagedResults>(`/bridges/${activeBridge}/favorites`);
-    activeListId = null;
-    renderGrid(r.items);
-    status(`Favorites: ${r.items.length} item(s).`);
+    const r = await api<PagedResults>(`/bridges/${activeBridge}/favorites?page=${page}`);
+    if (page === 1) { activeListId = null; renderGrid(r.items); }
+    else for (const item of r.items) $("#grid").append(makeCard(item));
+    setLoadMore(r.hasNextPage, () => loadFavorites(page + 1));
+    if (page === 1) status(`Favorites: ${r.items.length} item(s).`);
   } catch (e) {
-    $("#grid").innerHTML = "";
+    if (page === 1) { $("#grid").innerHTML = ""; setLoadMore(false, async () => {}); }
     status(`Favorites unavailable — set a session token in settings? (${e instanceof Error ? e.message : String(e)})`, true);
   }
 }
@@ -393,38 +409,44 @@ async function loadLists(): Promise<void> {
   await loadList(initial);
 }
 
-async function loadList(listId: string): Promise<void> {
-  activeListId = listId;
-  status(`Loading list "${listId}"…`);
+async function loadList(listId: string, page = 1): Promise<void> {
+  if (page === 1) { activeListId = listId; status(`Loading list "${listId}"…`); }
   try {
-    const r = await api<PagedResults>(`/bridges/${activeBridge}/lists/${encodeURIComponent(listId)}`);
-    renderGrid(r.items);
-    const searchable = currentLists.find((l) => l.id === listId)?.searchable;
-    status(`${r.items.length} item(s) in "${listId}".${searchable ? " (search box scopes to this list)" : ""}`);
+    const r = await api<PagedResults>(`/bridges/${activeBridge}/lists/${enc(listId)}?page=${page}`);
+    if (page === 1) renderGrid(r.items);
+    else for (const item of r.items) $("#grid").append(makeCard(item));
+    setLoadMore(r.hasNextPage, () => loadList(listId, page + 1));
+    if (page === 1) {
+      const searchable = currentLists.find((l) => l.id === listId)?.searchable;
+      status(`${r.items.length} item(s) in "${listId}".${searchable ? " (search box scopes to this list)" : ""}`);
+    }
   } catch (e) {
     status(`List load failed: ${e instanceof Error ? e.message : e}`, true);
   }
 }
 
+function makeCard(item: SeriesEntry): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `
+    <img src="${item.thumbnailUrl ?? ""}" alt="${esc(item.title)}" loading="lazy"
+      onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
+    <div class="card-title">${esc(item.title)}</div>
+    ${item.subtitle ? `<div class="card-sub">${esc(item.subtitle)}</div>` : ""}`;
+  card.onclick = () => void showDetail(item.id);
+  return card;
+}
+
 function renderGrid(items: SeriesEntry[]): void {
   const grid = $("#grid");
   grid.innerHTML = "";
-  for (const item of items) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
-      <img src="${item.thumbnailUrl ?? ""}" alt="${esc(item.title)}" loading="lazy"
-        onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
-      <div class="card-title">${esc(item.title)}</div>
-      ${item.subtitle ? `<div class="card-sub">${esc(item.subtitle)}</div>` : ""}`;
-    card.onclick = () => void showDetail(item.id);
-    grid.append(card);
-  }
+  for (const item of items) grid.append(makeCard(item));
+  setLoadMore(false, async () => {});
 }
 
 async function showDetail(seriesId: string): Promise<void> {
-  const detail = $("#detail");
-  detail.style.display = "block";
+  if (currentView !== "detail") previousView = currentView as "browse" | "library" | "history";
+  switchView("detail");
   $("#detail-title").textContent = "Loading…";
   $("#detail-meta").textContent = "";
   $("#detail-genres").innerHTML = "";
@@ -432,11 +454,13 @@ async function showDetail(seriesId: string): Promise<void> {
   $("#detail-description").textContent = "";
   ($("#detail-cover") as HTMLImageElement).style.display = "none";
   $("#chapters").innerHTML = "";
-  $("#pages").innerHTML = "";
 
+  const isDirect = activeCaps.includes("direct");
   const [info, chapters] = await Promise.all([
     api<SeriesInfo>(`/bridges/${activeBridge}/series/${encodeURIComponent(seriesId)}`),
-    api<Chapter[]>(`/bridges/${activeBridge}/series/${encodeURIComponent(seriesId)}/chapters`),
+    isDirect
+      ? Promise.resolve([] as Chapter[])
+      : api<Chapter[]>(`/bridges/${activeBridge}/series/${encodeURIComponent(seriesId)}/chapters`),
   ]);
 
   $("#detail-title").textContent = info.title;
@@ -489,52 +513,255 @@ async function showDetail(seriesId: string): Promise<void> {
     .join("");
   $("#detail-description").textContent = info.description ?? "";
 
+  const readBtn = $<HTMLButtonElement>("#read-direct-btn");
+  readBtn.hidden = !isDirect;
+  if (isDirect) readBtn.onclick = () => void readDirect(seriesId);
+
+  // Library tracking (optional module): track this series under the bridge it came from.
+  currentSeries = { bridgeId: activeBridge, seriesId, info, chapters, progress: new Map(), inLibrary: false };
+  await refreshLibraryStatus();
+  renderChapters();
+}
+
+// ── Library: detail-page tracking ────────────────────────────────────────────
+interface CurrentSeries {
+  bridgeId: string;
+  seriesId: string;
+  info: SeriesInfo;
+  chapters: Chapter[];
+  progress: Map<string, ProgressItem>;
+  inLibrary: boolean;
+}
+let currentSeries: CurrentSeries | null = null;
+
+interface ReaderState { ch: Chapter; pages: Page[]; currentPage: number; }
+let readerState: ReaderState | null = null;
+
+/** Load the series' library state (membership, progress) and surface any newly-published chapters. */
+async function refreshLibraryStatus(): Promise<void> {
+  if (!currentSeries) return;
+  const { bridgeId, seriesId } = currentSeries;
+  const libBtn = $<HTMLButtonElement>("#lib-toggle");
+  const newBadge = $("#new-badge");
+  libBtn.hidden = false;
+  newBadge.hidden = true;
+  libBtn.onclick = () => void toggleLibrary();
+  try {
+    const detail = await api<{ entry: LibEntry; progress: ProgressItem[] }>(
+      `/library/entries/${bridgeId}/${enc(seriesId)}`,
+    );
+    currentSeries.inLibrary = true;
+    currentSeries.progress = new Map(detail.progress.map((p) => [p.chapterId, p]));
+    libBtn.textContent = "✓ In Library";
+    // Detect new chapters since the last visit.
+    const sync = await send("POST", `/library/entries/${bridgeId}/${enc(seriesId)}/sync`, { chapters: currentSeries.chapters });
+    const added = (sync.data as { added?: Chapter[] }).added ?? [];
+    if (added.length) { newBadge.hidden = false; newBadge.textContent = `${added.length} new`; }
+    await renderCategoryPicker(detail.entry.categoryIds);
+  } catch {
+    currentSeries.inLibrary = false;
+    currentSeries.progress = new Map();
+    libBtn.textContent = "＋ Library";
+    $("#lib-category-picker").hidden = true;
+  }
+}
+
+async function toggleLibrary(): Promise<void> {
+  if (!currentSeries) return;
+  const { bridgeId, seriesId, info, inLibrary } = currentSeries;
+  if (inLibrary) {
+    await send("DELETE", `/library/entries/${bridgeId}/${enc(seriesId)}`);
+  } else {
+    const snap: Record<string, unknown> = { bridgeId, seriesId, title: info.title };
+    if (info.thumbnailUrl) snap.thumbnailUrl = info.thumbnailUrl;
+    if (info.author) snap.author = info.author;
+    await send("POST", "/library/entries", snap);
+    await send("POST", `/library/entries/${bridgeId}/${enc(seriesId)}/sync`, { chapters: currentSeries.chapters });
+  }
+  await refreshLibraryStatus();
+  renderChapters();
+}
+
+async function renderCategoryPicker(selectedIds: string[]): Promise<void> {
+  const picker = $("#lib-category-picker");
+  if (!currentSeries?.inLibrary) { picker.hidden = true; return; }
+  const cats = await api<Category[]>("/library/categories");
+  picker.hidden = false;
+  picker.innerHTML = "";
+  if (cats.length === 0) {
+    picker.innerHTML = '<span class="muted">No categories yet — add some in the Library tab.</span>';
+    return;
+  }
+  for (const cat of cats) {
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = selectedIds.includes(cat.id);
+    cb.dataset.id = cat.id;
+    cb.onchange = async () => {
+      const ids = Array.from(picker.querySelectorAll<HTMLInputElement>("input:checked")).map((i) => i.dataset.id!);
+      await send("PUT", `/library/entries/${currentSeries!.bridgeId}/${enc(currentSeries!.seriesId)}/categories`, { categoryIds: ids });
+    };
+    label.append(cb, document.createTextNode(cat.name));
+    picker.append(label);
+  }
+}
+
+function renderChapters(): void {
+  if (!currentSeries) return;
+  const { chapters, progress, inLibrary } = currentSeries;
   const ul = $("#chapters");
+  ul.innerHTML = "";
   for (const ch of chapters) {
     const li = document.createElement("li");
-    li.textContent = ch.pageCount ? `${ch.name} · ${ch.pageCount}p` : ch.name;
-    li.onclick = async () => {
-      const pagesEl = $("#pages");
-      pagesEl.innerHTML = "<p>Loading pages…</p>";
-      const pages = await api<Page[]>(
-        `/bridges/${activeBridge}/series/${encodeURIComponent(seriesId)}/chapters/${encodeURIComponent(ch.id)}/pages`,
-      );
-      pagesEl.innerHTML = pages
-        .map(
-          (p) =>
-            `<img src="${p.imageUrl}" loading="lazy"` +
-            ` onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${p.index + 1}'">`,
-        )
-        .join("");
-    };
+    const p = progress.get(ch.id);
+    if (p?.read) li.classList.add("read");
+    if (inLibrary) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!p?.read;
+      cb.title = "Mark read";
+      cb.onclick = (e) => { e.stopPropagation(); void markRead(ch.id, cb.checked, ch.name); };
+      li.append(cb);
+    }
+    const name = document.createElement("span");
+    name.className = "ch-name";
+    name.textContent = ch.pageCount ? `${ch.name} · ${ch.pageCount}p` : ch.name;
+    li.append(name);
+    if (inLibrary) {
+      const up = document.createElement("button");
+      up.className = "ch-uptohere";
+      up.textContent = "read to here";
+      up.onclick = (e) => { e.stopPropagation(); void readUpTo(ch.id); };
+      li.append(up);
+    }
+    li.onclick = () => void openChapter(ch);
     ul.append(li);
   }
+}
+
+async function openChapter(ch: Chapter, resumePage?: number): Promise<void> {
+  if (!currentSeries) return;
+  const { bridgeId, seriesId, inLibrary } = currentSeries;
+  switchView("reader");
+  $("#reader-info").textContent = `${ch.name} · Loading…`;
+  $<HTMLButtonElement>("#reader-prev").disabled = true;
+  $<HTMLButtonElement>("#reader-next").disabled = true;
+  $("#reader-page").innerHTML = `<p class="muted" style="text-align:center;padding:2rem">Loading pages…</p>`;
+  const pages = await api<Page[]>(
+    `/bridges/${bridgeId}/series/${enc(seriesId)}/chapters/${enc(ch.id)}/pages`,
+  );
+  readerState = { ch, pages, currentPage: Math.min(resumePage ?? 0, Math.max(0, pages.length - 1)) };
+  renderReaderPage();
+  if (inLibrary) await setProgress(ch, readerState.currentPage, pages.length);
+}
+
+async function readDirect(seriesId: string): Promise<void> {
+  if (!currentSeries) return;
+  const { bridgeId, info } = currentSeries;
+  switchView("reader");
+  $("#reader-info").textContent = `${info.title} · Loading…`;
+  $<HTMLButtonElement>("#reader-prev").disabled = true;
+  $<HTMLButtonElement>("#reader-next").disabled = true;
+  $("#reader-page").innerHTML = `<p class="muted" style="text-align:center;padding:2rem">Loading pages…</p>`;
+  const pages = await api<Page[]>(`/bridges/${bridgeId}/series/${enc(seriesId)}/pages`);
+  const syntheticChapter: Chapter = { id: "__direct__", name: info.title };
+  readerState = { ch: syntheticChapter, pages, currentPage: 0 };
+  renderReaderPage();
+}
+
+function renderReaderPage(): void {
+  if (!readerState) return;
+  const { ch, pages, currentPage } = readerState;
+  const p = pages[currentPage];
+  if (!p) return;
+  $("#reader-info").textContent = `${ch.name} · ${currentPage + 1} / ${pages.length}`;
+  $<HTMLButtonElement>("#reader-prev").disabled = currentPage === 0;
+  $<HTMLButtonElement>("#reader-next").disabled = currentPage >= pages.length - 1;
+  $("#reader-page").innerHTML =
+    `<img src="${p.imageUrl}" alt="Page ${currentPage + 1}"` +
+    ` onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${currentPage + 1}'">`;
+  window.scrollTo({ top: 0 });
+}
+
+async function readerNavigate(delta: number): Promise<void> {
+  if (!readerState) return;
+  const next = Math.max(0, Math.min(readerState.pages.length - 1, readerState.currentPage + delta));
+  if (next === readerState.currentPage) return;
+  readerState.currentPage = next;
+  renderReaderPage();
+  if (currentSeries?.inLibrary) await setProgress(readerState.ch, readerState.currentPage, readerState.pages.length);
+}
+
+async function reloadProgress(): Promise<void> {
+  if (!currentSeries) return;
+  const { bridgeId, seriesId } = currentSeries;
+  const progress = await api<ProgressItem[]>(`/library/entries/${bridgeId}/${enc(seriesId)}/progress`);
+  currentSeries.progress = new Map(progress.map((p) => [p.chapterId, p]));
+}
+
+async function markRead(chapterId: string, read: boolean, name: string): Promise<void> {
+  if (!currentSeries) return;
+  const { bridgeId, seriesId } = currentSeries;
+  await send("PUT", `/library/entries/${bridgeId}/${enc(seriesId)}/progress/${enc(chapterId)}`, { read, chapterName: name });
+  await reloadProgress();
+  renderChapters();
+}
+
+async function readUpTo(chapterId: string): Promise<void> {
+  if (!currentSeries) return;
+  const { bridgeId, seriesId, chapters } = currentSeries;
+  await send("POST", `/library/entries/${bridgeId}/${enc(seriesId)}/read-up-to`, { chapters, chapterId });
+  await reloadProgress();
+  renderChapters();
+}
+
+async function setProgress(ch: Chapter, lastPage: number, pageCount: number): Promise<void> {
+  if (!currentSeries) return;
+  const { bridgeId, seriesId } = currentSeries;
+  const wasRead = currentSeries.progress.get(ch.id)?.read;
+  await send("PUT", `/library/entries/${bridgeId}/${enc(seriesId)}/progress/${enc(ch.id)}`, { lastPage, pageCount, chapterName: ch.name });
+  // Only re-render when read state may have flipped (reaching the end), to avoid churn while scrolling.
+  if (!wasRead && lastPage >= pageCount - 1) { await reloadProgress(); renderChapters(); }
 }
 
 async function doSearch(): Promise<void> {
   const q = $<HTMLInputElement>("#query").value;
   const filters = collectFilters();
   const sort = collectSort();
+  await runSearch(q, filters, sort, 1);
+}
 
-  // If the active list is searchable, scope the query to it (getListItems); else global search.
+async function runSearch(
+  q: string,
+  filters: FilterValue[],
+  sort: ReturnType<typeof collectSort>,
+  page: number,
+): Promise<void> {
   const activeList = currentLists.find((l) => l.id === activeListId);
   const scoped = activeList?.searchable ? activeList : undefined;
 
-  const qs = [`q=${encodeURIComponent(q)}`];
-  if (filters.length) qs.push(`filters=${encodeURIComponent(JSON.stringify(filters))}`);
-  if (sort) qs.push(`sort=${encodeURIComponent(sort.key)}&dir=${sort.ascending ? "asc" : "desc"}`);
+  const qs = [`q=${enc(q)}`, `page=${page}`];
+  if (filters.length) qs.push(`filters=${enc(JSON.stringify(filters))}`);
+  if (sort) qs.push(`sort=${enc(sort.key)}&dir=${sort.ascending ? "asc" : "desc"}`);
 
-  status(scoped ? `Searching in "${scoped.name}"…` : "Searching…");
+  if (page === 1) {
+    status(scoped ? `Searching in "${scoped.name}"…` : "Searching…");
+    if (!scoped) $("#list-tabs").querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+  }
   try {
     const path = scoped
-      ? `/bridges/${activeBridge}/lists/${encodeURIComponent(scoped.id)}?${qs.join("&")}`
+      ? `/bridges/${activeBridge}/lists/${enc(scoped.id)}?${qs.join("&")}`
       : `/bridges/${activeBridge}/search?${qs.join("&")}`;
     const r = await api<PagedResults>(path);
-    if (!scoped) $("#list-tabs").querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    renderGrid(r.items);
-    const where = scoped ? ` in "${scoped.name}"` : "";
-    const notes = [filters.length ? `${filters.length} filter(s)` : "", sort ? `sort:${sort.key}` : ""].filter(Boolean).join(", ");
-    status(`${r.items.length} result(s) for "${q}"${where}${notes ? ` (${notes})` : ""}.`);
+    if (page === 1) renderGrid(r.items);
+    else for (const item of r.items) $("#grid").append(makeCard(item));
+    setLoadMore(r.hasNextPage, () => runSearch(q, filters, sort, page + 1));
+    if (page === 1) {
+      const where = scoped ? ` in "${scoped.name}"` : "";
+      const notes = [filters.length ? `${filters.length} filter(s)` : "", sort ? `sort:${sort.key}` : ""].filter(Boolean).join(", ");
+      status(`${r.items.length} result(s) for "${q}"${where}${notes ? ` (${notes})` : ""}.`);
+    }
   } catch (e) {
     status(`Search failed: ${e instanceof Error ? e.message : e}`, true);
   }
@@ -595,6 +822,165 @@ async function refreshAll(): Promise<void> {
   await loadRegistry();
 }
 
+// ── Library view (cross-bridge collection) ──────────────────────────────────
+let libActiveCategory: string | null = null;
+
+async function loadLibrary(): Promise<void> {
+  const cats = await api<Category[]>("/library/categories");
+  renderCategoryChips(cats);
+  renderCategoryManager(cats);
+  const path = libActiveCategory ? `/library?category=${enc(libActiveCategory)}` : "/library";
+  const entries = await api<LibEntryView[]>(path);
+  const grid = $("#library-grid");
+  grid.innerHTML = "";
+  if (entries.length === 0) {
+    grid.innerHTML = '<p class="muted">Your library is empty. Open a series and tap "＋ Library".</p>';
+    return;
+  }
+  for (const e of entries) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      ${e.unreadCount > 0 ? `<span class="badge-unread">${e.unreadCount}</span>` : ""}
+      <img src="${e.thumbnailUrl ?? ""}" alt="${esc(e.title)}" loading="lazy"
+        onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
+      <div class="card-title">${esc(e.title)}</div>
+      <div class="card-sub">${esc(e.bridgeId)}</div>`;
+    if (cats.length > 0) {
+      const catsRow = document.createElement("div");
+      catsRow.className = "card-categories";
+      const assigned = new Set(e.categoryIds);
+      for (const cat of cats) {
+        const chip = document.createElement("span");
+        chip.className = "chip cat-chip" + (assigned.has(cat.id) ? " cat-chip-on" : "");
+        chip.textContent = cat.name;
+        chip.onclick = async (ev) => {
+          ev.stopPropagation();
+          if (assigned.has(cat.id)) assigned.delete(cat.id);
+          else assigned.add(cat.id);
+          chip.className = "chip cat-chip" + (assigned.has(cat.id) ? " cat-chip-on" : "");
+          await send("PUT", `/library/entries/${e.bridgeId}/${enc(e.seriesId)}/categories`, { categoryIds: [...assigned] });
+          if (libActiveCategory) void loadLibrary();
+        };
+        catsRow.append(chip);
+      }
+      card.append(catsRow);
+    }
+    card.onclick = () => void openSeries(e.bridgeId, e.seriesId);
+    grid.append(card);
+  }
+}
+
+function renderCategoryChips(cats: Category[]): void {
+  const host = $("#lib-category-chips");
+  host.innerHTML = "";
+  const mk = (id: string | null, label: string) => {
+    const tab = document.createElement("div");
+    tab.className = "tab" + (libActiveCategory === id ? " active" : "");
+    tab.textContent = label;
+    tab.onclick = () => { libActiveCategory = id; void loadLibrary(); };
+    host.append(tab);
+  };
+  mk(null, "All");
+  for (const c of cats) mk(c.id, c.name);
+}
+
+function renderCategoryManager(cats: Category[]): void {
+  const host = $("#lib-category-manage");
+  host.innerHTML = "";
+  for (const c of cats) {
+    const row = document.createElement("div");
+    row.className = "reg-item";
+    row.innerHTML = `<span>${esc(c.name)}</span>`;
+    const actions = document.createElement("span");
+    const rename = document.createElement("button");
+    rename.className = "secondary";
+    rename.textContent = "Rename";
+    rename.onclick = async () => {
+      const name = window.prompt("Rename category", c.name);
+      if (name) { await send("PATCH", `/library/categories/${enc(c.id)}`, { name }); await loadLibrary(); }
+    };
+    const del = document.createElement("button");
+    del.className = "secondary";
+    del.textContent = "Delete";
+    del.onclick = async () => {
+      if (libActiveCategory === c.id) libActiveCategory = null;
+      await send("DELETE", `/library/categories/${enc(c.id)}`);
+      await loadLibrary();
+    };
+    actions.append(rename, del);
+    row.append(actions);
+    host.append(row);
+  }
+}
+
+// ── History view ─────────────────────────────────────────────────────────────
+async function loadHistory(): Promise<void> {
+  const items = await api<HistoryItem[]>("/library/history");
+  const host = $("#history-list");
+  host.innerHTML = "";
+  if (items.length === 0) {
+    host.innerHTML = '<p class="muted">No reading history yet.</p>';
+    return;
+  }
+  for (const h of items) {
+    const row = document.createElement("div");
+    row.className = "history-item";
+    const when = new Date(h.lastReadAt).toLocaleString();
+    row.innerHTML = `
+      <img src="${h.thumbnailUrl ?? ""}" alt="" onerror="this.style.visibility='hidden'">
+      <div class="hi-body">
+        <div class="hi-title">${esc(h.title)}</div>
+        <div class="hi-sub">${h.lastReadChapterName ? esc(h.lastReadChapterName) + " · " : ""}${when}</div>
+      </div>`;
+    const resume = document.createElement("button");
+    resume.textContent = "Resume";
+    resume.onclick = () => void openSeries(h.bridgeId, h.seriesId, h.lastReadChapterId);
+    row.append(resume);
+    host.append(row);
+  }
+}
+
+// ── Cross-view navigation ──────────────────────────────────────────────────────
+/** Ensure a bridge's capabilities are loaded (so favorites etc. render) without resetting browse UI. */
+async function ensureBridge(bridgeId: string): Promise<void> {
+  if (activeBridge === bridgeId && activeCaps.length) return;
+  activeBridge = bridgeId;
+  try {
+    const d = await api<BridgeDetail>(`/bridges/${bridgeId}`);
+    activeCaps = d.info.capabilities;
+  } catch {
+    activeCaps = [];
+  }
+}
+
+/** Open a series from anywhere (library/history), optionally jumping into a chapter to resume. */
+async function openSeries(bridgeId: string, seriesId: string, resumeChapterId?: string): Promise<void> {
+  await ensureBridge(bridgeId);
+  await showDetail(seriesId);
+  if (resumeChapterId && currentSeries) {
+    const ch = currentSeries.chapters.find((c) => c.id === resumeChapterId);
+    if (ch) {
+      const lastPage = currentSeries.progress.get(resumeChapterId)?.lastPage;
+      await openChapter(ch, lastPage);
+    }
+  }
+}
+
+function switchView(view: "browse" | "library" | "history" | "detail" | "reader"): void {
+  currentView = view;
+  document.querySelectorAll<HTMLElement>(".view-tabs .tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.view === view),
+  );
+  $("#browse-view").style.display = view === "browse" ? "" : "none";
+  $("#library-view").style.display = view === "library" ? "" : "none";
+  $("#history-view").style.display = view === "history" ? "" : "none";
+  $("#detail-view").style.display = view === "detail" ? "" : "none";
+  $("#reader-view").style.display = view === "reader" ? "" : "none";
+  if (view === "library") void loadLibrary().catch((e) => status(`Library unavailable: ${e instanceof Error ? e.message : e}`, true));
+  if (view === "history") void loadHistory().catch((e) => status(`History unavailable: ${e instanceof Error ? e.message : e}`, true));
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────────
 (async () => {
   status("Connecting to server…");
@@ -604,6 +990,23 @@ async function refreshAll(): Promise<void> {
     status(`Cannot reach server at ${SERVER}. Is comical-server running? (bun run demo:server)`, true);
     return;
   }
+
+  document.querySelectorAll<HTMLElement>(".view-tabs .tab").forEach((t) => {
+    t.onclick = () => switchView((t.dataset.view as "browse" | "library" | "history") ?? "browse");
+  });
+  $("#back-btn").onclick = () => switchView(previousView);
+  $("#reader-back").onclick = () => switchView("detail");
+  $("#reader-prev").onclick = () => void readerNavigate(-1);
+  $("#reader-next").onclick = () => void readerNavigate(1);
+  $("#load-more").onclick = () => void loadMoreFn?.();
+  $("#lib-add-category").onclick = async () => {
+    const input = $<HTMLInputElement>("#lib-new-category");
+    const name = input.value.trim();
+    if (!name) return;
+    await send("POST", "/library/categories", { name });
+    input.value = "";
+    await loadLibrary();
+  };
 
   $("#settings-save").onclick = () => void saveSettings();
   $("#searchBtn").onclick = () => void doSearch();
