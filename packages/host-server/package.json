@@ -17,6 +17,7 @@
     "@comical/host-bun": "workspace:*",
     "@comical/library": "workspace:*",
     "@comical/registry": "workspace:*",
+    "@comical/runtime": "workspace:*",
     "hono": "^4.12.23"
   }
 }

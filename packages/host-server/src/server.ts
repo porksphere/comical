@@ -4,6 +4,7 @@
 import { join } from "node:path";
 import { Library } from "@comical/library";
 import { ManifestStore, RegistryManager } from "@comical/registry";
+import { ComicalRuntime } from "@comical/runtime";
 import { BridgeManager } from "./bridge-manager.ts";
 import { FileLibraryStore } from "./library-store.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
@@ -43,7 +44,9 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
     const dir = typeof opts.library === "object" && opts.library.dir
       ? opts.library.dir
       : join(opts.dataDir, "library");
-    routerOpts.library = new Library(new FileLibraryStore(dir));
+    const lib = new Library(new FileLibraryStore(dir));
+    routerOpts.library = lib;
+    routerOpts.runtime = new ComicalRuntime({ bridges: manager, library: lib });
   }
   const router = createRouter(manager, routerOpts);
 

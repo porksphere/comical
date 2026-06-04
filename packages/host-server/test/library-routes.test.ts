@@ -6,6 +6,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Library } from "@comical/library";
+import { ComicalRuntime } from "@comical/runtime";
 import { BridgeManager } from "../src/bridge-manager.ts";
 import { FileLibraryStore } from "../src/library-store.ts";
 import { createRouter } from "../src/router.ts";
@@ -38,7 +39,8 @@ beforeAll(() => {
     settings: new SettingsStore(DATA_DIR),
   });
   const library = new Library(new FileLibraryStore(join(DATA_DIR, "library")));
-  const srv = Bun.serve({ port: 0, fetch: createRouter(manager, { library }).fetch });
+  const runtime = new ComicalRuntime({ bridges: manager, library });
+  const srv = Bun.serve({ port: 0, fetch: createRouter(manager, { library, runtime }).fetch });
   baseUrl = `http://localhost:${srv.port}`;
   stop = () => srv.stop(true);
 });
@@ -97,8 +99,8 @@ describe("/library lifecycle", () => {
     expect((await get("/library/entries/demo/s1")).status).toBe(404);
   });
 
-  test("validation: add without title is 400", async () => {
-    expect((await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "x" })).status).toBe(400);
+  test("validation: add without bridgeId is 400", async () => {
+    expect((await send("POST", "/library/entries", { seriesId: "x", title: "T" })).status).toBe(400);
   });
 });
 
