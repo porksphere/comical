@@ -84,6 +84,15 @@
     .history-item .hi-body { flex: 1; }
     .history-item .hi-title { font-size: 0.9rem; font-weight: 600; }
     .history-item .hi-sub { font-size: 0.78rem; color: #888; }
+    #tracker-panel { border-top: 1px solid #2a2a2e; margin-top: 0.75rem; padding-top: 0.6rem; }
+    .tracker-row { display: flex; justify-content: space-between; align-items: center; padding: 0.25rem 0; font-size: 0.85rem; }
+    .tracker-row-acts { display: flex; gap: 0.35rem; }
+    .tracker-search-result { padding: 0.3rem 0.4rem; cursor: pointer; border-radius: 4px; font-size: 0.84rem; }
+    .tracker-search-result:hover { background: #2a2a2e; color: #60a5fa; }
+    .tracker-search-result img { width: 28px; height: 42px; object-fit: cover; border-radius: 2px; vertical-align: middle; margin-right: 0.5rem; background: #333; }
+    .tracker-config-item { border-bottom: 1px solid #242427; padding: 0.5rem 0; }
+    .tracker-config-item:last-child { border-bottom: none; }
+    .tracker-config-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.6rem; margin: 0.5rem 0; }
   </style>
 </head>
 <body>
@@ -181,6 +190,7 @@
       </div>
       <div id="lib-category-picker" hidden></div>
       <div id="group-panel" hidden></div>
+      <div id="tracker-panel" hidden></div>
       <button id="read-direct-btn" hidden style="margin-bottom:0.75rem">▶ Read</button>
       <ul id="chapters"></ul>
     </div>
@@ -196,6 +206,14 @@
       </span>
     </div>
     <div id="reader-page"></div>
+  </section>
+
+  <!-- Trackers -->
+  <section class="panel" id="trackers-config-panel" style="display:none">
+    <details>
+      <summary>Trackers</summary>
+      <div id="trackers-config-list" style="margin-top:0.75rem"></div>
+    </details>
   </section>
 
   <!-- Registry (M4) -->
