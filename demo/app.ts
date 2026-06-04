@@ -26,7 +26,7 @@ interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
 interface TagGroup { label: string; kind?: string; tags: string[] }
-interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; artist?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[]; externalIds?: { anilist?: number; mal?: number; mu?: string } }
+interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; artist?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[]; externalIds?: Record<string, string | number> }
 interface Chapter { id: string; name: string; number?: number; pageCount?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
@@ -40,7 +40,7 @@ interface AvailableBridge { entry: { id: string; name: string; version: string }
 // Library (optional /library module)
 interface ProgressItem { chapterId: string; read: boolean; lastPage?: number; pageCount?: number }
 interface Category { id: string; name: string; order: number }
-interface LibEntry { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; author?: string; categoryIds: string[]; seriesGroupId?: string; externalIds?: { anilist?: number; mal?: number; mu?: string }; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt?: number }
+interface LibEntry { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; author?: string; categoryIds: string[]; seriesGroupId?: string; externalIds?: Record<string, string | number>; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt?: number }
 interface LibEntryView extends LibEntry { unreadCount: number }
 interface HistoryItem { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt: number }
 interface SeriesGroup { id: string; title: string; primaryKey: string; memberKeys: string[]; createdAt: number }
@@ -586,7 +586,7 @@ async function refreshLibraryStatus(): Promise<void> {
     const added = (sync.data as { added?: Chapter[] }).added ?? [];
     if (added.length) { newBadge.hidden = false; newBadge.textContent = `${added.length} new`; }
     await renderCategoryPicker(detail.entry.categoryIds);
-    await renderGroupPanel(bridgeId, seriesId, detail.entry.seriesGroupId);
+    await renderGroupPanel(bridgeId, seriesId, detail.entry);
   } catch {
     currentSeries.inLibrary = false;
     currentSeries.progress = new Map();
@@ -596,66 +596,91 @@ async function refreshLibraryStatus(): Promise<void> {
   }
 }
 
-async function renderGroupPanel(bridgeId: string, seriesId: string, groupId?: string): Promise<void> {
+async function renderGroupPanel(bridgeId: string, seriesId: string, entry: LibEntry): Promise<void> {
   const panel = $("#group-panel");
-  if (!groupId) { panel.hidden = true; return; }
-  const groups = await api<SeriesGroup[]>("/library/groups").catch(() => [] as SeriesGroup[]);
-  const group = groups.find((g) => g.id === groupId);
-  if (!group) { panel.hidden = true; return; }
-  panel.hidden = false;
+  panel.hidden = true;
   panel.innerHTML = "";
-  const heading = document.createElement("div");
-  heading.className = "muted";
-  heading.style.fontSize = "0.75rem";
-  heading.style.marginBottom = "0.35rem";
-  heading.textContent = "Sources";
-  panel.append(heading);
-  for (const key of group.memberKeys) {
-    const [bid, ...sidParts] = key.split(":");
-    const sid = sidParts.join(":");
+
+  const [groups, allEntries] = await Promise.all([
+    api<SeriesGroup[]>("/library/groups").catch(() => [] as SeriesGroup[]),
+    api<LibEntryView[]>("/library").catch(() => [] as LibEntryView[]),
+  ]);
+
+  const groupId = entry.seriesGroupId;
+  const currentKey = `${bridgeId}:${seriesId}`;
+
+  function makeRow(label: string, isPrimary: boolean, actions: HTMLElement): HTMLDivElement {
     const row = document.createElement("div");
     row.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:0.25rem 0;";
-    const isCurrent = bid === bridgeId && sid === seriesId;
-    const isPrimary = key === group.primaryKey;
-    row.innerHTML = `<span style="font-size:0.85rem">${esc(bid ?? "")}${isPrimary ? " <span class=\"ok\" style=\"font-size:0.7rem\">primary</span>" : ""}</span>`;
-    const actions = document.createElement("span");
-    actions.style.display = "flex";
-    actions.style.gap = "0.4rem";
-    if (!isCurrent) {
-      const switchBtn = document.createElement("button");
-      switchBtn.className = "secondary";
-      switchBtn.style.fontSize = "0.75rem";
-      switchBtn.style.padding = "0.15rem 0.5rem";
-      switchBtn.textContent = "Switch";
-      switchBtn.onclick = () => void openSeries(bid ?? "", sid);
-      actions.append(switchBtn);
-    }
-    if (!isPrimary) {
-      const primaryBtn = document.createElement("button");
-      primaryBtn.className = "secondary";
-      primaryBtn.style.fontSize = "0.75rem";
-      primaryBtn.style.padding = "0.15rem 0.5rem";
-      primaryBtn.textContent = "Set primary";
-      primaryBtn.onclick = async () => {
+    row.innerHTML = `<span style="font-size:0.85rem">${esc(label)}${isPrimary ? " <span class=\"ok\" style=\"font-size:0.7rem\">primary</span>" : ""}</span>`;
+    row.append(actions);
+    return row;
+  }
+  function makeBtn(text: string, fn: () => void): HTMLButtonElement {
+    const b = document.createElement("button");
+    b.className = "secondary";
+    b.style.cssText = "font-size:0.75rem;padding:0.15rem 0.5rem";
+    b.textContent = text;
+    b.onclick = fn;
+    return b;
+  }
+
+  if (groupId) {
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return;
+    panel.hidden = false;
+    const heading = document.createElement("div");
+    heading.className = "muted";
+    heading.style.cssText = "font-size:0.75rem;margin-bottom:0.35rem";
+    heading.textContent = "Sources";
+    panel.append(heading);
+    for (const key of group.memberKeys) {
+      const i = key.indexOf(":");
+      const bid = key.slice(0, i);
+      const sid = key.slice(i + 1);
+      const isCurrent = key === currentKey;
+      const isPrimary = key === group.primaryKey;
+      const acts = document.createElement("span");
+      acts.style.cssText = "display:flex;gap:0.4rem";
+      if (!isCurrent) acts.append(makeBtn("Switch", () => void openSeries(bid, sid)));
+      if (!isPrimary) acts.append(makeBtn("Set primary", async () => {
         await send("PUT", `/library/groups/${groupId}/primary`, { primaryKey: key });
         await refreshLibraryStatus();
-      };
-      actions.append(primaryBtn);
-    }
-    if (isCurrent) {
-      const unlinkBtn = document.createElement("button");
-      unlinkBtn.className = "secondary";
-      unlinkBtn.style.fontSize = "0.75rem";
-      unlinkBtn.style.padding = "0.15rem 0.5rem";
-      unlinkBtn.textContent = "Unlink";
-      unlinkBtn.onclick = async () => {
+      }));
+      if (isCurrent) acts.append(makeBtn("Unlink", async () => {
         await send("DELETE", `/library/entries/${bridgeId}/${enc(seriesId)}/leave-group`);
         await refreshLibraryStatus();
-      };
-      actions.append(unlinkBtn);
+      }));
+      panel.append(makeRow(bid, isPrimary, acts));
     }
-    row.append(actions);
-    panel.append(row);
+  } else {
+    // Find other library entries with the same title from different bridges.
+    const titleNorm = entry.title.trim().toLowerCase();
+    const candidates = allEntries.filter((e) =>
+      e.title.trim().toLowerCase() === titleNorm &&
+      !(e.bridgeId === bridgeId && e.seriesId === seriesId),
+    );
+    if (candidates.length === 0) return;
+    panel.hidden = false;
+    const heading = document.createElement("div");
+    heading.className = "muted";
+    heading.style.cssText = "font-size:0.75rem;margin-bottom:0.35rem";
+    heading.textContent = "Same title found in other sources — link them?";
+    panel.append(heading);
+    for (const c of candidates) {
+      const candidateKey = `${c.bridgeId}:${c.seriesId}`;
+      const acts = document.createElement("span");
+      acts.style.cssText = "display:flex;gap:0.4rem";
+      acts.append(makeBtn("Link", async () => {
+        if (c.seriesGroupId) {
+          await send("POST", `/library/entries/${bridgeId}/${enc(seriesId)}/join-group`, { groupId: c.seriesGroupId });
+        } else {
+          await send("POST", "/library/groups", { memberKeys: [currentKey, candidateKey], primaryKey: candidateKey });
+        }
+        await refreshLibraryStatus();
+      }));
+      panel.append(makeRow(c.bridgeId, false, acts));
+    }
   }
 }
 

@@ -12,27 +12,36 @@
  *   - importBridgeFavorites: paginate getFavorites, dedupe, bulk-add to library.
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapterIds.
  */
-import type { Chapter } from "@comical/contract";
-import type { LoadedBridge } from "@comical/core";
-import { entryKey, type AddSeriesResult, type Library, type SeriesSnapshot } from "@comical/library";
+import type { Chapter, PagedResults, TrackerSearchResult } from "@comical/contract";
+import type { LoadedBridge, LoadedTracker } from "@comical/core";
+import { entryKey, type AddSeriesResult, type Library, type SeriesSnapshot, type TrackerLink } from "@comical/library";
 
 export interface BridgeProvider {
   get(id: string): Promise<LoadedBridge>;
+}
+
+export interface TrackerProvider {
+  get(id: string): Promise<LoadedTracker>;
+  list(): Promise<Array<{ info: { id: string } }>>;
 }
 
 export interface RuntimeOptions {
   bridges: BridgeProvider;
   /** Optional — methods that require a library throw if omitted. */
   library?: Library;
+  /** Optional — methods that require trackers throw if omitted. */
+  trackers?: TrackerProvider;
 }
 
 export class ComicalRuntime {
   private readonly bridges: BridgeProvider;
   private readonly lib: Library | undefined;
+  private readonly trackers: TrackerProvider | undefined;
 
   constructor(opts: RuntimeOptions) {
     this.bridges = opts.bridges;
     this.lib = opts.library;
+    this.trackers = opts.trackers;
   }
 
   // ── addToLibrary ──────────────────────────────────────────────────────────────
@@ -106,6 +115,7 @@ export class ComicalRuntime {
     } catch {
       // read-sync is best-effort — library write already committed
     }
+    if (read) await this.syncEntryToTrackers(bridgeId, seriesId).catch(() => {});
   }
 
   async setProgress(
@@ -127,6 +137,7 @@ export class ComicalRuntime {
         await bridge.markChapterRead?.(seriesId, chapterId);
       }
     } catch { /* best-effort */ }
+    await this.syncEntryToTrackers(bridgeId, seriesId).catch(() => {});
   }
 
   async markReadUpTo(
@@ -148,6 +159,7 @@ export class ComicalRuntime {
         try { await bridge.markChapterRead(seriesId, c.id); } catch { /* best-effort */ }
       }
     } catch { /* best-effort */ }
+    await this.syncEntryToTrackers(bridgeId, seriesId).catch(() => {});
   }
 
   // ── Favorites import ──────────────────────────────────────────────────────────
@@ -205,6 +217,106 @@ export class ComicalRuntime {
     return { updated, newChapters };
   }
 
+  // ── Tracker sync ─────────────────────────────────────────────────────────────
+
+  /** Link a library entry to a tracker (e.g. after the user selects from a search result). */
+  async linkTracker(bridgeId: string, seriesId: string, trackerId: string, externalId: string | number): Promise<void> {
+    await this.requireLibrary().linkTracker(entryKey(bridgeId, seriesId), trackerId, externalId);
+  }
+
+  async unlinkTracker(bridgeId: string, seriesId: string, trackerId: string): Promise<void> {
+    await this.requireLibrary().unlinkTracker(entryKey(bridgeId, seriesId), trackerId);
+  }
+
+  async listTrackerLinks(bridgeId: string, seriesId: string): Promise<TrackerLink[]> {
+    return this.requireLibrary().listTrackerLinks(entryKey(bridgeId, seriesId));
+  }
+
+  /**
+   * Push the current read-state for one library entry to all linked trackers.
+   * Best-effort: errors per-tracker are swallowed, nothing throws.
+   * Called automatically after markRead / setProgress / markReadUpTo when trackers are configured.
+   */
+  async syncEntryToTrackers(bridgeId: string, seriesId: string): Promise<void> {
+    if (!this.lib || !this.trackers) return;
+    const key = entryKey(bridgeId, seriesId);
+    const links = await this.lib.listTrackerLinks(key);
+    if (links.length === 0) return;
+    const progress = await this.lib.getProgress(key);
+    const readCount = progress.filter((p) => p.read).length;
+    for (const link of links) {
+      try {
+        const tracker = await this.trackers.get(link.trackerId);
+        if (!tracker.info.capabilities.includes("status-sync") || !tracker.updateEntry) continue;
+        await tracker.updateEntry(link.externalId, { chaptersRead: readCount });
+        await this.lib.updateTrackerLink(key, link.trackerId, {
+          chaptersRead: readCount,
+          lastSyncAt: Date.now(),
+        });
+      } catch { /* per-tracker best-effort */ }
+    }
+  }
+
+  /**
+   * Pull the user's list from a tracker and update the status/chaptersRead on all existing
+   * tracker links for this tracker. Entries from the tracker that are not yet linked are counted
+   * as `unlinked` (the caller can prompt the user to link them manually).
+   * Capability "library-sync" required.
+   */
+  async syncFromTracker(trackerId: string): Promise<{ updated: number; unlinked: number }> {
+    const lib = this.requireLibrary();
+    if (!this.trackers) throw new Error("ComicalRuntime: no trackers configured");
+    const tracker = await this.trackers.get(trackerId);
+    if (!tracker.info.capabilities.includes("library-sync") || !tracker.getLibrary) {
+      throw new Error(`tracker "${trackerId}" does not support library-sync`);
+    }
+
+    // Build a lookup: externalId → entryKey for all existing links of this tracker.
+    const allEntries = await lib.getLibrary();
+    const linkIndex = new Map<string, string>(); // stringified externalId → entryKey
+    for (const entry of allEntries) {
+      const ek = entryKey(entry.bridgeId, entry.seriesId);
+      const link = await lib.getTrackerLink(ek, trackerId);
+      if (link) linkIndex.set(String(link.externalId), ek);
+    }
+
+    let page = 1;
+    let updated = 0;
+    let unlinked = 0;
+    while (true) {
+      const result = await tracker.getLibrary(page);
+      for (const item of result.items) {
+        const ek = linkIndex.get(String(item.externalId));
+        if (ek) {
+          await lib.updateTrackerLink(ek, trackerId, {
+            status: item.status,
+            ...(item.chaptersRead !== undefined && { chaptersRead: item.chaptersRead }),
+            lastSyncAt: Date.now(),
+          });
+          updated++;
+        } else {
+          unlinked++;
+        }
+      }
+      if (!result.hasNextPage) break;
+      page++;
+    }
+    return { updated, unlinked };
+  }
+
+  /**
+   * Search a tracker for a series title (for the "link tracker" UI flow).
+   * Capability "search" required.
+   */
+  async searchTracker(trackerId: string, query: string, page = 1): Promise<PagedResults<TrackerSearchResult>> {
+    if (!this.trackers) throw new Error("ComicalRuntime: no trackers configured");
+    const tracker = await this.trackers.get(trackerId);
+    if (!tracker.info.capabilities.includes("search") || !tracker.search) {
+      throw new Error(`tracker "${trackerId}" does not support search`);
+    }
+    return tracker.search(query, page);
+  }
+
   // ── Private ───────────────────────────────────────────────────────────────────
 
   private requireLibrary(): Library {
@@ -212,6 +324,7 @@ export class ComicalRuntime {
     return this.lib;
   }
 }
+
 
 /** Ascending chapter order by number, preserving original order for unnumbered chapters. */
 function orderForReading(chapters: Chapter[]): Chapter[] {

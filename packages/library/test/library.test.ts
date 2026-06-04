@@ -149,3 +149,64 @@ describe("guards", () => {
     await expect(lib.markRead(KEY, "c1", true)).rejects.toThrow("not in library");
   });
 });
+
+describe("series grouping via generic externalIds", () => {
+  test("adding two entries with the same externalId auto-links them", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries({ ...SERIES, externalIds: { mal: 12345 } });
+    const r2 = await lib.addSeries({
+      bridgeId: "mangadex",
+      seriesId: "md-1",
+      title: "Series One",
+      externalIds: { mal: 12345 },
+    });
+    expect(r2.autoLinked).toBeDefined();
+    expect(r2.autoLinked?.sharedId.service).toBe("mal");
+    expect(r2.autoLinked?.sharedId.value).toBe(12345);
+  });
+
+  test("entries with different externalIds do not auto-link", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries({ ...SERIES, externalIds: { mal: 1 } });
+    const r2 = await lib.addSeries({ bridgeId: "alt", seriesId: "s2", title: "Other", externalIds: { mal: 2 } });
+    expect(r2.autoLinked).toBeUndefined();
+  });
+});
+
+describe("tracker links", () => {
+  test("link / list / update / unlink", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+
+    await lib.linkTracker(KEY, "anilist", 98765);
+    const links = await lib.listTrackerLinks(KEY);
+    expect(links).toHaveLength(1);
+    expect(links[0]?.trackerId).toBe("anilist");
+    expect(links[0]?.externalId).toBe(98765);
+
+    await lib.updateTrackerLink(KEY, "anilist", { chaptersRead: 5, lastSyncAt: 2000 });
+    const updated = await lib.getTrackerLink(KEY, "anilist");
+    expect(updated?.chaptersRead).toBe(5);
+
+    await lib.unlinkTracker(KEY, "anilist");
+    expect(await lib.listTrackerLinks(KEY)).toHaveLength(0);
+  });
+
+  test("linking a different tracker id adds a second link", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.linkTracker(KEY, "anilist", 1);
+    await lib.linkTracker(KEY, "mal", 2);
+    expect(await lib.listTrackerLinks(KEY)).toHaveLength(2);
+  });
+
+  test("relinking the same tracker updates the externalId", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.linkTracker(KEY, "anilist", 1);
+    await lib.linkTracker(KEY, "anilist", 99);
+    const links = await lib.listTrackerLinks(KEY);
+    expect(links).toHaveLength(1);
+    expect(links[0]?.externalId).toBe(99);
+  });
+});

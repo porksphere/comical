@@ -57,15 +57,10 @@ export const libraryEntrySchema = z.object({
    */
   seriesGroupId: z.string().optional(),
   /**
-   * Cross-service identifiers persisted from `SeriesInfo.externalIds` at add-time. Used for
-   * automatic group-suggestion when adding a second bridge entry for the same title, and for
-   * future AniList/MAL sync provider matching.
+   * Cross-service identifiers persisted from `SeriesInfo.externalIds` at add-time. Keyed by
+   * tracker id (e.g. "anilist", "mal"). Used for auto-linking groups and for tracker sync matching.
    */
-  externalIds: z.object({
-    anilist: z.number().int().positive().optional(),
-    mal: z.number().int().positive().optional(),
-    mu: z.string().optional(),
-  }).optional(),
+  externalIds: z.record(z.string(), z.union([z.string().min(1), z.number().int().positive()])).optional(),
 });
 export type LibraryEntry = z.infer<typeof libraryEntrySchema>;
 
@@ -121,3 +116,16 @@ export interface ResumePoint {
   chapterId: string;
   lastPage: number;
 }
+
+/**
+ * Association between a library entry and a tracker service entry. Persisted per-series
+ * so the runtime can push read state to the tracker after each chapter mark.
+ */
+export const trackerLinkSchema = z.object({
+  trackerId: z.string().min(1),
+  externalId: z.union([z.string().min(1), z.number().int().positive()]),
+  status: z.enum(["reading", "completed", "on_hold", "dropped", "planning", "rereading"]).optional(),
+  chaptersRead: z.number().optional(),
+  lastSyncAt: z.number().int().optional(),
+});
+export type TrackerLink = z.infer<typeof trackerLinkSchema>;

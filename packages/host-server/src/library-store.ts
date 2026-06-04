@@ -10,7 +10,7 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Category, ChapterProgress, LibraryEntry, LibraryStore, SeriesGroup } from "@comical/library";
+import type { Category, ChapterProgress, LibraryEntry, LibraryStore, SeriesGroup, TrackerLink } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -25,6 +25,7 @@ export class FileLibraryStore implements LibraryStore {
   private categoriesCache?: Category[];
   private groupsCache?: Map<string, SeriesGroup>;
   private progressCache = new Map<string, Map<string, ChapterProgress>>();
+  private trackerLinksCache?: Map<string, TrackerLink[]>;
 
   constructor(private readonly dir: string) {}
 
@@ -36,6 +37,9 @@ export class FileLibraryStore implements LibraryStore {
   }
   private get groupsPath(): string {
     return join(this.dir, "groups.json");
+  }
+  private get trackerLinksPath(): string {
+    return join(this.dir, "tracker-links.json");
   }
   private progressPath(key: string): string {
     return join(this.dir, "progress", `${encodeURIComponent(key)}.json`);
@@ -155,5 +159,44 @@ export class FileLibraryStore implements LibraryStore {
   }
   async deleteGroup(id: string): Promise<void> {
     if ((await this.groups()).delete(id)) await this.flushGroups();
+  }
+
+  // ── Tracker links ─────────────────────────────────────────────────────────────
+
+  private async trackerLinks(): Promise<Map<string, TrackerLink[]>> {
+    if (!this.trackerLinksCache) {
+      const obj = await readJson<Record<string, TrackerLink[]>>(this.trackerLinksPath, {});
+      this.trackerLinksCache = new Map(Object.entries(obj));
+    }
+    return this.trackerLinksCache;
+  }
+
+  private async flushTrackerLinks(): Promise<void> {
+    const obj = Object.fromEntries((await this.trackerLinks()).entries());
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(this.trackerLinksPath, JSON.stringify(obj, null, 2), "utf8");
+  }
+
+  async listTrackerLinks(key: string): Promise<TrackerLink[]> {
+    return (await this.trackerLinks()).get(key) ?? [];
+  }
+  async putTrackerLink(key: string, link: TrackerLink): Promise<void> {
+    const map = await this.trackerLinks();
+    const existing = map.get(key) ?? [];
+    const idx = existing.findIndex((l) => l.trackerId === link.trackerId);
+    if (idx === -1) existing.push(link);
+    else existing[idx] = link;
+    map.set(key, existing);
+    await this.flushTrackerLinks();
+  }
+  async deleteTrackerLink(key: string, trackerId: string): Promise<void> {
+    const map = await this.trackerLinks();
+    const existing = map.get(key);
+    if (!existing) return;
+    const next = existing.filter((l) => l.trackerId !== trackerId);
+    if (next.length === existing.length) return;
+    if (next.length === 0) map.delete(key);
+    else map.set(key, next);
+    await this.flushTrackerLinks();
   }
 }
