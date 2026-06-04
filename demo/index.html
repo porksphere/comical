@@ -63,6 +63,8 @@
     .view-tabs { margin: 0.5rem 0 1rem; }
     .card { position: relative; }
     .badge-unread { position: absolute; top: 0.5rem; right: 0.5rem; background: #2563eb; color: #fff; border-radius: 999px; font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.45rem; }
+    .badge-sources { position: absolute; top: 0.5rem; left: 0.5rem; background: #4b5563; color: #e5e7eb; border-radius: 999px; font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.4rem; }
+    #group-panel { border-top: 1px solid #2a2a2e; margin-top: 0.75rem; padding-top: 0.6rem; }
     .card-categories { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-top: 0.35rem; }
     .cat-chip { cursor: pointer; font-size: 0.7rem; padding: 0.15rem 0.5rem; }
     .cat-chip:hover { border-color: #60a5fa; color: #ddd; }
@@ -112,6 +114,8 @@
       <div class="row">
         <button id="settings-save">Save settings</button>
         <span id="settings-msg"></span>
+        <button id="import-favorites-btn" class="secondary" hidden>Import favorites → Library</button>
+        <span id="import-favorites-msg" class="muted"></span>
       </div>
     </details>
   </section>
@@ -176,6 +180,7 @@
         </div>
       </div>
       <div id="lib-category-picker" hidden></div>
+      <div id="group-panel" hidden></div>
       <button id="read-direct-btn" hidden style="margin-bottom:0.75rem">▶ Read</button>
       <ul id="chapters"></ul>
     </div>

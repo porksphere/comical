@@ -15,6 +15,7 @@ import {
   type LibraryEntry,
   type LibraryEntryView,
   type ResumePoint,
+  type SeriesGroup,
 } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
@@ -26,6 +27,18 @@ export interface SeriesSnapshot {
   thumbnailUrl?: string;
   author?: string;
   categoryIds?: string[];
+  /** Cross-service ids from `SeriesInfo.externalIds` — persisted for group suggestion + sync. */
+  externalIds?: { anilist?: number; mal?: number; mu?: string };
+}
+
+/** Returned when adding a series. `autoLinked` is set when the new entry was automatically grouped with an existing one via a shared external id. */
+export interface AddSeriesResult {
+  entry: LibraryEntry;
+  /** Present when the new entry was automatically grouped with an existing library entry via a shared external id. */
+  autoLinked?: {
+    matchedKey: string;
+    sharedId: { service: "anilist" | "mal" | "mu"; value: number | string };
+  };
 }
 
 export interface LibraryOptions {
@@ -45,7 +58,7 @@ export class Library {
 
   // ── Collection ─────────────────────────────────────────────────────────────
 
-  async addSeries(snap: SeriesSnapshot): Promise<LibraryEntry> {
+  async addSeries(snap: SeriesSnapshot): Promise<AddSeriesResult> {
     const key = entryKey(snap.bridgeId, snap.seriesId);
     const existing = await this.store.getEntry(key);
     const t = this.now();
@@ -64,11 +77,31 @@ export class Library {
     if (snap.thumbnailUrl !== undefined) entry.thumbnailUrl = snap.thumbnailUrl;
     if (snap.author !== undefined) entry.author = snap.author;
     if (!existing && snap.categoryIds) entry.categoryIds = snap.categoryIds;
+    if (snap.externalIds !== undefined) entry.externalIds = snap.externalIds;
     await this.store.putEntry(entry);
-    return entry;
+
+    // Auto-link: for new entries with externalIds, find any existing entry that shares an id
+    // and automatically create/join a group. No user action required.
+    let autoLinked: AddSeriesResult["autoLinked"];
+    if (!existing && snap.externalIds) {
+      const match = await this.findExternalIdMatch(key, snap.externalIds);
+      if (match) {
+        const matchedEntry = await this.store.getEntry(match.matchedKey);
+        if (matchedEntry?.seriesGroupId) {
+          await this.joinGroup(matchedEntry.seriesGroupId, key);
+        } else {
+          // Existing entry is primary (it was added first); new entry joins.
+          await this.createGroup([match.matchedKey, key], match.matchedKey);
+        }
+        autoLinked = match;
+      }
+    }
+
+    return { entry, ...(autoLinked !== undefined && { autoLinked }) };
   }
 
   async removeSeries(key: string): Promise<void> {
+    await this.leaveGroup(key);
     await this.store.deleteEntry(key);
     await this.store.deleteProgressForEntry(key);
   }
@@ -233,6 +266,96 @@ export class Library {
     }
   }
 
+  // ── Series groups ─────────────────────────────────────────────────────────────
+
+  async listGroups(): Promise<SeriesGroup[]> {
+    return this.store.listGroups();
+  }
+
+  /** Link two or more existing library entries as the same title from different bridges. */
+  async createGroup(memberKeys: string[], primaryKey: string): Promise<SeriesGroup> {
+    if (!memberKeys.includes(primaryKey)) throw new Error("primaryKey must be in memberKeys");
+    if (memberKeys.length < 2) throw new Error("a group requires at least 2 members");
+    const primary = await this.store.getEntry(primaryKey);
+    if (!primary) throw new Error(`entry not in library: ${primaryKey}`);
+    const deduped = [...new Set(memberKeys)];
+    const group: SeriesGroup = {
+      id: crypto.randomUUID(),
+      title: primary.title,
+      primaryKey,
+      memberKeys: deduped,
+      createdAt: this.now(),
+    };
+    await this.store.putGroup(group);
+    for (const key of deduped) {
+      const e = await this.store.getEntry(key);
+      if (e) await this.store.putEntry({ ...e, seriesGroupId: group.id, updatedAt: this.now() });
+    }
+    return group;
+  }
+
+  /** Add an entry to an existing group. */
+  async joinGroup(groupId: string, key: string): Promise<void> {
+    const groups = await this.store.listGroups();
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) throw new Error(`group not found: ${groupId}`);
+    if (group.memberKeys.includes(key)) return;
+    group.memberKeys = [...group.memberKeys, key];
+    await this.store.putGroup(group);
+    const entry = await this.store.getEntry(key);
+    if (entry) await this.store.putEntry({ ...entry, seriesGroupId: groupId, updatedAt: this.now() });
+  }
+
+  /**
+   * Remove an entry from its group. Dissolves the group if fewer than 2 members would remain.
+   * No-op if the entry has no group.
+   */
+  async leaveGroup(key: string): Promise<void> {
+    const entry = await this.store.getEntry(key);
+    if (!entry?.seriesGroupId) return;
+    const { seriesGroupId: groupId, ...entryWithoutGroup } = entry;
+    await this.store.putEntry({ ...entryWithoutGroup, updatedAt: this.now() });
+
+    const groups = await this.store.listGroups();
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return;
+    const remaining = group.memberKeys.filter((k) => k !== key);
+    if (remaining.length < 2) {
+      // Dissolve — remove groupId from the last remaining member too.
+      await this.store.deleteGroup(groupId);
+      for (const rk of remaining) {
+        const re = await this.store.getEntry(rk);
+        if (re) {
+          const { seriesGroupId: _drop, ...rest } = re;
+          await this.store.putEntry({ ...rest, updatedAt: this.now() });
+        }
+      }
+    } else {
+      group.memberKeys = remaining;
+      if (group.primaryKey === key) group.primaryKey = remaining[0]!;
+      await this.store.putGroup(group);
+    }
+  }
+
+  /** Get the group this entry belongs to, if any. */
+  async getGroup(key: string): Promise<SeriesGroup | undefined> {
+    const entry = await this.store.getEntry(key);
+    if (!entry?.seriesGroupId) return undefined;
+    const groups = await this.store.listGroups();
+    return groups.find((g) => g.id === entry.seriesGroupId);
+  }
+
+  /** Change which bridge is the preferred reading source for a group. */
+  async setPrimarySource(groupId: string, newPrimaryKey: string): Promise<void> {
+    const groups = await this.store.listGroups();
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) throw new Error(`group not found: ${groupId}`);
+    if (!group.memberKeys.includes(newPrimaryKey)) {
+      throw new Error(`${newPrimaryKey} is not a member of group ${groupId}`);
+    }
+    await this.store.putGroup({ ...group, primaryKey: newPrimaryKey });
+  }
+
   // ── Internals ────────────────────────────────────────────────────────────────
 
   /** Merge a progress patch and refresh the entry's resume cache when a read advances. */
@@ -273,6 +396,27 @@ export class Library {
       throw new Error(`series not in library: ${bridgeId}/${seriesId}`);
     }
     return entry;
+  }
+
+  private async findExternalIdMatch(
+    newKey: string,
+    ids: NonNullable<SeriesSnapshot["externalIds"]>,
+  ): Promise<AddSeriesResult["autoLinked"]> {
+    const entries = await this.store.listEntries();
+    for (const e of entries) {
+      const ek = entryKey(e.bridgeId, e.seriesId);
+      if (ek === newKey || !e.externalIds) continue;
+      if (ids.anilist !== undefined && e.externalIds.anilist === ids.anilist) {
+        return { matchedKey: ek, sharedId: { service: "anilist", value: ids.anilist } };
+      }
+      if (ids.mal !== undefined && e.externalIds.mal === ids.mal) {
+        return { matchedKey: ek, sharedId: { service: "mal", value: ids.mal } };
+      }
+      if (ids.mu !== undefined && e.externalIds.mu === ids.mu) {
+        return { matchedKey: ek, sharedId: { service: "mu", value: ids.mu } };
+      }
+    }
+    return undefined;
   }
 }
 

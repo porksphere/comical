@@ -37,8 +37,8 @@ describe("collection", () => {
     const lib = makeLibrary();
     const first = await lib.addSeries(SERIES);
     const again = await lib.addSeries({ ...SERIES, title: "Renamed" });
-    expect(again.addedAt).toBe(first.addedAt);
-    expect(again.title).toBe("Renamed");
+    expect(again.entry.addedAt).toBe(first.entry.addedAt);
+    expect(again.entry.title).toBe("Renamed");
   });
 });
 

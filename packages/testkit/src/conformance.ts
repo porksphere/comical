@@ -71,6 +71,7 @@ const CAPABILITY_METHOD: Partial<Record<BridgeCapability, keyof Bridge>> = {
   settings: "getSettings",
   favorites: "getFavorites",
   direct: "getSeriesPages",
+  "read-sync": "markChapterRead",
 };
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
