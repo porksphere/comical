@@ -8,3 +8,4 @@ export * from "./version.ts";
 export * from "./models.ts";
 export * from "./capabilities.ts";
 export * from "./bridge.ts";
+export * from "./tracker.ts";

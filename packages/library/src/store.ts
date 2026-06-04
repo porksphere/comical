@@ -6,7 +6,7 @@
  *
  * Keys are `entryKey(bridgeId, seriesId)`.
  */
-import type { Category, ChapterProgress, LibraryEntry, SeriesGroup } from "./models.ts";
+import type { Category, ChapterProgress, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
 
 export interface LibraryStore {
   // ── Entries ──────────────────────────────────────────────────────────────
@@ -30,4 +30,9 @@ export interface LibraryStore {
   listGroups(): Promise<SeriesGroup[]>;
   putGroup(group: SeriesGroup): Promise<void>;
   deleteGroup(id: string): Promise<void>;
+
+  // ── Tracker links ─────────────────────────────────────────────────────────
+  listTrackerLinks(key: string): Promise<TrackerLink[]>;
+  putTrackerLink(key: string, link: TrackerLink): Promise<void>;
+  deleteTrackerLink(key: string, trackerId: string): Promise<void>;
 }

@@ -58,16 +58,11 @@ export const seriesInfoSchema = z.object({
   status: seriesStatusSchema.optional(),
   languages: z.array(z.string()).optional(),
   /**
-   * Known cross-service identifiers for this series. Populated by bridges that know their
-   * backend's external IDs (e.g. Komga stores MAL IDs via metadata enrichment; example-bridge exposes
-   * both its own UUID and a MAL mapping). Used by sync providers (AniList, MAL) to match
-   * local library entries to external tracking entries without manual linking.
+   * Known cross-service identifiers for this series, keyed by tracker id (e.g. "anilist", "mal").
+   * Populated by bridges that expose external mappings. Used by the tracker system to auto-link
+   * library entries to tracker entries without manual matching.
    */
-  externalIds: z.object({
-    anilist: z.number().int().positive().optional(),
-    mal: z.number().int().positive().optional(),
-    mu: z.string().optional(),
-  }).optional(),
+  externalIds: z.record(z.string(), z.union([z.string().min(1), z.number().int().positive()])).optional(),
 });
 export type SeriesInfo = z.infer<typeof seriesInfoSchema>;
 

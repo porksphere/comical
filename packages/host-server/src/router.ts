@@ -14,6 +14,7 @@ import { entryKey, type Library } from "@comical/library";
 import type { RegistryManager } from "@comical/registry";
 import type { ComicalRuntime } from "@comical/runtime";
 import type { BridgeManager } from "./bridge-manager.ts";
+import type { TrackerManager } from "./tracker-manager.ts";
 
 export interface RouterOptions {
   /** CORS origin(s) allowed. Defaults to '*' for LAN use. */
@@ -26,6 +27,8 @@ export interface RouterOptions {
   library?: Library;
   /** Runtime orchestration layer — required alongside `library` for read-sync and richer addToLibrary. */
   runtime?: ComicalRuntime;
+  /** Tracker manager — enables `/trackers` endpoints when provided. */
+  trackers?: TrackerManager;
 }
 
 type Bindings = Record<string, never>;
@@ -53,6 +56,8 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     app.use("/bridges/*", guard as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     app.use("/library/*", guard as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    app.use("/trackers/*", guard as any);
   }
 
   app.use("*", async (c, next) => {
@@ -286,6 +291,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
   // ── Library (optional local tracking module) ──────────────────────────────────
   // Mounted only when a Library service is supplied; cross-bridge, keyed by (bridgeId, seriesId).
 
+  const trackerMgr = opts.trackers;
   const lib = opts.library;
   const runtime = opts.runtime;
   if (lib) {
@@ -342,7 +348,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       const b = await body<{
         bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string;
         author?: string; categoryIds?: string[];
-        externalIds?: { anilist?: number; mal?: number; mu?: string };
+        externalIds?: Record<string, string | number>;
       }>(c);
       if (!b?.bridgeId || !b.seriesId) {
         return c.json({ error: "bridgeId and seriesId are required" }, 400);
@@ -449,6 +455,89 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     });
 
     app.post("/library/sync", async (c) => c.json(await runtime!.backgroundSync()));
+
+    // Tracker links — per-entry associations to external tracker services
+    app.get("/library/entries/:bridgeId/:seriesId/tracker-links", async (c) =>
+      c.json(await lib.listTrackerLinks(keyOf(c))),
+    );
+
+    app.post("/library/entries/:bridgeId/:seriesId/tracker-links", async (c) => {
+      const b = await body<{ trackerId?: string; externalId?: string | number }>(c);
+      if (!b?.trackerId || b.externalId === undefined) {
+        return c.json({ error: "trackerId and externalId are required" }, 400);
+      }
+      return withLibraryEntry(c, () =>
+        runtime!.linkTracker(c.req.param("bridgeId"), c.req.param("seriesId"), b.trackerId!, b.externalId!),
+      );
+    });
+
+    app.delete("/library/entries/:bridgeId/:seriesId/tracker-links/:trackerId", async (c) => {
+      await lib.unlinkTracker(keyOf(c), c.req.param("trackerId"));
+      return c.json({ ok: true });
+    });
+  }
+
+  // ── Tracker endpoints ─────────────────────────────────────────────────────────
+  // Mounted only when a TrackerManager is provided.
+
+  if (trackerMgr) {
+    app.get("/trackers", async (c) => c.json(await trackerMgr.list()));
+
+    app.get("/trackers/:id/settings", async (c) => {
+      const id = c.req.param("id");
+      try {
+        const tracker = await trackerMgr.get(id);
+        const settings = tracker.getSettings?.() ?? [];
+        const stored = await trackerMgr.storedSettings(id);
+        const secretKeys = new Set(settings.filter((d) => d.type === "string" && d.secret).map((d) => d.key));
+        const values: Record<string, SettingValue> = {};
+        const secretsSet: string[] = [];
+        for (const [k, v] of Object.entries(stored)) {
+          if (secretKeys.has(k)) { if (v !== undefined && v !== "") secretsSet.push(k); }
+          else values[k] = v;
+        }
+        return c.json({ info: tracker.info, settings, values, secretsSet });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
+      }
+    });
+
+    app.put("/trackers/:id/settings", async (c) => {
+      const id = c.req.param("id");
+      let b: Record<string, SettingValue>;
+      try { b = await c.req.json<Record<string, SettingValue>>(); }
+      catch { return c.json({ error: "invalid JSON" }, 400); }
+      try {
+        const updated = await trackerMgr.updateSettings(id, b);
+        return c.json({ settings: updated });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
+      }
+    });
+
+    app.get("/trackers/:id/search", async (c) => {
+      const id = c.req.param("id");
+      const q = c.req.query("q") ?? "";
+      const page = Number(c.req.query("page") ?? "1");
+      try {
+        return c.json(await runtime!.searchTracker(id, q, page));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return c.json({ error: msg }, msg.includes("not found") ? 404 : 400);
+      }
+    });
+
+    app.post("/trackers/:id/sync", async (c) => {
+      const id = c.req.param("id");
+      try {
+        return c.json(await runtime!.syncFromTracker(id));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return c.json({ error: msg }, msg.includes("not found") ? 404 : 400);
+      }
+    });
   }
 
   // ── M4 Registry endpoints ──────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import { BridgeManager } from "./bridge-manager.ts";
 import { FileLibraryStore } from "./library-store.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
 import { SettingsStore } from "./settings-store.ts";
+import { TrackerManager } from "./tracker-manager.ts";
 
 export interface ServerOptions {
   port?: number;
@@ -21,6 +22,11 @@ export interface ServerOptions {
    * pass `{ dir }` to override. Omit to leave the `/library` endpoints unmounted entirely.
    */
   library?: boolean | { dir?: string };
+  /**
+   * Enable the tracker plugin system. Pass a path (or array of paths) to scan for tracker bundles.
+   * Omit to leave `/trackers` endpoints unmounted entirely.
+   */
+  trackersDir?: string | string[];
 }
 
 export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> {
@@ -40,13 +46,28 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
   const routerOpts: RouterOptions = { registry };
   if (opts.origin) routerOpts.origin = opts.origin;
   if (opts.token) routerOpts.token = opts.token;
+
+  let trackerManager: TrackerManager | undefined;
+  if (opts.trackersDir) {
+    trackerManager = new TrackerManager({
+      trackersDir: opts.trackersDir,
+      dataDir: opts.dataDir,
+      settings,
+    });
+    routerOpts.trackers = trackerManager;
+  }
+
   if (opts.library) {
     const dir = typeof opts.library === "object" && opts.library.dir
       ? opts.library.dir
       : join(opts.dataDir, "library");
     const lib = new Library(new FileLibraryStore(dir));
     routerOpts.library = lib;
-    routerOpts.runtime = new ComicalRuntime({ bridges: manager, library: lib });
+    routerOpts.runtime = new ComicalRuntime({
+      bridges: manager,
+      library: lib,
+      ...(trackerManager ? { trackers: trackerManager } : {}),
+    });
   }
   const router = createRouter(manager, routerOpts);
 

@@ -16,6 +16,7 @@ import {
   type LibraryEntryView,
   type ResumePoint,
   type SeriesGroup,
+  type TrackerLink,
 } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
@@ -27,8 +28,8 @@ export interface SeriesSnapshot {
   thumbnailUrl?: string;
   author?: string;
   categoryIds?: string[];
-  /** Cross-service ids from `SeriesInfo.externalIds` — persisted for group suggestion + sync. */
-  externalIds?: { anilist?: number; mal?: number; mu?: string };
+  /** Cross-service ids from `SeriesInfo.externalIds`, keyed by tracker id — persisted for auto-grouping + sync. */
+  externalIds?: Record<string, string | number>;
 }
 
 /** Returned when adding a series. `autoLinked` is set when the new entry was automatically grouped with an existing one via a shared external id. */
@@ -37,7 +38,7 @@ export interface AddSeriesResult {
   /** Present when the new entry was automatically grouped with an existing library entry via a shared external id. */
   autoLinked?: {
     matchedKey: string;
-    sharedId: { service: "anilist" | "mal" | "mu"; value: number | string };
+    sharedId: { service: string; value: number | string };
   };
 }
 
@@ -406,17 +407,40 @@ export class Library {
     for (const e of entries) {
       const ek = entryKey(e.bridgeId, e.seriesId);
       if (ek === newKey || !e.externalIds) continue;
-      if (ids.anilist !== undefined && e.externalIds.anilist === ids.anilist) {
-        return { matchedKey: ek, sharedId: { service: "anilist", value: ids.anilist } };
-      }
-      if (ids.mal !== undefined && e.externalIds.mal === ids.mal) {
-        return { matchedKey: ek, sharedId: { service: "mal", value: ids.mal } };
-      }
-      if (ids.mu !== undefined && e.externalIds.mu === ids.mu) {
-        return { matchedKey: ek, sharedId: { service: "mu", value: ids.mu } };
+      for (const [service, id] of Object.entries(ids)) {
+        if (e.externalIds[service] === id) {
+          return { matchedKey: ek, sharedId: { service, value: id } };
+        }
       }
     }
     return undefined;
+  }
+
+  // ── Tracker links ─────────────────────────────────────────────────────────────
+
+  async linkTracker(key: string, trackerId: string, externalId: string | number): Promise<void> {
+    await this.requireEntry(key);
+    const existing = (await this.store.listTrackerLinks(key)).find((l) => l.trackerId === trackerId);
+    const link: TrackerLink = { ...existing, trackerId, externalId };
+    await this.store.putTrackerLink(key, link);
+  }
+
+  async unlinkTracker(key: string, trackerId: string): Promise<void> {
+    await this.store.deleteTrackerLink(key, trackerId);
+  }
+
+  async getTrackerLink(key: string, trackerId: string): Promise<TrackerLink | undefined> {
+    return (await this.store.listTrackerLinks(key)).find((l) => l.trackerId === trackerId);
+  }
+
+  async listTrackerLinks(key: string): Promise<TrackerLink[]> {
+    return this.store.listTrackerLinks(key);
+  }
+
+  async updateTrackerLink(key: string, trackerId: string, patch: Partial<TrackerLink>): Promise<void> {
+    const existing = await this.getTrackerLink(key, trackerId);
+    if (!existing) throw new Error(`tracker link not found: ${key} / ${trackerId}`);
+    await this.store.putTrackerLink(key, { ...existing, ...patch, trackerId });
   }
 }
 
