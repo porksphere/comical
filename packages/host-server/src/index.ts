@@ -6,6 +6,7 @@
  * bridge code; all fetching, parsing, and rate-limiting happens server-side.
  */
 export { BridgeManager } from "./bridge-manager.ts";
+export { FileLibraryStore } from "./library-store.ts";
 export { createRouter, type RouterOptions } from "./router.ts";
 export { SettingsStore } from "./settings-store.ts";
 export { createServer, type ServerOptions } from "./server.ts";

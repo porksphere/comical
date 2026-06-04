@@ -2,17 +2,24 @@
  * Assembles the complete server: SettingsStore + BridgeManager + RegistryManager + Hono router.
  */
 import { join } from "node:path";
+import { Library } from "@comical/library";
 import { ManifestStore, RegistryManager } from "@comical/registry";
 import { BridgeManager } from "./bridge-manager.ts";
+import { FileLibraryStore } from "./library-store.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
 import { SettingsStore } from "./settings-store.ts";
 
 export interface ServerOptions {
   port?: number;
-  bridgesDir: string;
+  bridgesDir: string | string[];
   dataDir: string;
   origin?: string;
   token?: string;
+  /**
+   * Enable the optional local library/tracking module. `true` stores it under `{dataDir}/library`;
+   * pass `{ dir }` to override. Omit to leave the `/library` endpoints unmounted entirely.
+   */
+  library?: boolean | { dir?: string };
 }
 
 export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> {
@@ -32,6 +39,12 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
   const routerOpts: RouterOptions = { registry };
   if (opts.origin) routerOpts.origin = opts.origin;
   if (opts.token) routerOpts.token = opts.token;
+  if (opts.library) {
+    const dir = typeof opts.library === "object" && opts.library.dir
+      ? opts.library.dir
+      : join(opts.dataDir, "library");
+    routerOpts.library = new Library(new FileLibraryStore(dir));
+  }
   const router = createRouter(manager, routerOpts);
 
   return Bun.serve({ port: opts.port ?? 3100, fetch: router.fetch });
@@ -45,6 +58,7 @@ if (import.meta.main) {
     port: Number(process.env.PORT ?? 3100),
     bridgesDir: join(ROOT, "bridges"),
     dataDir: process.env.COMICAL_DATA_DIR ?? join(ROOT, ".comical"),
+    library: true,
     ...(process.env.COMICAL_ORIGIN ? { origin: process.env.COMICAL_ORIGIN } : {}),
     ...(process.env.COMICAL_TOKEN ? { token: process.env.COMICAL_TOKEN } : {}),
   });

@@ -33,7 +33,7 @@ describe("host-bun integration (real HTTP)", () => {
     expect(results.items.length).toBeGreaterThan(0);
     expect(results.items[0]!.id).toBe("sherlock");
 
-    const pages = await bridge.getChapterPages("sherlock", "sherlock-1");
+    const pages = await bridge.getChapterPages!("sherlock", "sherlock-1");
     expect(pages.length).toBe(4);
     expect(pages[0]!.imageUrl).toBe("https://picsum.photos/seed/sherlock-sherlock-1-1/700/1000");
   });

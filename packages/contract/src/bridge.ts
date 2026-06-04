@@ -41,10 +41,15 @@ export interface Bridge {
   getSeriesDetails(seriesId: string): Promise<SeriesInfo>;
 
   /** Ordered chapter list for a series. Order is the bridge's responsibility. */
-  getChapters(seriesId: string): Promise<Chapter[]>;
+  getChapters?(seriesId: string): Promise<Chapter[]>;
 
   /** Resolve the readable pages (absolute image URLs) for a chapter. */
-  getChapterPages(seriesId: string, chapterId: string): Promise<Page[]>;
+  getChapterPages?(seriesId: string, chapterId: string): Promise<Page[]>;
+
+  // ---- Direct-read (capability "direct") ----
+
+  /** Flat page list for a series with no chapter structure. (capability "direct") */
+  getSeriesPages?(seriesId: string): Promise<Page[]>;
 
   // ---- Optional capabilities (advertise via BridgeInfo.capabilities) ----
 

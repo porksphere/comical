@@ -3,6 +3,7 @@
  * record/replay cassettes, and the reusable bridge conformance suite.
  */
 export * from "./fixture-backend.ts";
+export * from "./direct-fixture-backend.ts";
 export * from "./mock-host.ts";
 export * from "./cassette.ts";
 export * from "./conformance.ts";

@@ -90,7 +90,7 @@ describe("loadBridge", () => {
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
     const b = loadBridge({ code: bad, capabilities: mockHost() });
-    await expect(b.getChapterPages("m", "c")).rejects.toBeInstanceOf(BridgeValidationError);
+    await expect(b.getChapterPages!("m", "c")).rejects.toBeInstanceOf(BridgeValidationError);
   });
 
   test("rejects an incompatible contract version", () => {

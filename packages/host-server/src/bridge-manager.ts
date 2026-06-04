@@ -22,7 +22,7 @@ import {
 import type { SettingsStore } from "./settings-store.ts";
 
 export interface BridgeManagerOptions {
-  bridgesDir: string;
+  bridgesDir: string | string[];
   dataDir: string;
   settings: SettingsStore;
   /** Registry manager, if M4 registry support is enabled. */

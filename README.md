@@ -258,6 +258,7 @@ bundles or needs CORS at all.
 | `@comical/sdk` | `BridgeBase` class, cheerio-backed HTML helpers (`fetchHtml`, `parse`), URL resolver, re-exports contract types. What bridge authors import. |
 | `@comical/testkit` | `FixtureBackend` (public-domain demo library), `MockHost`, network record/replay cassettes, the `evaluateBridge` coverage report + `runConformance` strict gate. |
 | `@comical/registry` | Registry index schema + zod validation, GitHub URL auto-resolution, SHA-256 integrity + Ed25519 signature verification, `ManifestStore`, `RegistryManager` (add/remove/browse/install/update/uninstall). |
+| `@comical/library` | **Optional** local, cross-bridge reading library + tracking: collection, read/unread state, per-page resume, history, categories, new-chapter detection. Platform-agnostic `Library` service over a `LibraryStore` seam (in-memory store included). `host-server` mounts `/library` only when enabled. |
 
 ### Host adapters
 

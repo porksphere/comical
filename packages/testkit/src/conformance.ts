@@ -70,6 +70,7 @@ const CAPABILITY_METHOD: Partial<Record<BridgeCapability, keyof Bridge>> = {
   tags: "getTags",
   settings: "getSettings",
   favorites: "getFavorites",
+  direct: "getSeriesPages",
 };
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -269,6 +270,22 @@ export async function evaluateBridge(
     }
   }
 
+  // ── Direct-read path (capability "direct") ───────────────────────────────
+  if (has("direct") && bridge.getSeriesPages) {
+    exercised.add("direct");
+    if (firstId) {
+      try {
+        const pages = await bridge.getSeriesPages(firstId);
+        if (pages.length === 0) fail("direct", "direct.pages.empty", "getSeriesPages returned no pages");
+        else pass("direct", "direct.pages", `getSeriesPages returned ${pages.length} page(s)`);
+      } catch (e) {
+        fail("direct", "direct.pages.threw", `getSeriesPages threw: ${msg(e)}`);
+      }
+    } else {
+      warn("direct", "direct.noSample", "no series id available to probe getSeriesPages");
+    }
+  }
+
   // ── Required read path: sampled id → details → chapters → pages ────────────
   if (firstId) {
     try {
@@ -280,26 +297,30 @@ export async function evaluateBridge(
       if (!details.description) warn("core", "read.details.description", "series details have no description");
       if (!details.genres || details.genres.length === 0) warn("core", "read.details.genres", "series details have no genres");
 
-      const chapters = await bridge.getChapters(firstId);
-      if (!Array.isArray(chapters)) {
-        fail("core", "read.chapters.array", "getChapters did not return an array");
-      } else {
-        const numbers = chapters.map((c) => c.number).filter((n): n is number => typeof n === "number");
-        const sorted = [...numbers].sort((x, y) => x - y);
-        if (new Set(chapters.map((c) => c.id)).size !== chapters.length) {
-          fail("core", "read.chapters.unique", "chapter ids are not unique");
-        }
-        if (numbers.length === chapters.length && numbers.join() !== sorted.join() && numbers.join() !== [...sorted].reverse().join()) {
-          fail("core", "read.chapters.order", "chapters are not in a consistent (asc or desc) numeric order");
-        }
-        if (chapters.length === 0) {
-          warn("core", "read.chapters.empty", "series has no chapters");
+      if (has("direct")) {
+        // Chapter-based read path not applicable for direct bridges.
+      } else if (bridge.getChapters) {
+        const chapters = await bridge.getChapters(firstId);
+        if (!Array.isArray(chapters)) {
+          fail("core", "read.chapters.array", "getChapters did not return an array");
         } else {
-          pass("core", "read.chapters", `got ${chapters.length} ordered, uniquely-identified chapter(s)`);
-          sampledChapterId = chapters[0]!.id;
-          const pages = await bridge.getChapterPages(firstId, sampledChapterId);
-          if (pages.length === 0) fail("core", "read.pages", "getChapterPages returned no pages for the first chapter");
-          else pass("core", "read.pages", `got ${pages.length} page(s) with absolute image URLs`);
+          const numbers = chapters.map((c) => c.number).filter((n): n is number => typeof n === "number");
+          const sorted = [...numbers].sort((x, y) => x - y);
+          if (new Set(chapters.map((c) => c.id)).size !== chapters.length) {
+            fail("core", "read.chapters.unique", "chapter ids are not unique");
+          }
+          if (numbers.length === chapters.length && numbers.join() !== sorted.join() && numbers.join() !== [...sorted].reverse().join()) {
+            fail("core", "read.chapters.order", "chapters are not in a consistent (asc or desc) numeric order");
+          }
+          if (chapters.length === 0) {
+            warn("core", "read.chapters.empty", "series has no chapters");
+          } else {
+            pass("core", "read.chapters", `got ${chapters.length} ordered, uniquely-identified chapter(s)`);
+            sampledChapterId = chapters[0]!.id;
+            const pages = await bridge.getChapterPages!(firstId, sampledChapterId);
+            if (pages.length === 0) fail("core", "read.pages", "getChapterPages returned no pages for the first chapter");
+            else pass("core", "read.pages", `got ${pages.length} page(s) with absolute image URLs`);
+          }
         }
       }
     } catch (e) {

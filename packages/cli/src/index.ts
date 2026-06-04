@@ -343,11 +343,13 @@ async function main(): Promise<number> {
         break;
       }
       case "chapters": {
+        if (!bridge.getChapters) throw new Error(`bridge "${discovered.id}" does not support chapters`);
         const id = requireArg(positionals[1], "seriesId");
         print(json, await bridge.getChapters(id));
         break;
       }
       case "pages": {
+        if (!bridge.getChapterPages) throw new Error(`bridge "${discovered.id}" does not support chapter pages`);
         const id = requireArg(positionals[1], "seriesId");
         const chapterId = requireArg(positionals[2], "chapterId");
         print(json, await bridge.getChapterPages(id, chapterId));

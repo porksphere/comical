@@ -46,12 +46,12 @@ describe("example-bridge", () => {
       genres: details.genres,
     }).toMatchSnapshot("sherlock-details");
 
-    const chapters = await bridge.getChapters("sherlock");
+    const chapters = await bridge.getChapters!("sherlock");
     expect(chapters.map((c) => ({ id: c.id, name: c.name, number: c.number }))).toMatchSnapshot(
       "sherlock-chapters",
     );
 
-    const pages = await bridge.getChapterPages("sherlock", "sherlock-1");
+    const pages = await bridge.getChapterPages!("sherlock", "sherlock-1");
     expect(pages).toMatchSnapshot("sherlock-1-pages");
   });
 

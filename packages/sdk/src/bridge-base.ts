@@ -108,8 +108,18 @@ export abstract class BridgeBase<
   // getListItems) and search (getSearchResults) are optional: a subclass declares them when its
   // capabilities include "lists"/"search", typed against the re-exported contract types.
   abstract getSeriesDetails(seriesId: string): Promise<SeriesInfo>;
-  abstract getChapters(seriesId: string): Promise<Chapter[]>;
-  abstract getChapterPages(seriesId: string, chapterId: string): Promise<Page[]>;
+
+  // Chapter-based read path. Concrete stubs let "direct"-only bridges extend BridgeBase without
+  // overriding these; bridges that serve chapters override them as normal.
+  getChapters(_seriesId: string): Promise<Chapter[]> {
+    return Promise.reject(new Error("getChapters is not supported by this bridge"));
+  }
+  getChapterPages(_seriesId: string, _chapterId: string): Promise<Page[]> {
+    return Promise.reject(new Error("getChapterPages is not supported by this bridge"));
+  }
+
+  // Direct-read path (capability "direct"): override when the series has no chapter structure.
+  getSeriesPages?(_seriesId: string): Promise<Page[]>;
 }
 
 /** Identity helper that gives a bridge factory the correct type and a single obvious export. */

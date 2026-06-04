@@ -208,10 +208,15 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
   const bridge: LoadedBridge = {
     info,
     getSeriesDetails: (id) => call("getSeriesDetails", seriesInfoSchema, () => raw.getSeriesDetails(id)),
-    getChapters: (id) => call("getChapters", z.array(chapterSchema), () => raw.getChapters(id)),
-    getChapterPages: (m, c) =>
-      call("getChapterPages", z.array(pageSchema), () => raw.getChapterPages(m, c)),
   };
+
+  // Chapter methods are omitted for direct-only bridges (capability "direct").
+  if (!info.capabilities.includes("direct")) {
+    bridge.getChapters = (id) =>
+      call("getChapters", z.array(chapterSchema), () => raw.getChapters!(id));
+    bridge.getChapterPages = (m, c) =>
+      call("getChapterPages", z.array(pageSchema), () => raw.getChapterPages!(m, c));
+  }
 
   if (raw.getLists) {
     bridge.getLists = (q) => call("getLists", z.array(seriesListSchema), () => raw.getLists!(q));
@@ -254,6 +259,10 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
     const getSettings = raw.getSettings.bind(raw);
     bridge.getSettings = () =>
       validate(z.array(settingDescriptorSchema), getSettings(), "getSettings");
+  }
+  if (raw.getSeriesPages) {
+    bridge.getSeriesPages = (id) =>
+      call("getSeriesPages", z.array(pageSchema), () => raw.getSeriesPages!(id));
   }
 
   return bridge;
