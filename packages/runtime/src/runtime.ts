@@ -196,25 +196,45 @@ export class ComicalRuntime {
    * Skips direct-only bridges (no getChapters). Per-entry errors are swallowed so one
    * unreachable bridge doesn't abort the whole run.
    */
-  async backgroundSync(): Promise<{ updated: number; newChapters: number }> {
+  async backgroundSync(): Promise<{ updated: number; newChapters: number; readSynced: number }> {
     const lib = this.requireLibrary();
     const entries = await lib.getLibrary();
     let updated = 0;
     let newChapters = 0;
+    let readSynced = 0;
     for (const entry of entries) {
       try {
         const bridge = await this.bridges.get(entry.bridgeId);
-        if (!bridge.getChapters) continue;
-        const chapters = await bridge.getChapters(entry.seriesId);
         const key = entryKey(entry.bridgeId, entry.seriesId);
-        const result = await lib.syncChapters(key, chapters);
-        newChapters += result.added.length;
-        updated++;
+
+        // Pull fresh chapter list and detect new chapters.
+        if (bridge.getChapters) {
+          const chapters = await bridge.getChapters(entry.seriesId);
+          const result = await lib.syncChapters(key, chapters);
+          newChapters += result.added.length;
+          updated++;
+        }
+
+        // Pull read state from the bridge and union-merge into the local library.
+        // Union means: if either side says it's read, mark it read — never un-read.
+        if (bridge.getReadChapters) {
+          const remoteRead = await bridge.getReadChapters(entry.seriesId);
+          const localProgress = await lib.getProgress(key);
+          const localRead = new Set(localProgress.filter((p) => p.read).map((p) => p.chapterId));
+          for (const chapterId of remoteRead) {
+            if (!localRead.has(chapterId)) {
+              await lib.markRead(key, chapterId, true);
+              readSynced++;
+            }
+          }
+        }
+
+        await this.syncEntryToTrackers(entry.bridgeId, entry.seriesId).catch(() => {});
       } catch {
         // continue — one bad bridge or deleted series should not abort the sync
       }
     }
-    return { updated, newChapters };
+    return { updated, newChapters, readSynced };
   }
 
   // ── Tracker sync ─────────────────────────────────────────────────────────────
