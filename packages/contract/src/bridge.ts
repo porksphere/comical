@@ -56,6 +56,13 @@ export interface Bridge {
   // Bridges that can write reading state back to their source implement these.
   // The host calls them when local progress is recorded so the source stays in sync.
 
+  /**
+   * Return the chapter IDs the remote considers read for a series. Used by the runtime to
+   * reconcile divergence during background sync (union merge: if either side is read, mark read).
+   * (capability "read-sync")
+   */
+  getReadChapters?(seriesId: string): Promise<string[]>;
+
   /** Push a chapter-read event to the source. (capability "read-sync") */
   markChapterRead?(seriesId: string, chapterId: string): Promise<void>;
 
