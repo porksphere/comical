@@ -10,7 +10,7 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Category, ChapterProgress, LibraryEntry, LibraryStore, SeriesGroup, TrackerLink } from "@comical/library";
+import type { BridgePrefs, Category, ChapterProgress, HistoryItem, LibraryEntry, LibraryStore, SeriesGroup, TrackerLink } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -26,6 +26,8 @@ export class FileLibraryStore implements LibraryStore {
   private groupsCache?: Map<string, SeriesGroup>;
   private progressCache = new Map<string, Map<string, ChapterProgress>>();
   private trackerLinksCache?: Map<string, TrackerLink[]>;
+  private readingLogCache?: Map<string, HistoryItem>;
+  private bridgePrefsCache?: Map<string, BridgePrefs>;
 
   constructor(private readonly dir: string) {}
 
@@ -40,6 +42,12 @@ export class FileLibraryStore implements LibraryStore {
   }
   private get trackerLinksPath(): string {
     return join(this.dir, "tracker-links.json");
+  }
+  private get readingLogPath(): string {
+    return join(this.dir, "reading-log.json");
+  }
+  private get bridgePrefsPath(): string {
+    return join(this.dir, "bridge-prefs.json");
   }
   private progressPath(key: string): string {
     return join(this.dir, "progress", `${encodeURIComponent(key)}.json`);
@@ -198,5 +206,57 @@ export class FileLibraryStore implements LibraryStore {
     if (next.length === 0) map.delete(key);
     else map.set(key, next);
     await this.flushTrackerLinks();
+  }
+
+  // ── Reading log ───────────────────────────────────────────────────────────────
+
+  private async readingLog(): Promise<Map<string, HistoryItem>> {
+    if (!this.readingLogCache) {
+      const obj = await readJson<Record<string, HistoryItem>>(this.readingLogPath, {});
+      this.readingLogCache = new Map(Object.entries(obj));
+    }
+    return this.readingLogCache;
+  }
+
+  private async flushReadingLog(): Promise<void> {
+    const obj = Object.fromEntries((await this.readingLog()).entries());
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(this.readingLogPath, JSON.stringify(obj, null, 2), "utf8");
+  }
+
+  async listReadingLog(): Promise<HistoryItem[]> {
+    return [...(await this.readingLog()).values()];
+  }
+  async upsertReadingLog(item: HistoryItem): Promise<void> {
+    (await this.readingLog()).set(`${item.bridgeId}:${item.seriesId}`, item);
+    await this.flushReadingLog();
+  }
+  async deleteReadingLog(bridgeId: string, seriesId: string): Promise<void> {
+    if ((await this.readingLog()).delete(`${bridgeId}:${seriesId}`)) await this.flushReadingLog();
+  }
+
+  // ── Bridge preferences ────────────────────────────────────────────────────
+
+  private async bridgePrefs(): Promise<Map<string, BridgePrefs>> {
+    if (!this.bridgePrefsCache) {
+      const obj = await readJson<Record<string, BridgePrefs>>(this.bridgePrefsPath, {});
+      this.bridgePrefsCache = new Map(Object.entries(obj));
+    }
+    return this.bridgePrefsCache;
+  }
+
+  private async flushBridgePrefs(): Promise<void> {
+    const obj = Object.fromEntries((await this.bridgePrefs()).entries());
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(this.bridgePrefsPath, JSON.stringify(obj, null, 2), "utf8");
+  }
+
+  async getBridgePrefs(bridgeId: string): Promise<BridgePrefs | undefined> {
+    return (await this.bridgePrefs()).get(bridgeId);
+  }
+
+  async setBridgePrefs(bridgeId: string, prefs: BridgePrefs): Promise<void> {
+    (await this.bridgePrefs()).set(bridgeId, prefs);
+    await this.flushBridgePrefs();
   }
 }

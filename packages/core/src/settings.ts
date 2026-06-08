@@ -58,6 +58,12 @@ function coerce(
       }
       return { value: raw };
     }
+    case "oauth-pin":
+    case "oauth-callback": {
+      // The stored value is the access token (or a JSON blob) — treat it as a plain string.
+      if (typeof raw === "string") return { value: raw };
+      return { error: `"${descriptor.key}" must be a string token` };
+    }
   }
 }
 
@@ -102,8 +108,9 @@ export function resolveSettings(
   for (const d of descriptors) {
     const supplied = values[d.key];
     if (supplied === undefined || supplied === "") {
-      if (d.default !== undefined) {
-        values[d.key] = d.default;
+      const defaultValue = "default" in d ? d.default : undefined;
+      if (defaultValue !== undefined) {
+        values[d.key] = defaultValue;
       } else {
         delete values[d.key];
         if (d.required) missingRequired.push(d.key);

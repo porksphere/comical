@@ -1,26 +1,32 @@
 /**
  * Manages the lifecycle of loaded trackers on the server.
  *
- * Trackers are scanned from `{trackersDir}/{id}/dist/tracker.js` bundles — the same layout
- * used by bridges in their own repos. Each is loaded once and cached; `get(id)` throws if the
- * id is unknown or the bundle fails to load.
+ * Trackers can come from two sources:
+ *   - Local: `{trackersDir}/{id}/dist/tracker.js` bundles (optional)
+ *   - Registry: downloaded, verified, cached via RegistryManager (optional)
+ *
+ * `get(id)` tries local first, then falls back to the registry cache.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { SettingDescriptor, SettingValue, TrackerInfo } from "@comical/contract";
+import type { HostCapabilities, HttpRequest, HttpResponse, NetworkCapability, SettingDescriptor, SettingValue, TrackerInfo } from "@comical/contract";
 import { type LoadedTracker, loadTracker, resolveSettings } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
+import type { RegistryManager } from "@comical/registry";
 import type { SettingsStore } from "./settings-store.ts";
 
 export interface TrackerManagerOptions {
-  trackersDir: string | string[];
+  trackersDir?: string | string[];
   dataDir: string;
   settings: SettingsStore;
+  registry?: RegistryManager;
 }
 
 export interface TrackerSummary {
   info: TrackerInfo;
   settings: SettingDescriptor[];
+  values: Record<string, SettingValue>;
+  secretsSet: string[];
   configured: boolean;
   missingRequired: string[];
 }
@@ -30,12 +36,111 @@ interface DiscoveredTracker {
   bundlePath: string;
 }
 
+// ── OAuth token blob ──────────────────────────────────────────────────────────
+
+interface OAuthTokenBlob {
+  access: string;
+  refresh?: string;
+  expiresAt?: number;
+}
+
+interface OAuthRefreshConfig {
+  key: string;
+  currentToken: string;
+  refreshToken: string;
+  refreshUrl: string;
+  clientId: string;
+  clientSecret: string;
+}
+
+function parseOAuthBlob(value: SettingValue): OAuthTokenBlob | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(value) as { access?: unknown };
+    if (typeof parsed.access === "string") return parsed as OAuthTokenBlob;
+  } catch { /* not a blob */ }
+  return undefined;
+}
+
+/** Unwrap oauth token blobs to plain access-token strings so the tracker sees a simple string. */
+function resolveAccessToken(value: SettingValue): SettingValue {
+  return parseOAuthBlob(value)?.access ?? value;
+}
+
+// ── Refreshable network ───────────────────────────────────────────────────────
+
+class RefreshableNetwork implements NetworkCapability {
+  private configs: OAuthRefreshConfig[] = [];
+  private inflightRefresh: Promise<string | null> | null = null;
+
+  constructor(
+    private readonly inner: NetworkCapability,
+    private readonly onRefreshed: (key: string, blob: OAuthTokenBlob) => Promise<void>,
+  ) {}
+
+  configure(configs: OAuthRefreshConfig[]): void {
+    this.configs = configs;
+  }
+
+  async request(req: HttpRequest): Promise<HttpResponse> {
+    const res = await this.inner.request(req);
+    if (res.status !== 401 || this.configs.length === 0) return res;
+
+    const authHeader = req.headers?.["Authorization"] ?? req.headers?.["authorization"];
+    if (!authHeader?.startsWith("Bearer ")) return res;
+    const bearerToken = authHeader.slice(7);
+    const cfg = this.configs.find((c) => c.currentToken === bearerToken);
+    if (!cfg) return res;
+
+    // Serialize concurrent refresh attempts.
+    this.inflightRefresh ??= this.doRefresh(cfg).finally(() => { this.inflightRefresh = null; });
+    const newToken = await this.inflightRefresh;
+    if (!newToken) return res;
+
+    return this.inner.request({
+      ...req,
+      headers: { ...(req.headers ?? {}), Authorization: `Bearer ${newToken}` },
+    });
+  }
+
+  private async doRefresh(cfg: OAuthRefreshConfig): Promise<string | null> {
+    try {
+      const params: Record<string, string> = {
+        grant_type: "refresh_token",
+        client_id: cfg.clientId,
+        refresh_token: cfg.refreshToken,
+      };
+      if (cfg.clientSecret) params.client_secret = cfg.clientSecret;
+      const resp = await fetch(cfg.refreshUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams(params).toString(),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
+      if (!data.access_token) return null;
+
+      const blob: OAuthTokenBlob = { access: data.access_token };
+      if (data.refresh_token) blob.refresh = data.refresh_token;
+      if (data.expires_in) blob.expiresAt = Date.now() + data.expires_in * 1000;
+
+      await this.onRefreshed(cfg.key, blob);
+      cfg.currentToken = data.access_token;
+      if (data.refresh_token) cfg.refreshToken = data.refresh_token;
+      return data.access_token;
+    } catch {
+      return null;
+    }
+  }
+}
+
+// ── Tracker discovery ─────────────────────────────────────────────────────────
+
 function discoverTrackers(dirs: string | string[]): DiscoveredTracker[] {
   const dirList = Array.isArray(dirs) ? dirs : [dirs];
   const found: DiscoveredTracker[] = [];
   for (const dir of dirList) {
     if (!existsSync(dir)) continue;
-    // Each subdir is a tracker id; look for dist/tracker.js inside it.
     let entries: string[];
     try {
       entries = readdirSync(dir, { withFileTypes: true })
@@ -58,12 +163,19 @@ export class TrackerManager {
 
   constructor(private readonly opts: TrackerManagerOptions) {}
 
+  refresh(): void {
+    this.discovered = undefined;
+    this.loaded.clear();
+  }
+
   invalidate(id: string): void {
     this.loaded.delete(id);
   }
 
   private discover(): DiscoveredTracker[] {
-    if (!this.discovered) this.discovered = discoverTrackers(this.opts.trackersDir);
+    if (!this.discovered) {
+      this.discovered = this.opts.trackersDir ? discoverTrackers(this.opts.trackersDir) : [];
+    }
     return this.discovered;
   }
 
@@ -71,35 +183,104 @@ export class TrackerManager {
     const cached = this.loaded.get(id);
     if (cached) return cached;
 
+    // Find the bundle — local discovery first, then registry cache.
     const found = this.discover().find((d) => d.id === id);
-    if (!found) throw new Error(`tracker not found: ${id}`);
+    let bundlePath: string | undefined = found?.bundlePath;
 
-    const code = readFileSync(found.bundlePath, "utf8");
+    if (!bundlePath && this.opts.registry) {
+      const p = await this.opts.registry.resolveTrackerBundle(id);
+      if (p && existsSync(p)) bundlePath = p;
+    }
+
+    if (!bundlePath) throw new Error(`tracker not found: ${id}`);
+
+    const code = readFileSync(bundlePath, "utf8");
     const stored = (await this.opts.settings.get(id)) as Record<string, SettingValue>;
-    const host = createBunHost({ bridgeId: id, dataDir: join(this.opts.dataDir, "trackers", id), settings: stored });
+
+    // Unwrap oauth-pin token blobs → plain access-token strings for the tracker.
+    const settingsForTracker: Record<string, SettingValue> = {};
+    for (const [k, v] of Object.entries(stored)) settingsForTracker[k] = resolveAccessToken(v);
+
+    const bunHost = createBunHost({ bridgeId: id, dataDir: join(this.opts.dataDir, "trackers", id), settings: settingsForTracker });
+    const refreshable = new RefreshableNetwork(
+      bunHost.network,
+      async (key, blob) => {
+        await this.opts.settings.patch(id, { [key]: JSON.stringify(blob) });
+        this.invalidate(id);
+      },
+    );
+    const host: HostCapabilities = { ...bunHost, network: refreshable };
     const tracker = loadTracker({ code, capabilities: host, expectedId: id });
+
+    // Configure refresh now that we have descriptors.
+    const descriptors = tracker.getSettings?.() ?? [];
+    const refreshConfigs: OAuthRefreshConfig[] = [];
+    for (const d of descriptors) {
+      let refreshUrl: string | undefined;
+      let clientId: string;
+      let clientSecret: string;
+
+      if (d.type === "oauth-pin") {
+        if (!d.exchange?.refreshUrl) continue;
+        refreshUrl = d.exchange.refreshUrl;
+        clientId = d.exchange.clientId;
+        clientSecret = d.exchange.clientSecret;
+      } else if (d.type === "oauth-callback") {
+        if (!d.exchange.refreshUrl) continue;
+        refreshUrl = d.exchange.refreshUrl;
+        clientId = d.exchange.clientIdKey
+          ? String(settingsForTracker[d.exchange.clientIdKey] ?? "")
+          : (d.exchange.clientId ?? "");
+        clientSecret = "";
+      } else {
+        continue;
+      }
+
+      const blob = parseOAuthBlob(stored[d.key] ?? "");
+      if (!blob?.refresh) continue;
+      refreshConfigs.push({ key: d.key, currentToken: blob.access, refreshToken: blob.refresh, refreshUrl, clientId, clientSecret });
+    }
+    if (refreshConfigs.length > 0) refreshable.configure(refreshConfigs);
+
     this.loaded.set(id, tracker);
     return tracker;
   }
 
+  private async summarize(id: string): Promise<TrackerSummary> {
+    const tracker = await this.get(id);
+    const settings = tracker.getSettings?.() ?? [];
+    const stored = (await this.opts.settings.get(id)) as Record<string, SettingValue>;
+    const { missingRequired } = resolveSettings(stored, settings);
+    const secretKeys = new Set(
+      settings.filter((d) => (d.type === "string" && !!d.secret) || d.type === "oauth-pin" || d.type === "oauth-callback").map((d) => d.key),
+    );
+    const values: Record<string, SettingValue> = {};
+    const secretsSet: string[] = [];
+    for (const [k, v] of Object.entries(stored)) {
+      if (secretKeys.has(k)) { if (v !== undefined && v !== "") secretsSet.push(k); }
+      else values[k] = v;
+    }
+    return { info: tracker.info, settings, values, secretsSet, configured: missingRequired.length === 0, missingRequired };
+  }
+
   async list(): Promise<TrackerSummary[]> {
     const results: TrackerSummary[] = [];
+    const localIds = new Set(this.discover().map((d) => d.id));
+
+    // Local trackers.
     for (const d of this.discover()) {
-      try {
-        const tracker = await this.get(d.id);
-        const settings = tracker.getSettings?.() ?? [];
-        const stored = (await this.opts.settings.get(d.id)) as Record<string, SettingValue>;
-        const { missingRequired } = resolveSettings(stored, settings);
-        results.push({
-          info: tracker.info,
-          settings,
-          configured: missingRequired.length === 0,
-          missingRequired,
-        });
-      } catch {
-        // skip trackers that fail to load
+      try { results.push(await this.summarize(d.id)); } catch { /* skip */ }
+    }
+
+    // Registry-installed trackers not present in a local dir.
+    if (this.opts.registry) {
+      const installed = await this.opts.registry.allInstalledTrackers();
+      for (const t of installed) {
+        if (localIds.has(t.id)) continue;
+        try { results.push(await this.summarize(t.id)); } catch { /* skip */ }
       }
     }
+
     return results;
   }
 

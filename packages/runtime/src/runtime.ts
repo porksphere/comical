@@ -16,13 +16,31 @@ import type { Chapter, PagedResults, TrackerSearchResult } from "@comical/contra
 import type { LoadedBridge, LoadedTracker } from "@comical/core";
 import { entryKey, type AddSeriesResult, type Library, type SeriesSnapshot, type TrackerLink } from "@comical/library";
 
+/** Extends AddSeriesResult with tracker suggestions when no externalId match was found. */
+export interface RuntimeAddResult extends AddSeriesResult {
+  /** Candidate tracker matches found by title search for trackers that couldn't be auto-linked. */
+  trackerSuggestions?: Array<{ trackerId: string; result: TrackerSearchResult }>;
+}
+
+/**
+ * A series the user tracks on an external service but does not yet have in their library. Surfaced
+ * by a tracker pull so the host can offer to add it — adding stays deliberate because a tracker
+ * entry has no bridge to read from until the user picks one.
+ */
+export interface TrackerSuggestion {
+  trackerId: string;
+  externalId: string | number;
+  title: string;
+  thumbnailUrl?: string;
+}
+
 export interface BridgeProvider {
   get(id: string): Promise<LoadedBridge>;
 }
 
 export interface TrackerProvider {
   get(id: string): Promise<LoadedTracker>;
-  list(): Promise<Array<{ info: { id: string } }>>;
+  list(): Promise<Array<{ info: { id: string; capabilities: string[] } }>>;
 }
 
 export interface RuntimeOptions {
@@ -58,7 +76,7 @@ export class ComicalRuntime {
     bridgeId: string,
     seriesId: string,
     snap?: Partial<Omit<SeriesSnapshot, "bridgeId" | "seriesId">>,
-  ): Promise<AddSeriesResult> {
+  ): Promise<RuntimeAddResult> {
     const lib = this.requireLibrary();
 
     let title = snap?.title;
@@ -73,12 +91,7 @@ export class ComicalRuntime {
       if (thumbnailUrl === undefined && info.thumbnailUrl !== undefined) thumbnailUrl = info.thumbnailUrl;
       if (author === undefined && info.author !== undefined) author = info.author;
       if (externalIds === undefined && info.externalIds !== undefined) {
-        const { anilist, mal, mu } = info.externalIds;
-        externalIds = {
-          ...(anilist !== undefined && { anilist }),
-          ...(mal !== undefined && { mal }),
-          ...(mu !== undefined && { mu }),
-        };
+        externalIds = info.externalIds;
       }
     }
 
@@ -88,7 +101,34 @@ export class ComicalRuntime {
     if (snap?.categoryIds !== undefined) full.categoryIds = snap.categoryIds;
     if (externalIds !== undefined) full.externalIds = externalIds;
 
-    return lib.addSeries(full);
+    const result = await lib.addSeries(full);
+
+    const key = entryKey(bridgeId, seriesId);
+    const trackerSuggestions: RuntimeAddResult["trackerSuggestions"] = [];
+
+    if (this.trackers) {
+      const trackerList = await this.trackers.list().catch(() => []);
+      for (const t of trackerList) {
+        const extId = externalIds?.[t.info.id];
+        if (extId !== undefined) {
+          // Known external id — auto-link silently.
+          await lib.linkTracker(key, t.info.id, extId).catch(() => {});
+        } else if (title && t.info.capabilities.includes("search")) {
+          // No id available — search by title and surface a suggestion for the user to confirm.
+          try {
+            const tracker = await this.trackers.get(t.info.id);
+            const res = await tracker.search?.(title, 1);
+            const first = res?.items[0];
+            if (first) trackerSuggestions.push({ trackerId: t.info.id, result: first });
+          } catch { /* best-effort */ }
+        }
+      }
+    }
+
+    return {
+      ...result,
+      ...(trackerSuggestions.length > 0 && { trackerSuggestions }),
+    };
   }
 
   // ── Read-state methods (library write + optional bridge read-sync) ────────────
@@ -99,10 +139,11 @@ export class ComicalRuntime {
     chapterId: string,
     read: boolean,
     chapterName?: string,
+    number?: number,
   ): Promise<void> {
     const lib = this.requireLibrary();
     const key = entryKey(bridgeId, seriesId);
-    await lib.markRead(key, chapterId, read, chapterName);
+    await lib.markRead(key, chapterId, read, chapterName, number);
     try {
       const bridge = await this.bridges.get(bridgeId);
       if (bridge.info.capabilities.includes("read-sync")) {
@@ -125,10 +166,11 @@ export class ComicalRuntime {
     lastPage: number,
     pageCount?: number,
     chapterName?: string,
+    number?: number,
   ): Promise<void> {
     const lib = this.requireLibrary();
     const key = entryKey(bridgeId, seriesId);
-    await lib.setProgress(key, chapterId, lastPage, pageCount, chapterName);
+    await lib.setProgress(key, chapterId, lastPage, pageCount, chapterName, number);
     const reachedEnd = pageCount !== undefined && pageCount > 0 && lastPage >= pageCount - 1;
     if (!reachedEnd) return;
     try {
@@ -149,16 +191,8 @@ export class ComicalRuntime {
     const lib = this.requireLibrary();
     const key = entryKey(bridgeId, seriesId);
     await lib.markReadUpTo(key, chapters, chapterId);
-    try {
-      const bridge = await this.bridges.get(bridgeId);
-      if (!bridge.info.capabilities.includes("read-sync") || !bridge.markChapterRead) return;
-      const ordered = orderForReading(chapters);
-      const cut = ordered.findIndex((c) => c.id === chapterId);
-      if (cut === -1) return;
-      for (const c of ordered.slice(0, cut + 1)) {
-        try { await bridge.markChapterRead(seriesId, c.id); } catch { /* best-effort */ }
-      }
-    } catch { /* best-effort */ }
+    // Bridge push is best-effort and self-contained so its early-exits never skip the tracker sync.
+    await this.pushReadUpToBridge(bridgeId, seriesId, chapters, chapterId).catch(() => {});
     await this.syncEntryToTrackers(bridgeId, seriesId).catch(() => {});
   }
 
@@ -192,11 +226,14 @@ export class ComicalRuntime {
   // ── Background sync ───────────────────────────────────────────────────────────
 
   /**
-   * Pull fresh chapters for every library entry and update knownChapterIds.
-   * Skips direct-only bridges (no getChapters). Per-entry errors are swallowed so one
-   * unreachable bridge doesn't abort the whole run.
+   * One reconciliation pass over the whole library. Per entry: pull fresh chapters (new-chapter
+   * detection), auto-link any newly-configured trackers, union-merge the bridge's read state, and
+   * push local read state back out. Then, once per library-sync tracker, pull the tracker's list
+   * and union-merge its progress in too. Read-state pulls go through `reconcileRead`, so they update
+   * read flags WITHOUT moving the user's resume point or recency. Per-entry/per-tracker errors are
+   * swallowed so one unreachable source doesn't abort the run.
    */
-  async backgroundSync(): Promise<{ updated: number; newChapters: number; readSynced: number }> {
+  async backgroundSync(): Promise<{ updated: number; newChapters: number; readSynced: number; suggestions: TrackerSuggestion[] }> {
     const lib = this.requireLibrary();
     const entries = await lib.getLibrary();
     let updated = 0;
@@ -208,25 +245,29 @@ export class ComicalRuntime {
         const key = entryKey(entry.bridgeId, entry.seriesId);
 
         // Pull fresh chapter list and detect new chapters.
+        let chapters: Chapter[] | undefined;
         if (bridge.getChapters) {
-          const chapters = await bridge.getChapters(entry.seriesId);
+          chapters = await bridge.getChapters(entry.seriesId);
           const result = await lib.syncChapters(key, chapters);
           newChapters += result.added.length;
           updated++;
         }
 
-        // Pull read state from the bridge and union-merge into the local library.
-        // Union means: if either side says it's read, mark it read — never un-read.
+        // Wire up any tracker configured after this entry was added (externalId already known).
+        await this.relinkEntry(entry.bridgeId, entry.seriesId, entry.externalIds);
+
+        // Union-merge the bridge's read state — read flags only, resume untouched.
         if (bridge.getReadChapters) {
           const remoteRead = await bridge.getReadChapters(entry.seriesId);
-          const localProgress = await lib.getProgress(key);
-          const localRead = new Set(localProgress.filter((p) => p.read).map((p) => p.chapterId));
-          for (const chapterId of remoteRead) {
-            if (!localRead.has(chapterId)) {
-              await lib.markRead(key, chapterId, true);
-              readSynced++;
-            }
-          }
+          const numById = new Map((chapters ?? []).map((c) => [c.id, c.number]));
+          const res = await lib.reconcileRead(
+            key,
+            remoteRead.map((id) => {
+              const n = numById.get(id);
+              return n !== undefined ? { chapterId: id, number: n } : { chapterId: id };
+            }),
+          );
+          readSynced += res.marked;
         }
 
         await this.syncEntryToTrackers(entry.bridgeId, entry.seriesId).catch(() => {});
@@ -234,7 +275,22 @@ export class ComicalRuntime {
         // continue — one bad bridge or deleted series should not abort the sync
       }
     }
-    return { updated, newChapters, readSynced };
+
+    // Tracker pull is a whole-list operation, so run it once per tracker (not per entry).
+    const suggestions: TrackerSuggestion[] = [];
+    if (this.trackers) {
+      const trackerList = await this.trackers.list().catch(() => []);
+      for (const t of trackerList) {
+        if (!t.info.capabilities.includes("library-sync")) continue;
+        try {
+          const res = await this.syncFromTracker(t.info.id);
+          readSynced += res.readSynced;
+          suggestions.push(...res.suggestions);
+        } catch { /* best-effort — one bad tracker shouldn't abort */ }
+      }
+    }
+
+    return { updated, newChapters, readSynced, suggestions };
   }
 
   // ── Tracker sync ─────────────────────────────────────────────────────────────
@@ -259,18 +315,23 @@ export class ComicalRuntime {
    */
   async syncEntryToTrackers(bridgeId: string, seriesId: string): Promise<void> {
     if (!this.lib || !this.trackers) return;
+    const prefs = await this.lib.getBridgePrefs(bridgeId);
+    if (prefs.trackersDisabled) return;
     const key = entryKey(bridgeId, seriesId);
     const links = await this.lib.listTrackerLinks(key);
     if (links.length === 0) return;
-    const progress = await this.lib.getProgress(key);
-    const readCount = progress.filter((p) => p.read).length;
+    // `chaptersRead` is the HIGHEST read chapter number (the contract's definition), not a count —
+    // counting breaks on decimal or out-of-order numbering. Skip pushing 0 so we never clobber a
+    // tracker's progress with "nothing read".
+    const chaptersRead = await this.lib.maxReadChapterNumber(key);
+    if (chaptersRead <= 0) return;
     for (const link of links) {
       try {
         const tracker = await this.trackers.get(link.trackerId);
         if (!tracker.info.capabilities.includes("status-sync") || !tracker.updateEntry) continue;
-        await tracker.updateEntry(link.externalId, { chaptersRead: readCount });
+        await tracker.updateEntry(link.externalId, { chaptersRead });
         await this.lib.updateTrackerLink(key, link.trackerId, {
-          chaptersRead: readCount,
+          chaptersRead,
           lastSyncAt: Date.now(),
         });
       } catch { /* per-tracker best-effort */ }
@@ -278,12 +339,13 @@ export class ComicalRuntime {
   }
 
   /**
-   * Pull the user's list from a tracker and update the status/chaptersRead on all existing
-   * tracker links for this tracker. Entries from the tracker that are not yet linked are counted
-   * as `unlinked` (the caller can prompt the user to link them manually).
+   * Pull the user's list from a tracker. For each linked entry: update the link's status/chaptersRead
+   * AND reconcile the tracker's progress into the library (mark chapters up to `chaptersRead` read,
+   * union, resume untouched). Tracked series with no local entry are returned as `suggestions` —
+   * adding them stays deliberate because a tracker entry has no bridge to read from.
    * Capability "library-sync" required.
    */
-  async syncFromTracker(trackerId: string): Promise<{ updated: number; unlinked: number }> {
+  async syncFromTracker(trackerId: string): Promise<{ updated: number; readSynced: number; suggestions: TrackerSuggestion[] }> {
     const lib = this.requireLibrary();
     if (!this.trackers) throw new Error("ComicalRuntime: no trackers configured");
     const tracker = await this.trackers.get(trackerId);
@@ -291,37 +353,98 @@ export class ComicalRuntime {
       throw new Error(`tracker "${trackerId}" does not support library-sync`);
     }
 
-    // Build a lookup: externalId → entryKey for all existing links of this tracker.
+    // Build a lookup: externalId → linked entry for all existing links of this tracker.
     const allEntries = await lib.getLibrary();
-    const linkIndex = new Map<string, string>(); // stringified externalId → entryKey
+    const linkIndex = new Map<string, { key: string; bridgeId: string; seriesId: string }>();
     for (const entry of allEntries) {
       const ek = entryKey(entry.bridgeId, entry.seriesId);
       const link = await lib.getTrackerLink(ek, trackerId);
-      if (link) linkIndex.set(String(link.externalId), ek);
+      if (link) linkIndex.set(String(link.externalId), { key: ek, bridgeId: entry.bridgeId, seriesId: entry.seriesId });
     }
 
     let page = 1;
     let updated = 0;
-    let unlinked = 0;
+    let readSynced = 0;
+    const suggestions: TrackerSuggestion[] = [];
     while (true) {
       const result = await tracker.getLibrary(page);
       for (const item of result.items) {
-        const ek = linkIndex.get(String(item.externalId));
-        if (ek) {
-          await lib.updateTrackerLink(ek, trackerId, {
+        const match = linkIndex.get(String(item.externalId));
+        if (match) {
+          await lib.updateTrackerLink(match.key, trackerId, {
             status: item.status,
             ...(item.chaptersRead !== undefined && { chaptersRead: item.chaptersRead }),
             lastSyncAt: Date.now(),
           });
           updated++;
+          if (item.chaptersRead !== undefined && item.chaptersRead > 0) {
+            readSynced += await this.reconcileTrackerRead(match.bridgeId, match.seriesId, match.key, item.chaptersRead);
+          }
         } else {
-          unlinked++;
+          suggestions.push({
+            trackerId,
+            externalId: item.externalId,
+            title: item.title,
+            ...(item.thumbnailUrl !== undefined && { thumbnailUrl: item.thumbnailUrl }),
+          });
         }
       }
       if (!result.hasNextPage) break;
       page++;
     }
-    return { updated, unlinked };
+    return { updated, readSynced, suggestions };
+  }
+
+  /**
+   * Link an existing entry to any configured tracker whose externalId is already on the entry but
+   * not yet linked — the re-link counterpart to the auto-link `addToLibrary` does, for entries that
+   * predate a tracker being configured. Best-effort; never throws.
+   */
+  /** Push a "read up to here" range to the bridge's own backend, if it supports read-sync. */
+  private async pushReadUpToBridge(bridgeId: string, seriesId: string, chapters: Chapter[], chapterId: string): Promise<void> {
+    const bridge = await this.bridges.get(bridgeId);
+    if (!bridge.info.capabilities.includes("read-sync") || !bridge.markChapterRead) return;
+    const ordered = orderForReading(chapters);
+    const cut = ordered.findIndex((c) => c.id === chapterId);
+    if (cut === -1) return;
+    for (const c of ordered.slice(0, cut + 1)) {
+      try { await bridge.markChapterRead(seriesId, c.id); } catch { /* best-effort */ }
+    }
+  }
+
+  private async relinkEntry(bridgeId: string, seriesId: string, externalIds?: Record<string, string | number>): Promise<void> {
+    if (!this.lib || !this.trackers || !externalIds) return;
+    const key = entryKey(bridgeId, seriesId);
+    const trackerList = await this.trackers.list().catch(() => []);
+    for (const t of trackerList) {
+      const extId = externalIds[t.info.id];
+      if (extId === undefined) continue;
+      if (await this.lib.getTrackerLink(key, t.info.id)) continue;
+      await this.lib.linkTracker(key, t.info.id, extId).catch(() => {});
+    }
+  }
+
+  /**
+   * Map a tracker's `chaptersRead` high-water number to chapter ids via the bridge's chapter list
+   * and reconcile them into the library (read flags only). No-op for direct-only bridges that can't
+   * list chapters, or when the bridge/series is unreachable. Returns how many chapters were newly
+   * marked read.
+   */
+  private async reconcileTrackerRead(bridgeId: string, seriesId: string, key: string, chaptersRead: number): Promise<number> {
+    const lib = this.requireLibrary();
+    let chapters: Chapter[];
+    try {
+      const bridge = await this.bridges.get(bridgeId);
+      if (!bridge.getChapters) return 0;
+      chapters = await bridge.getChapters(seriesId);
+    } catch {
+      return 0;
+    }
+    const toMark = chapters
+      .filter((c): c is Chapter & { number: number } => c.number !== undefined && c.number <= chaptersRead)
+      .map((c) => ({ chapterId: c.id, number: c.number }));
+    const res = await lib.reconcileRead(key, toMark);
+    return res.marked;
   }
 
   /**

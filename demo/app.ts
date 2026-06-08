@@ -25,15 +25,15 @@ interface BridgeInfo { id: string; name: string; capabilities: string[] }
 interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values: Record<string, string | number | boolean | string[]>; secretsSet: string[]; missingRequired: string[]; configured: boolean }
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
-interface TagGroup { label: string; kind?: string; tags: string[] }
+interface TagGroup { label: string; kind?: string; tags: string[]; tagIds?: string[] }
 interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; artist?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[]; externalIds?: Record<string, string | number> }
 interface Chapter { id: string; name: string; number?: number; pageCount?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
 interface SeriesList { id: string; name: string; layout?: string; featured?: boolean; searchable?: boolean }
-interface Filter { type: "text" | "toggle" | "number" | "select" | "multiselect"; key: string; label: string; options?: Choice[]; min?: number; max?: number }
+interface Filter { type: "text" | "toggle" | "number" | "select" | "multiselect" | "tag-multiselect"; key: string; label: string; options?: Choice[]; min?: number; max?: number }
 interface FilterValue { key: string; value: string | string[] | number | boolean }
-interface SortOption { key: string; label: string }
+interface SortOption { key: string; label: string; directionless?: boolean }
 interface Tag { id: string; label: string }
 interface SavedRegistry { url: string; name: string }
 interface AvailableBridge { entry: { id: string; name: string; version: string }; registryUrl: string; installedVersion: string | null; updateAvailable: boolean }
@@ -47,8 +47,10 @@ interface SeriesGroup { id: string; title: string; primaryKey: string; memberKey
 interface AddSeriesResult { entry: LibEntry; autoLinked?: { matchedKey: string; sharedId: { service: string; value: number | string } } }
 // Trackers
 interface TrackerSummary { info: { id: string; name: string; capabilities: string[] }; settings: SettingDescriptor[]; values: Record<string, string | number | boolean | string[]>; secretsSet: string[]; configured: boolean; missingRequired: string[] }
+interface BridgePrefs { bridgeId: string; trackersDisabled: boolean }
 interface TrackerLink { trackerId: string; externalId: string | number; status?: string; chaptersRead?: number; lastSyncAt?: number }
 interface TrackerSearchPageResult { items: Array<{ externalId: string | number; title: string; thumbnailUrl?: string }>; page: number; hasNextPage: boolean }
+interface AvailableTracker { entry: { id: string; name: string; version: string; capabilities: string[] }; registryUrl: string; installedVersion: string | null; updateAvailable: boolean }
 
 // ── DOM + API helpers ────────────────────────────────────────────────────────────
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -89,9 +91,62 @@ let currentDescriptors: SettingDescriptor[] = [];
 let currentFilters: Filter[] = [];
 let currentLists: SeriesList[] = [];
 let activeListId: string | null = null;
-let currentView: "browse" | "library" | "history" | "detail" | "reader" = "browse";
+let currentView: "browse" | "library" | "history" | "detail" | "reader" | "settings" = "browse";
 let previousView: "browse" | "library" | "history" = "browse";
 let loadMoreFn: (() => Promise<void>) | null = null;
+let currentSortOptions: SortOption[] = [];
+const filterTagSelections = new Map<string, Array<{ id: string; label: string }>>();
+const tagIdToName = new Map<string, string>();
+
+// ── URL routing ─────────────────────────────────────────────────────────────────
+// Route scheme: #browse | #library | #history | #detail/{bridgeId}/{seriesId} | #reader/{bridgeId}/{seriesId}/{chapterId}
+let initialized = false;
+let isRestoringRoute = false;
+
+function pushRoute(path: string): void {
+  if (!initialized || isRestoringRoute) return;
+  const hash = `#${path}`;
+  if (window.location.hash !== hash) history.pushState(null, "", hash);
+}
+
+async function handleRoute(): Promise<void> {
+  const hash = window.location.hash.slice(1) || "browse";
+  const parts = hash.split("/");
+  const view = parts[0];
+  isRestoringRoute = true;
+  try {
+    if (view === "library") {
+      switchView("library");
+    } else if (view === "history") {
+      switchView("history");
+    } else if (view === "settings") {
+      switchView("settings");
+    } else if (view === "detail" && parts[1] && parts[2]) {
+      const bridgeId = decodeURIComponent(parts[1]!);
+      const seriesId = decodeURIComponent(parts[2]!);
+      await ensureBridge(bridgeId);
+      await showDetail(seriesId);
+    } else if (view === "reader" && parts[1] && parts[2] && parts[3]) {
+      const bridgeId = decodeURIComponent(parts[1]!);
+      const seriesId = decodeURIComponent(parts[2]!);
+      const chapterId = decodeURIComponent(parts[3]!);
+      if (!currentSeries || currentSeries.seriesId !== seriesId || currentSeries.bridgeId !== bridgeId) {
+        await ensureBridge(bridgeId);
+        await showDetail(seriesId);
+      }
+      if (currentSeries) {
+        const ch = chapterId === "__direct__"
+          ? { id: "__direct__", name: currentSeries.info.title }
+          : currentSeries.chapters.find((c) => c.id === chapterId);
+        if (ch) await openChapter(ch);
+      }
+    } else {
+      switchView("browse");
+    }
+  } finally {
+    isRestoringRoute = false;
+  }
+}
 
 function setLoadMore(hasMore: boolean, fn: () => Promise<void>): void {
   loadMoreFn = hasMore ? fn : null;
@@ -122,6 +177,64 @@ function renderFilterControls(filters: Filter[]): void {
       else sel.append(new Option("— any —", ""));
       for (const o of f.options ?? []) sel.append(new Option(o.label, o.value));
       label.append(sel);
+    } else if (f.type === "tag-multiselect") {
+      const wrap = document.createElement("div");
+      wrap.className = "tag-filter"; wrap.dataset.key = f.key; wrap.dataset.kind = "tag-multiselect";
+
+      const pills = document.createElement("div");
+      pills.className = "tag-filter-pills";
+
+      const input = document.createElement("input");
+      input.type = "text"; input.className = "tag-filter-input"; input.placeholder = "Search tags…";
+
+      const dropdown = document.createElement("div");
+      dropdown.className = "tag-filter-dropdown"; dropdown.style.display = "none";
+
+      wrap.append(pills, input, dropdown);
+      label.append(wrap);
+
+      const fKey = f.key;
+      function renderTagPills(): void {
+        const sel = filterTagSelections.get(fKey) ?? [];
+        pills.innerHTML = sel.map((t) =>
+          `<span class="tag-pill" data-id="${esc(t.id)}">${esc(t.label)} <button type="button">×</button></span>`
+        ).join("");
+        pills.querySelectorAll<HTMLElement>(".tag-pill button").forEach((btn) => {
+          btn.onclick = () => {
+            const id = btn.closest<HTMLElement>(".tag-pill")!.dataset.id!;
+            filterTagSelections.set(fKey, (filterTagSelections.get(fKey) ?? []).filter((t) => t.id !== id));
+            renderTagPills();
+          };
+        });
+      }
+      renderTagPills();
+
+      let tagDebounce: ReturnType<typeof setTimeout>;
+      input.addEventListener("input", () => {
+        clearTimeout(tagDebounce);
+        tagDebounce = setTimeout(async () => {
+          const q = input.value.trim();
+          if (!q) { dropdown.style.display = "none"; return; }
+          const tags = await api<Tag[]>(`/bridges/${activeBridge}/tags?q=${enc(q)}`).catch(() => []);
+          const current = new Set((filterTagSelections.get(fKey) ?? []).map((t) => t.id));
+          const opts = tags.filter((t) => !current.has(t.id));
+          dropdown.innerHTML = opts.map((t) =>
+            `<div class="tag-option" data-id="${esc(t.id)}" data-label="${esc(t.label)}">${esc(t.label)}</div>`
+          ).join("") || `<div class="tag-option-empty">No results</div>`;
+          dropdown.style.display = "block";
+          dropdown.querySelectorAll<HTMLElement>(".tag-option[data-id]").forEach((opt) => {
+            opt.onmousedown = (e) => {
+              e.preventDefault(); // prevent blur from firing before we handle the selection
+              const sel = filterTagSelections.get(fKey) ?? [];
+              sel.push({ id: opt.dataset.id!, label: opt.dataset.label! });
+              filterTagSelections.set(fKey, sel);
+              input.value = ""; dropdown.style.display = "none";
+              renderTagPills();
+            };
+          });
+        }, 200);
+      });
+      input.addEventListener("blur", () => setTimeout(() => { dropdown.style.display = "none"; }, 150));
     } else {
       const i = document.createElement("input");
       i.type = "text"; i.dataset.key = f.key; i.dataset.kind = "text";
@@ -144,6 +257,9 @@ function collectFilters(): FilterValue[] {
     } else if (kind === "select") {
       const v = (el as HTMLSelectElement).value;
       if (v) out.push({ key, value: v });
+    } else if (kind === "tag-multiselect") {
+      const ids = (filterTagSelections.get(key) ?? []).map((t) => t.id);
+      if (ids.length) out.push({ key, value: ids });
     } else if (kind === "text") {
       const v = (el as HTMLInputElement).value.trim();
       if (v) out.push({ key, value: v });
@@ -157,6 +273,12 @@ function collectSort(): { key: string; ascending: boolean } | undefined {
   const field = $<HTMLSelectElement>("#sort-field");
   if (!field.value) return undefined;
   return { key: field.value, ascending: $<HTMLSelectElement>("#sort-dir").value !== "desc" };
+}
+
+function updateSortDirVisibility(): void {
+  const key = $<HTMLSelectElement>("#sort-field").value;
+  const opt = currentSortOptions.find((s) => s.key === key);
+  $<HTMLElement>("#sort-dir").style.display = (key && opt?.directionless) ? "none" : "";
 }
 
 // ── Bridge picker ────────────────────────────────────────────────────────────────
@@ -183,13 +305,14 @@ async function loadBridges(): Promise<void> {
 async function selectBridge(id: string): Promise<void> {
   activeBridge = id;
   activeCaps = [];
+  filterTagSelections.clear();
   switchView("browse");
   const detail = await api<BridgeDetail>(`/bridges/${id}`);
   activeCaps = detail.info.capabilities;
   currentDescriptors = detail.settings;
   $("#caps").textContent = `[${detail.info.capabilities.join(", ")}]`;
 
-  renderSettings(detail);
+  void renderSettings(detail);
   await renderMeta(detail.info.capabilities);
 
   const canSearch = detail.info.capabilities.includes("search");
@@ -265,31 +388,53 @@ async function loadFavorites(page = 1): Promise<void> {
 }
 
 // ── Settings form ────────────────────────────────────────────────────────────────
-function renderSettings(detail: BridgeDetail): void {
+async function renderSettings(detail: BridgeDetail): Promise<void> {
   const panel = $("#settings-panel");
   const form = $("#settings-form");
   form.innerHTML = "";
-  if (detail.settings.length === 0) {
-    panel.style.display = "none";
-    return;
-  }
   panel.style.display = "";
-  $("#settings-state").textContent = detail.missingRequired.length
-    ? `— needs: ${detail.missingRequired.join(", ")}`
-    : "— configured";
-  $("#settings-state").className = detail.missingRequired.length ? "warn" : "ok";
 
-  for (const d of detail.settings) {
-    const wrap = document.createElement("div");
-    if (d.type === "string" && d.secret) wrap.className = "field-secret";
-    const label = document.createElement("label");
-    label.textContent = d.label + (d.required ? " *" : "");
-    if (d.description) label.title = d.description;
-    label.append(buildInput(d, detail.values[d.key], detail.secretsSet.includes(d.key)));
-    wrap.append(label);
-    form.append(wrap);
+  if (detail.settings.length === 0) {
+    $("#settings-state").textContent = "";
+  } else {
+    $("#settings-state").textContent = detail.missingRequired.length
+      ? `— needs: ${detail.missingRequired.join(", ")}`
+      : "— configured";
+    $("#settings-state").className = detail.missingRequired.length ? "warn" : "ok";
+
+    for (const d of detail.settings) {
+      const wrap = document.createElement("div");
+      if (d.type === "string" && d.secret) wrap.className = "field-secret";
+      const label = document.createElement("label");
+      label.textContent = d.label + (d.required ? " *" : "");
+      if (d.description) label.title = d.description;
+      label.append(buildInput(d, detail.values[d.key], detail.secretsSet.includes(d.key)));
+      wrap.append(label);
+      form.append(wrap);
+    }
+    $("#settings-msg").textContent = "";
   }
-  $("#settings-msg").textContent = "";
+
+  // Tracker disable toggle — always shown regardless of bridge settings.
+  const prefs = await api<BridgePrefs>(`/library/bridges/${enc(detail.info.id)}/prefs`).catch(
+    () => ({ bridgeId: detail.info.id, trackersDisabled: false }),
+  );
+  let trackerRow = document.getElementById("tracker-disable-row");
+  if (!trackerRow) {
+    trackerRow = document.createElement("label");
+    trackerRow.id = "tracker-disable-row";
+    trackerRow.style.cssText = "display:flex;align-items:center;gap:0.4rem;font-size:0.84rem;margin-top:0.6rem";
+    const chk = document.createElement("input");
+    chk.type = "checkbox";
+    chk.id = "tracker-disable-toggle";
+    chk.onchange = async () => {
+      await send("PUT", `/library/bridges/${enc(activeBridge)}/prefs`, { trackersDisabled: chk.checked });
+    };
+    trackerRow.append(chk, "Disable tracker sync for this bridge");
+    const detailsEl = $("#settings-details");
+    detailsEl.append(trackerRow);
+  }
+  ($<HTMLInputElement>("#tracker-disable-toggle")).checked = prefs.trackersDisabled;
 }
 
 /** Build a control prefilled with the current stored value (falling back to the descriptor default). */
@@ -297,7 +442,83 @@ function buildInput(
   d: SettingDescriptor,
   current: string | number | boolean | string[] | undefined,
   secretSet: boolean,
+  ctx?: { trackerId: string; form: HTMLElement },
 ): HTMLElement {
+  if (d.type === "oauth-callback") {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:flex;flex-direction:column;gap:0.4rem;margin-top:0.2rem";
+    if (secretSet) {
+      const status = document.createElement("span");
+      status.className = "ok";
+      status.style.fontSize = "0.82rem";
+      status.textContent = "Connected ✓";
+      wrap.append(status);
+    }
+    const connectBtn = document.createElement("button");
+    connectBtn.type = "button";
+    connectBtn.className = "secondary";
+    connectBtn.style.cssText = "font-size:0.82rem;padding:0.3rem 0.7rem;align-self:flex-start";
+    connectBtn.textContent = secretSet ? "Reconnect" : `Connect ${d.label}`;
+    const statusMsg = document.createElement("span");
+    statusMsg.style.cssText = "font-size:0.8rem;color:var(--fg-muted,#888)";
+    connectBtn.onclick = async () => {
+      connectBtn.disabled = true;
+      statusMsg.textContent = "Opening authorization…";
+      try {
+        const settings: Record<string, string> = {};
+        if (ctx) {
+          ctx.form.querySelectorAll<HTMLInputElement>("[data-key]").forEach((el) => {
+            if (el.value.trim()) settings[el.dataset.key!] = el.value.trim();
+          });
+        }
+        const res = await send("POST", `/trackers/${ctx?.trackerId ?? ""}/oauth-start`, { key: d.key, settings });
+        if (!res.ok) { statusMsg.textContent = (res.data as { error?: string }).error ?? "Failed to start OAuth"; connectBtn.disabled = false; return; }
+        const { authUrl } = res.data as { authUrl: string };
+        window.open(authUrl, "_blank", "noopener noreferrer");
+        statusMsg.textContent = "Authorize in the browser window…";
+        const onMsg = (e: MessageEvent) => {
+          if ((e.data as { type?: string })?.type !== "comical-oauth-complete") return;
+          window.removeEventListener("message", onMsg);
+          statusMsg.textContent = "Connected! Refreshing…";
+          void fetchTrackers().then((t) => { availableTrackers = t; return loadTrackerConfig(); });
+        };
+        window.addEventListener("message", onMsg);
+        connectBtn.disabled = false;
+      } catch (e) {
+        statusMsg.textContent = e instanceof Error ? e.message : String(e);
+        connectBtn.disabled = false;
+      }
+    };
+    wrap.append(connectBtn, statusMsg);
+    return wrap;
+  }
+  if (d.type === "oauth-pin") {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:flex;flex-direction:column;gap:0.3rem;margin-top:0.2rem";
+    const hasExchange = "exchange" in d && !!d.exchange;
+    if (secretSet) {
+      const status = document.createElement("span");
+      status.className = "ok";
+      status.style.fontSize = "0.82rem";
+      status.textContent = "Connected ✓";
+      wrap.append(status);
+    }
+    const link = document.createElement("a");
+    link.href = d.authUrl;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = secretSet ? "Reconnect" : `Connect ${d.label}`;
+    link.style.cssText = "font-size:0.82rem";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.dataset.key = d.key;
+    input.dataset.kind = "oauth-pin";
+    input.placeholder = secretSet
+      ? `leave blank to keep — paste ${hasExchange ? "new authorization code" : "new token"} to update`
+      : hasExchange ? "Paste the authorization code shown on the provider page" : "Paste the access token shown on the provider page";
+    wrap.append(link, input);
+    return wrap;
+  }
   if (d.type === "enum") {
     const sel = document.createElement("select");
     sel.dataset.key = d.key;
@@ -389,13 +610,16 @@ async function renderMeta(capabilities: string[]): Promise<void> {
       any = true;
     } catch { /* ignore */ }
   }
+  currentSortOptions = [];
   if (capabilities.includes("sort")) {
     try {
       const sorts = await api<SortOption[]>(`/bridges/${activeBridge}/sort`);
+      currentSortOptions = sorts;
       const field = $<HTMLSelectElement>("#sort-field");
       field.innerHTML = "";
       field.append(new Option("— default —", ""));
       for (const s of sorts) field.append(new Option(s.label, s.key));
+      updateSortDirVisibility();
       sortBlock.style.display = "";
       any = true;
     } catch { /* ignore */ }
@@ -479,6 +703,7 @@ function renderGrid(items: SeriesEntry[]): void {
 async function showDetail(seriesId: string): Promise<void> {
   if (currentView !== "detail") previousView = currentView as "browse" | "library" | "history";
   switchView("detail");
+  pushRoute(`detail/${enc(activeBridge)}/${enc(seriesId)}`);
   $("#detail-title").textContent = "Loading…";
   $("#detail-meta").textContent = "";
   $("#detail-genres").innerHTML = "";
@@ -534,15 +759,35 @@ async function showDetail(seriesId: string): Promise<void> {
     favBtn.hidden = true;
   }
 
-  $("#detail-genres").innerHTML = (info.genres ?? []).map((g) => `<span class="chip">${esc(g)}</span>`).join("");
+  const genreFilter = currentFilters.find((f) => f.key === "genre");
+  const genreOptions = genreFilter && "options" in genreFilter ? (genreFilter.options ?? []) : [];
+  $("#detail-genres").innerHTML = (info.genres ?? [])
+    .map((name) => {
+      const opt = genreOptions.find((o) => o.label === name);
+      return opt
+        ? `<span class="chip chip-link" data-genre-id="${esc(opt.value)}">${esc(name)}</span>`
+        : `<span class="chip">${esc(name)}</span>`;
+    })
+    .join("");
+  $("#detail-genres").querySelectorAll<HTMLElement>("[data-genre-id]").forEach((el) => {
+    el.onclick = () => navigateToFilteredSearch([{ key: "genre", value: [el.dataset.genreId!] }]);
+  });
+  for (const grp of info.tagGroups ?? [])
+    grp.tags.forEach((name, i) => { const id = grp.tagIds?.[i]; if (id) tagIdToName.set(id, name); });
   $("#detail-taggroups").innerHTML = (info.tagGroups ?? [])
     .map(
       (grp) =>
         `<div class="tag-group"><span class="tag-group-label">${esc(grp.label)}</span>` +
-        grp.tags.map((t) => `<span class="chip tag">${esc(t)}</span>`).join("") +
+        grp.tags.map((t, i) => {
+          const id = grp.tagIds?.[i] ?? "";
+          return `<span class="chip tag chip-link" data-tag="${esc(id || t)}">${esc(t)}</span>`;
+        }).join("") +
         `</div>`,
     )
     .join("");
+  $("#detail-taggroups").querySelectorAll<HTMLElement>("[data-tag]").forEach((el) => {
+    el.onclick = () => navigateToFilteredSearch([{ key: "tag", value: [el.dataset.tag!] }]);
+  });
   $("#detail-description").textContent = info.description ?? "";
 
   const readBtn = $<HTMLButtonElement>("#read-direct-btn");
@@ -578,8 +823,9 @@ async function refreshLibraryStatus(): Promise<void> {
   libBtn.hidden = false;
   newBadge.hidden = true;
   libBtn.onclick = () => void toggleLibrary();
+  let detail: { entry: LibEntry; progress: ProgressItem[] } | undefined;
   try {
-    const detail = await api<{ entry: LibEntry; progress: ProgressItem[] }>(
+    detail = await api<{ entry: LibEntry; progress: ProgressItem[] }>(
       `/library/entries/${bridgeId}/${enc(seriesId)}`,
     );
     currentSeries.inLibrary = true;
@@ -589,9 +835,6 @@ async function refreshLibraryStatus(): Promise<void> {
     const sync = await send("POST", `/library/entries/${bridgeId}/${enc(seriesId)}/sync`, { chapters: currentSeries.chapters });
     const added = (sync.data as { added?: Chapter[] }).added ?? [];
     if (added.length) { newBadge.hidden = false; newBadge.textContent = `${added.length} new`; }
-    await renderCategoryPicker(detail.entry.categoryIds);
-    await renderGroupPanel(bridgeId, seriesId, detail.entry);
-    await renderTrackerPanel(bridgeId, seriesId);
   } catch {
     currentSeries.inLibrary = false;
     currentSeries.progress = new Map();
@@ -599,7 +842,12 @@ async function refreshLibraryStatus(): Promise<void> {
     $("#lib-category-picker").hidden = true;
     $("#group-panel").hidden = true;
     $("#tracker-panel").hidden = true;
+    return;
   }
+  // Render UI panels separately — failures here must not reset inLibrary.
+  await renderCategoryPicker(detail.entry.categoryIds).catch(() => {});
+  await renderGroupPanel(bridgeId, seriesId, detail.entry).catch(() => {});
+  await renderTrackerPanel(bridgeId, seriesId).catch(() => {});
 }
 
 async function renderGroupPanel(bridgeId: string, seriesId: string, entry: LibEntry): Promise<void> {
@@ -705,6 +953,11 @@ async function renderTrackerPanel(bridgeId: string, seriesId: string): Promise<v
 
   if (availableTrackers.length === 0) return;
 
+  const prefs = await api<BridgePrefs>(`/library/bridges/${enc(bridgeId)}/prefs`).catch(
+    () => ({ bridgeId, trackersDisabled: false }),
+  );
+  if (prefs.trackersDisabled) return;
+
   const links = await api<TrackerLink[]>(
     `/library/entries/${bridgeId}/${enc(seriesId)}/tracker-links`,
   ).catch(() => [] as TrackerLink[]);
@@ -735,11 +988,15 @@ async function renderTrackerPanel(bridgeId: string, seriesId: string): Promise<v
     syncBtn.textContent = "Sync";
     syncBtn.onclick = async () => {
       syncBtn.disabled = true;
-      // background sync re-runs syncEntryToTrackers for every library entry
-      await send("POST", "/library/sync");
+      // backgroundSync reconciles both directions for every entry, then pulls each tracker's list.
+      const { data } = await send("POST", "/library/sync");
+      const res = data as { readSynced?: number; suggestions?: Array<{ title: string }> };
       syncBtn.disabled = false;
       await renderTrackerPanel(bridgeId, seriesId);
-      status("Synced to trackers.");
+      const parts = [`${res.readSynced ?? 0} chapters reconciled`];
+      const sug = res.suggestions ?? [];
+      if (sug.length > 0) parts.push(`${sug.length} tracked series not in library: ${sug.slice(0, 3).map((s) => s.title).join(", ")}${sug.length > 3 ? "…" : ""}`);
+      status(`Synced. ${parts.join(" · ")}`);
     };
 
     const unlinkBtn = document.createElement("button");
@@ -855,7 +1112,11 @@ async function loadTrackerConfig(): Promise<void> {
   const section = $("#trackers-config-panel");
   const list = $("#trackers-config-list");
 
-  if (availableTrackers.length === 0) {
+  // Also fetch available trackers from registry, if any registries are added.
+  let availableFromRegistry: AvailableTracker[] = [];
+  try { availableFromRegistry = await api<AvailableTracker[]>("/registry/trackers"); } catch { /* no registry */ }
+
+  if (availableTrackers.length === 0 && availableFromRegistry.length === 0) {
     section.style.display = "none";
     return;
   }
@@ -884,7 +1145,7 @@ async function loadTrackerConfig(): Promise<void> {
         const label = document.createElement("label");
         label.textContent = d.label + (d.required ? " *" : "");
         if (d.description) label.title = d.description;
-        label.append(buildInput(d, t.values[d.key], t.secretsSet.includes(d.key)));
+        label.append(buildInput(d, t.values[d.key], t.secretsSet.includes(d.key), { trackerId: t.info.id, form }));
         wrap.append(label);
         form.append(wrap);
       }
@@ -923,6 +1184,68 @@ async function loadTrackerConfig(): Promise<void> {
 
     item.append(det);
     list.append(item);
+  }
+
+  // ── Registry-available trackers ──────────────────────────────────────────
+  if (availableFromRegistry.length > 0) {
+    const heading = document.createElement("h4");
+    heading.textContent = "Available from registry";
+    heading.style.cssText = "margin:0.75rem 0 0.4rem;font-size:0.85rem;opacity:0.7";
+    list.append(heading);
+
+    for (const t of availableFromRegistry) {
+      const row = document.createElement("div");
+      row.className = "tracker-config-item";
+      row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:0.5rem";
+
+      const caps = t.entry.capabilities.join(", ") || "—";
+      const versionTag = t.installedVersion
+        ? `<span class="ok" style="font-size:0.78rem">installed ${esc(t.installedVersion)}</span>`
+        : "";
+      const updateTag = t.updateAvailable
+        ? `<span class="warn" style="font-size:0.78rem"> → ${esc(t.entry.version)}</span>`
+        : "";
+
+      const info = document.createElement("span");
+      info.innerHTML = `${esc(t.entry.name)} <span class="muted" style="font-size:0.8rem">v${esc(t.entry.version)}</span> ${versionTag}${updateTag}<br><span class="muted" style="font-size:0.78rem">${esc(caps)}</span>`;
+      row.append(info);
+
+      const acts = document.createElement("span");
+      if (t.updateAvailable) {
+        const btn = document.createElement("button");
+        btn.textContent = `Update → ${t.entry.version}`;
+        btn.onclick = async () => {
+          btn.disabled = true;
+          await send("POST", `/trackers/${enc(t.entry.id)}/update`);
+          availableTrackers = await fetchTrackers();
+          await loadTrackerConfig();
+        };
+        acts.append(btn);
+      } else if (t.installedVersion) {
+        const btn = document.createElement("button");
+        btn.className = "secondary";
+        btn.textContent = "Uninstall";
+        btn.onclick = async () => {
+          btn.disabled = true;
+          await send("DELETE", `/trackers/${enc(t.entry.id)}`);
+          availableTrackers = await fetchTrackers();
+          await loadTrackerConfig();
+        };
+        acts.append(btn);
+      } else {
+        const btn = document.createElement("button");
+        btn.textContent = "Install";
+        btn.onclick = async () => {
+          btn.disabled = true;
+          await send("POST", `/registries/${encodeURIComponent(t.registryUrl)}/trackers/${enc(t.entry.id)}/install`);
+          availableTrackers = await fetchTrackers();
+          await loadTrackerConfig();
+        };
+        acts.append(btn);
+      }
+      row.append(acts);
+      list.append(row);
+    }
   }
 }
 
@@ -1012,7 +1335,16 @@ function renderChapters(): void {
 async function openChapter(ch: Chapter, resumePage?: number): Promise<void> {
   if (!currentSeries) return;
   const { bridgeId, seriesId, inLibrary } = currentSeries;
+  const alreadyInReader = currentView === "reader";
   switchView("reader");
+  // Replace when already in the reader so chapter-to-chapter navigation doesn't
+  // stack history entries — back should always return to the pre-reader view.
+  const route = `#reader/${enc(bridgeId)}/${enc(seriesId)}/${enc(ch.id)}`;
+  if (alreadyInReader) {
+    history.replaceState(null, "", route);
+  } else {
+    pushRoute(`reader/${enc(bridgeId)}/${enc(seriesId)}/${enc(ch.id)}`);
+  }
   $("#reader-info").textContent = `${ch.name} · Loading…`;
   $<HTMLButtonElement>("#reader-prev").disabled = true;
   $<HTMLButtonElement>("#reader-next").disabled = true;
@@ -1022,13 +1354,22 @@ async function openChapter(ch: Chapter, resumePage?: number): Promise<void> {
   );
   readerState = { ch, pages, currentPage: Math.min(resumePage ?? 0, Math.max(0, pages.length - 1)) };
   renderReaderPage();
-  if (inLibrary) await setProgress(ch, readerState.currentPage, pages.length);
+  if (inLibrary) {
+    await setProgress(ch, readerState.currentPage, pages.length);
+  } else {
+    const { info } = currentSeries;
+    void send("POST", "/reading-history", {
+      bridgeId, seriesId, title: info.title, thumbnailUrl: info.thumbnailUrl,
+      chapterId: ch.id, chapterName: ch.name, lastReadAt: Date.now(),
+    }).catch(() => {});
+  }
 }
 
 async function readDirect(seriesId: string): Promise<void> {
   if (!currentSeries) return;
-  const { bridgeId, info } = currentSeries;
+  const { bridgeId, info, inLibrary } = currentSeries;
   switchView("reader");
+  pushRoute(`reader/${enc(bridgeId)}/${enc(seriesId)}/__direct__`);
   $("#reader-info").textContent = `${info.title} · Loading…`;
   $<HTMLButtonElement>("#reader-prev").disabled = true;
   $<HTMLButtonElement>("#reader-next").disabled = true;
@@ -1037,6 +1378,28 @@ async function readDirect(seriesId: string): Promise<void> {
   const syntheticChapter: Chapter = { id: "__direct__", name: info.title };
   readerState = { ch: syntheticChapter, pages, currentPage: 0 };
   renderReaderPage();
+  if (inLibrary) {
+    await setProgress(syntheticChapter, 0, pages.length);
+  } else {
+    void send("POST", "/reading-history", {
+      bridgeId, seriesId, title: info.title, thumbnailUrl: info.thumbnailUrl,
+      chapterId: "__direct__", chapterName: info.title, lastReadAt: Date.now(),
+    }).catch(() => {});
+  }
+}
+
+/** Next or previous chapter in reading order (ascending by chapter number). */
+function getAdjacentChapter(delta: 1 | -1): Chapter | null {
+  if (!currentSeries || !readerState) return null;
+  const ordered = [...currentSeries.chapters].sort((a, b) => {
+    if (a.number !== undefined && b.number !== undefined) return a.number - b.number;
+    if (a.number !== undefined) return -1;
+    if (b.number !== undefined) return 1;
+    return 0;
+  });
+  const idx = ordered.findIndex((c) => c.id === readerState!.ch.id);
+  if (idx === -1) return null;
+  return ordered[idx + delta] ?? null;
 }
 
 function renderReaderPage(): void {
@@ -1044,17 +1407,32 @@ function renderReaderPage(): void {
   const { ch, pages, currentPage } = readerState;
   const p = pages[currentPage];
   if (!p) return;
+  ($("#reader-view") as HTMLElement).scrollTop = 0;
+  const onLastPage = currentPage >= pages.length - 1;
+  const nextCh = onLastPage ? getAdjacentChapter(1) : null;
   $("#reader-info").textContent = `${ch.name} · ${currentPage + 1} / ${pages.length}`;
   $<HTMLButtonElement>("#reader-prev").disabled = currentPage === 0;
-  $<HTMLButtonElement>("#reader-next").disabled = currentPage >= pages.length - 1;
-  $("#reader-page").innerHTML =
-    `<img src="${p.imageUrl}" alt="Page ${currentPage + 1}"` +
-    ` onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${currentPage + 1}'">`;
-  window.scrollTo({ top: 0 });
+  $<HTMLButtonElement>("#reader-next").disabled = onLastPage && !nextCh;
+  $<HTMLButtonElement>("#reader-next").textContent = onLastPage && nextCh ? "Next ch. ›" : "Next ›";
+  const img = `<img src="${p.imageUrl}" alt="Page ${currentPage + 1}" onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${currentPage + 1}'">`;
+  const endBanner = nextCh
+    ? `<div style="text-align:center;padding:1rem 0;border-top:1px solid #2a2a2e;margin-top:0.75rem">` +
+      `<button id="reader-end-next" style="font-size:0.9rem;padding:0.45rem 1rem">&#x25B6; Next: ${esc(nextCh.name)}</button></div>`
+    : "";
+  $("#reader-page").innerHTML = img + endBanner;
+  if (nextCh) {
+    const endBtn = document.getElementById("reader-end-next") as HTMLButtonElement | null;
+    if (endBtn) endBtn.onclick = () => void openChapter(nextCh);
+  }
 }
 
 async function readerNavigate(delta: number): Promise<void> {
   if (!readerState) return;
+  if (delta > 0 && readerState.currentPage >= readerState.pages.length - 1) {
+    const nextCh = getAdjacentChapter(1);
+    if (nextCh) await openChapter(nextCh);
+    return;
+  }
   const next = Math.max(0, Math.min(readerState.pages.length - 1, readerState.currentPage + delta));
   if (next === readerState.currentPage) return;
   readerState.currentPage = next;
@@ -1099,6 +1477,37 @@ async function doSearch(): Promise<void> {
   const filters = collectFilters();
   const sort = collectSort();
   await runSearch(q, filters, sort, 1);
+}
+
+function navigateToFilteredSearch(filters: FilterValue[]): void {
+  switchView("browse");
+  $<HTMLInputElement>("#query").value = "";
+  for (const f of filters) {
+    const el = $("#filters").querySelector<HTMLElement>(`[data-key="${f.key}"]`);
+    if (!el) continue;
+    if (el instanceof HTMLSelectElement && Array.isArray(f.value)) {
+      for (const opt of el.options) opt.selected = (f.value as string[]).includes(opt.value);
+    } else if (el.dataset.kind === "tag-multiselect" && Array.isArray(f.value)) {
+      const tags = (f.value as string[]).map((id) => ({ id, label: tagIdToName.get(id) ?? id }));
+      filterTagSelections.set(f.key, tags);
+      const pills = el.querySelector<HTMLElement>(".tag-filter-pills");
+      if (pills) {
+        pills.innerHTML = tags.map((t) =>
+          `<span class="tag-pill" data-id="${esc(t.id)}">${esc(t.label)} <button type="button">×</button></span>`
+        ).join("");
+        pills.querySelectorAll<HTMLElement>(".tag-pill button").forEach((btn) => {
+          btn.onclick = () => {
+            const id = btn.closest<HTMLElement>(".tag-pill")!.dataset.id!;
+            filterTagSelections.set(f.key, (filterTagSelections.get(f.key) ?? []).filter((t) => t.id !== id));
+            btn.closest<HTMLElement>(".tag-pill")!.remove();
+          };
+        });
+      }
+    } else if (el instanceof HTMLInputElement && typeof f.value === "string") {
+      el.value = f.value;
+    }
+  }
+  void doSearch();
 }
 
 async function runSearch(
@@ -1189,6 +1598,8 @@ async function loadRegistry(): Promise<void> {
 async function refreshAll(): Promise<void> {
   await loadBridges();
   await loadRegistry();
+  availableTrackers = await fetchTrackers();
+  await loadTrackerConfig();
 }
 
 // ── Library view (cross-bridge collection) ──────────────────────────────────
@@ -1325,7 +1736,15 @@ async function loadHistory(): Promise<void> {
     const resume = document.createElement("button");
     resume.textContent = "Resume";
     resume.onclick = () => void openSeries(h.bridgeId, h.seriesId, h.lastReadChapterId);
-    row.append(resume);
+    const remove = document.createElement("button");
+    remove.textContent = "Remove";
+    remove.className = "btn-ghost";
+    remove.onclick = async () => {
+      await send("DELETE", `/library/history/${enc(h.bridgeId)}/${enc(h.seriesId)}`);
+      row.remove();
+      if (!host.querySelector(".history-item")) host.innerHTML = '<p class="muted">No reading history yet.</p>';
+    };
+    row.append(resume, remove);
     host.append(row);
   }
 }
@@ -1356,7 +1775,7 @@ async function openSeries(bridgeId: string, seriesId: string, resumeChapterId?: 
   }
 }
 
-function switchView(view: "browse" | "library" | "history" | "detail" | "reader"): void {
+function switchView(view: "browse" | "library" | "history" | "detail" | "reader" | "settings"): void {
   currentView = view;
   document.querySelectorAll<HTMLElement>(".view-tabs .tab").forEach((t) =>
     t.classList.toggle("active", t.dataset.view === view),
@@ -1366,6 +1785,8 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
   $("#history-view").style.display = view === "history" ? "" : "none";
   $("#detail-view").style.display = view === "detail" ? "" : "none";
   $("#reader-view").style.display = view === "reader" ? "" : "none";
+  $("#settings-view").style.display = view === "settings" ? "" : "none";
+  if (view === "browse" || view === "library" || view === "history" || view === "settings") pushRoute(view);
   if (view === "library") void loadLibrary().catch((e) => status(`Library unavailable: ${e instanceof Error ? e.message : e}`, true));
   if (view === "history") void loadHistory().catch((e) => status(`History unavailable: ${e instanceof Error ? e.message : e}`, true));
 }
@@ -1381,12 +1802,17 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
   }
 
   document.querySelectorAll<HTMLElement>(".view-tabs .tab").forEach((t) => {
-    t.onclick = () => switchView((t.dataset.view as "browse" | "library" | "history") ?? "browse");
+    t.onclick = () => switchView((t.dataset.view as "browse" | "library" | "history" | "settings") ?? "browse");
   });
-  $("#back-btn").onclick = () => switchView(previousView);
-  $("#reader-back").onclick = () => switchView("detail");
+  $("#back-btn").onclick = () => history.back();
+  $("#reader-back").onclick = () => history.back();
   $("#reader-prev").onclick = () => void readerNavigate(-1);
   $("#reader-next").onclick = () => void readerNavigate(1);
+  $("#reader-page").addEventListener("click", (e: MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button,a")) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    void readerNavigate(e.clientX < rect.left + rect.width / 2 ? -1 : 1);
+  });
   $("#load-more").onclick = () => void loadMoreFn?.();
   $("#lib-add-category").onclick = async () => {
     const input = $<HTMLInputElement>("#lib-new-category");
@@ -1397,6 +1823,7 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
     await loadLibrary();
   };
 
+  $<HTMLSelectElement>("#sort-field").addEventListener("change", updateSortDirVisibility);
   $("#settings-save").onclick = () => void saveSettings();
   $("#searchBtn").onclick = () => void doSearch();
   $<HTMLInputElement>("#query").addEventListener("keydown", (e) => { if (e.key === "Enter") void doSearch(); });
@@ -1409,10 +1836,15 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
     else { const e = res.data as { error?: string }; msg.textContent = e.error ?? `error ${res.status}`; msg.className = "err"; }
   };
 
+  window.addEventListener("popstate", () => void handleRoute());
+
   try {
     availableTrackers = await fetchTrackers();
     await Promise.all([loadBridges(), loadRegistry(), loadTrackerConfig()]);
   } catch (e) {
     status(`Init failed: ${e instanceof Error ? e.message : e}`, true);
   }
+
+  initialized = true;
+  await handleRoute().catch(() => {});
 })();

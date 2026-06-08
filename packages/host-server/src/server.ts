@@ -43,19 +43,20 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
     registry,
   });
 
-  const routerOpts: RouterOptions = { registry };
+  const port = opts.port ?? 3100;
+  const routerOpts: RouterOptions = { registry, callbackBaseUrl: `http://localhost:${port}` };
   if (opts.origin) routerOpts.origin = opts.origin;
   if (opts.token) routerOpts.token = opts.token;
 
-  let trackerManager: TrackerManager | undefined;
-  if (opts.trackersDir) {
-    trackerManager = new TrackerManager({
-      trackersDir: opts.trackersDir,
-      dataDir: opts.dataDir,
-      settings,
-    });
-    routerOpts.trackers = trackerManager;
-  }
+  // Always create TrackerManager so that registry-installed trackers work
+  // even when no local trackersDir is configured.
+  const trackerManager = new TrackerManager({
+    ...(opts.trackersDir ? { trackersDir: opts.trackersDir } : {}),
+    dataDir: opts.dataDir,
+    settings,
+    registry,
+  });
+  routerOpts.trackers = trackerManager;
 
   if (opts.library) {
     const dir = typeof opts.library === "object" && opts.library.dir

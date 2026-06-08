@@ -28,7 +28,7 @@ import {
   signSha256,
 } from "@comical/registry";
 import { readdir, writeFile } from "node:fs/promises";
-import { discoverBridges, readBundle, resolveBridge } from "./discover.ts";
+import { discoverBridges, discoverTrackers, readBundle, resolveBridge } from "./discover.ts";
 
 const BRIDGES_DIR = join(import.meta.dir, "..", "..", "..", "bridges");
 
@@ -59,7 +59,7 @@ Usage:
   comical registry update <bridgeId>             update an installed bridge
   comical registry uninstall <bridgeId>          uninstall a registry bridge
   comical registry updates                       check for available updates
-  comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR]   generate index.json
+  comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR] [--trackers-dir DIR]   generate index.json
   comical registry keygen --out FILE             generate an Ed25519 keypair
 
 Options:
@@ -75,6 +75,7 @@ Options:
   --base-url URL      Base URL for \`registry publish\` (e.g. https://me.github.io/bridges)
   --out DIR           Output directory for \`registry publish\`
   --bridges-dir DIR   Bridges dir to publish from (external bridge repos); defaults to this repo's
+  --trackers-dir DIR  Trackers dir to publish from (tracker repos)
   --key FILE          Path to private key file for \`registry publish\`
   --query Q           Search query for the \`evaluate\` probe
   --strict            \`evaluate\`: treat warnings as failures (non-zero exit)
@@ -127,6 +128,7 @@ async function main(): Promise<number> {
       strict: { type: "boolean" },
       "base-url": { type: "string" },
       "bridges-dir": { type: "string" },
+      "trackers-dir": { type: "string" },
       out: { type: "string" },
       key: { type: "string" },
       fixture: { type: "boolean" },
@@ -264,6 +266,7 @@ async function main(): Promise<number> {
       const pubOpts: PublishOpts = { baseUrl, outDir };
       if (values.key) pubOpts.keyFile = values.key;
       if (values["bridges-dir"]) pubOpts.bridgesDir = values["bridges-dir"];
+      if (values["trackers-dir"]) pubOpts.trackersDir = values["trackers-dir"];
       await publishRegistry(pubOpts);
       return 0;
     }
@@ -467,9 +470,11 @@ interface PublishOpts {
   keyFile?: string;
   /** Where built bridges live; defaults to this repo's bridges/. External bridge repos pass their own. */
   bridgesDir?: string;
+  /** Where built trackers live (.build/ in a tracker repo). */
+  trackersDir?: string;
 }
 
-async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir }: PublishOpts): Promise<void> {
+async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersDir }: PublishOpts): Promise<void> {
   const { mkdirSync, readFileSync, copyFileSync } = await import("node:fs");
   const { join: pjoin } = await import("node:path");
 
@@ -481,18 +486,22 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir }: Publish
     publicKey = pair.publicKey;
   }
 
-  const bridges = discoverBridges(bridgesDir ?? BRIDGES_DIR);
-  if (bridges.length === 0) throw new Error("no built bridges found — run the build first");
-
+  const base = baseUrl.replace(/\/+$/, "");
   mkdirSync(outDir, { recursive: true });
 
-  const entries = [];
+  // ── Bridges ──────────────────────────────────────────────────────────────
+  // Only use the monorepo default when --bridges-dir is not given AND no --trackers-dir was
+  // provided either (tracker-only repos must not accidentally include the monorepo's bridges).
+  const effectiveBridgesDir = bridgesDir ?? (trackersDir ? undefined : BRIDGES_DIR);
+  const bridges = effectiveBridgesDir ? discoverBridges(effectiveBridgesDir) : [];
+  if (bridges.length === 0 && !trackersDir) throw new Error("no built bridges found — run the build first");
+
+  const bridgeEntries = [];
   for (const b of bridges) {
     const bundleBytes = new Uint8Array(readFileSync(b.bundlePath));
     const hash = await sha256Hex(bundleBytes);
     const sig = (privateKey && publicKey) ? await signSha256(hash, privateKey) : undefined;
 
-    // Copy bundle to output.
     const relPath = `bridges/${b.id}/${b.info.version}/bridge.js`;
     const destPath = pjoin(outDir, relPath);
     mkdirSync(dirname(destPath), { recursive: true });
@@ -506,25 +515,57 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir }: Publish
       languages: b.info.languages,
       nsfw: b.info.nsfw,
       capabilities: b.info.capabilities,
-      url: `${baseUrl.replace(/\/+$/, "")}/${relPath}`,
+      url: `${base}/${relPath}`,
       sha256: hash,
     };
     if (sig) entry.signature = sig;
-    entries.push(entry);
-    console.log(`✓ ${b.info.id} v${b.info.version}  sha256:${hash.slice(0, 12)}…`);
+    bridgeEntries.push(entry);
+    console.log(`bridge  ✓ ${b.info.id} v${b.info.version}  sha256:${hash.slice(0, 12)}…`);
+  }
+
+  // ── Trackers ─────────────────────────────────────────────────────────────
+  const trackerEntries = [];
+  if (trackersDir) {
+    const trackers = discoverTrackers(trackersDir);
+    if (trackers.length === 0) throw new Error(`no built trackers found in ${trackersDir} — run the build first`);
+    for (const t of trackers) {
+      const bundleBytes = new Uint8Array(readFileSync(t.bundlePath));
+      const hash = await sha256Hex(bundleBytes);
+      const sig = (privateKey && publicKey) ? await signSha256(hash, privateKey) : undefined;
+
+      const relPath = `trackers/${t.id}/${t.info.version}/tracker.js`;
+      const destPath = pjoin(outDir, relPath);
+      mkdirSync(dirname(destPath), { recursive: true });
+      copyFileSync(t.bundlePath, destPath);
+
+      const entry: Record<string, unknown> = {
+        id: t.info.id,
+        name: t.info.name,
+        version: t.info.version,
+        contractVersion: t.info.contractVersion,
+        capabilities: t.info.capabilities,
+        url: `${base}/${relPath}`,
+        sha256: hash,
+      };
+      if (sig) entry.signature = sig;
+      trackerEntries.push(entry);
+      console.log(`tracker ✓ ${t.info.id} v${t.info.version}  sha256:${hash.slice(0, 12)}…`);
+    }
   }
 
   const index: Record<string, unknown> = {
     registryVersion: "1",
     updated: new Date().toISOString(),
-    bridges: entries,
+    bridges: bridgeEntries,
   };
+  if (trackerEntries.length > 0) index.trackers = trackerEntries;
   if (publicKey) index.publicKey = publicKey;
 
   const indexPath = pjoin(outDir, "index.json");
   await writeFile(indexPath, JSON.stringify(index, null, 2), "utf8");
   console.log(`\n✓ index.json written → ${indexPath}`);
-  console.log(`  ${entries.length} bridge(s) published`);
+  if (bridgeEntries.length) console.log(`  ${bridgeEntries.length} bridge(s) published`);
+  if (trackerEntries.length) console.log(`  ${trackerEntries.length} tracker(s) published`);
   if (publicKey) console.log(`  Signed with key: ${publicKey.slice(0, 20)}…`);
   else console.log("  Unsigned (no --key provided) — users trust via HTTPS");
 }

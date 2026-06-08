@@ -6,7 +6,7 @@
  *
  * Keys are `entryKey(bridgeId, seriesId)`.
  */
-import type { Category, ChapterProgress, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
+import type { BridgePrefs, Category, ChapterProgress, HistoryItem, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
 
 export interface LibraryStore {
   // ── Entries ──────────────────────────────────────────────────────────────
@@ -35,4 +35,14 @@ export interface LibraryStore {
   listTrackerLinks(key: string): Promise<TrackerLink[]>;
   putTrackerLink(key: string, link: TrackerLink): Promise<void>;
   deleteTrackerLink(key: string, trackerId: string): Promise<void>;
+
+  // ── Reading log (non-library reads) ───────────────────────────────────────
+  /** One entry per series; keyed by `bridgeId:seriesId`. */
+  listReadingLog(): Promise<HistoryItem[]>;
+  upsertReadingLog(item: HistoryItem): Promise<void>;
+  deleteReadingLog(bridgeId: string, seriesId: string): Promise<void>;
+
+  // ── Bridge preferences ────────────────────────────────────────────────────
+  getBridgePrefs(bridgeId: string): Promise<BridgePrefs | undefined>;
+  setBridgePrefs(bridgeId: string, prefs: BridgePrefs): Promise<void>;
 }

@@ -16,7 +16,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { downloadBundle, fetchIndex } from "./fetcher.ts";
 import { ManifestStore } from "./manifest.ts";
-import type { InstalledBridge, RegistryBridgeEntry, RegistryIndex, SavedRegistry } from "./schema.ts";
+import type { InstalledBridge, InstalledTracker, RegistryBridgeEntry, RegistryTrackerEntry, RegistryIndex, SavedRegistry } from "./schema.ts";
 import { resolveRegistryUrl, registryDisplayName } from "./url.ts";
 import { publicKeyFingerprint } from "./verify.ts";
 
@@ -32,6 +32,13 @@ export interface AvailableBridge {
   /** Installed version, if any. null = not installed. */
   installedVersion: string | null;
   /** True when a newer version is available in the registry. */
+  updateAvailable: boolean;
+}
+
+export interface AvailableTracker {
+  entry: RegistryTrackerEntry;
+  registryUrl: string;
+  installedVersion: string | null;
   updateAvailable: boolean;
 }
 
@@ -213,6 +220,117 @@ export class RegistryManager {
     if (await this.isOrphaned(bridgeId)) return null;
     const installed = await this.opts.manifest.getInstalled(bridgeId);
     return installed?.bundlePath ?? null;
+  }
+
+  // ── Tracker browsing ────────────────────────────────────────────────────────
+
+  async browseTrackers(rawUrl: string): Promise<AvailableTracker[]> {
+    const url = resolveRegistryUrl(rawUrl);
+    const index = await this.fetchAndCache(url);
+    const installed = await this.opts.manifest.allInstalledTrackers();
+    const installedMap = new Map(installed.map((t) => [t.id, t]));
+
+    return (index.trackers ?? []).map((entry) => {
+      const local = installedMap.get(entry.id);
+      return {
+        entry,
+        registryUrl: url,
+        installedVersion: local?.version ?? null,
+        updateAvailable: !!local && isNewer(entry.version, local.version),
+      };
+    });
+  }
+
+  async browseAllTrackers(): Promise<AvailableTracker[]> {
+    const registries = await this.list();
+    const results: AvailableTracker[] = [];
+    for (const reg of registries) {
+      try {
+        results.push(...await this.browseTrackers(reg.url));
+      } catch { /* skip failing registries */ }
+    }
+    return results;
+  }
+
+  // ── Tracker install / update / uninstall ────────────────────────────────────
+
+  async installTracker(registryUrl: string, trackerId: string): Promise<InstallResult> {
+    const url = resolveRegistryUrl(registryUrl);
+    const index = await this.fetchAndCache(url);
+    const entry = (index.trackers ?? []).find((t) => t.id === trackerId);
+    if (!entry) throw new Error(`tracker "${trackerId}" not found in registry ${url}`);
+
+    const registry = await this.opts.manifest.getRegistry(url);
+    const dlOpts: Parameters<typeof downloadBundle>[1] = {
+      requireSignature: registry?.requireSignature ?? false,
+    };
+    if (index.publicKey) dlOpts.publicKey = index.publicKey;
+    const result = await downloadBundle(entry, dlOpts);
+
+    const bundlePath = join(this.opts.cacheDir, "trackers", trackerId, entry.version, "tracker.js");
+    await mkdir(dirname(bundlePath), { recursive: true });
+    await writeFile(bundlePath, result.text, "utf8");
+
+    const installed: InstalledTracker = {
+      id: trackerId,
+      version: entry.version,
+      contractVersion: entry.contractVersion,
+      registryUrl: url,
+      bundlePath,
+      sha256: result.sha256,
+      installedAt: new Date().toISOString(),
+    };
+    await this.opts.manifest.addInstalledTracker(installed);
+    await this.opts.manifest.updateLastFetched(url);
+
+    return { id: trackerId, version: entry.version, bundlePath };
+  }
+
+  async updateTracker(trackerId: string): Promise<InstallResult> {
+    const current = await this.opts.manifest.getInstalledTracker(trackerId);
+    if (!current?.registryUrl) {
+      throw new Error(`tracker "${trackerId}" was not installed from a registry — cannot auto-update`);
+    }
+    return this.installTracker(current.registryUrl, trackerId);
+  }
+
+  async uninstallTracker(trackerId: string): Promise<void> {
+    await this.opts.manifest.removeInstalledTracker(trackerId);
+  }
+
+  // ── Tracker update detection ─────────────────────────────────────────────────
+
+  async checkTrackerUpdates(): Promise<Array<{ id: string; installedVersion: string; availableVersion: string }>> {
+    const installed = await this.opts.manifest.allInstalledTrackers();
+    const updates: Array<{ id: string; installedVersion: string; availableVersion: string }> = [];
+    for (const tracker of installed) {
+      if (!tracker.registryUrl) continue;
+      try {
+        const index = await this.fetchAndCache(tracker.registryUrl);
+        const entry = (index.trackers ?? []).find((t) => t.id === tracker.id);
+        if (entry && isNewer(entry.version, tracker.version)) {
+          updates.push({ id: tracker.id, installedVersion: tracker.version, availableVersion: entry.version });
+        }
+      } catch { /* offline */ }
+    }
+    return updates;
+  }
+
+  async isTrackerOrphaned(trackerId: string): Promise<boolean> {
+    const installed = await this.opts.manifest.getInstalledTracker(trackerId);
+    if (!installed?.registryUrl) return false;
+    const reg = await this.opts.manifest.getRegistry(installed.registryUrl);
+    return !reg;
+  }
+
+  async resolveTrackerBundle(trackerId: string): Promise<string | null> {
+    if (await this.isTrackerOrphaned(trackerId)) return null;
+    const installed = await this.opts.manifest.getInstalledTracker(trackerId);
+    return installed?.bundlePath ?? null;
+  }
+
+  async allInstalledTrackers() {
+    return this.opts.manifest.allInstalledTrackers();
   }
 
   // ── Private ─────────────────────────────────────────────────────────────────

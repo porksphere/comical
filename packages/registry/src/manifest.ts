@@ -7,12 +7,13 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   type InstalledBridge,
+  type InstalledTracker,
   type Manifest,
   manifestSchema,
   type SavedRegistry,
 } from "./schema.ts";
 
-const EMPTY: Manifest = { registries: [], installed: [] };
+const EMPTY: Manifest = { registries: [], installed: [], installedTrackers: [] };
 
 export class ManifestStore {
   private readonly path: string;
@@ -99,5 +100,35 @@ export class ManifestStore {
     return (await this.read()).installed
       .filter((b) => b.registryUrl === registryUrl)
       .map((b) => b.id);
+  }
+
+  // ── Installed trackers ─────────────────────────────────────────────────────
+
+  async addInstalledTracker(tracker: InstalledTracker): Promise<void> {
+    const m = await this.read();
+    m.installedTrackers = m.installedTrackers.filter((t) => t.id !== tracker.id);
+    m.installedTrackers.push(tracker);
+    await this.write(m);
+  }
+
+  async removeInstalledTracker(id: string): Promise<void> {
+    const m = await this.read();
+    m.installedTrackers = m.installedTrackers.filter((t) => t.id !== id);
+    await this.write(m);
+  }
+
+  async getInstalledTracker(id: string): Promise<InstalledTracker | undefined> {
+    return (await this.read()).installedTrackers.find((t) => t.id === id);
+  }
+
+  async allInstalledTrackers(): Promise<InstalledTracker[]> {
+    return (await this.read()).installedTrackers;
+  }
+
+  /** Returns IDs of trackers installed from `registryUrl`. */
+  async trackersFromRegistry(registryUrl: string): Promise<string[]> {
+    return (await this.read()).installedTrackers
+      .filter((t) => t.registryUrl === registryUrl)
+      .map((t) => t.id);
   }
 }

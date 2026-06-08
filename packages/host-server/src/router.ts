@@ -29,7 +29,23 @@ export interface RouterOptions {
   runtime?: ComicalRuntime;
   /** Tracker manager — enables `/trackers` endpoints when provided. */
   trackers?: TrackerManager;
+  /** Base URL of this server, used as the OAuth callback redirect URI (e.g. "http://localhost:3100"). */
+  callbackBaseUrl?: string;
 }
+
+// ── OAuth callback state ──────────────────────────────────────────────────────
+
+interface PendingOAuth {
+  trackerId: string;
+  settingKey: string;
+  clientId: string;
+  clientSecret?: string;
+  codeVerifier: string;
+  exchangeUrl: string;
+  refreshUrl?: string;
+  expiresAt: number;
+}
+const pendingOAuth = new Map<string, PendingOAuth>();
 
 type Bindings = Record<string, never>;
 type Vars = { manager: BridgeManager };
@@ -86,7 +102,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       // string values — instead report which secret keys are set.
       const stored = await manager.storedSettings(bridge.info.id);
       const secretKeys = new Set(
-        settings.filter((d) => d.type === "string" && d.secret).map((d) => d.key),
+        settings.filter((d) => (d.type === "string" && !!d.secret) || d.type === "oauth-pin").map((d) => d.key),
       );
       const values: Record<string, SettingValue> = {};
       const secretsSet: string[] = [];
@@ -199,7 +215,8 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
   app.get("/bridges/:id/tags", (c) =>
     withContentBridge(c, async (bridge) => {
       if (!bridge.getTags) return c.json({ error: "not supported" }, 400);
-      return c.json(await bridge.getTags());
+      const q = c.req.query("q") ?? "";
+      return c.json(await bridge.getTags(q));
     }),
   );
 
@@ -292,14 +309,15 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
   // Mounted only when a Library service is supplied; cross-bridge, keyed by (bridgeId, seriesId).
 
   const trackerMgr = opts.trackers;
+  const body = async <T>(c: { req: { json: <U>() => Promise<U> } }): Promise<T | undefined> => {
+    try { return await c.req.json<T>(); } catch { return undefined; }
+  };
+
   const lib = opts.library;
   const runtime = opts.runtime;
   if (lib) {
     const keyOf = (c: { req: { param: (k: string) => string } }) =>
       entryKey(c.req.param("bridgeId"), c.req.param("seriesId"));
-    const body = async <T>(c: { req: { json: <U>() => Promise<U> } }): Promise<T | undefined> => {
-      try { return await c.req.json<T>(); } catch { return undefined; }
-    };
 
     app.get("/library", async (c) => {
       const category = c.req.query("category");
@@ -309,6 +327,26 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     app.get("/library/history", async (c) => {
       const limit = c.req.query("limit");
       return c.json(await lib.getHistory(limit ? Number(limit) : undefined));
+    });
+
+    app.delete("/library/history/:bridgeId/:seriesId", async (c) => {
+      await lib.clearHistoryEntry(c.req.param("bridgeId"), c.req.param("seriesId"));
+      return c.json({ ok: true });
+    });
+
+    app.post("/reading-history", async (c) => {
+      const b = await body<{ bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string; chapterId?: string; chapterName?: string; lastReadAt?: number }>(c);
+      if (!b?.bridgeId || !b.seriesId || !b.title) return c.json({ error: "bridgeId, seriesId, title required" }, 400);
+      await lib.recordRead({
+        bridgeId: b.bridgeId,
+        seriesId: b.seriesId,
+        title: b.title,
+        lastReadAt: b.lastReadAt ?? Date.now(),
+        ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
+        ...(b.chapterId !== undefined && { lastReadChapterId: b.chapterId }),
+        ...(b.chapterName !== undefined && { lastReadChapterName: b.chapterName }),
+      });
+      return c.json({ ok: true });
     });
 
     // Categories
@@ -397,15 +435,15 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     );
 
     app.put("/library/entries/:bridgeId/:seriesId/progress/:chapterId", async (c) => {
-      const b = (await body<{ read?: boolean; lastPage?: number; pageCount?: number; chapterName?: string }>(c)) ?? {};
+      const b = (await body<{ read?: boolean; lastPage?: number; pageCount?: number; chapterName?: string; number?: number }>(c)) ?? {};
       const chapterId = c.req.param("chapterId");
       const bridgeId = c.req.param("bridgeId");
       const seriesId = c.req.param("seriesId");
       return withLibraryEntry(c, () => {
         if (b.lastPage !== undefined) {
-          return runtime!.setProgress(bridgeId, seriesId, chapterId, b.lastPage, b.pageCount, b.chapterName);
+          return runtime!.setProgress(bridgeId, seriesId, chapterId, b.lastPage, b.pageCount, b.chapterName, b.number);
         }
-        return runtime!.markRead(bridgeId, seriesId, chapterId, b.read ?? true, b.chapterName);
+        return runtime!.markRead(bridgeId, seriesId, chapterId, b.read ?? true, b.chapterName, b.number);
       });
     });
 
@@ -475,6 +513,20 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       await lib.unlinkTracker(keyOf(c), c.req.param("trackerId"));
       return c.json({ ok: true });
     });
+
+    // Bridge preferences — per-bridge user settings (e.g. disable tracker sync)
+    app.get("/library/bridges/:bridgeId/prefs", async (c) =>
+      c.json(await lib.getBridgePrefs(c.req.param("bridgeId"))),
+    );
+
+    app.put("/library/bridges/:bridgeId/prefs", async (c) => {
+      const b = await body<{ trackersDisabled?: boolean }>(c);
+      if (typeof b?.trackersDisabled !== "boolean") {
+        return c.json({ error: "trackersDisabled (boolean) is required" }, 400);
+      }
+      await lib.setBridgePrefs(c.req.param("bridgeId"), { trackersDisabled: b.trackersDisabled });
+      return c.json({ ok: true });
+    });
   }
 
   // ── Tracker endpoints ─────────────────────────────────────────────────────────
@@ -489,7 +541,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
         const tracker = await trackerMgr.get(id);
         const settings = tracker.getSettings?.() ?? [];
         const stored = await trackerMgr.storedSettings(id);
-        const secretKeys = new Set(settings.filter((d) => d.type === "string" && d.secret).map((d) => d.key));
+        const secretKeys = new Set(settings.filter((d) => (d.type === "string" && !!d.secret) || d.type === "oauth-pin" || d.type === "oauth-callback").map((d) => d.key));
         const values: Record<string, SettingValue> = {};
         const secretsSet: string[] = [];
         for (const [k, v] of Object.entries(stored)) {
@@ -509,11 +561,130 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       try { b = await c.req.json<Record<string, SettingValue>>(); }
       catch { return c.json({ error: "invalid JSON" }, 400); }
       try {
+        // For oauth-pin fields with an exchange config, swap the authorization code for a token.
+        const tracker = await trackerMgr.get(id).catch(() => null);
+        if (tracker) {
+          const descriptors = tracker.getSettings?.() ?? [];
+          for (const d of descriptors) {
+            if (d.type !== "oauth-pin" || !d.exchange) continue;
+            const code = b[d.key];
+            if (typeof code !== "string" || !code) continue;
+            const { url, clientId, clientSecret, redirectUri } = d.exchange;
+            const resp = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify({ grant_type: "authorization_code", client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, code }),
+            });
+            if (!resp.ok) return c.json({ error: `OAuth exchange failed: ${resp.status} ${resp.statusText}` }, 502);
+            const data = await resp.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
+            if (!data.access_token) return c.json({ error: "OAuth exchange returned no access_token" }, 502);
+            // Store as a blob so the refresh token and expiry survive restarts.
+            const blob: Record<string, unknown> = { access: data.access_token };
+            if (data.refresh_token) blob.refresh = data.refresh_token;
+            if (data.expires_in) blob.expiresAt = Date.now() + data.expires_in * 1000;
+            b[d.key] = JSON.stringify(blob);
+          }
+        }
         const updated = await trackerMgr.updateSettings(id, b);
         return c.json({ settings: updated });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
+      }
+    });
+
+    app.post("/trackers/:id/oauth-start", async (c) => {
+      const trackerId = c.req.param("id");
+      const b = await body<{ key?: string; settings?: Record<string, string> }>(c);
+      if (!b?.key) return c.json({ error: "key required" }, 400);
+      try {
+        const tracker = await trackerMgr.get(trackerId);
+        const desc = (tracker.getSettings?.() ?? []).find((d) => d.key === b.key);
+        if (!desc || desc.type !== "oauth-callback") return c.json({ error: "not an oauth-callback field" }, 400);
+
+        const stored = await trackerMgr.storedSettings(trackerId);
+        const resolve = (key?: string, fallback?: string) =>
+          key ? String(b.settings?.[key] ?? stored[key] ?? "") : (fallback ?? "");
+        const clientId = resolve(desc.exchange.clientIdKey, desc.exchange.clientId);
+        if (!clientId) return c.json({ error: "client_id not configured — save settings first" }, 400);
+        const clientSecret = resolve(desc.exchange.clientSecretKey, desc.exchange.clientSecret);
+
+        const state = crypto.randomUUID().replace(/-/g, "");
+        let codeVerifier = "";
+        if (desc.exchange.pkce) {
+          const bytes = new Uint8Array(32);
+          crypto.getRandomValues(bytes);
+          codeVerifier = btoa(String.fromCharCode(...bytes))
+            .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "").slice(0, 43);
+        }
+
+        const callbackUrl = `${opts.callbackBaseUrl ?? "http://localhost:3100"}/oauth/callback`;
+        const authUrl = desc.authUrlTemplate
+          .replace("{clientId}", encodeURIComponent(clientId))
+          .replace("{pkce}", encodeURIComponent(codeVerifier))
+          .replace("{callbackUrl}", encodeURIComponent(callbackUrl))
+          .replace("{state}", encodeURIComponent(state));
+
+        // Prune stale entries then register this one.
+        for (const [s, p] of pendingOAuth) { if (p.expiresAt < Date.now()) pendingOAuth.delete(s); }
+        const pending: PendingOAuth = {
+          trackerId, settingKey: b.key, clientId, codeVerifier,
+          exchangeUrl: desc.exchange.url,
+          expiresAt: Date.now() + 10 * 60 * 1000,
+        };
+        if (clientSecret) pending.clientSecret = clientSecret;
+        if (desc.exchange.refreshUrl) pending.refreshUrl = desc.exchange.refreshUrl;
+        pendingOAuth.set(state, pending);
+
+        return c.json({ authUrl });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
+      }
+    });
+
+    app.get("/oauth/callback", async (c) => {
+      const code = c.req.query("code");
+      const state = c.req.query("state");
+      const htmlErr = (msg: string, status = 400) =>
+        c.html(`<!DOCTYPE html><html><body><h2>OAuth error</h2><pre>${msg.replace(/</g, "&lt;")}</pre></body></html>`, status as 400 | 500 | 502);
+
+      if (!code || !state) return htmlErr("Missing code or state parameter.");
+      const pending = pendingOAuth.get(state);
+      if (!pending || pending.expiresAt < Date.now()) { pendingOAuth.delete(state); return htmlErr("Expired or unknown state — please try connecting again."); }
+      pendingOAuth.delete(state);
+
+      const callbackUrl = `${opts.callbackBaseUrl ?? "http://localhost:3100"}/oauth/callback`;
+      const params: Record<string, string> = {
+        grant_type: "authorization_code",
+        client_id: pending.clientId,
+        code,
+        redirect_uri: callbackUrl,
+      };
+      if (pending.clientSecret) params.client_secret = pending.clientSecret;
+      if (pending.codeVerifier) params.code_verifier = pending.codeVerifier;
+
+      try {
+        const resp = await fetch(pending.exchangeUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+          body: new URLSearchParams(params).toString(),
+        });
+        if (!resp.ok) { const t = await resp.text(); return htmlErr(`Exchange failed (${resp.status}): ${t}`, 502); }
+        const data = await resp.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
+        if (!data.access_token) return htmlErr("Exchange response missing access_token.", 502);
+
+        const blob: Record<string, unknown> = { access: data.access_token };
+        if (data.refresh_token) blob.refresh = data.refresh_token;
+        if (data.expires_in) blob.expiresAt = Date.now() + data.expires_in * 1000;
+        await trackerMgr.updateSettings(pending.trackerId, { [pending.settingKey]: JSON.stringify(blob) });
+
+        return c.html(`<!DOCTYPE html><html><head><title>Connected</title></head><body>
+          <h2>&#10003; Connected!</h2><p>You can close this tab and return to Comical.</p>
+          <script>if(window.opener)window.opener.postMessage({type:'comical-oauth-complete'},'*');window.close();</script>
+          </body></html>`);
+      } catch (e) {
+        return htmlErr(e instanceof Error ? e.message : String(e), 500);
       }
     });
 
@@ -623,6 +794,61 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     // Check for available updates across all installed registry bridges.
     app.get("/registry/updates", async (c) => {
       return c.json(await reg.checkUpdates());
+    });
+
+    // ── Tracker registry endpoints ──────────────────────────────────────────
+
+    // Browse all trackers across all added registries.
+    app.get("/registry/trackers", async (c) => {
+      return c.json(await reg.browseAllTrackers());
+    });
+
+    // Browse trackers in a specific registry.
+    app.get("/registries/:encodedUrl/trackers", async (c) => {
+      const url = decodeURIComponent(c.req.param("encodedUrl"));
+      try {
+        return c.json(await reg.browseTrackers(url));
+      } catch (e) {
+        return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    });
+
+    // Install a tracker from a registry.
+    app.post("/registries/:encodedUrl/trackers/:id/install", async (c) => {
+      const registryUrl = decodeURIComponent(c.req.param("encodedUrl"));
+      const trackerId = c.req.param("id");
+      try {
+        const result = await reg.installTracker(registryUrl, trackerId);
+        trackerMgr?.invalidate(trackerId);
+        return c.json(result, 201);
+      } catch (e) {
+        return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    });
+
+    // Update a tracker to its latest registry version.
+    app.post("/trackers/:id/update", async (c) => {
+      const trackerId = c.req.param("id");
+      try {
+        const result = await reg.updateTracker(trackerId);
+        trackerMgr?.invalidate(trackerId);
+        return c.json(result);
+      } catch (e) {
+        return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    });
+
+    // Uninstall a registry-installed tracker.
+    app.delete("/trackers/:id", async (c) => {
+      const trackerId = c.req.param("id");
+      await reg.uninstallTracker(trackerId);
+      trackerMgr?.invalidate(trackerId);
+      return c.json({ ok: true });
+    });
+
+    // Check for available tracker updates.
+    app.get("/registry/tracker-updates", async (c) => {
+      return c.json(await reg.checkTrackerUpdates());
     });
   }
 

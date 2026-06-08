@@ -72,6 +72,63 @@ describe("read state", () => {
   });
 });
 
+describe("reconcileRead (external pull)", () => {
+  test("marks read flags WITHOUT moving the resume pointer or recency", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    // User is reading locally at chapter 1 (page 3, not finished → c1 not yet read).
+    await lib.setProgress(KEY, "c1", 3, 20, "Ch 1");
+    const before = await lib.getEntry(KEY);
+
+    // A tracker says chapters 1–3 are read — reconcile them in.
+    const marked = await lib.reconcileRead(KEY, [
+      { chapterId: "c1", number: 1 },
+      { chapterId: "c2", number: 2 },
+      { chapterId: "c3", number: 3 },
+    ]);
+    expect(marked.marked).toBe(3);
+
+    const after = await lib.getEntry(KEY);
+    // Resume + recency are sacred: even reconciling chapters AHEAD must not move the pointer.
+    expect(after?.lastReadChapterId).toBe("c1");
+    expect(after?.lastReadChapterId).toBe(before?.lastReadChapterId);
+    expect(after?.lastReadAt).toBe(before?.lastReadAt);
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c1", lastPage: 3 });
+    // But the read flags ARE now set, and c1's page progress is preserved.
+    const read = new Set((await lib.getProgress(KEY)).filter((p) => p.read).map((p) => p.chapterId));
+    expect(read).toEqual(new Set(["c1", "c2", "c3"]));
+  });
+
+  test("is union — never un-reads an already-read chapter", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.markRead(KEY, "c5", true, "Ch 5", 5);
+    // A pull that doesn't include c5 must leave it read.
+    await lib.reconcileRead(KEY, [{ chapterId: "c1", number: 1 }]);
+    const read = new Set((await lib.getProgress(KEY)).filter((p) => p.read).map((p) => p.chapterId));
+    expect(read).toEqual(new Set(["c1", "c5"]));
+  });
+
+  test("maxReadChapterNumber returns the highest read number, decimals and out-of-order included", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.reconcileRead(KEY, [
+      { chapterId: "c10", number: 10 },
+      { chapterId: "c2", number: 2 },
+      { chapterId: "c10_5", number: 10.5 },
+    ]);
+    expect(await lib.maxReadChapterNumber(KEY)).toBe(10.5);
+  });
+
+  test("maxReadChapterNumber falls back to the read count when no numbers are recorded", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.markRead(KEY, "c1", true); // no number supplied
+    await lib.markRead(KEY, "c2", true);
+    expect(await lib.maxReadChapterNumber(KEY)).toBe(2);
+  });
+});
+
 describe("new-chapter detection", () => {
   test("first sync establishes a baseline (no 'added'); later syncs report new chapters", async () => {
     const lib = makeLibrary();
@@ -173,6 +230,59 @@ describe("series grouping via generic externalIds", () => {
   });
 });
 
+describe("reading log (non-library history)", () => {
+  test("recordRead appears in getHistory when series is not in library", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ bridgeId: "demo", seriesId: "ext1", title: "External Series", lastReadAt: 1000 });
+
+    const history = await lib.getHistory();
+    expect(history.some((h) => h.seriesId === "ext1")).toBe(true);
+  });
+
+  test("library entry takes precedence over log for same series", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.markRead(KEY, "c1", true);
+    await lib.recordRead({ bridgeId: SERIES.bridgeId, seriesId: SERIES.seriesId, title: SERIES.title, lastReadAt: 9999 });
+
+    const history = await lib.getHistory();
+    expect(history.filter((h) => h.seriesId === SERIES.seriesId)).toHaveLength(1);
+  });
+
+  test("recordRead is a no-op when series is already in library", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.markRead(KEY, "c1", true); // gives it a lastReadAt so it appears in history
+    await lib.recordRead({ bridgeId: SERIES.bridgeId, seriesId: SERIES.seriesId, title: SERIES.title, lastReadAt: 9999 });
+
+    // Exactly one entry — library wins, log entry is not persisted separately
+    const history = await lib.getHistory();
+    expect(history.filter((h) => h.seriesId === SERIES.seriesId)).toHaveLength(1);
+  });
+
+  test("clearHistoryEntry removes a log-only series from history", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ bridgeId: "demo", seriesId: "ext1", title: "External Series", lastReadAt: 1000 });
+    await lib.clearHistoryEntry("demo", "ext1");
+
+    const history = await lib.getHistory();
+    expect(history.some((h) => h.seriesId === "ext1")).toBe(false);
+  });
+
+  test("clearHistoryEntry removes a library series from history without removing it from library", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.markRead(KEY, "c1", true);
+    await lib.clearHistoryEntry(SERIES.bridgeId, SERIES.seriesId);
+
+    const history = await lib.getHistory();
+    expect(history.some((h) => h.seriesId === SERIES.seriesId)).toBe(false);
+
+    const library = await lib.getLibrary();
+    expect(library.some((e) => e.seriesId === SERIES.seriesId)).toBe(true);
+  });
+});
+
 describe("tracker links", () => {
   test("link / list / update / unlink", async () => {
     const lib = makeLibrary();
@@ -208,5 +318,26 @@ describe("tracker links", () => {
     const links = await lib.listTrackerLinks(KEY);
     expect(links).toHaveLength(1);
     expect(links[0]?.externalId).toBe(99);
+  });
+});
+
+describe("bridge prefs", () => {
+  test("returns defaults when no prefs stored", async () => {
+    const lib = makeLibrary();
+    const prefs = await lib.getBridgePrefs("demo");
+    expect(prefs.bridgeId).toBe("demo");
+    expect(prefs.trackersDisabled).toBe(false);
+  });
+
+  test("set trackersDisabled then read it back", async () => {
+    const lib = makeLibrary();
+    await lib.setBridgePrefs("demo", { trackersDisabled: true });
+    expect((await lib.getBridgePrefs("demo")).trackersDisabled).toBe(true);
+  });
+
+  test("prefs are per-bridge — different bridges are independent", async () => {
+    const lib = makeLibrary();
+    await lib.setBridgePrefs("bridge-a", { trackersDisabled: true });
+    expect((await lib.getBridgePrefs("bridge-b")).trackersDisabled).toBe(false);
   });
 });

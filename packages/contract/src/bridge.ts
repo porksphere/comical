@@ -100,7 +100,7 @@ export interface Bridge {
   /** Sort fields offered for search ordering (capability "sort"). */
   getSortOptions?(): Promise<SortOption[]>;
 
-  getTags?(): Promise<Tag[]>;
+  getTags?(query?: string): Promise<Tag[]>;
 
   /**
    * Declarative settings this bridge needs from the user (backend URL, credentials, options).
