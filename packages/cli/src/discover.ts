@@ -5,8 +5,8 @@
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BridgeInfo, HostCapabilities } from "@comical/contract";
-import { loadBridge } from "@comical/core";
+import type { BridgeInfo, HostCapabilities, TrackerInfo } from "@comical/contract";
+import { loadBridge, loadTracker } from "@comical/core";
 
 export interface DiscoveredBridge {
   id: string;
@@ -72,4 +72,44 @@ export function resolveBridge(bridgesDir: string | string[], id: string): Discov
     throw new Error(`bridge "${id}" not found in ${dirs} (did you run \`bun run build\`?)`);
   }
   return match;
+}
+
+// ── Tracker discovery ─────────────────────────────────────────────────────────
+
+export interface DiscoveredTracker {
+  id: string;
+  info: TrackerInfo;
+  bundlePath: string;
+  dir: string;
+}
+
+export function discoverTrackers(trackersDir: string | string[]): DiscoveredTracker[] {
+  const roots = Array.isArray(trackersDir) ? trackersDir : [trackersDir];
+  const found: DiscoveredTracker[] = [];
+  for (const root of roots) {
+    let dirs: string[];
+    try {
+      dirs = readdirSync(root, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+    } catch {
+      continue;
+    }
+    for (const dir of dirs) {
+      const bundlePath = join(root, dir, "dist", "tracker.js");
+      let code: string;
+      try {
+        code = readFileSync(bundlePath, "utf8");
+      } catch {
+        continue;
+      }
+      try {
+        const tracker = loadTracker({ code, capabilities: infoOnlyHost() });
+        found.push({ id: tracker.info.id, info: tracker.info, bundlePath, dir });
+      } catch {
+        // Skip bundles that fail to load
+      }
+    }
+  }
+  return found;
 }

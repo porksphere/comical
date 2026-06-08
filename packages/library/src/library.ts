@@ -9,6 +9,7 @@ import type { Chapter } from "@comical/contract";
 import {
   entryKey,
   parseEntryKey,
+  type BridgePrefs,
   type Category,
   type ChapterProgress,
   type HistoryItem,
@@ -157,8 +158,10 @@ export class Library {
 
   // ── Read state ────────────────────────────────────────────────────────────────
 
-  async markRead(key: string, chapterId: string, read: boolean, chapterName?: string): Promise<void> {
-    await this.writeProgress(key, chapterId, { read }, chapterName);
+  async markRead(key: string, chapterId: string, read: boolean, chapterName?: string, number?: number): Promise<void> {
+    const patch: Partial<ChapterProgress> = { read };
+    if (number !== undefined) patch.number = number;
+    await this.writeProgress(key, chapterId, patch, chapterName);
   }
 
   /**
@@ -171,7 +174,9 @@ export class Library {
     const cut = ordered.findIndex((c) => c.id === chapterId);
     if (cut === -1) throw new Error(`chapter not found in list: ${chapterId}`);
     for (const c of ordered.slice(0, cut + 1)) {
-      await this.writeProgress(key, c.id, { read: true }, c.name);
+      const patch: Partial<ChapterProgress> = { read: true };
+      if (c.number !== undefined) patch.number = c.number;
+      await this.writeProgress(key, c.id, patch, c.name);
     }
   }
 
@@ -185,12 +190,49 @@ export class Library {
     lastPage: number,
     pageCount?: number,
     chapterName?: string,
+    number?: number,
   ): Promise<void> {
     const reachedEnd = pageCount !== undefined && pageCount > 0 && lastPage >= pageCount - 1;
     const patch: Partial<ChapterProgress> = { lastPage };
     if (pageCount !== undefined) patch.pageCount = pageCount;
     if (reachedEnd) patch.read = true;
+    if (number !== undefined) patch.number = number;
     await this.writeProgress(key, chapterId, patch, chapterName);
+  }
+
+  /**
+   * Mark chapters read from an EXTERNAL source (a bridge or tracker pull). Union semantics: only
+   * ever sets the read flag — it never un-reads. Unlike {@link markRead} it does NOT advance the
+   * resume pointer or `lastReadAt`: those reflect the user's own local reading, so a sync that
+   * pulls in a fully-read series cannot hijack where the user is or flood their history. Records
+   * each chapter's `number` when supplied so later tracker pushes can compute the high-water mark.
+   */
+  async reconcileRead(
+    key: string,
+    chapters: Array<{ chapterId: string; number?: number }>,
+  ): Promise<{ marked: number }> {
+    await this.requireEntry(key);
+    const read = new Set((await this.store.listProgress(key)).filter((p) => p.read).map((p) => p.chapterId));
+    let marked = 0;
+    for (const { chapterId, number } of chapters) {
+      if (read.has(chapterId)) continue; // union — never downgrade an already-read chapter
+      const patch: Partial<ChapterProgress> = { read: true };
+      if (number !== undefined) patch.number = number;
+      await this.writeProgress(key, chapterId, patch, undefined, { touchResume: false });
+      marked++;
+    }
+    return { marked };
+  }
+
+  /**
+   * The highest chapter `number` among read chapters — the value trackers expect as `chaptersRead`.
+   * Falls back to the count of read chapters when no numbers are recorded, so a tracker still
+   * receives a monotonic, non-zero value.
+   */
+  async maxReadChapterNumber(key: string): Promise<number> {
+    const read = (await this.store.listProgress(key)).filter((p) => p.read);
+    const numbers = read.map((p) => p.number).filter((n): n is number => n !== undefined);
+    return numbers.length > 0 ? Math.max(...numbers) : read.length;
   }
 
   async getProgress(key: string): Promise<ChapterProgress[]> {
@@ -209,22 +251,45 @@ export class Library {
   /** Recently-read series, newest first (one row per series for v1). */
   async getHistory(limit = 50): Promise<HistoryItem[]> {
     const entries = await this.store.listEntries();
-    return entries
+    const libraryItems = entries
       .filter((e): e is LibraryEntry & { lastReadAt: number } => e.lastReadAt !== undefined)
+      .map((e): HistoryItem => ({
+        bridgeId: e.bridgeId,
+        seriesId: e.seriesId,
+        title: e.title,
+        lastReadAt: e.lastReadAt,
+        ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
+        ...(e.lastReadChapterId !== undefined && { lastReadChapterId: e.lastReadChapterId }),
+        ...(e.lastReadChapterName !== undefined && { lastReadChapterName: e.lastReadChapterName }),
+      }));
+
+    const libraryKeys = new Set(libraryItems.map((i) => `${i.bridgeId}:${i.seriesId}`));
+    const logItems = (await this.store.listReadingLog()).filter(
+      (i) => !libraryKeys.has(`${i.bridgeId}:${i.seriesId}`),
+    );
+
+    return [...libraryItems, ...logItems]
       .sort((a, b) => b.lastReadAt - a.lastReadAt)
-      .slice(0, limit)
-      .map((e) => {
-        const item: HistoryItem = {
-          bridgeId: e.bridgeId,
-          seriesId: e.seriesId,
-          title: e.title,
-          lastReadAt: e.lastReadAt,
-        };
-        if (e.thumbnailUrl !== undefined) item.thumbnailUrl = e.thumbnailUrl;
-        if (e.lastReadChapterId !== undefined) item.lastReadChapterId = e.lastReadChapterId;
-        if (e.lastReadChapterName !== undefined) item.lastReadChapterName = e.lastReadChapterName;
-        return item;
-      });
+      .slice(0, limit);
+  }
+
+  /** Record a non-library read. Ignored if the series is already in the library (setProgress handles those). */
+  async recordRead(item: HistoryItem): Promise<void> {
+    const existing = await this.store.getEntry(entryKey(item.bridgeId, item.seriesId));
+    if (existing) return;
+    await this.store.upsertReadingLog(item);
+  }
+
+  /** Remove a series from reading history. For library entries, clears last-read fields; for log entries, deletes the record. */
+  async clearHistoryEntry(bridgeId: string, seriesId: string): Promise<void> {
+    const key = entryKey(bridgeId, seriesId);
+    const existing = await this.store.getEntry(key);
+    if (existing) {
+      const { lastReadAt: _a, lastReadChapterId: _b, lastReadChapterName: _c, ...rest } = existing;
+      await this.store.putEntry({ ...rest, updatedAt: this.now() });
+    } else {
+      await this.store.deleteReadingLog(bridgeId, seriesId);
+    }
   }
 
   // ── Categories ────────────────────────────────────────────────────────────────
@@ -359,12 +424,19 @@ export class Library {
 
   // ── Internals ────────────────────────────────────────────────────────────────
 
-  /** Merge a progress patch and refresh the entry's resume cache when a read advances. */
+  /**
+   * Merge a progress patch and (for local reads) refresh the entry's resume cache.
+   *
+   * `opts.touchResume` defaults to true: a local read advances the resume/history point. External
+   * reconciliation passes `false` so a pulled-in read can update the read flag without hijacking
+   * the user's reading position or recency.
+   */
   private async writeProgress(
     key: string,
     chapterId: string,
     patch: Partial<ChapterProgress>,
     chapterName?: string,
+    opts: { touchResume?: boolean } = {},
   ): Promise<void> {
     const entry = await this.requireEntry(key);
     const t = this.now();
@@ -378,10 +450,14 @@ export class Library {
     if (lastPage !== undefined) next.lastPage = lastPage;
     const pageCount = patch.pageCount ?? existing?.pageCount;
     if (pageCount !== undefined) next.pageCount = pageCount;
+    const number = patch.number ?? existing?.number;
+    if (number !== undefined) next.number = number;
     await this.store.putProgress(key, next);
 
-    // Advancing a read (marking read, or recording a page) makes this the resume/history point.
-    if (next.read || patch.lastPage !== undefined) {
+    // Advancing a LOCAL read (marking read, or recording a page) makes this the resume/history
+    // point. Pulled-in reads pass touchResume:false so a sync can't move where the user is.
+    const touchResume = opts.touchResume ?? true;
+    if (touchResume && (next.read || patch.lastPage !== undefined)) {
       entry.lastReadChapterId = chapterId;
       if (chapterName !== undefined) entry.lastReadChapterName = chapterName;
       entry.lastReadAt = t;
@@ -441,6 +517,16 @@ export class Library {
     const existing = await this.getTrackerLink(key, trackerId);
     if (!existing) throw new Error(`tracker link not found: ${key} / ${trackerId}`);
     await this.store.putTrackerLink(key, { ...existing, ...patch, trackerId });
+  }
+
+  // ── Bridge preferences ─────────────────────────────────────────────────────
+
+  async getBridgePrefs(bridgeId: string): Promise<BridgePrefs> {
+    return (await this.store.getBridgePrefs(bridgeId)) ?? { bridgeId, trackersDisabled: false };
+  }
+
+  async setBridgePrefs(bridgeId: string, update: Pick<BridgePrefs, "trackersDisabled">): Promise<void> {
+    await this.store.setBridgePrefs(bridgeId, { bridgeId, ...update });
   }
 }
 

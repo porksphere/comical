@@ -69,6 +69,24 @@ describe("loadBridge", () => {
     expect(b.getTags).toBeUndefined();
   });
 
+  test("getTags forwards the query argument to the bridge", async () => {
+    const code = bundle(`{
+      info: ${GOOD_INFO},
+      getSeriesDetails: async (id) => ({ id, title: "T" }),
+      getChapters: async () => [],
+      getChapterPages: async () => [],
+      getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
+      getTags: async (q = "") => q ? [{ id: "1", label: q }] : [],
+    }`);
+    const b = loadBridge({ code, capabilities: mockHost() });
+    const withQuery = await b.getTags!("romance");
+    expect(withQuery).toHaveLength(1);
+    expect(withQuery[0]!.label).toBe("romance");
+
+    const empty = await b.getTags!();
+    expect(empty).toHaveLength(0);
+  });
+
   test("rejects output that fails schema validation", async () => {
     const bad = bundle(`{
       info: ${GOOD_INFO},

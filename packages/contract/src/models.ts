@@ -41,6 +41,8 @@ export const tagGroupSchema = z.object({
   label: z.string().min(1),
   kind: tagKindSchema.optional(),
   tags: z.array(z.string()),
+  /** Bridge-internal IDs parallel to `tags` (same index). Hosts use these for filter lookups. */
+  tagIds: z.array(z.string()).optional(),
 });
 export type TagGroup = z.infer<typeof tagGroupSchema>;
 
@@ -119,6 +121,8 @@ export const filterSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("number"), key: z.string(), label: z.string(), min: z.number().optional(), max: z.number().optional() }),
   z.object({ type: z.literal("select"), key: z.string(), label: z.string(), options: z.array(optionSchema) }),
   z.object({ type: z.literal("multiselect"), key: z.string(), label: z.string(), options: z.array(optionSchema) }),
+  /** Options fetched live via GET /bridges/:id/tags?q=:query. Value is string[] of tag IDs. */
+  z.object({ type: z.literal("tag-multiselect"), key: z.string(), label: z.string() }),
 ]);
 export type Filter = z.infer<typeof filterSchema>;
 
@@ -134,7 +138,12 @@ export const filterValueSchema = z.object({
 export type FilterValue = z.infer<typeof filterValueSchema>;
 
 /** A sort field a bridge offers via `getSortOptions()` (capability "sort"). */
-export const sortOptionSchema = z.object({ key: z.string(), label: z.string() });
+export const sortOptionSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  /** When true, ascending/descending direction has no meaning for this sort key. Hosts should hide the direction selector. */
+  directionless: z.boolean().optional(),
+});
 export type SortOption = z.infer<typeof sortOptionSchema>;
 
 /** A concrete sort selection supplied to a search: a field key + direction. */
@@ -230,6 +239,52 @@ export const settingDescriptorSchema = z.discriminatedUnion("type", [
     default: z.union([z.string(), z.array(z.string())]).optional(),
     /** When true, the value is a `string[]` (multi-select). */
     multiple: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("oauth-pin"),
+    ...settingBase,
+    /** Authorization URL to open in the user's browser. */
+    authUrl: z.string(),
+    /**
+     * When present the user pastes an authorization code; the server exchanges it
+     * for a token automatically. When absent the auth URL uses an implicit grant
+     * and the user pastes the token directly from the provider's pin page.
+     */
+    exchange: z.object({
+      url: z.string(),
+      clientId: z.string(),
+      clientSecret: z.string(),
+      redirectUri: z.string(),
+      /** Token refresh endpoint. When set, the host automatically refreshes on 401. */
+      refreshUrl: z.string().optional(),
+    }).optional(),
+  }),
+  z.object({
+    type: z.literal("oauth-callback"),
+    ...settingBase,
+    /**
+     * Auth URL template. Placeholders replaced by the server:
+     *   {clientId}    — resolved from `exchange.clientIdKey` setting or `exchange.clientId`
+     *   {pkce}        — server-generated PKCE code_challenge (plain method, when exchange.pkce = true)
+     *   {callbackUrl} — server's local OAuth callback URL
+     *   {state}       — random CSRF state token
+     */
+    authUrlTemplate: z.string(),
+    exchange: z.object({
+      url: z.string(),
+      /** Read client_id from this other setting key (e.g. "clientId"). */
+      clientIdKey: z.string().optional(),
+      /** Hardcoded client_id (when not per-user). */
+      clientId: z.string().optional(),
+      /** Read client_secret from this other setting key. */
+      clientSecretKey: z.string().optional(),
+      /** Hardcoded client_secret. */
+      clientSecret: z.string().optional(),
+      /** Use PKCE plain method (code_challenge = code_verifier). */
+      pkce: z.boolean().optional(),
+      /** Token refresh endpoint. When set, the host automatically refreshes on 401. */
+      refreshUrl: z.string().optional(),
+    }),
   }),
 ]);
 export type SettingDescriptor = z.infer<typeof settingDescriptorSchema>;

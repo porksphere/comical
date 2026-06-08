@@ -52,12 +52,25 @@
     .tag-group-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #777; margin-right: 0.25rem; }
     .chip.tag { color: #8ab4f8; border-color: #2c4060; }
     .chip.tag::before { content: "#"; opacity: 0.6; }
+    .chip-link { cursor: pointer; }
+    .chip-link:hover { border-color: #60a5fa; color: #ddd; }
+    .tag-filter { position: relative; display: flex; flex-direction: column; gap: 0.3rem; }
+    .tag-filter-pills { display: flex; flex-wrap: wrap; gap: 0.25rem; min-height: 0; }
+    .tag-pill { display: flex; align-items: center; gap: 0.2rem; background: #1c2a3a; border: 1px solid #2c4060; border-radius: 999px; padding: 0.15rem 0.5rem; font-size: 0.75rem; color: #8ab4f8; }
+    .tag-pill button { background: none; border: none; color: #8ab4f8; cursor: pointer; padding: 0; line-height: 1; font-size: 0.9rem; opacity: 0.7; }
+    .tag-pill button:hover { opacity: 1; }
+    .tag-filter-input { width: 100%; box-sizing: border-box; }
+    .tag-filter-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 10; background: #1c1c1e; border: 1px solid #333; border-radius: 4px; max-height: 200px; overflow-y: auto; }
+    .tag-option { padding: 0.35rem 0.6rem; font-size: 0.8rem; cursor: pointer; color: #ccc; }
+    .tag-option:hover { background: #2a2a2e; }
+    .tag-option-empty { padding: 0.35rem 0.6rem; font-size: 0.8rem; color: #666; }
     #detail-description { font-size: 0.88rem; line-height: 1.5; color: #ccc; margin: 0; }
     #chapters { list-style: none; padding: 0; margin: 0; }
     #chapters li { padding: 0.4rem 0; border-bottom: 1px solid #2a2a2e; font-size: 0.88rem; cursor: pointer; }
     #chapters li:hover { color: #60a5fa; }
-    .reader-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin: 0.75rem 0; }
-    #reader-page img { width: 100%; max-width: 800px; display: block; margin: 0 auto; border-radius: 4px; background: #222; }
+    #reader-view { position: fixed; inset: 0; overflow-y: auto; background: #0f0f0f; z-index: 100; box-sizing: border-box; padding: 0 1rem 2rem; -webkit-overflow-scrolling: touch; }
+    .reader-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.75rem 0; position: sticky; top: 0; background: #0f0f0f; z-index: 1; }
+    #reader-page img { width: 100%; max-width: 800px; display: block; margin: 0 auto; border-radius: 4px; background: #222; cursor: pointer; user-select: none; }
     .reg-item { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #242427; font-size: 0.84rem; }
     .reg-item:last-child { border-bottom: none; }
     .view-tabs { margin: 0.5rem 0 1rem; }
@@ -103,6 +116,7 @@
     <div class="tab active" data-view="browse">Browse</div>
     <div class="tab" data-view="library">Library</div>
     <div class="tab" data-view="history">History</div>
+    <div class="tab" data-view="settings">Settings</div>
   </nav>
 
   <div id="status">Initialising…</div>
@@ -114,20 +128,6 @@
     </label>
     <span id="caps" class="muted"></span>
   </div>
-
-  <!-- Settings -->
-  <section class="panel" id="settings-panel" style="display:none">
-    <details id="settings-details">
-      <summary>Settings <span id="settings-state" class="muted"></span></summary>
-      <form id="settings-form"></form>
-      <div class="row">
-        <button id="settings-save">Save settings</button>
-        <span id="settings-msg"></span>
-        <button id="import-favorites-btn" class="secondary" hidden>Import favorites → Library</button>
-        <span id="import-favorites-msg" class="muted"></span>
-      </div>
-    </details>
-  </section>
 
   <!-- Filters / sort / tags (only when the bridge supports them) -->
   <section class="panel" id="meta-panel" style="display:none">
@@ -208,27 +208,44 @@
     <div id="reader-page"></div>
   </section>
 
-  <!-- Trackers -->
-  <section class="panel" id="trackers-config-panel" style="display:none">
-    <details>
-      <summary>Trackers</summary>
-      <div id="trackers-config-list" style="margin-top:0.75rem"></div>
-    </details>
-  </section>
+  <!-- Settings page -->
+  <section id="settings-view" style="display:none">
+    <!-- Bridge Settings -->
+    <section class="panel" id="settings-panel" style="display:none">
+      <details id="settings-details">
+        <summary>Bridge Settings <span id="settings-state" class="muted"></span></summary>
+        <form id="settings-form"></form>
+        <div class="row">
+          <button id="settings-save">Save settings</button>
+          <span id="settings-msg"></span>
+          <button id="import-favorites-btn" class="secondary" hidden>Import favorites → Library</button>
+          <span id="import-favorites-msg" class="muted"></span>
+        </div>
+      </details>
+    </section>
 
-  <!-- Registry (M4) -->
-  <section class="panel" id="registry-panel">
-    <details>
-      <summary>Registries</summary>
-      <div class="controls" style="margin-top:0.75rem">
-        <input id="reg-url" type="text" placeholder="github.com/user/bridges or https://…/index.json" style="flex:1; min-width:220px">
-        <button id="reg-add">Add registry</button>
-      </div>
-      <div id="reg-msg"></div>
-      <div id="reg-list"></div>
-      <h3 style="margin-top:0.9rem">Available bridges</h3>
-      <div id="reg-browse" class="muted">No registries added.</div>
-    </details>
+    <!-- Trackers -->
+    <section class="panel" id="trackers-config-panel" style="display:none">
+      <details>
+        <summary>Trackers</summary>
+        <div id="trackers-config-list" style="margin-top:0.75rem"></div>
+      </details>
+    </section>
+
+    <!-- Registry (M4) -->
+    <section class="panel" id="registry-panel">
+      <details>
+        <summary>Registries</summary>
+        <div class="controls" style="margin-top:0.75rem">
+          <input id="reg-url" type="text" placeholder="github.com/user/bridges or https://…/index.json" style="flex:1; min-width:220px">
+          <button id="reg-add">Add registry</button>
+        </div>
+        <div id="reg-msg"></div>
+        <div id="reg-list"></div>
+        <h3 style="margin-top:0.9rem">Available bridges</h3>
+        <div id="reg-browse" class="muted">No registries added.</div>
+      </details>
+    </section>
   </section>
 
   <script type="module" src="./app.js"></script>

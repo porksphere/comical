@@ -30,6 +30,7 @@ const server = createServer({
   dataDir: DATA_DIR,
   origin: "*",
   library: true,
+  trackersDir: join(ROOT, "..", "comical-trackers", ".build"),
 });
 
 console.log(`comical-server running at http://localhost:${server.port}`);

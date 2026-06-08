@@ -88,6 +88,12 @@ export const chapterProgressSchema = z.object({
   /** Last page index viewed (0-based) — the resume point within the chapter. */
   lastPage: z.number().int().nonnegative().optional(),
   pageCount: z.number().int().nonnegative().optional(),
+  /**
+   * Decimal chapter number (mirrors `Chapter.number`), recorded when known. Lets tracker pushes
+   * compute the highest read chapter number — the value trackers expect as `chaptersRead` — without
+   * keeping a separate chapter store.
+   */
+  number: z.number().optional(),
   updatedAt: z.number().int(),
 });
 export type ChapterProgress = z.infer<typeof chapterProgressSchema>;
@@ -129,3 +135,11 @@ export const trackerLinkSchema = z.object({
   lastSyncAt: z.number().int().optional(),
 });
 export type TrackerLink = z.infer<typeof trackerLinkSchema>;
+
+/** Per-bridge user preferences stored in the library. */
+export const bridgePrefsSchema = z.object({
+  bridgeId: z.string().min(1),
+  /** When true, tracker sync (push and pull) is skipped for all series from this bridge. */
+  trackersDisabled: z.boolean().default(false),
+});
+export type BridgePrefs = z.infer<typeof bridgePrefsSchema>;

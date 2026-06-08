@@ -32,6 +32,22 @@ export const registryBridgeEntrySchema = z.object({
 });
 export type RegistryBridgeEntry = z.infer<typeof registryBridgeEntrySchema>;
 
+/** A single tracker entry in the registry index. */
+export const registryTrackerEntrySchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  name: z.string().min(1),
+  version: z.string(),
+  contractVersion: z.string(),
+  capabilities: z.array(z.string()),
+  description: z.string().optional(),
+  /** Absolute URL to the CJS tracker bundle. */
+  url: z.string().url(),
+  /** Lowercase hex SHA-256 of the bundle content. Always required. */
+  sha256: z.string().regex(/^[0-9a-f]{64}$/, "sha256 must be 64 lowercase hex chars"),
+  signature: z.string().optional(),
+});
+export type RegistryTrackerEntry = z.infer<typeof registryTrackerEntrySchema>;
+
 /** The top-level registry index file (index.json). */
 export const registryIndexSchema = z.object({
   /** Semver of the index format itself (not the bridges). Current: "1". */
@@ -44,6 +60,7 @@ export const registryIndexSchema = z.object({
    */
   publicKey: z.string().optional(),
   bridges: z.array(registryBridgeEntrySchema),
+  trackers: z.array(registryTrackerEntrySchema).optional(),
 });
 export type RegistryIndex = z.infer<typeof registryIndexSchema>;
 
@@ -77,9 +94,25 @@ export const installedBridgeSchema = z.object({
 });
 export type InstalledBridge = z.infer<typeof installedBridgeSchema>;
 
+/** Persisted record of an installed tracker, stored in the local manifest. */
+export const installedTrackerSchema = z.object({
+  id: z.string(),
+  version: z.string(),
+  contractVersion: z.string(),
+  /** URL of the registry this was installed from. null = locally built / no registry. */
+  registryUrl: z.string().url().nullable(),
+  /** Absolute path to the cached bundle on disk. */
+  bundlePath: z.string(),
+  /** SHA-256 of the installed bundle (for integrity re-verification). */
+  sha256: z.string(),
+  installedAt: z.string(),
+});
+export type InstalledTracker = z.infer<typeof installedTrackerSchema>;
+
 /** The full local manifest stored in dataDir/registry-manifest.json. */
 export const manifestSchema = z.object({
   registries: z.array(savedRegistrySchema),
   installed: z.array(installedBridgeSchema),
+  installedTrackers: z.array(installedTrackerSchema).default([]),
 });
 export type Manifest = z.infer<typeof manifestSchema>;

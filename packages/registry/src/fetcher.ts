@@ -3,7 +3,15 @@
  * Downloads a bridge bundle, verifies its checksum (always), and optionally
  * verifies its Ed25519 signature.
  */
-import { registryIndexSchema, type RegistryBridgeEntry, type RegistryIndex } from "./schema.ts";
+import { registryIndexSchema, type RegistryIndex } from "./schema.ts";
+
+/** Minimal shape required to download and verify any registry bundle (bridge or tracker). */
+export interface BundleEntryLike {
+  id: string;
+  url: string;
+  sha256: string;
+  signature?: string | undefined;
+}
 import { verifyChecksum, verifySignature, sha256Hex } from "./verify.ts";
 
 export class FetchError extends Error {
@@ -44,13 +52,13 @@ export interface DownloadResult {
 }
 
 /**
- * Download a bridge bundle, verify its SHA-256 checksum (always), and optionally
+ * Download a bundle (bridge or tracker), verify its SHA-256 checksum (always), and optionally
  * verify its Ed25519 signature if both `entry.signature` and `publicKey` are present.
  *
  * When `requireSignature` is true and no signature is present, throws VerificationError.
  */
 export async function downloadBundle(
-  entry: RegistryBridgeEntry,
+  entry: BundleEntryLike,
   opts: { publicKey?: string; requireSignature?: boolean } = {},
 ): Promise<DownloadResult> {
   let res: Response;

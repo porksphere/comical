@@ -244,7 +244,7 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
       call("getSortOptions", z.array(sortOptionSchema), () => raw.getSortOptions!());
   }
   if (raw.getTags) {
-    bridge.getTags = () => call("getTags", z.array(tagSchema), () => raw.getTags!());
+    bridge.getTags = (q) => call("getTags", z.array(tagSchema), () => raw.getTags!(q));
   }
   if (raw.getFavorites) {
     bridge.getFavorites = (p) => call("getFavorites", entryPage, () => raw.getFavorites!(p));

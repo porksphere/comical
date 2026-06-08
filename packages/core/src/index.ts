@@ -17,8 +17,11 @@ export { evaluateBundle, NodeVmEvaluator } from "./sandbox.ts";
 export { withTimeout, errorMessage } from "./util.ts";
 
 // Importing the core barrel is the Node/Bun entry: register node:vm as the default evaluator so
-// existing callers (host-bun, host-server, CLI, tests) keep zero-config bridge loading. Non-Node
-// hosts import `@comical/core/loader` instead and pass their own evaluator — never pulling node:vm.
+// existing callers (host-bun, host-server, CLI, tests) keep zero-config bridge/tracker loading.
+// Non-Node hosts import `@comical/core/loader` instead and pass their own evaluator.
 import { setDefaultEvaluator } from "./loader.ts";
+import { setDefaultTrackerEvaluator } from "./tracker-loader.ts";
 import { NodeVmEvaluator } from "./sandbox.ts";
-setDefaultEvaluator((evalTimeoutMs) => new NodeVmEvaluator(evalTimeoutMs));
+const makeEvaluator = (evalTimeoutMs: number) => new NodeVmEvaluator(evalTimeoutMs);
+setDefaultEvaluator(makeEvaluator);
+setDefaultTrackerEvaluator(makeEvaluator);

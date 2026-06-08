@@ -3,7 +3,7 @@
  * fallback for hosts without durable storage. Deep-clones on the way in and out so callers can't
  * mutate stored objects by reference.
  */
-import type { Category, ChapterProgress, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
+import type { BridgePrefs, Category, ChapterProgress, HistoryItem, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
 const clone = <T>(v: T): T => structuredClone(v);
@@ -14,6 +14,8 @@ export class InMemoryLibraryStore implements LibraryStore {
   private categories = new Map<string, Category>();
   private groups = new Map<string, SeriesGroup>();
   private trackerLinks = new Map<string, Map<string, TrackerLink>>();
+  private readingLog = new Map<string, HistoryItem>();
+  private bridgePrefs = new Map<string, BridgePrefs>();
 
   async listEntries(): Promise<LibraryEntry[]> {
     return [...this.entries.values()].map(clone);
@@ -71,6 +73,24 @@ export class InMemoryLibraryStore implements LibraryStore {
   }
   async deleteTrackerLink(key: string, trackerId: string): Promise<void> {
     this.trackerLinks.get(key)?.delete(trackerId);
+  }
+
+  async listReadingLog(): Promise<HistoryItem[]> {
+    return [...this.readingLog.values()].map(clone);
+  }
+  async upsertReadingLog(item: HistoryItem): Promise<void> {
+    this.readingLog.set(`${item.bridgeId}:${item.seriesId}`, clone(item));
+  }
+  async deleteReadingLog(bridgeId: string, seriesId: string): Promise<void> {
+    this.readingLog.delete(`${bridgeId}:${seriesId}`);
+  }
+
+  async getBridgePrefs(bridgeId: string): Promise<BridgePrefs | undefined> {
+    const p = this.bridgePrefs.get(bridgeId);
+    return p ? clone(p) : undefined;
+  }
+  async setBridgePrefs(bridgeId: string, prefs: BridgePrefs): Promise<void> {
+    this.bridgePrefs.set(bridgeId, clone(prefs));
   }
 }
 
