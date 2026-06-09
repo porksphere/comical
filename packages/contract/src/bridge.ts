@@ -123,6 +123,9 @@ export interface Bridge {
 
   /** Remove a series from the account's favorites. */
   removeFavorite?(seriesId: string): Promise<void>;
+
+  /** Check whether a series is currently in the account's favorites. */
+  isFavorite?(seriesId: string): Promise<boolean>;
 }
 
 /**

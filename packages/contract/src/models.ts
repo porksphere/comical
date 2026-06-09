@@ -52,7 +52,9 @@ export const seriesInfoSchema = z.object({
   title: z.string().min(1),
   thumbnailUrl: z.string().url().optional(),
   author: z.string().optional(),
+  authorId: z.string().optional(),
   artist: z.string().optional(),
+  artistId: z.string().optional(),
   description: z.string().optional(),
   genres: z.array(z.string()).optional(),
   /** Other site taxonomies beyond genres (themes, demographics, format, content warnings, …). */

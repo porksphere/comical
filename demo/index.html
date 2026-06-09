@@ -6,7 +6,13 @@
   <title>Comical — Browser Demo</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #0f0f0f; color: #e8e8e8; }
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem calc(3.5rem + env(safe-area-inset-bottom)); background: #0f0f0f; color: #e8e8e8; }
+    .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: #111113; border-top: 1px solid #242427; z-index: 50; padding-bottom: env(safe-area-inset-bottom); }
+    .bn-item { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0.55rem 0; gap: 0.15rem; cursor: pointer; color: #666; user-select: none; }
+    .bn-item.active { color: #2563eb; }
+    .bn-item:hover { color: #ccc; }
+    .bn-icon { font-size: 1.1rem; line-height: 1; }
+    .bn-label { font-size: 0.68rem; }
     h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
     h3 { font-size: 0.95rem; margin: 0 0 0.6rem; }
     .subtitle { color: #888; font-size: 0.85rem; margin-bottom: 1.25rem; }
@@ -40,12 +46,14 @@
     .card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 4px; background: #333; margin-bottom: 0.5rem; }
     .card-title { font-size: 0.85rem; font-weight: 600; line-height: 1.3; }
     .card-sub { font-size: 0.75rem; color: #888; margin-top: 0.2rem; }
-    #detail { background: #1c1c1e; border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+    #detail { padding: 1rem; margin-top: 1rem; }
     #detail h2 { margin: 0 0 0.4rem; }
     #fav-toggle { float: right; background: #1c1c1e; border: 1px solid #333; color: #ddd; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; }
     #fav-toggle:hover { border-color: #60a5fa; }
-    #detail .meta { font-size: 0.82rem; color: #888; margin-bottom: 0.75rem; }
+    #detail .meta { font-size: 0.82rem; color: #888; }
     .detail-head { display: flex; gap: 1rem; margin-bottom: 1rem; }
+    .detail-side { display: flex; flex-direction: column; gap: 0.5rem; flex: 1; min-width: 0; }
+    #detail-actions { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
     #detail-cover { width: 120px; height: 180px; object-fit: cover; border-radius: 6px; background: #333; flex-shrink: 0; }
     #detail-genres { display: flex; align-items: center; gap: 0.35rem; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2rem 0.6rem; padding: 0 1rem 2px; }
     #detail-genres::-webkit-scrollbar { display: none; }
@@ -65,7 +73,7 @@
     .tag-option { padding: 0.35rem 0.6rem; font-size: 0.8rem; cursor: pointer; color: #ccc; }
     .tag-option:hover { background: #2a2a2e; }
     .tag-option-empty { padding: 0.35rem 0.6rem; font-size: 0.8rem; color: #666; }
-    #detail-description { font-size: 0.88rem; line-height: 1.5; color: #ccc; margin: 0; }
+    #detail-description { font-size: 0.88rem; line-height: 1.5; color: #ccc; margin: 0.75rem 0 0; }
     #chapters { list-style: none; padding: 0; margin: 0; }
     #chapters li { padding: 0.4rem 0; border-bottom: 1px solid #2a2a2e; font-size: 0.88rem; cursor: pointer; }
     #chapters li:hover { color: #60a5fa; }
@@ -109,6 +117,9 @@
     .tracker-config-item { border-bottom: 1px solid #242427; padding: 0.5rem 0; }
     .tracker-config-item:last-child { border-bottom: none; }
     .tracker-config-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.6rem; margin: 0.5rem 0; }
+    .bridge-settings-entry { border-bottom: 1px solid #242427; padding: 0.5rem 0; }
+    .bridge-settings-entry:last-child { border-bottom: none; padding-bottom: 0; }
+    .bridge-settings-entry > summary { cursor: pointer; font-weight: 600; font-size: 0.95rem; }
     .tag-group-label { flex-shrink: 0; }
   </style>
 </head>
@@ -116,21 +127,18 @@
   <h1>Comical</h1>
   <p class="subtitle">Content bridge runtime — browser console (thin client → comical-server)</p>
 
-  <nav class="tabs view-tabs">
-    <div class="tab active" data-view="browse">Browse</div>
-    <div class="tab" data-view="library">Library</div>
-    <div class="tab" data-view="history">History</div>
-    <div class="tab" data-view="settings">Settings</div>
-  </nav>
-
   <div id="status">Initialising…</div>
 
   <div id="browse-view">
-  <div class="row">
-    <label>Bridge
-      <select id="bridge"></select>
-    </label>
-    <span id="caps" class="muted"></span>
+  <div id="bridge-list" class="tabs" style="margin-bottom:0.4rem"></div>
+  <span id="caps" class="muted" style="font-size:0.8rem; display:block; margin-bottom:0.5rem"></span>
+
+  <!-- Browse -->
+  <nav class="tabs" id="list-tabs"></nav>
+  <div class="controls">
+    <input id="query" type="search" placeholder="Search…" style="flex:1; min-width:160px">
+    <button id="searchBtn">Search</button>
+    <button id="filters-toggle" class="secondary" style="display:none">Filters</button>
   </div>
 
   <!-- Filters / sort / tags (only when the bridge supports them) -->
@@ -141,13 +149,6 @@
     </div>
     <div id="tags-block" style="display:none; margin-top:0.6rem"><h3>Tags</h3><div id="tags" class="chips"></div></div>
   </section>
-
-  <!-- Browse -->
-  <nav class="tabs" id="list-tabs"></nav>
-  <div class="controls">
-    <input id="query" type="search" placeholder="Search…" style="flex:1; min-width:160px">
-    <button id="searchBtn">Search</button>
-  </div>
   <div id="grid" class="grid"></div>
   <div style="text-align:center; margin:1rem 0"><button id="load-more" class="secondary" style="display:none">Load more</button></div>
   </div><!-- /browse-view -->
@@ -178,18 +179,20 @@
     <div style="margin-bottom:0.75rem"><button id="back-btn" class="secondary">← Back</button></div>
     <div id="detail">
       <h2 id="detail-title"></h2>
-      <span id="detail-actions" style="float:right; display:flex; gap:0.4rem; align-items:center">
-        <span id="new-badge" class="badge-new" hidden></span>
-        <button id="lib-toggle" hidden>＋ Library</button>
-        <button id="fav-toggle" hidden>☆ Favorite</button>
-      </span>
-      <div class="meta" id="detail-meta"></div>
       <div class="detail-head">
         <img id="detail-cover" alt="" />
-        <p class="description" id="detail-description"></p>
+        <div class="detail-side">
+          <div class="meta" id="detail-meta"></div>
+          <div id="detail-actions">
+            <span id="new-badge" class="badge-new" hidden></span>
+            <button id="lib-toggle" hidden>＋ Library</button>
+            <button id="fav-toggle" hidden>☆ Favorite</button>
+          </div>
+        </div>
       </div>
       <div class="genres" id="detail-genres"></div>
       <div id="detail-taggroups"></div>
+      <p class="description" id="detail-description"></p>
       <div id="lib-category-picker" hidden></div>
       <div id="group-panel" hidden></div>
       <div id="tracker-panel" hidden></div>
@@ -213,18 +216,7 @@
   <!-- Settings page -->
   <section id="settings-view" style="display:none">
     <!-- Bridge Settings -->
-    <section class="panel" id="settings-panel" style="display:none">
-      <details id="settings-details">
-        <summary>Bridge Settings <span id="settings-state" class="muted"></span></summary>
-        <form id="settings-form"></form>
-        <div class="row">
-          <button id="settings-save">Save settings</button>
-          <span id="settings-msg"></span>
-          <button id="import-favorites-btn" class="secondary" hidden>Import favorites → Library</button>
-          <span id="import-favorites-msg" class="muted"></span>
-        </div>
-      </details>
-    </section>
+    <section class="panel" id="bridge-settings-list" style="display:none"></section>
 
     <!-- Trackers -->
     <section class="panel" id="trackers-config-panel" style="display:none">
@@ -249,6 +241,13 @@
       </details>
     </section>
   </section>
+
+  <nav class="bottom-nav">
+    <div class="bn-item active" data-view="browse"><span class="bn-icon">⊞</span><span class="bn-label">Browse</span></div>
+    <div class="bn-item" data-view="library"><span class="bn-icon">☰</span><span class="bn-label">Library</span></div>
+    <div class="bn-item" data-view="history"><span class="bn-icon">↺</span><span class="bn-label">History</span></div>
+    <div class="bn-item" data-view="settings"><span class="bn-icon">⚙</span><span class="bn-label">Settings</span></div>
+  </nav>
 
   <script type="module" src="./app.js"></script>
 </body>

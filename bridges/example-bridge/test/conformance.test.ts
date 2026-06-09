@@ -85,6 +85,7 @@ describe("example-bridge", () => {
     const bridge = load();
     const filters = await bridge.getFilters!();
     expect(filters.find((f) => f.key === "genre")?.type).toBe("multiselect");
+    expect(filters.find((f) => f.key === "author")?.type).toBe("text");
     const sorts = await bridge.getSortOptions!();
     expect(sorts.map((s) => s.key)).toContain("title");
 
@@ -99,6 +100,33 @@ describe("example-bridge", () => {
     const asc = await bridge.getSearchResults!("", 1, { sort: { key: "title", ascending: true } });
     const desc = await bridge.getSearchResults!("", 1, { sort: { key: "title", ascending: false } });
     expect(asc.items.map((i) => i.id).join()).toBe([...desc.items].reverse().map((i) => i.id).join());
+  });
+
+  test("author filter returns only that author's series", async () => {
+    const bridge = load();
+    const all = await bridge.getSearchResults!("", 1);
+
+    // Lewis Carroll only wrote Alice in the fixture catalog.
+    const carroll = await bridge.getSearchResults!("", 1, {
+      filters: [{ key: "author", value: "Lewis Carroll" }],
+    });
+    expect(carroll.items.length).toBeGreaterThan(0);
+    expect(carroll.items.length).toBeLessThan(all.items.length);
+    expect(carroll.items.every((i) => i.id === "alice")).toBe(true);
+
+    // Partial name match (case-insensitive) should also work.
+    const partial = await bridge.getSearchResults!("", 1, {
+      filters: [{ key: "author", value: "carroll" }],
+    });
+    expect(partial.items.map((i) => i.id)).toEqual(carroll.items.map((i) => i.id));
+  });
+
+  test("author filter with no matches returns empty results", async () => {
+    const bridge = load();
+    const results = await bridge.getSearchResults!("", 1, {
+      filters: [{ key: "author", value: "Nonexistent Author XYZ" }],
+    });
+    expect(results.items.length).toBe(0);
   });
 
   test("favorites: round-trip add → list → remove (authenticated)", async () => {

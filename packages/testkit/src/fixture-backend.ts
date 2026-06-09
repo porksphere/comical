@@ -191,7 +191,7 @@ export class FixtureBackend {
 
   private renderSearch(
     query: string,
-    opts: { genres?: string[]; sort?: string; ascending?: boolean } = {},
+    opts: { genres?: string[]; sort?: string; ascending?: boolean; author?: string } = {},
   ): string {
     const q = query.trim().toLowerCase();
     let matches = q
@@ -203,6 +203,11 @@ export class FixtureBackend {
     if (opts.genres && opts.genres.length > 0) {
       const wanted = new Set(opts.genres.map((g) => g.toLowerCase()));
       matches = matches.filter((s) => s.genres.some((g) => wanted.has(g.toLowerCase())));
+    }
+
+    if (opts.author) {
+      const a = opts.author.trim().toLowerCase();
+      matches = matches.filter((s) => s.author.toLowerCase().includes(a));
     }
 
     if (opts.sort === "title" || opts.sort === "author") {
@@ -278,11 +283,13 @@ export class FixtureBackend {
       const genres = p.get("genre")?.split(",").map((g) => g.trim()).filter(Boolean);
       const sort = p.get("sort") ?? undefined;
       const ascending = p.get("dir") !== "desc";
+      const author = p.get("author") ?? undefined;
       return this.html(
         this.renderSearch(p.get("q") ?? "", {
           ...(genres && genres.length ? { genres } : {}),
           ...(sort ? { sort } : {}),
           ascending,
+          ...(author ? { author } : {}),
         }),
       );
     }
