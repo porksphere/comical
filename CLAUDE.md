@@ -17,7 +17,10 @@ When the user is iterating on the demo browser app, spin up **two background ter
 | Server   | `bun run demo:server` | 3100 |
 | Client   | `bun run demo:dev`   | 3300 |
 
-- **On any change** to demo source files, reboot both terminals (kill → restart).
+- **Both processes watch for changes automatically** — no manual restart needed for source edits.
+  - Server restarts automatically when `packages/host-server/**` or `demo/demo-server.ts` change (via `bun --watch`).
+  - Client rebuilds automatically when any `demo/*.ts` or `demo/index.html` changes, and the browser live-reloads.
+  - Bridge/tracker changes: after rebuilding the bridge or tracker (`bun run build` in that package), the server detects the new `.js` and restarts automatically.
 - **Port conflicts**: before starting, check if ports 3100/3300 are already in use. If the occupying process is the comical server or client from a previous session, kill it. If it is an unrelated process, warn the user before killing.
 
 ```powershell

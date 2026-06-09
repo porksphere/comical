@@ -246,6 +246,23 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     }),
   );
 
+  app.get("/bridges/:id/favorites/:seriesId", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.getFavorites) return c.json({ error: "not supported" }, 400);
+      const seriesId = c.req.param("seriesId");
+      if (bridge.isFavorite) {
+        return c.json({ favorited: await bridge.isFavorite(seriesId) });
+      }
+      const MAX_PAGES = 20;
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const result = await bridge.getFavorites(page);
+        if (result.items.some((item) => item.id === seriesId)) return c.json({ favorited: true });
+        if (!result.hasNextPage) break;
+      }
+      return c.json({ favorited: false });
+    }),
+  );
+
   app.get("/bridges/:id/series/:seriesId", (c) =>
     withContentBridge(c, async (bridge) => {
       return c.json(await bridge.getSeriesDetails(c.req.param("seriesId")));

@@ -165,6 +165,7 @@ class ExampleBridge extends BridgeBase<Settings> {
           label: g,
         })),
       },
+      { type: "text", key: "author", label: "Author" },
     ];
   }
 
@@ -183,6 +184,7 @@ class ExampleBridge extends BridgeBase<Settings> {
     const params = new URLSearchParams({ q: query, page: String(page) });
     for (const f of options?.filters ?? []) {
       if (f.key === "genre" && Array.isArray(f.value)) params.set("genre", f.value.join(","));
+      if (f.key === "author" && typeof f.value === "string") params.set("author", f.value);
     }
     const sort = this.effectiveSort(options?.sort);
     if (sort) {

@@ -16,7 +16,7 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "cli": "bun run packages/cli/src/index.ts",
-    "demo:server": "bun run demo/demo-server.ts",
+    "demo:server": "bun --watch run demo/demo-server.ts",
     "demo:dev": "bun run demo/serve.ts",
     "serve": "bun run packages/host-server/src/server.ts"
   },

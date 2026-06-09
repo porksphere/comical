@@ -87,7 +87,6 @@ async function send(method: string, path: string, body?: unknown): Promise<{ ok:
 // ── State ──────────────────────────────────────────────────────────────────────
 let activeBridge = "";
 let activeCaps: string[] = [];
-let currentDescriptors: SettingDescriptor[] = [];
 let currentFilters: Filter[] = [];
 let currentLists: SeriesList[] = [];
 let activeListId: string | null = null;
@@ -288,19 +287,31 @@ function updateSortDirVisibility(): void {
 // ── Bridge picker ────────────────────────────────────────────────────────────────
 async function loadBridges(): Promise<void> {
   const bridges = await api<BridgeSummary[]>("/bridges");
-  const select = $<HTMLSelectElement>("#bridge");
-  select.innerHTML = "";
+  const list = $("#bridge-list");
+  list.innerHTML = "";
   for (const b of bridges) {
-    const opt = document.createElement("option");
-    opt.value = b.info.id;
-    opt.textContent = b.info.name + (b.availableVersion ? ` (update: ${b.availableVersion})` : "");
-    select.append(opt);
+    const btn = document.createElement("div");
+    btn.className = "tab";
+    btn.dataset.id = b.info.id;
+    let label = b.info.name;
+    if (b.missingRequired.length) label += " ⚠";
+    if (b.availableVersion) label += " ↑";
+    btn.textContent = label;
+    if (b.missingRequired.length) btn.title = `Needs config: ${b.missingRequired.join(", ")}`;
+    else if (b.availableVersion) btn.title = `Update available: ${b.availableVersion}`;
+    btn.onclick = () => void selectBridge(b.info.id);
+    list.append(btn);
   }
-  select.onchange = () => void selectBridge(select.value);
+  const settingsList = $("#bridge-settings-list");
+  settingsList.innerHTML = "";
   if (bridges.length > 0) {
-    select.value = bridges[0]!.info.id;
-    await selectBridge(bridges[0]!.info.id);
+    settingsList.style.display = "";
+    for (const b of bridges) settingsList.append(buildBridgeSettingsEntry(b));
+    const saved = localStorage.getItem("lastBridge");
+    const initial = bridges.find((b) => b.info.id === saved) ? saved! : bridges[0]!.info.id;
+    await selectBridge(initial);
   } else {
+    settingsList.style.display = "none";
     status("No bridges installed. Add a registry below, or build one locally.");
   }
 }
@@ -308,15 +319,17 @@ async function loadBridges(): Promise<void> {
 // ── Select a bridge: load info, settings, meta, lists ────────────────────────────
 async function selectBridge(id: string): Promise<void> {
   activeBridge = id;
+  localStorage.setItem("lastBridge", id);
+  document.querySelectorAll<HTMLElement>("#bridge-list .tab").forEach((el) => {
+    el.classList.toggle("active", el.dataset.id === id);
+  });
   activeCaps = [];
   filterTagSelections.clear();
   switchView("browse");
   const detail = await api<BridgeDetail>(`/bridges/${id}`);
   activeCaps = detail.info.capabilities;
-  currentDescriptors = detail.settings;
   $("#caps").textContent = `[${detail.info.capabilities.join(", ")}]`;
 
-  void renderSettings(detail);
   await renderMeta(detail.info.capabilities);
 
   const canSearch = detail.info.capabilities.includes("search");
@@ -328,38 +341,12 @@ async function selectBridge(id: string): Promise<void> {
     $("#list-tabs").innerHTML = "";
     $("#grid").innerHTML = "";
     status(`"${detail.info.name}" needs configuration: ${detail.missingRequired.join(", ")}`, true);
-    $<HTMLDetailsElement>("#settings-details").open = true;
     return;
   }
 
   if (detail.info.capabilities.includes("lists")) await loadLists();
   else { $("#list-tabs").innerHTML = ""; $("#grid").innerHTML = ""; }
   if (activeCaps.includes("favorites")) addFavoritesTab();
-
-  const importBtn = $<HTMLButtonElement>("#import-favorites-btn");
-  const importMsg = $("#import-favorites-msg");
-  if (detail.info.capabilities.includes("favorites")) {
-    importBtn.hidden = false;
-    importMsg.textContent = "";
-    importBtn.onclick = async () => {
-      importBtn.disabled = true;
-      importMsg.textContent = "Importing…";
-      importMsg.className = "muted";
-      const res = await send("POST", `/library/import/bridges/${id}/favorites`);
-      importBtn.disabled = false;
-      if (res.ok) {
-        const { imported, skipped } = res.data as { imported: number; skipped: number };
-        importMsg.textContent = `Done — ${imported} added, ${skipped} already in library.`;
-        importMsg.className = "ok";
-      } else {
-        importMsg.textContent = (res.data as { error?: string })?.error ?? `error ${res.status}`;
-        importMsg.className = "err";
-      }
-    };
-  } else {
-    importBtn.hidden = true;
-    importMsg.textContent = "";
-  }
 
   status(`Loaded "${detail.info.name}".`);
 }
@@ -391,54 +378,151 @@ async function loadFavorites(page = 1): Promise<void> {
   }
 }
 
-// ── Settings form ────────────────────────────────────────────────────────────────
-async function renderSettings(detail: BridgeDetail): Promise<void> {
-  const panel = $("#settings-panel");
-  const form = $("#settings-form");
-  form.innerHTML = "";
-  panel.style.display = "";
+// ── Bridge settings list (Settings view) ─────────────────────────────────────────
+function updateBridgeSummary(sumEl: HTMLElement, detail: BridgeDetail): void {
+  sumEl.textContent = detail.info.name;
+  if (detail.settings.length > 0) {
+    const s = document.createElement("span");
+    s.style.cssText = "margin-left:0.4rem;font-size:0.82rem;font-weight:normal";
+    s.className = detail.missingRequired.length ? "warn" : "ok";
+    s.textContent = detail.missingRequired.length ? `⚠ needs: ${detail.missingRequired.join(", ")}` : "✓";
+    sumEl.append(" ", s);
+  }
+}
 
-  if (detail.settings.length === 0) {
-    $("#settings-state").textContent = "";
-  } else {
-    $("#settings-state").textContent = detail.missingRequired.length
-      ? `— needs: ${detail.missingRequired.join(", ")}`
-      : "— configured";
-    $("#settings-state").className = detail.missingRequired.length ? "warn" : "ok";
+function buildBridgeSettingsEntry(b: BridgeSummary): HTMLElement {
+  const det = document.createElement("details");
+  det.className = "bridge-settings-entry";
+  const sum = document.createElement("summary");
+  sum.textContent = b.info.name;
+  if (b.missingRequired.length) {
+    const w = document.createElement("span");
+    w.style.cssText = "margin-left:0.4rem;font-size:0.82rem;font-weight:normal";
+    w.className = "warn";
+    w.textContent = `⚠ needs: ${b.missingRequired.join(", ")}`;
+    sum.append(" ", w);
+  }
+  const body = document.createElement("div");
+  body.style.marginTop = "0.75rem";
+  det.append(sum, body);
+  let loaded = false;
+  det.addEventListener("toggle", () => {
+    if (!det.open || loaded) return;
+    loaded = true;
+    body.innerHTML = `<p class="muted" style="font-size:0.84rem">Loading…</p>`;
+    api<BridgeDetail>(`/bridges/${b.info.id}`)
+      .then((detail) => void renderBridgeSettingsBody(detail, body, sum))
+      .catch((e) => { body.innerHTML = `<p class="err" style="font-size:0.84rem">Failed: ${esc(String(e))}</p>`; loaded = false; });
+  });
+  return det;
+}
 
+async function renderBridgeSettingsBody(detail: BridgeDetail, container: HTMLElement, sumEl: HTMLElement): Promise<void> {
+  container.innerHTML = "";
+  updateBridgeSummary(sumEl, detail);
+
+  if (detail.settings.length > 0) {
+    const grid = document.createElement("div");
+    grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.75rem;margin:0.5rem 0 0.75rem";
     for (const d of detail.settings) {
       const wrap = document.createElement("div");
       if (d.type === "string" && d.secret) wrap.className = "field-secret";
-      const label = document.createElement("label");
-      label.textContent = d.label + (d.required ? " *" : "");
-      if (d.description) label.title = d.description;
-      label.append(buildInput(d, detail.values[d.key], detail.secretsSet.includes(d.key)));
-      wrap.append(label);
-      form.append(wrap);
+      const lbl = document.createElement("label");
+      lbl.textContent = d.label + (d.required ? " *" : "");
+      if (d.description) lbl.title = d.description;
+      lbl.append(buildInput(d, detail.values[d.key], detail.secretsSet.includes(d.key)));
+      wrap.append(lbl);
+      grid.append(wrap);
     }
-    $("#settings-msg").textContent = "";
+    container.append(grid);
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "Save";
+    const msgEl = document.createElement("span");
+    saveBtn.onclick = () => void saveBridgeSettings(detail.info.id, grid, msgEl, sumEl);
+    row.append(saveBtn, msgEl);
+
+    if (detail.info.capabilities.includes("favorites")) {
+      const impBtn = document.createElement("button");
+      impBtn.type = "button";
+      impBtn.className = "secondary";
+      impBtn.textContent = "Import favorites → Library";
+      const impMsg = document.createElement("span");
+      impMsg.className = "muted";
+      impBtn.onclick = async () => {
+        impBtn.disabled = true;
+        impMsg.textContent = "Importing…";
+        const res = await send("POST", `/library/import/bridges/${detail.info.id}/favorites`);
+        impBtn.disabled = false;
+        if (res.ok) {
+          const { imported, skipped } = res.data as { imported: number; skipped: number };
+          impMsg.textContent = `Done — ${imported} added, ${skipped} already in library.`;
+          impMsg.className = "ok";
+        } else {
+          impMsg.textContent = (res.data as { error?: string })?.error ?? `error ${res.status}`;
+          impMsg.className = "err";
+        }
+      };
+      row.append(impBtn, impMsg);
+    }
+    container.append(row);
+  } else {
+    container.append(Object.assign(document.createElement("p"), { className: "muted", style: "font-size:0.84rem", textContent: "No configurable settings." }));
   }
 
-  // Tracker disable toggle — always shown regardless of bridge settings.
   const prefs = await api<BridgePrefs>(`/library/bridges/${enc(detail.info.id)}/prefs`).catch(
     () => ({ bridgeId: detail.info.id, trackersDisabled: false }),
   );
-  let trackerRow = document.getElementById("tracker-disable-row");
-  if (!trackerRow) {
-    trackerRow = document.createElement("label");
-    trackerRow.id = "tracker-disable-row";
-    trackerRow.style.cssText = "display:flex;align-items:center;gap:0.4rem;font-size:0.84rem;margin-top:0.6rem";
-    const chk = document.createElement("input");
-    chk.type = "checkbox";
-    chk.id = "tracker-disable-toggle";
-    chk.onchange = async () => {
-      await send("PUT", `/library/bridges/${enc(activeBridge)}/prefs`, { trackersDisabled: chk.checked });
-    };
-    trackerRow.append(chk, "Disable tracker sync for this bridge");
-    const detailsEl = $("#settings-details");
-    detailsEl.append(trackerRow);
+  const trackerLbl = document.createElement("label");
+  trackerLbl.style.cssText = "display:flex;align-items:center;gap:0.4rem;font-size:0.84rem;margin-top:0.6rem";
+  const chk = document.createElement("input");
+  chk.type = "checkbox";
+  chk.checked = prefs.trackersDisabled;
+  chk.onchange = async () => {
+    await send("PUT", `/library/bridges/${enc(detail.info.id)}/prefs`, { trackersDisabled: chk.checked });
+  };
+  trackerLbl.append(chk, "Disable tracker sync for this bridge");
+  container.append(trackerLbl);
+}
+
+async function saveBridgeSettings(bridgeId: string, form: HTMLElement, msgEl: HTMLElement, sumEl: HTMLElement): Promise<void> {
+  const body: Record<string, string | number | boolean | string[]> = {};
+  form.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-key]").forEach((el) => {
+    const key = el.dataset.key!;
+    const kind = el.dataset.kind!;
+    if (kind === "boolean") {
+      body[key] = (el as HTMLInputElement).checked;
+    } else if (kind === "enum" && (el as HTMLSelectElement).multiple) {
+      body[key] = Array.from((el as HTMLSelectElement).selectedOptions).map((o) => o.value);
+    } else if (kind === "number") {
+      const v = (el as HTMLInputElement).value.trim();
+      if (v !== "") body[key] = Number(v);
+    } else {
+      const v = (el as HTMLInputElement).value.trim();
+      if (v !== "") body[key] = v;
+    }
+  });
+  const res = await send("PUT", `/bridges/${bridgeId}/settings`, body);
+  if (res.ok) {
+    msgEl.textContent = "Saved ✓";
+    msgEl.className = "ok";
+    const detail = await api<BridgeDetail>(`/bridges/${bridgeId}`);
+    updateBridgeSummary(sumEl, detail);
+    document.querySelectorAll<HTMLElement>("#bridge-list .tab").forEach((el) => {
+      if (el.dataset.id !== bridgeId) return;
+      let label = detail.info.name;
+      if (detail.missingRequired.length) label += " ⚠";
+      if (detail.availableVersion) label += " ↑";
+      el.textContent = label;
+    });
+    if (activeBridge === bridgeId) activeCaps = detail.info.capabilities;
+  } else {
+    msgEl.textContent = (res.data as { error?: string }).error ?? `error ${res.status}`;
+    msgEl.className = "err";
   }
-  ($<HTMLInputElement>("#tracker-disable-toggle")).checked = prefs.trackersDisabled;
 }
 
 /** Build a control prefilled with the current stored value (falling back to the descriptor default). */
@@ -636,7 +720,10 @@ async function renderMeta(capabilities: string[]): Promise<void> {
       any = true;
     } catch { /* ignore */ }
   }
-  panel.style.display = any ? "" : "none";
+  panel.style.display = "none";
+  const toggleBtn = $<HTMLButtonElement>("#filters-toggle");
+  toggleBtn.style.display = any ? "" : "none";
+  toggleBtn.textContent = "Filters";
 }
 
 // ── Lists + grid ─────────────────────────────────────────────────────────────────
@@ -735,7 +822,7 @@ async function showDetail(seriesId: string): Promise<void> {
   ].filter(Boolean).join(" · ");
   if (creator && canSearch) {
     const suffix = otherMeta ? ` · ${esc(otherMeta)}` : "";
-    $("#detail-meta").innerHTML = `<span class="chip chip-link" id="author-chip">by ${esc(creator)}</span>${suffix}`;
+    $("#detail-meta").innerHTML = `<span class="chip chip-link" id="author-chip">${esc(creator)}</span>${suffix}`;
     document.getElementById("author-chip")!.onclick = () => {
       if (authorFilter) {
         const val = creatorId ?? creator;
@@ -748,10 +835,7 @@ async function showDetail(seriesId: string): Promise<void> {
       }
     };
   } else {
-    $("#detail-meta").textContent = [
-      creator && `by ${creator}`,
-      otherMeta || undefined,
-    ].filter(Boolean).join(" · ");
+    $("#detail-meta").textContent = [creator, otherMeta || undefined].filter(Boolean).join(" · ");
   }
 
   const cover = $("#detail-cover") as HTMLImageElement;
@@ -1854,7 +1938,7 @@ async function openSeries(bridgeId: string, seriesId: string, resumeChapterId?: 
 
 function switchView(view: "browse" | "library" | "history" | "detail" | "reader" | "settings"): void {
   currentView = view;
-  document.querySelectorAll<HTMLElement>(".view-tabs .tab").forEach((t) =>
+  document.querySelectorAll<HTMLElement>(".bn-item").forEach((t) =>
     t.classList.toggle("active", t.dataset.view === view),
   );
   $("#browse-view").style.display = view === "browse" ? "" : "none";
@@ -1884,7 +1968,7 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
     return;
   }
 
-  document.querySelectorAll<HTMLElement>(".view-tabs .tab").forEach((t) => {
+  document.querySelectorAll<HTMLElement>(".bn-item").forEach((t) => {
     t.onclick = () => switchView((t.dataset.view as "browse" | "library" | "history" | "settings") ?? "browse");
   });
   $("#back-btn").onclick = () => history.back();
@@ -1931,8 +2015,14 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
   };
 
   $<HTMLSelectElement>("#sort-field").addEventListener("change", updateSortDirVisibility);
-  $("#settings-save").onclick = () => void saveSettings();
   $("#searchBtn").onclick = () => void doSearch();
+  $("#filters-toggle").onclick = () => {
+    const panel = $("#meta-panel");
+    const btn = $<HTMLButtonElement>("#filters-toggle");
+    const open = panel.style.display === "none";
+    panel.style.display = open ? "" : "none";
+    btn.textContent = open ? "Filters ✕" : "Filters";
+  };
   $<HTMLInputElement>("#query").addEventListener("keydown", (e) => { if (e.key === "Enter") void doSearch(); });
   $("#reg-add").onclick = async () => {
     const url = $<HTMLInputElement>("#reg-url").value.trim();
