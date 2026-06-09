@@ -26,7 +26,7 @@ interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
 interface TagGroup { label: string; kind?: string; tags: string[]; tagIds?: string[] }
-interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; artist?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[]; externalIds?: Record<string, string | number> }
+interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; authorId?: string; artist?: string; artistId?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[]; externalIds?: Record<string, string | number> }
 interface Chapter { id: string; name: string; number?: number; pageCount?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
@@ -124,8 +124,12 @@ async function handleRoute(): Promise<void> {
     } else if (view === "detail" && parts[1] && parts[2]) {
       const bridgeId = decodeURIComponent(parts[1]!);
       const seriesId = decodeURIComponent(parts[2]!);
-      await ensureBridge(bridgeId);
-      await showDetail(seriesId);
+      if (currentSeries?.bridgeId === bridgeId && currentSeries.seriesId === seriesId) {
+        switchView("detail");
+      } else {
+        await ensureBridge(bridgeId);
+        await showDetail(seriesId);
+      }
     } else if (view === "reader" && parts[1] && parts[2] && parts[3]) {
       const bridgeId = decodeURIComponent(parts[1]!);
       const seriesId = decodeURIComponent(parts[2]!);
@@ -722,11 +726,33 @@ async function showDetail(seriesId: string): Promise<void> {
 
   $("#detail-title").textContent = info.title;
   const creator = info.author || info.artist;
-  $("#detail-meta").textContent = [
-    creator && `by ${creator}`,
+  const creatorId = info.author ? info.authorId : info.artistId;
+  const canSearch = activeCaps.includes("search") || activeCaps.includes("filters");
+  const authorFilter = currentFilters.find((f) => f.key === "author");
+  const otherMeta = [
     info.status,
     info.languages?.length ? info.languages.join(" / ") : undefined,
   ].filter(Boolean).join(" · ");
+  if (creator && canSearch) {
+    const suffix = otherMeta ? ` · ${esc(otherMeta)}` : "";
+    $("#detail-meta").innerHTML = `<span class="chip chip-link" id="author-chip">by ${esc(creator)}</span>${suffix}`;
+    document.getElementById("author-chip")!.onclick = () => {
+      if (authorFilter) {
+        const val = creatorId ?? creator;
+        const value = authorFilter.type === "text" ? val : [val];
+        navigateToFilteredSearch([{ key: "author", value }]);
+      } else {
+        $<HTMLInputElement>("#query").value = creator;
+        switchView("browse");
+        void doSearch();
+      }
+    };
+  } else {
+    $("#detail-meta").textContent = [
+      creator && `by ${creator}`,
+      otherMeta || undefined,
+    ].filter(Boolean).join(" · ");
+  }
 
   const cover = $("#detail-cover") as HTMLImageElement;
   if (info.thumbnailUrl) {
@@ -741,8 +767,15 @@ async function showDetail(seriesId: string): Promise<void> {
   const favBtn = $("#fav-toggle") as HTMLButtonElement;
   if (activeCaps.includes("favorites")) {
     favBtn.hidden = false;
-    let favorited = false;
     favBtn.textContent = "☆ Favorite";
+    let favorited = false;
+    // Fire-and-forget: don't block readBtn wiring on the network round-trip
+    api<{ favorited: boolean }>(`/bridges/${activeBridge}/favorites/${encodeURIComponent(seriesId)}`)
+      .then((check) => {
+        favorited = check.favorited;
+        favBtn.textContent = favorited ? "★ Favorited" : "☆ Favorite";
+      })
+      .catch(() => { /* non-fatal */ });
     favBtn.onclick = async () => {
       const r = await send(
         favorited ? "DELETE" : "PUT",
@@ -795,6 +828,8 @@ async function showDetail(seriesId: string): Promise<void> {
   if (isDirect) readBtn.onclick = () => void readDirect(seriesId);
 
   // Library tracking (optional module): track this series under the bridge it came from.
+  prefetchedChapter = null;
+  preloadedUrls.clear();
   currentSeries = { bridgeId: activeBridge, seriesId, info, chapters, progress: new Map(), inLibrary: false };
   await refreshLibraryStatus();
   renderChapters();
@@ -813,6 +848,28 @@ let currentSeries: CurrentSeries | null = null;
 
 interface ReaderState { ch: Chapter; pages: Page[]; currentPage: number; }
 let readerState: ReaderState | null = null;
+
+interface PrefetchedChapter { bridgeId: string; seriesId: string; ch: Chapter; pages: Page[] }
+let prefetchedChapter: PrefetchedChapter | null = null;
+const preloadedUrls = new Set<string>();
+
+let toolbarHideTimer: ReturnType<typeof setTimeout> | null = null;
+function showToolbar(): void {
+  const tb = document.querySelector(".reader-toolbar") as HTMLElement | null;
+  if (!tb) return;
+  tb.classList.remove("hidden");
+  if (toolbarHideTimer) clearTimeout(toolbarHideTimer);
+  toolbarHideTimer = setTimeout(() => tb.classList.add("hidden"), 3000);
+}
+
+function preloadImages(urls: string[]): void {
+  for (const url of urls) {
+    if (preloadedUrls.has(url)) continue;
+    preloadedUrls.add(url);
+    const img = new Image();
+    img.src = url;
+  }
+}
 
 /** Load the series' library state (membership, progress) and surface any newly-published chapters. */
 async function refreshLibraryStatus(): Promise<void> {
@@ -1345,13 +1402,22 @@ async function openChapter(ch: Chapter, resumePage?: number): Promise<void> {
   } else {
     pushRoute(`reader/${enc(bridgeId)}/${enc(seriesId)}/${enc(ch.id)}`);
   }
-  $("#reader-info").textContent = `${ch.name} · Loading…`;
-  $<HTMLButtonElement>("#reader-prev").disabled = true;
-  $<HTMLButtonElement>("#reader-next").disabled = true;
-  $("#reader-page").innerHTML = `<p class="muted" style="text-align:center;padding:2rem">Loading pages…</p>`;
-  const pages = await api<Page[]>(
-    `/bridges/${bridgeId}/series/${enc(seriesId)}/chapters/${enc(ch.id)}/pages`,
-  );
+  let pages: Page[];
+  if (prefetchedChapter?.ch.id === ch.id &&
+      prefetchedChapter.bridgeId === bridgeId &&
+      prefetchedChapter.seriesId === seriesId) {
+    pages = prefetchedChapter.pages;
+    prefetchedChapter = null;
+  } else {
+    prefetchedChapter = null;
+    $("#reader-info").textContent = `${ch.name} · Loading…`;
+    $<HTMLButtonElement>("#reader-prev").disabled = true;
+    $<HTMLButtonElement>("#reader-next").disabled = true;
+    $("#reader-page").innerHTML = `<p class="muted" style="text-align:center;padding:2rem">Loading pages…</p>`;
+    pages = await api<Page[]>(
+      `/bridges/${bridgeId}/series/${enc(seriesId)}/chapters/${enc(ch.id)}/pages`,
+    );
+  }
   readerState = { ch, pages, currentPage: Math.min(resumePage ?? 0, Math.max(0, pages.length - 1)) };
   renderReaderPage();
   if (inLibrary) {
@@ -1402,6 +1468,23 @@ function getAdjacentChapter(delta: 1 | -1): Chapter | null {
   return ordered[idx + delta] ?? null;
 }
 
+async function prefetchNextChapter(): Promise<void> {
+  if (!currentSeries || !readerState) return;
+  const nextCh = getAdjacentChapter(1);
+  if (!nextCh) return;
+  const { bridgeId, seriesId } = currentSeries;
+  if (prefetchedChapter?.ch.id === nextCh.id &&
+      prefetchedChapter.bridgeId === bridgeId &&
+      prefetchedChapter.seriesId === seriesId) return;
+  try {
+    const pages = await api<Page[]>(
+      `/bridges/${bridgeId}/series/${enc(seriesId)}/chapters/${enc(nextCh.id)}/pages`,
+    );
+    prefetchedChapter = { bridgeId, seriesId, ch: nextCh, pages };
+    preloadImages(pages.slice(0, 3).map(p => p.imageUrl));
+  } catch { /* silently discard — openChapter will retry */ }
+}
+
 function renderReaderPage(): void {
   if (!readerState) return;
   const { ch, pages, currentPage } = readerState;
@@ -1414,16 +1497,10 @@ function renderReaderPage(): void {
   $<HTMLButtonElement>("#reader-prev").disabled = currentPage === 0;
   $<HTMLButtonElement>("#reader-next").disabled = onLastPage && !nextCh;
   $<HTMLButtonElement>("#reader-next").textContent = onLastPage && nextCh ? "Next ch. ›" : "Next ›";
-  const img = `<img src="${p.imageUrl}" alt="Page ${currentPage + 1}" onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${currentPage + 1}'">`;
-  const endBanner = nextCh
-    ? `<div style="text-align:center;padding:1rem 0;border-top:1px solid #2a2a2e;margin-top:0.75rem">` +
-      `<button id="reader-end-next" style="font-size:0.9rem;padding:0.45rem 1rem">&#x25B6; Next: ${esc(nextCh.name)}</button></div>`
-    : "";
-  $("#reader-page").innerHTML = img + endBanner;
-  if (nextCh) {
-    const endBtn = document.getElementById("reader-end-next") as HTMLButtonElement | null;
-    if (endBtn) endBtn.onclick = () => void openChapter(nextCh);
-  }
+  $("#reader-page").innerHTML = `<img src="${p.imageUrl}" alt="Page ${currentPage + 1}" onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${currentPage + 1}'">`;
+  showToolbar();
+  preloadImages(pages.slice(Math.max(0, currentPage - 1), currentPage + 4).map(p => p.imageUrl));
+  if (currentPage >= pages.length - 1 - 3) void prefetchNextChapter();
 }
 
 async function readerNavigate(delta: number): Promise<void> {
@@ -1789,6 +1866,12 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
   if (view === "browse" || view === "library" || view === "history" || view === "settings") pushRoute(view);
   if (view === "library") void loadLibrary().catch((e) => status(`Library unavailable: ${e instanceof Error ? e.message : e}`, true));
   if (view === "history") void loadHistory().catch((e) => status(`History unavailable: ${e instanceof Error ? e.message : e}`, true));
+  document.body.style.overflow = view === "reader" ? "hidden" : "";
+  if (view !== "reader") {
+    if (toolbarHideTimer) { clearTimeout(toolbarHideTimer); toolbarHideTimer = null; }
+    const tb = document.querySelector(".reader-toolbar") as HTMLElement | null;
+    if (tb) tb.classList.remove("hidden");
+  }
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────────
@@ -1812,6 +1895,30 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
     if ((e.target as HTMLElement).closest("button,a")) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     void readerNavigate(e.clientX < rect.left + rect.width / 2 ? -1 : 1);
+  });
+  document.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (currentView !== "reader") return;
+    if (e.key === "ArrowLeft") { e.preventDefault(); void readerNavigate(-1); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); void readerNavigate(1); }
+  });
+  // Show toolbar on mouse movement (desktop idle recovery)
+  ($("#reader-view") as HTMLElement).addEventListener("mousemove", () => {
+    if (currentView === "reader") showToolbar();
+  });
+  // Touch swipe navigation (mobile)
+  let swipeStartX = 0, swipeStartY = 0;
+  ($("#reader-view") as HTMLElement).addEventListener("touchstart", (e: TouchEvent) => {
+    swipeStartX = e.touches[0].clientX;
+    swipeStartY = e.touches[0].clientY;
+    showToolbar();
+  }, { passive: true });
+  ($("#reader-view") as HTMLElement).addEventListener("touchend", (e: TouchEvent) => {
+    const dx = e.changedTouches[0].clientX - swipeStartX;
+    const dy = e.changedTouches[0].clientY - swipeStartY;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      e.preventDefault();
+      void readerNavigate(dx < 0 ? 1 : -1);
+    }
   });
   $("#load-more").onclick = () => void loadMoreFn?.();
   $("#lib-add-category").onclick = async () => {

@@ -33,7 +33,7 @@
     .tab { padding: 0.35rem 0.7rem; border-radius: 999px; background: #1c1c1e; border: 1px solid #333; cursor: pointer; font-size: 0.82rem; }
     .tab.active { background: #2563eb; border-color: #2563eb; }
     .chips { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-    .chip { background: #1c1c1e; border: 1px solid #333; border-radius: 999px; padding: 0.2rem 0.6rem; font-size: 0.75rem; color: #bbb; }
+    .chip { background: #1c1c1e; border: 1px solid #333; border-radius: 999px; padding: 0.2rem 0.6rem; font-size: 0.75rem; color: #bbb; white-space: nowrap; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; }
     .card { background: #1c1c1e; border-radius: 8px; padding: 0.75rem; cursor: pointer; transition: background 0.15s; }
     .card:hover { background: #2a2a2e; }
@@ -47,11 +47,12 @@
     #detail .meta { font-size: 0.82rem; color: #888; margin-bottom: 0.75rem; }
     .detail-head { display: flex; gap: 1rem; margin-bottom: 1rem; }
     #detail-cover { width: 120px; height: 180px; object-fit: cover; border-radius: 6px; background: #333; flex-shrink: 0; }
-    #detail-genres { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
-    .tag-group { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.4rem; }
+    #detail-genres { display: flex; align-items: center; gap: 0.35rem; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2rem 0.6rem; padding: 0 1rem 2px; }
+    #detail-genres::-webkit-scrollbar { display: none; }
+    .tag-group { display: flex; align-items: center; gap: 0.35rem; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2rem 0.4rem; padding: 0 1rem 2px; }
+    .tag-group::-webkit-scrollbar { display: none; }
     .tag-group-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #777; margin-right: 0.25rem; }
     .chip.tag { color: #8ab4f8; border-color: #2c4060; }
-    .chip.tag::before { content: "#"; opacity: 0.6; }
     .chip-link { cursor: pointer; }
     .chip-link:hover { border-color: #60a5fa; color: #ddd; }
     .tag-filter { position: relative; display: flex; flex-direction: column; gap: 0.3rem; }
@@ -68,9 +69,11 @@
     #chapters { list-style: none; padding: 0; margin: 0; }
     #chapters li { padding: 0.4rem 0; border-bottom: 1px solid #2a2a2e; font-size: 0.88rem; cursor: pointer; }
     #chapters li:hover { color: #60a5fa; }
-    #reader-view { position: fixed; inset: 0; overflow-y: auto; background: #0f0f0f; z-index: 100; box-sizing: border-box; padding: 0 1rem 2rem; -webkit-overflow-scrolling: touch; }
-    .reader-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.75rem 0; position: sticky; top: 0; background: #0f0f0f; z-index: 1; }
-    #reader-page img { width: 100%; max-width: 800px; display: block; margin: 0 auto; border-radius: 4px; background: #222; cursor: pointer; user-select: none; }
+    #reader-view { position: fixed; inset: 0; display: flex; flex-direction: column; overflow: hidden; overscroll-behavior: none; background: #0f0f0f; z-index: 100; }
+    .reader-toolbar { position: absolute; top: 0; left: 0; right: 0; z-index: 2; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.75rem 1rem; background: linear-gradient(to bottom, rgba(0,0,0,0.72) 0%, transparent 100%); transition: opacity 0.3s; }
+    .reader-toolbar.hidden { opacity: 0; pointer-events: none; }
+    #reader-page { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    #reader-page img { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; object-fit: contain; user-select: none; -webkit-user-drag: none; cursor: pointer; }
     .reg-item { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #242427; font-size: 0.84rem; }
     .reg-item:last-child { border-bottom: none; }
     .view-tabs { margin: 0.5rem 0 1rem; }
@@ -106,6 +109,7 @@
     .tracker-config-item { border-bottom: 1px solid #242427; padding: 0.5rem 0; }
     .tracker-config-item:last-child { border-bottom: none; }
     .tracker-config-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.6rem; margin: 0.5rem 0; }
+    .tag-group-label { flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -182,12 +186,10 @@
       <div class="meta" id="detail-meta"></div>
       <div class="detail-head">
         <img id="detail-cover" alt="" />
-        <div>
-          <div class="genres" id="detail-genres"></div>
-          <div id="detail-taggroups"></div>
-          <p class="description" id="detail-description"></p>
-        </div>
+        <p class="description" id="detail-description"></p>
       </div>
+      <div class="genres" id="detail-genres"></div>
+      <div id="detail-taggroups"></div>
       <div id="lib-category-picker" hidden></div>
       <div id="group-panel" hidden></div>
       <div id="tracker-panel" hidden></div>
