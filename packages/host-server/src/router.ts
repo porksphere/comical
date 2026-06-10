@@ -352,7 +352,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     });
 
     app.post("/reading-history", async (c) => {
-      const b = await body<{ bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string; chapterId?: string; chapterName?: string; lastReadAt?: number }>(c);
+      const b = await body<{ bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string; chapterId?: string; chapterName?: string; lastPage?: number; pageCount?: number; lastReadAt?: number }>(c);
       if (!b?.bridgeId || !b.seriesId || !b.title) return c.json({ error: "bridgeId, seriesId, title required" }, 400);
       await lib.recordRead({
         bridgeId: b.bridgeId,
@@ -362,6 +362,8 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
         ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
         ...(b.chapterId !== undefined && { lastReadChapterId: b.chapterId }),
         ...(b.chapterName !== undefined && { lastReadChapterName: b.chapterName }),
+        ...(b.lastPage !== undefined && { lastPage: b.lastPage }),
+        ...(b.pageCount !== undefined && { pageCount: b.pageCount }),
       });
       return c.json({ ok: true });
     });
@@ -510,6 +512,23 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     });
 
     app.post("/library/sync", async (c) => c.json(await runtime!.backgroundSync()));
+
+    // Activity feed — newly-detected chapters across the library (a "new chapters" news feed)
+    app.get("/library/activity", async (c) => {
+      const limit = c.req.query("limit");
+      const unread = c.req.query("unread");
+      return c.json(
+        await lib.getActivity({
+          ...(limit ? { limit: Number(limit) } : {}),
+          ...(unread === "1" ? { unreadOnly: true } : {}),
+        }),
+      );
+    });
+    app.get("/library/activity/count", async (c) => c.json({ unread: await lib.unreadActivityCount() }));
+    app.delete("/library/activity", async (c) => {
+      await lib.clearActivity();
+      return c.json({ ok: true });
+    });
 
     // Tracker links — per-entry associations to external tracker services
     app.get("/library/entries/:bridgeId/:seriesId/tracker-links", async (c) =>

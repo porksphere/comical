@@ -79,14 +79,20 @@ class ComicalBridgeContext private constructor(
             bundleCode: String,
             settings: Map<String, Any> = emptyMap(),
             dataDir: File? = null,
+            networkOptionsJson: String? = null,
         ): ComicalBridgeContext {
             val ctx = ComicalBridgeContext(androidContext, dataDir)
-            ctx.load(androidContext, bundleCode, settings)
+            ctx.load(androidContext, bundleCode, settings, networkOptionsJson)
             return ctx
         }
     }
 
-    private suspend fun load(androidContext: Context, bundleCode: String, settings: Map<String, Any>) {
+    private suspend fun load(
+        androidContext: Context,
+        bundleCode: String,
+        settings: Map<String, Any>,
+        networkOptionsJson: String?,
+    ) {
         registerNativeCallbacks()
         registerRuntimeGlobals()
 
@@ -94,13 +100,20 @@ class ComicalBridgeContext private constructor(
         val settingsJson = JSONObject(settings).toString()
         js.function("__comical_bundle") { _ -> bundleCode }
         js.function("__comical_settings") { _ -> settingsJson }
+        if (networkOptionsJson != null) {
+            js.function("__comical_network") { _ -> networkOptionsJson }
+        }
 
         // The bundled runtime installs comical_init / comical_call as globals.
         val harness = androidContext.assets.open("comical_harness.js").bufferedReader().readText()
         js.evaluate<Any?>(harness)
 
         // Initialise the bridge through core (loadBridge: contract check, settings, rate limit, …).
-        js.evaluate<Any?>("comical_init(__comical_bundle(), __comical_settings())")
+        val initCall = if (networkOptionsJson != null)
+            "comical_init(__comical_bundle(), __comical_settings(), __comical_network())"
+        else
+            "comical_init(__comical_bundle(), __comical_settings())"
+        js.evaluate<Any?>(initCall)
     }
 
     suspend fun bridgeInfo(): BridgeInfo? {

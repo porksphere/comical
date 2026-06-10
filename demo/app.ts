@@ -7,6 +7,8 @@
  *   bun run demo:server   — comical-server on :3100 (wired to the fixture backend)
  *   bun run demo:dev      — builds + serves this page on :3300
  */
+import { createIcons, LayoutGrid, Library, History, Bell, Settings } from "lucide";
+createIcons({ icons: { LayoutGrid, Library, History, Bell, Settings } });
 
 // Default the API host to the same host the page was loaded from (so it works over LAN / from a
 // phone), on the server port 3100. Override with window.COMICAL_SERVER if needed.
@@ -27,7 +29,7 @@ interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: s
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
 interface TagGroup { label: string; kind?: string; tags: string[]; tagIds?: string[] }
 interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; authorId?: string; artist?: string; artistId?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[]; externalIds?: Record<string, string | number> }
-interface Chapter { id: string; name: string; number?: number; pageCount?: number }
+interface Chapter { id: string; name: string; number?: number; pageCount?: number; group?: string; languageCode?: string; publishedAt?: number }
 interface Page { index: number; imageUrl: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
 interface SeriesList { id: string; name: string; layout?: string; featured?: boolean; searchable?: boolean }
@@ -42,7 +44,8 @@ interface ProgressItem { chapterId: string; read: boolean; lastPage?: number; pa
 interface Category { id: string; name: string; order: number }
 interface LibEntry { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; author?: string; categoryIds: string[]; seriesGroupId?: string; externalIds?: Record<string, string | number>; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt?: number }
 interface LibEntryView extends LibEntry { unreadCount: number }
-interface HistoryItem { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt: number }
+interface HistoryItem { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; lastReadChapterId?: string; lastReadChapterName?: string; lastPage?: number; pageCount?: number; lastReadAt: number }
+interface ActivityItemView { bridgeId: string; seriesId: string; chapterId: string; title: string; thumbnailUrl?: string; chapterName?: string; number?: number; publishedAt?: number; detectedAt: number; read: boolean }
 interface SeriesGroup { id: string; title: string; primaryKey: string; memberKeys: string[]; createdAt: number }
 interface AddSeriesResult { entry: LibEntry; autoLinked?: { matchedKey: string; sharedId: { service: string; value: number | string } } }
 // Trackers
@@ -59,9 +62,12 @@ const esc = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
 
 function status(msg: string, isError = false): void {
+  // Informational chatter ("Loaded …", "Searching…", counts) is suppressed — the status bar only
+  // surfaces for errors, and hides again on the next non-error message.
   const el = $("#status");
-  el.textContent = msg;
+  el.textContent = isError ? msg : "";
   el.className = isError ? "error" : "";
+  el.style.display = isError ? "" : "none";
 }
 
 async function api<T>(path: string): Promise<T> {
@@ -87,10 +93,14 @@ async function send(method: string, path: string, body?: unknown): Promise<{ ok:
 // ── State ──────────────────────────────────────────────────────────────────────
 let activeBridge = "";
 let activeCaps: string[] = [];
+/** The bridge the browse view's filter/sort/tag controls were last rendered for (via {@link renderMeta}). */
+let browseBridge = "";
+/** Display name of the active bridge, shown as the browse-view title. */
+let activeBridgeName = "";
 let currentFilters: Filter[] = [];
 let currentLists: SeriesList[] = [];
 let activeListId: string | null = null;
-let currentView: "browse" | "library" | "history" | "detail" | "reader" | "settings" = "browse";
+let currentView: "browse" | "library" | "history" | "activity" | "detail" | "reader" | "settings" = "browse";
 let previousView: "browse" | "library" | "history" = "browse";
 let loadMoreFn: (() => Promise<void>) | null = null;
 let currentSortOptions: SortOption[] = [];
@@ -98,7 +108,7 @@ const filterTagSelections = new Map<string, Array<{ id: string; label: string }>
 const tagIdToName = new Map<string, string>();
 
 // ── URL routing ─────────────────────────────────────────────────────────────────
-// Route scheme: #browse | #library | #history | #detail/{bridgeId}/{seriesId} | #reader/{bridgeId}/{seriesId}/{chapterId}
+// Route scheme: #browse | #library | #history | #activity | #detail/{bridgeId}/{seriesId} | #reader/{bridgeId}/{seriesId}/{chapterId}
 let initialized = false;
 let isRestoringRoute = false;
 
@@ -118,6 +128,8 @@ async function handleRoute(): Promise<void> {
       switchView("library");
     } else if (view === "history") {
       switchView("history");
+    } else if (view === "activity") {
+      switchView("activity");
     } else if (view === "settings") {
       switchView("settings");
     } else if (view === "detail" && parts[1] && parts[2]) {
@@ -138,10 +150,14 @@ async function handleRoute(): Promise<void> {
         await showDetail(seriesId);
       }
       if (currentSeries) {
-        const ch = chapterId === "__direct__"
-          ? { id: "__direct__", name: currentSeries.info.title }
-          : currentSeries.chapters.find((c) => c.id === chapterId);
-        if (ch) await openChapter(ch);
+        // Restoring the reader (reload / deep-link / back-forward) should resume at the
+        // saved page, not jump to page 0. A direct series reads from the direct endpoint.
+        if (chapterId === "__direct__") {
+          await readDirect(seriesId, currentSeries.progress.get("__direct__")?.lastPage);
+        } else {
+          const ch = currentSeries.chapters.find((c) => c.id === chapterId);
+          if (ch) await openChapter(ch, currentSeries.progress.get(ch.id)?.lastPage);
+        }
       }
     } else {
       switchView("browse");
@@ -316,6 +332,37 @@ async function loadBridges(): Promise<void> {
   }
 }
 
+// ── Bridge dropdown (off the browse-view title) ──────────────────────────────────
+function openBridgeDropdown(): void {
+  // Only meaningful in the browse view, where the title shows the bridge name.
+  if (currentView !== "browse") return;
+  $("#app-header").classList.add("open");
+  $("#bridge-dropdown").hidden = false;
+}
+function closeBridgeDropdown(): void {
+  $("#app-header").classList.remove("open");
+  $("#bridge-dropdown").hidden = true;
+}
+function toggleBridgeDropdown(): void {
+  if ($("#bridge-dropdown").hidden) openBridgeDropdown();
+  else closeBridgeDropdown();
+}
+
+/**
+ * Sync the global title to the current view: the browse view shows the active bridge name with a
+ * caret (a dropdown of other bridges); every other view keeps the "Comical" branding + tagline.
+ */
+function updateHeaderForView(view: string): void {
+  // Only the browse view has a header: the bridge name + switcher. Every other view hides it.
+  const interactive = view === "browse";
+  $("#app-header").style.display = interactive ? "" : "none";
+  $("#app-title").classList.toggle("interactive", interactive);
+  $("#app-title-caret").hidden = !interactive;
+  $("#app-subtitle").style.display = "none";
+  if (interactive) $("#app-title-text").textContent = activeBridgeName || "Comical";
+  else closeBridgeDropdown();
+}
+
 // ── Select a bridge: load info, settings, meta, lists ────────────────────────────
 async function selectBridge(id: string): Promise<void> {
   activeBridge = id;
@@ -323,11 +370,14 @@ async function selectBridge(id: string): Promise<void> {
   document.querySelectorAll<HTMLElement>("#bridge-list .tab").forEach((el) => {
     el.classList.toggle("active", el.dataset.id === id);
   });
+  closeBridgeDropdown();
   activeCaps = [];
   filterTagSelections.clear();
   switchView("browse");
   const detail = await api<BridgeDetail>(`/bridges/${id}`);
   activeCaps = detail.info.capabilities;
+  activeBridgeName = detail.info.name;
+  if (currentView === "browse") $("#app-title-text").textContent = detail.info.name;
   $("#caps").textContent = `[${detail.info.capabilities.join(", ")}]`;
 
   await renderMeta(detail.info.capabilities);
@@ -724,6 +774,7 @@ async function renderMeta(capabilities: string[]): Promise<void> {
   const toggleBtn = $<HTMLButtonElement>("#filters-toggle");
   toggleBtn.style.display = any ? "" : "none";
   toggleBtn.textContent = "Filters";
+  browseBridge = activeBridge;
 }
 
 // ── Lists + grid ─────────────────────────────────────────────────────────────────
@@ -804,12 +855,18 @@ async function showDetail(seriesId: string): Promise<void> {
   $("#chapters").innerHTML = "";
 
   const isDirect = activeCaps.includes("direct");
+  // `currentFilters` is rendered for `browseBridge`; if this series is from a different bridge (opened
+  // from history/library), reload it so the author/genre chips below map to this bridge's filters.
+  const filtersReload = browseBridge !== activeBridge && activeCaps.includes("filters")
+    ? api<Filter[]>(`/bridges/${activeBridge}/filters`).catch(() => [] as Filter[])
+    : Promise.resolve(currentFilters);
   const [info, chapters] = await Promise.all([
     api<SeriesInfo>(`/bridges/${activeBridge}/series/${encodeURIComponent(seriesId)}`),
     isDirect
       ? Promise.resolve([] as Chapter[])
       : api<Chapter[]>(`/bridges/${activeBridge}/series/${encodeURIComponent(seriesId)}/chapters`),
   ]);
+  currentFilters = await filtersReload;
 
   $("#detail-title").textContent = info.title;
   const creator = info.author || info.artist;
@@ -827,7 +884,7 @@ async function showDetail(seriesId: string): Promise<void> {
       if (authorFilter) {
         const val = creatorId ?? creator;
         const value = authorFilter.type === "text" ? val : [val];
-        navigateToFilteredSearch([{ key: "author", value }]);
+        void navigateToFilteredSearch([{ key: "author", value }]);
       } else {
         $<HTMLInputElement>("#query").value = creator;
         switchView("browse");
@@ -887,7 +944,7 @@ async function showDetail(seriesId: string): Promise<void> {
     })
     .join("");
   $("#detail-genres").querySelectorAll<HTMLElement>("[data-genre-id]").forEach((el) => {
-    el.onclick = () => navigateToFilteredSearch([{ key: "genre", value: [el.dataset.genreId!] }]);
+    el.onclick = () => void navigateToFilteredSearch([{ key: "genre", value: [el.dataset.genreId!] }]);
   });
   for (const grp of info.tagGroups ?? [])
     grp.tags.forEach((name, i) => { const id = grp.tagIds?.[i]; if (id) tagIdToName.set(id, name); });
@@ -903,7 +960,7 @@ async function showDetail(seriesId: string): Promise<void> {
     )
     .join("");
   $("#detail-taggroups").querySelectorAll<HTMLElement>("[data-tag]").forEach((el) => {
-    el.onclick = () => navigateToFilteredSearch([{ key: "tag", value: [el.dataset.tag!] }]);
+    el.onclick = () => void navigateToFilteredSearch([{ key: "tag", value: [el.dataset.tag!] }]);
   });
   $("#detail-description").textContent = info.description ?? "";
 
@@ -914,6 +971,7 @@ async function showDetail(seriesId: string): Promise<void> {
   // Library tracking (optional module): track this series under the bridge it came from.
   prefetchedChapter = null;
   preloadedUrls.clear();
+  preferredGroupName = undefined;
   currentSeries = { bridgeId: activeBridge, seriesId, info, chapters, progress: new Map(), inLibrary: false };
   await refreshLibraryStatus();
   renderChapters();
@@ -935,6 +993,55 @@ let readerState: ReaderState | null = null;
 
 interface PrefetchedChapter { bridgeId: string; seriesId: string; ch: Chapter; pages: Page[] }
 let prefetchedChapter: PrefetchedChapter | null = null;
+
+// ── Logical chapters (scanlator grouping) ────────────────────────────────────────
+// Sites with multiple scanlation groups return one Chapter per group. We collapse copies that share
+// the same (number, language) into one "logical chapter" row, and remember which group the user last
+// read so chapter-to-chapter navigation keeps the same scanlator + language.
+interface ChapterGroup {
+  key: string;
+  number?: number;
+  languageCode?: string;
+  name: string; // representative display name (from the preferred/first version)
+  versions: Chapter[];
+}
+/** The scanlation group the user last opened — used to keep the same source across chapter turns. */
+let preferredGroupName: string | undefined;
+
+/** Same logical-chapter key as the library: copies sharing (number, language) collapse; numberless stand alone. */
+function chapterLogicalKey(c: Chapter): string {
+  return c.number !== undefined ? `n:${c.number}:${c.languageCode ?? ""}` : `i:${c.id}`;
+}
+
+/** Collapse a chapter list into logical-chapter groups, ordered for reading (ascending number, numberless last). */
+function groupChapters(chapters: Chapter[]): ChapterGroup[] {
+  const byKey = new Map<string, ChapterGroup>();
+  for (const ch of chapters) {
+    const key = chapterLogicalKey(ch);
+    let g = byKey.get(key);
+    if (!g) {
+      g = { key, number: ch.number, languageCode: ch.languageCode, name: ch.name, versions: [] };
+      byKey.set(key, g);
+    }
+    g.versions.push(ch);
+  }
+  // Within a group, newest first (publishedAt desc) then by group name, so the default copy is the freshest.
+  for (const g of byKey.values()) {
+    g.versions.sort((a, b) => (b.publishedAt ?? 0) - (a.publishedAt ?? 0) || (a.group ?? "").localeCompare(b.group ?? ""));
+    g.name = g.versions[0]!.name;
+  }
+  return [...byKey.values()].sort((a, b) => {
+    if (a.number !== undefined && b.number !== undefined) return a.number - b.number;
+    if (a.number !== undefined) return -1;
+    if (b.number !== undefined) return 1;
+    return 0;
+  });
+}
+
+/** Pick the copy of a group matching a preferred scanlator group, falling back to the first (freshest). */
+function pickVersion(group: ChapterGroup, prefGroupName?: string): Chapter {
+  return group.versions.find((v) => v.group === prefGroupName) ?? group.versions[0]!;
+}
 const preloadedUrls = new Set<string>();
 
 let toolbarHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -944,6 +1051,17 @@ function showToolbar(): void {
   tb.classList.remove("hidden");
   if (toolbarHideTimer) clearTimeout(toolbarHideTimer);
   toolbarHideTimer = setTimeout(() => tb.classList.add("hidden"), 3000);
+}
+
+function toggleToolbar(): void {
+  const tb = document.querySelector(".reader-toolbar") as HTMLElement | null;
+  if (!tb) return;
+  if (tb.classList.contains("hidden")) {
+    showToolbar();
+  } else {
+    if (toolbarHideTimer) clearTimeout(toolbarHideTimer);
+    tb.classList.add("hidden");
+  }
 }
 
 function preloadImages(urls: string[]): void {
@@ -1445,46 +1563,117 @@ function renderChapters(): void {
   const { chapters, progress, inLibrary } = currentSeries;
   const ul = $("#chapters");
   ul.innerHTML = "";
-  for (const ch of chapters) {
-    const li = document.createElement("li");
-    const p = progress.get(ch.id);
-    if (p?.read) li.classList.add("read");
-    if (inLibrary) {
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = !!p?.read;
-      cb.title = "Mark read";
-      cb.onclick = (e) => { e.stopPropagation(); void markRead(ch.id, cb.checked, ch.name); };
-      li.append(cb);
-    }
-    const name = document.createElement("span");
-    name.className = "ch-name";
-    name.textContent = ch.pageCount ? `${ch.name} · ${ch.pageCount}p` : ch.name;
-    li.append(name);
-    if (inLibrary) {
-      const up = document.createElement("button");
-      up.className = "ch-uptohere";
-      up.textContent = "read to here";
-      up.onclick = (e) => { e.stopPropagation(); void readUpTo(ch.id); };
-      li.append(up);
-    }
-    li.onclick = () => void openChapter(ch);
-    ul.append(li);
+  for (const group of groupChapters(chapters)) {
+    ul.append(renderChapterGroup(group, progress, inLibrary));
   }
 }
 
-async function openChapter(ch: Chapter, resumePage?: number): Promise<void> {
+/** A short "Group · lang · Np" label for one scanlation-group copy of a chapter. */
+function versionLabel(v: Chapter): string {
+  const parts: string[] = [];
+  if (v.group) parts.push(v.group);
+  if (v.languageCode) parts.push(v.languageCode);
+  if (v.pageCount) parts.push(`${v.pageCount}p`);
+  return parts.join(" · ") || v.name;
+}
+
+/** One chapter-list row: a logical chapter, expandable to its per-scanlator copies. */
+function renderChapterGroup(group: ChapterGroup, progress: Map<string, ProgressItem>, inLibrary: boolean): HTMLLIElement {
+  const li = document.createElement("li");
+  const groupRead = group.versions.some((v) => progress.get(v.id)?.read);
+  const multi = group.versions.length > 1;
+
+  const row = document.createElement("div");
+  row.className = "ch-row";
+  if (groupRead) row.classList.add("read");
+
+  if (inLibrary) {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = groupRead;
+    cb.title = "Mark read";
+    cb.onclick = (e) => { e.stopPropagation(); void markGroupRead(group, cb.checked); };
+    row.append(cb);
+  }
+
+  const name = document.createElement("span");
+  name.className = "ch-name";
+  const lang = group.languageCode ? ` (${group.languageCode})` : "";
+  const pages = !multi && group.versions[0]!.pageCount ? ` · ${group.versions[0]!.pageCount}p` : "";
+  name.textContent = `${group.name}${lang}${pages}`;
+  row.append(name);
+
+  let sub: HTMLUListElement | undefined;
+  if (multi) {
+    const toggle = document.createElement("button");
+    toggle.className = "ch-versions-toggle";
+    const setLabel = () => { toggle.textContent = `${group.versions.length} versions ${sub!.hidden ? "▾" : "▴"}`; };
+    sub = document.createElement("ul");
+    sub.className = "ch-versions";
+    sub.hidden = true;
+    for (const v of group.versions) {
+      const vli = document.createElement("li");
+      if (progress.get(v.id)?.read) vli.classList.add("read");
+      const dot = document.createElement("span");
+      dot.className = "ch-dot";
+      const vn = document.createElement("span");
+      vn.className = "ch-name";
+      vn.textContent = versionLabel(v);
+      vli.append(dot, vn);
+      vli.onclick = (e) => { e.stopPropagation(); void openChapter(v); };
+      sub.append(vli);
+    }
+    setLabel();
+    toggle.onclick = (e) => { e.stopPropagation(); sub!.hidden = !sub!.hidden; setLabel(); };
+    row.append(toggle);
+  }
+
+  if (inLibrary) {
+    const up = document.createElement("button");
+    up.className = "ch-uptohere";
+    up.textContent = "read to here";
+    up.onclick = (e) => { e.stopPropagation(); void readUpTo(pickVersion(group, preferredGroupName).id); };
+    row.append(up);
+  }
+
+  row.onclick = () => void openChapter(pickVersion(group, preferredGroupName));
+  li.append(row);
+  if (sub) li.append(sub);
+  return li;
+}
+
+/**
+ * Toggle the read state of a whole logical chapter. Marking read sets one copy (the library counts
+ * logically, so a single copy makes the chapter read everywhere); un-marking clears every copy that
+ * currently has a read record.
+ */
+async function markGroupRead(group: ChapterGroup, read: boolean): Promise<void> {
+  if (!currentSeries) return;
+  if (read) {
+    const v = pickVersion(group, preferredGroupName);
+    await markRead(v.id, true, v.name);
+    return;
+  }
+  const toClear = group.versions.filter((v) => currentSeries!.progress.get(v.id)?.read);
+  for (const v of toClear) await markRead(v.id, false, v.name);
+  if (toClear.length === 0) renderChapters();
+}
+
+async function openChapter(ch: Chapter, resumePage?: number, replace = false): Promise<void> {
   if (!currentSeries) return;
   const { bridgeId, seriesId, inLibrary } = currentSeries;
-  const alreadyInReader = currentView === "reader";
+  // Remember the scanlation group so next/prev keeps the same source where it exists.
+  if (ch.group !== undefined) preferredGroupName = ch.group;
+  // Replace when already in the reader (chapter-to-chapter nav shouldn't stack), or when the
+  // caller asks — e.g. resuming from history, where we don't want the intermediate series-detail
+  // entry to sit between the reader and history. Back should return to the pre-reader view.
+  const replaceEntry = replace || currentView === "reader";
   switchView("reader");
-  // Replace when already in the reader so chapter-to-chapter navigation doesn't
-  // stack history entries — back should always return to the pre-reader view.
-  const route = `#reader/${enc(bridgeId)}/${enc(seriesId)}/${enc(ch.id)}`;
-  if (alreadyInReader) {
-    history.replaceState(null, "", route);
+  const route = `reader/${enc(bridgeId)}/${enc(seriesId)}/${enc(ch.id)}`;
+  if (replaceEntry) {
+    history.replaceState(null, "", `#${route}`);
   } else {
-    pushRoute(`reader/${enc(bridgeId)}/${enc(seriesId)}/${enc(ch.id)}`);
+    pushRoute(route);
   }
   let pages: Page[];
   if (prefetchedChapter?.ch.id === ch.id &&
@@ -1503,53 +1692,56 @@ async function openChapter(ch: Chapter, resumePage?: number): Promise<void> {
     );
   }
   readerState = { ch, pages, currentPage: Math.min(resumePage ?? 0, Math.max(0, pages.length - 1)) };
-  renderReaderPage();
+  renderReaderPage(true);
   if (inLibrary) {
     await setProgress(ch, readerState.currentPage, pages.length);
   } else {
-    const { info } = currentSeries;
-    void send("POST", "/reading-history", {
-      bridgeId, seriesId, title: info.title, thumbnailUrl: info.thumbnailUrl,
-      chapterId: ch.id, chapterName: ch.name, lastReadAt: Date.now(),
-    }).catch(() => {});
+    recordHistory(readerState.currentPage);
   }
 }
 
-async function readDirect(seriesId: string): Promise<void> {
+async function readDirect(seriesId: string, resumePage?: number, replace = false): Promise<void> {
   if (!currentSeries) return;
   const { bridgeId, info, inLibrary } = currentSeries;
+  const replaceEntry = replace || currentView === "reader";
   switchView("reader");
-  pushRoute(`reader/${enc(bridgeId)}/${enc(seriesId)}/__direct__`);
+  const route = `reader/${enc(bridgeId)}/${enc(seriesId)}/__direct__`;
+  if (replaceEntry) history.replaceState(null, "", `#${route}`);
+  else pushRoute(route);
   $("#reader-info").textContent = `${info.title} · Loading…`;
   $<HTMLButtonElement>("#reader-prev").disabled = true;
   $<HTMLButtonElement>("#reader-next").disabled = true;
   $("#reader-page").innerHTML = `<p class="muted" style="text-align:center;padding:2rem">Loading pages…</p>`;
   const pages = await api<Page[]>(`/bridges/${bridgeId}/series/${enc(seriesId)}/pages`);
   const syntheticChapter: Chapter = { id: "__direct__", name: info.title };
-  readerState = { ch: syntheticChapter, pages, currentPage: 0 };
-  renderReaderPage();
+  readerState = { ch: syntheticChapter, pages, currentPage: Math.min(resumePage ?? 0, Math.max(0, pages.length - 1)) };
+  renderReaderPage(true);
   if (inLibrary) {
-    await setProgress(syntheticChapter, 0, pages.length);
+    await setProgress(syntheticChapter, readerState.currentPage, pages.length);
   } else {
-    void send("POST", "/reading-history", {
-      bridgeId, seriesId, title: info.title, thumbnailUrl: info.thumbnailUrl,
-      chapterId: "__direct__", chapterName: info.title, lastReadAt: Date.now(),
-    }).catch(() => {});
+    recordHistory(readerState.currentPage);
   }
 }
 
-/** Next or previous chapter in reading order (ascending by chapter number). */
+/**
+ * The next/previous logical chapter to read. Stays in the current chapter's language and, within the
+ * target chapter, prefers the same scanlation group (falling back to the freshest copy). This keeps a
+ * multi-scanlator series reading like a single continuous run instead of cycling through every group.
+ */
 function getAdjacentChapter(delta: 1 | -1): Chapter | null {
   if (!currentSeries || !readerState) return null;
-  const ordered = [...currentSeries.chapters].sort((a, b) => {
-    if (a.number !== undefined && b.number !== undefined) return a.number - b.number;
-    if (a.number !== undefined) return -1;
-    if (b.number !== undefined) return 1;
-    return 0;
-  });
-  const idx = ordered.findIndex((c) => c.id === readerState!.ch.id);
-  if (idx === -1) return null;
-  return ordered[idx + delta] ?? null;
+  const cur = readerState.ch;
+  const groups = groupChapters(currentSeries.chapters);
+  const lane = groups.filter((g) => g.languageCode === cur.languageCode);
+  const idx = lane.findIndex((g) => g.key === chapterLogicalKey(cur));
+  if (idx !== -1) {
+    const target = lane[idx + delta];
+    return target ? pickVersion(target, cur.group ?? preferredGroupName) : null;
+  }
+  // Fallback for a chapter that isn't in the grouped list (e.g. a synthetic/direct read): step flat.
+  const ordered = groups.flatMap((g) => g.versions);
+  const flat = ordered.findIndex((c) => c.id === cur.id);
+  return flat === -1 ? null : ordered[flat + delta] ?? null;
 }
 
 async function prefetchNextChapter(): Promise<void> {
@@ -1569,7 +1761,7 @@ async function prefetchNextChapter(): Promise<void> {
   } catch { /* silently discard — openChapter will retry */ }
 }
 
-function renderReaderPage(): void {
+function renderReaderPage(showOverlay = false): void {
   if (!readerState) return;
   const { ch, pages, currentPage } = readerState;
   const p = pages[currentPage];
@@ -1577,12 +1769,13 @@ function renderReaderPage(): void {
   ($("#reader-view") as HTMLElement).scrollTop = 0;
   const onLastPage = currentPage >= pages.length - 1;
   const nextCh = onLastPage ? getAdjacentChapter(1) : null;
-  $("#reader-info").textContent = `${ch.name} · ${currentPage + 1} / ${pages.length}`;
+  $("#reader-info").textContent = ch.name;
+  $("#reader-progress").textContent = `${currentPage + 1} / ${pages.length}`;
   $<HTMLButtonElement>("#reader-prev").disabled = currentPage === 0;
   $<HTMLButtonElement>("#reader-next").disabled = onLastPage && !nextCh;
   $<HTMLButtonElement>("#reader-next").textContent = onLastPage && nextCh ? "Next ch. ›" : "Next ›";
   $("#reader-page").innerHTML = `<img src="${p.imageUrl}" alt="Page ${currentPage + 1}" onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${currentPage + 1}'">`;
-  showToolbar();
+  if (showOverlay) showToolbar();
   preloadImages(pages.slice(Math.max(0, currentPage - 1), currentPage + 4).map(p => p.imageUrl));
   if (currentPage >= pages.length - 1 - 3) void prefetchNextChapter();
 }
@@ -1599,6 +1792,60 @@ async function readerNavigate(delta: number): Promise<void> {
   readerState.currentPage = next;
   renderReaderPage();
   if (currentSeries?.inLibrary) await setProgress(readerState.ch, readerState.currentPage, readerState.pages.length);
+  else recordHistory(readerState.currentPage);
+}
+
+/** Jump straight to a 0-based page index (clamped) and persist, like {@link readerNavigate}. */
+async function jumpToPage(index: number): Promise<void> {
+  if (!readerState) return;
+  const next = Math.max(0, Math.min(readerState.pages.length - 1, index));
+  if (next === readerState.currentPage) return;
+  readerState.currentPage = next;
+  renderReaderPage();
+  if (currentSeries?.inLibrary) await setProgress(readerState.ch, readerState.currentPage, readerState.pages.length);
+  else recordHistory(readerState.currentPage);
+}
+
+/**
+ * Turn the progress pill into a tiny page-number input. Enter jumps, Escape/blur cancels.
+ * A `done` flag guards against blur firing after Enter (which would re-render twice).
+ */
+function openPageJump(): void {
+  if (!readerState) return;
+  const pill = $("#reader-progress");
+  if (pill.querySelector(".page-jump")) return; // already editing
+  const total = readerState.pages.length;
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "1";
+  input.max = String(total);
+  input.value = String(readerState.currentPage + 1);
+  input.className = "page-jump";
+  input.setAttribute("inputmode", "numeric");
+  // iOS's numeric keypad has no return key, so Enter can't submit there — give it a Go button.
+  const go = document.createElement("button");
+  go.textContent = "Go";
+  go.className = "page-jump-go";
+  pill.replaceChildren(input, document.createTextNode(` / ${total} `), go);
+  input.focus();
+  input.select();
+  let done = false;
+  const cancel = (): void => { if (done) return; done = true; renderReaderPage(); };
+  const commit = (): void => {
+    if (done) return;
+    done = true;
+    const n = parseInt(input.value, 10);
+    renderReaderPage(); // restore the pill (jumpToPage re-renders again only if the page changes)
+    if (Number.isFinite(n)) void jumpToPage(n - 1);
+  };
+  input.addEventListener("keydown", (e: KeyboardEvent) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+  });
+  // pointerdown + preventDefault keeps focus on the input so its blur→cancel doesn't beat the commit.
+  go.addEventListener("pointerdown", (e: PointerEvent) => { e.preventDefault(); commit(); });
+  input.addEventListener("blur", cancel);
 }
 
 async function reloadProgress(): Promise<void> {
@@ -1633,6 +1880,21 @@ async function setProgress(ch: Chapter, lastPage: number, pageCount: number): Pr
   if (!wasRead && lastPage >= pageCount - 1) { await reloadProgress(); renderChapters(); }
 }
 
+/**
+ * Record a non-library read into the reading log, including the resume page. Library reads persist
+ * the page through {@link setProgress}; non-library reads have no progress record, so the page rides
+ * along on the history entry. Fire-and-forget — a failed write must not interrupt reading.
+ */
+function recordHistory(lastPage: number): void {
+  if (!currentSeries || !readerState) return;
+  const { bridgeId, seriesId, info } = currentSeries;
+  const { ch } = readerState;
+  void send("POST", "/reading-history", {
+    bridgeId, seriesId, title: info.title, thumbnailUrl: info.thumbnailUrl,
+    chapterId: ch.id, chapterName: ch.name, lastPage, pageCount: readerState.pages.length, lastReadAt: Date.now(),
+  }).catch(() => {});
+}
+
 async function doSearch(): Promise<void> {
   const q = $<HTMLInputElement>("#query").value;
   const filters = collectFilters();
@@ -1640,7 +1902,13 @@ async function doSearch(): Promise<void> {
   await runSearch(q, filters, sort, 1);
 }
 
-function navigateToFilteredSearch(filters: FilterValue[]): void {
+async function navigateToFilteredSearch(filters: FilterValue[]): Promise<void> {
+  // The chip belongs to the series' bridge, which may differ from whatever bridge the browse view
+  // last rendered its filter controls for (e.g. clicked a series from another bridge in history).
+  // Rebuild browse for the active bridge first, otherwise the values below land in the wrong DOM.
+  if (browseBridge !== activeBridge) {
+    await selectBridge(activeBridge);
+  }
   switchView("browse");
   $<HTMLInputElement>("#query").value = "";
   for (const f of filters) {
@@ -1888,15 +2156,28 @@ async function loadHistory(): Promise<void> {
     const row = document.createElement("div");
     row.className = "history-item";
     const when = new Date(h.lastReadAt).toLocaleString();
+    // A direct series has no real chapter — its "chapter name" is just the title, so don't repeat it.
+    const isDirect = h.lastReadChapterId === "__direct__";
+    const chapterLabel = !isDirect && h.lastReadChapterName ? esc(h.lastReadChapterName) : "";
+    const pageLabel = h.lastPage !== undefined
+      ? (h.pageCount ? `${h.lastPage + 1} / ${h.pageCount}` : `Page ${h.lastPage + 1}`)
+      : "";
+    const sub = [chapterLabel, pageLabel, when].filter(Boolean).join(" · ");
     row.innerHTML = `
       <img src="${h.thumbnailUrl ?? ""}" alt="" onerror="this.style.visibility='hidden'">
       <div class="hi-body">
         <div class="hi-title">${esc(h.title)}</div>
-        <div class="hi-sub">${h.lastReadChapterName ? esc(h.lastReadChapterName) + " · " : ""}${when}</div>
+        <div class="hi-sub">${sub}</div>
       </div>`;
+    // Title / thumbnail open the series page; Resume jumps back into the reader.
+    const openDetail = () => void openSeries(h.bridgeId, h.seriesId);
+    for (const sel of ["img", ".hi-body"]) {
+      const el = row.querySelector<HTMLElement>(sel);
+      if (el) { el.style.cursor = "pointer"; el.addEventListener("click", openDetail); }
+    }
     const resume = document.createElement("button");
     resume.textContent = "Resume";
-    resume.onclick = () => void openSeries(h.bridgeId, h.seriesId, h.lastReadChapterId);
+    resume.onclick = () => void openSeries(h.bridgeId, h.seriesId, h.lastReadChapterId, h.lastPage);
     const remove = document.createElement("button");
     remove.textContent = "Remove";
     remove.className = "btn-ghost";
@@ -1907,6 +2188,63 @@ async function loadHistory(): Promise<void> {
     };
     row.append(resume, remove);
     host.append(row);
+  }
+}
+
+// ── Activity feed (newly-detected chapters) ──────────────────────────────────────
+/** Compact "x ago" for activity timestamps; falls back to a date past a week. */
+function relTime(ms: number): string {
+  const secs = Math.round((Date.now() - ms) / 1000);
+  if (secs < 60) return "just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(ms).toLocaleDateString();
+}
+
+async function loadActivity(): Promise<void> {
+  const items = await api<ActivityItemView[]>("/library/activity");
+  const host = $("#activity-list");
+  host.innerHTML = "";
+  if (items.length === 0) {
+    host.innerHTML = '<p class="muted">No new chapters yet. Hit “Check for updates” to scan your library.</p>';
+    return;
+  }
+  for (const a of items) {
+    const row = document.createElement("div");
+    row.className = a.read ? "history-item read" : "history-item";
+    const chap = a.chapterName ?? (a.number !== undefined ? `Chapter ${a.number}` : "New chapter");
+    row.innerHTML = `
+      <img src="${a.thumbnailUrl ?? ""}" alt="" onerror="this.style.visibility='hidden'">
+      <div class="hi-body">
+        <div class="hi-title">${esc(a.title)}</div>
+        <div class="hi-sub">${esc(chap)} · ${relTime(a.detectedAt)}</div>
+      </div>`;
+    const read = document.createElement("button");
+    read.textContent = a.read ? "Read again" : "Read";
+    read.onclick = () => void openSeries(a.bridgeId, a.seriesId, a.chapterId);
+    row.append(read);
+    host.append(row);
+  }
+}
+
+/** Refresh the unread-count badge on the Activity nav item. */
+async function refreshActivityBadge(): Promise<void> {
+  const badge = document.querySelector<HTMLElement>("#activity-badge");
+  if (!badge) return;
+  try {
+    const { unread } = await api<{ unread: number }>("/library/activity/count");
+    if (unread > 0) {
+      badge.textContent = unread > 99 ? "99+" : String(unread);
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  } catch {
+    badge.hidden = true;
   }
 }
 
@@ -1923,20 +2261,54 @@ async function ensureBridge(bridgeId: string): Promise<void> {
   }
 }
 
-/** Open a series from anywhere (library/history), optionally jumping into a chapter to resume. */
-async function openSeries(bridgeId: string, seriesId: string, resumeChapterId?: string): Promise<void> {
-  await ensureBridge(bridgeId);
-  await showDetail(seriesId);
-  if (resumeChapterId && currentSeries) {
-    const ch = currentSeries.chapters.find((c) => c.id === resumeChapterId);
-    if (ch) {
-      const lastPage = currentSeries.progress.get(resumeChapterId)?.lastPage;
-      await openChapter(ch, lastPage);
-    }
+/**
+ * Load just the series state the reader needs — info, chapters, and library membership/progress —
+ * without rendering or switching to the series-detail view. Lets "Resume" jump straight from history
+ * into the reader instead of flashing the detail page on the way.
+ */
+async function loadSeriesForReader(seriesId: string): Promise<void> {
+  const isDirect = activeCaps.includes("direct");
+  const [info, chapters] = await Promise.all([
+    api<SeriesInfo>(`/bridges/${activeBridge}/series/${enc(seriesId)}`),
+    isDirect ? Promise.resolve([] as Chapter[]) : api<Chapter[]>(`/bridges/${activeBridge}/series/${enc(seriesId)}/chapters`),
+  ]);
+  prefetchedChapter = null;
+  preloadedUrls.clear();
+  currentSeries = { bridgeId: activeBridge, seriesId, info, chapters, progress: new Map(), inLibrary: false };
+  try {
+    const detail = await api<{ entry: LibEntry; progress: ProgressItem[] }>(`/library/entries/${activeBridge}/${enc(seriesId)}`);
+    currentSeries.inLibrary = true;
+    currentSeries.progress = new Map(detail.progress.map((p) => [p.chapterId, p]));
+  } catch {
+    // Not in the library (or the library module is off) — non-library resume uses the history page.
   }
 }
 
-function switchView(view: "browse" | "library" | "history" | "detail" | "reader" | "settings"): void {
+/** Open a series from anywhere (library/history), optionally jumping into a chapter to resume. */
+async function openSeries(bridgeId: string, seriesId: string, resumeChapterId?: string, resumePage?: number): Promise<void> {
+  await ensureBridge(bridgeId);
+  if (!resumeChapterId) {
+    await showDetail(seriesId);
+    return;
+  }
+  // Resume: load only what the reader needs and jump straight in — no detail-view flash. We stay on
+  // the calling view (e.g. history) while loading, then the reader pushes a single entry on top, so
+  // Back returns there directly.
+  await loadSeriesForReader(seriesId);
+  if (!currentSeries) return;
+  // Library reads resume via the progress map; non-library reads carry the page on the history item.
+  const lastPage = resumePage ?? currentSeries.progress.get(resumeChapterId)?.lastPage;
+  // A direct series has no chapter list — its pages come from the direct endpoint, so resume must go
+  // through readDirect rather than openChapter (which fetches per-chapter pages).
+  if (resumeChapterId === "__direct__") {
+    await readDirect(seriesId, lastPage);
+    return;
+  }
+  const ch = currentSeries.chapters.find((c) => c.id === resumeChapterId);
+  if (ch) await openChapter(ch, lastPage);
+}
+
+function switchView(view: "browse" | "library" | "history" | "activity" | "detail" | "reader" | "settings"): void {
   currentView = view;
   document.querySelectorAll<HTMLElement>(".bn-item").forEach((t) =>
     t.classList.toggle("active", t.dataset.view === view),
@@ -1944,12 +2316,16 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
   $("#browse-view").style.display = view === "browse" ? "" : "none";
   $("#library-view").style.display = view === "library" ? "" : "none";
   $("#history-view").style.display = view === "history" ? "" : "none";
+  $("#activity-view").style.display = view === "activity" ? "" : "none";
   $("#detail-view").style.display = view === "detail" ? "" : "none";
   $("#reader-view").style.display = view === "reader" ? "" : "none";
   $("#settings-view").style.display = view === "settings" ? "" : "none";
-  if (view === "browse" || view === "library" || view === "history" || view === "settings") pushRoute(view);
+  updateHeaderForView(view);
+  if (view === "browse" || view === "library" || view === "history" || view === "activity" || view === "settings") pushRoute(view);
   if (view === "library") void loadLibrary().catch((e) => status(`Library unavailable: ${e instanceof Error ? e.message : e}`, true));
   if (view === "history") void loadHistory().catch((e) => status(`History unavailable: ${e instanceof Error ? e.message : e}`, true));
+  if (view === "activity") void loadActivity().catch((e) => status(`Activity unavailable: ${e instanceof Error ? e.message : e}`, true));
+  void refreshActivityBadge();
   document.body.style.overflow = view === "reader" ? "hidden" : "";
   if (view !== "reader") {
     if (toolbarHideTimer) { clearTimeout(toolbarHideTimer); toolbarHideTimer = null; }
@@ -1969,16 +2345,46 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
   }
 
   document.querySelectorAll<HTMLElement>(".bn-item").forEach((t) => {
-    t.onclick = () => switchView((t.dataset.view as "browse" | "library" | "history" | "settings") ?? "browse");
+    t.onclick = () => switchView((t.dataset.view as "browse" | "library" | "history" | "activity" | "settings") ?? "browse");
   });
+
+  // Browse-view title doubles as a bridge switcher: click to toggle the dropdown of bridges.
+  $("#app-title").onclick = () => { if (currentView === "browse") toggleBridgeDropdown(); };
+  document.addEventListener("click", (e: MouseEvent) => {
+    if (!$("#bridge-dropdown").hidden && !(e.target as HTMLElement).closest("#app-header")) closeBridgeDropdown();
+  });
+
+  $("#activity-refresh").onclick = async () => {
+    const s = $("#activity-status");
+    s.textContent = "Checking…";
+    const res = await send("POST", "/library/sync");
+    const data = res.data as { newChapters?: number };
+    s.textContent = res.ok ? `Found ${data.newChapters ?? 0} new chapter(s).` : "Sync failed.";
+    await loadActivity();
+    await refreshActivityBadge();
+  };
+  $("#activity-clear").onclick = async () => {
+    await send("DELETE", "/library/activity");
+    $("#activity-status").textContent = "";
+    await loadActivity();
+    await refreshActivityBadge();
+  };
   $("#back-btn").onclick = () => history.back();
   $("#reader-back").onclick = () => history.back();
   $("#reader-prev").onclick = () => void readerNavigate(-1);
   $("#reader-next").onclick = () => void readerNavigate(1);
+  $("#reader-progress").addEventListener("click", (e: MouseEvent) => {
+    if ((e.target as HTMLElement).tagName === "INPUT") return;
+    openPageJump();
+  });
   $("#reader-page").addEventListener("click", (e: MouseEvent) => {
     if ((e.target as HTMLElement).closest("button,a")) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    void readerNavigate(e.clientX < rect.left + rect.width / 2 ? -1 : 1);
+    const frac = (e.clientX - rect.left) / rect.width;
+    // Left 40% → prev, right 40% → next, center 20% band → toggle the overlay.
+    if (frac < 0.4) void readerNavigate(-1);
+    else if (frac > 0.6) void readerNavigate(1);
+    else toggleToolbar();
   });
   document.addEventListener("keydown", (e: KeyboardEvent) => {
     if (currentView !== "reader") return;
@@ -1994,14 +2400,31 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
   ($("#reader-view") as HTMLElement).addEventListener("touchstart", (e: TouchEvent) => {
     swipeStartX = e.touches[0].clientX;
     swipeStartY = e.touches[0].clientY;
-    showToolbar();
   }, { passive: true });
   ($("#reader-view") as HTMLElement).addEventListener("touchend", (e: TouchEvent) => {
     const dx = e.changedTouches[0].clientX - swipeStartX;
     const dy = e.changedTouches[0].clientY - swipeStartY;
+    // Horizontal swipe → page navigation.
     if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
       e.preventDefault();
       void readerNavigate(dx < 0 ? 1 : -1);
+      return;
+    }
+    // Tap → zone logic, handled here rather than via the synthesized click so it doesn't
+    // depend on a "hover-priming" first tap (the mousemove handler would otherwise just pop
+    // the toolbar on the first tap and only navigate on the second). preventDefault also
+    // suppresses the synthesized mouse events, so the #reader-page click handler stays
+    // desktop-only. Controls (toolbar buttons) are left to fire their native click.
+    if (Math.abs(dx) < 12 && Math.abs(dy) < 12) {
+      const target = e.target as HTMLElement;
+      if (target.closest("button,a")) return;
+      if (target.tagName === "INPUT") return; // let the page-jump input handle its own taps
+      if (target.closest("#reader-progress")) { e.preventDefault(); openPageJump(); return; }
+      e.preventDefault();
+      const frac = e.changedTouches[0].clientX / window.innerWidth;
+      if (frac < 0.4) void readerNavigate(-1);
+      else if (frac > 0.6) void readerNavigate(1);
+      else toggleToolbar();
     }
   });
   $("#load-more").onclick = () => void loadMoreFn?.();
@@ -2043,5 +2466,6 @@ function switchView(view: "browse" | "library" | "history" | "detail" | "reader"
   }
 
   initialized = true;
+  void refreshActivityBadge();
   await handleRoute().catch(() => {});
 })();

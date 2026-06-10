@@ -248,6 +248,10 @@ class ExampleBridge extends BridgeBase<Settings> {
         if (Number.isFinite(number)) chapter.number = number;
         const pageCount = Number(node.attr("data-pages"));
         if (Number.isFinite(pageCount) && pageCount > 0) chapter.pageCount = pageCount;
+        const group = node.attr("data-group");
+        if (group) chapter.group = group;
+        const languageCode = node.attr("data-lang");
+        if (languageCode) chapter.languageCode = languageCode;
         return chapter;
       })
       .filter((c) => c.id.length > 0);

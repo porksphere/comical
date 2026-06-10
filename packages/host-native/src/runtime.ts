@@ -16,7 +16,8 @@ export type MakeHost = (settings: ResolvedSettings) => HostCapabilities;
 
 interface HarnessGlobal {
   comical_bridge?: LoadedBridge | null;
-  comical_init?: (code: string, settingsJSON?: string) => string | null;
+  /** networkJSON is an optional GatedNetworkOptions object (rate-limit overrides, etc). */
+  comical_init?: (code: string, settingsJSON?: string, networkJSON?: string) => string | null;
   comical_call?: (method: string, argsJSON?: string) => Promise<string>;
 }
 
@@ -25,9 +26,10 @@ export function installComicalHarness(makeHost: MakeHost): void {
   const evaluator = new NativeContextEvaluator();
   let bridge: LoadedBridge | null = null;
 
-  g.comical_init = (code, settingsJSON) => {
+  g.comical_init = (code, settingsJSON, networkJSON) => {
     const settings = (settingsJSON ? JSON.parse(settingsJSON) : {}) as Record<string, SettingValue>;
-    bridge = loadBridge({ code, capabilities: makeHost(settings), evaluator });
+    const network = networkJSON ? JSON.parse(networkJSON) : undefined;
+    bridge = loadBridge({ code, capabilities: makeHost(settings), evaluator, network });
     g.comical_bridge = bridge;
     return JSON.stringify(bridge.info);
   };

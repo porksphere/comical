@@ -15,6 +15,10 @@ export interface FixtureChapter {
   name: string;
   number: number;
   pages: number;
+  /** Scanlation group, for series with multiple copies of a chapter (optional). */
+  group?: string;
+  /** BCP-47-ish language code (e.g. "en", "es"); defaults to the bridge's language (optional). */
+  languageCode?: string;
 }
 
 export interface FixtureSeries {
@@ -96,6 +100,24 @@ export const DEFAULT_CATALOG: FixtureSeries[] = [
   { id: "monte-cristo", title: "The Count of Monte Cristo", author: "Alexandre Dumas", description: "An innocent man's elaborate revenge.", genres: ["Adventure", "Drama"], status: "ongoing", chapters: chaps("monte-cristo", 4) },
   { id: "hound", title: "The Hound of the Baskervilles", author: "Arthur Conan Doyle", description: "A spectral hound stalks the moors.", genres: ["Mystery", "Crime"], tagGroups: [{ label: "Themes", kind: "theme", tags: ["detective", "moors"] }, { label: "Audience", kind: "demographic", tags: ["Adult"] }], status: "completed", chapters: chaps("hound", 3) },
   { id: "turn-of-the-screw", title: "The Turn of the Screw", author: "Henry James", description: "A governess and two unsettling children.", genres: ["Horror", "Gothic"], status: "hiatus", chapters: chaps("turn-of-the-screw") },
+  // — multi-scanlator / multi-language title: exercises chapter grouping + language-aware navigation —
+  {
+    id: "beowulf",
+    title: "Beowulf",
+    author: "Anonymous",
+    description: "An epic of the hero Beowulf, fan-translated by several groups.",
+    genres: ["Adventure", "Fantasy"],
+    status: "ongoing",
+    chapters: [
+      { id: "beowulf-1-scriptorium", name: "Grendel [Scriptorium]", number: 1, pages: 3, group: "Scriptorium", languageCode: "en" },
+      { id: "beowulf-1-meadhall", name: "Grendel [MeadHall]", number: 1, pages: 4, group: "MeadHall", languageCode: "en" },
+      { id: "beowulf-1-runas", name: "Grendel [Runas]", number: 1, pages: 3, group: "Runas", languageCode: "es" },
+      { id: "beowulf-2-scriptorium", name: "Grendel's Mother [Scriptorium]", number: 2, pages: 3, group: "Scriptorium", languageCode: "en" },
+      { id: "beowulf-2-meadhall", name: "Grendel's Mother [MeadHall]", number: 2, pages: 2, group: "MeadHall", languageCode: "en" },
+      { id: "beowulf-3-scriptorium", name: "The Dragon [Scriptorium]", number: 3, pages: 4, group: "Scriptorium", languageCode: "en" },
+      { id: "beowulf-3-runas", name: "The Dragon [Runas]", number: 3, pages: 3, group: "Runas", languageCode: "es" },
+    ],
+  },
 ];
 
 const esc = (s: string): string =>
@@ -226,7 +248,8 @@ export class FixtureBackend {
     const chapters = s.chapters
       .map(
         (c) =>
-          `<li class="chapter" data-id="${esc(c.id)}" data-number="${c.number}" data-pages="${c.pages}">` +
+          `<li class="chapter" data-id="${esc(c.id)}" data-number="${c.number}" data-pages="${c.pages}"` +
+          `${c.group ? ` data-group="${esc(c.group)}"` : ""}${c.languageCode ? ` data-lang="${esc(c.languageCode)}"` : ""}>` +
           `<a href="/series/${esc(s.id)}/chapter/${esc(c.id)}">${esc(c.name)}</a></li>`,
       )
       .join("");

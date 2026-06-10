@@ -2,7 +2,7 @@
  * Starts comical-server with the testkit fixture backend pre-configured for the demo.
  * Spins up the fixture backend, writes settings pointing at it, then calls comical-server.
  */
-import { existsSync, watch } from "node:fs";
+import { existsSync, utimesSync, watch } from "node:fs";
 import { join } from "node:path";
 import { SettingsStore } from "../packages/host-server/src/settings-store.ts";
 import { createServer } from "../packages/host-server/src/server.ts";
@@ -38,14 +38,20 @@ const server = createServer({
 console.log(`comical-server running at http://localhost:${server.port}`);
 console.log("Now start the demo UI:  bun run demo:dev");
 
-// Watch bridge and tracker build dirs — exit on any .js change so bun --watch restarts.
+// Watch bridge and tracker build dirs. These .js files live outside this script's
+// module graph, so bun --watch can't see them directly. On any .js change, touch this
+// entrypoint's mtime — that IS in bun --watch's graph, so it triggers a clean restart.
+// (process.exit(0) does NOT restart: bun --watch reloads on file change, not self-exit.)
 // Ignore events in the first 2 s to avoid spurious Windows fs.watch notifications on startup.
 const watchReadyAt = Date.now() + 2000;
+let restarting = false;
 for (const dir of [...BRIDGES_DIRS, TRACKERS_DIR].filter((d) => existsSync(d))) {
   watch(dir, { recursive: true }, (_, filename) => {
-    if (filename?.endsWith(".js") && Date.now() >= watchReadyAt) {
+    if (filename?.endsWith(".js") && Date.now() >= watchReadyAt && !restarting) {
+      restarting = true;
       console.log(`[watch] ${filename} changed — restarting`);
-      process.exit(0);
+      const now = new Date();
+      utimesSync(import.meta.path, now, now);
     }
   });
 }

@@ -24,5 +24,8 @@
   "workspaces": [
     "packages/*",
     "bridges/*"
-  ]
+  ],
+  "dependencies": {
+    "lucide": "^1.17.0"
+  }
 }

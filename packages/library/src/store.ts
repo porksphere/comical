@@ -6,7 +6,7 @@
  *
  * Keys are `entryKey(bridgeId, seriesId)`.
  */
-import type { BridgePrefs, Category, ChapterProgress, HistoryItem, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
+import type { ActivityItem, BridgePrefs, Category, ChapterProgress, HistoryItem, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
 
 export interface LibraryStore {
   // ── Entries ──────────────────────────────────────────────────────────────
@@ -45,4 +45,14 @@ export interface LibraryStore {
   // ── Bridge preferences ────────────────────────────────────────────────────
   getBridgePrefs(bridgeId: string): Promise<BridgePrefs | undefined>;
   setBridgePrefs(bridgeId: string, prefs: BridgePrefs): Promise<void>;
+
+  // ── Activity feed (newly-detected chapters) ────────────────────────────────
+  /** Every recorded activity event; keyed internally by `bridgeId:seriesId:chapterId`. */
+  listActivity(): Promise<ActivityItem[]>;
+  /** Upsert one event (dedup on its composite key). */
+  putActivity(item: ActivityItem): Promise<void>;
+  /** Drop all activity for a series (called when an entry is removed). */
+  deleteActivityForEntry(key: string): Promise<void>;
+  /** Drop the entire feed. */
+  clearActivity(): Promise<void>;
 }

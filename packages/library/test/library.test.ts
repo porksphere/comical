@@ -14,6 +14,15 @@ function fakeClock() {
 
 const ch = (id: string, number: number): Chapter => ({ id, name: `Ch ${number}`, number });
 
+/** A chapter from a specific scanlation group + language — for multi-copy ("logical chapter") tests. */
+const chg = (id: string, number: number, group: string, languageCode: string): Chapter => ({
+  id,
+  name: `Ch ${number} [${group}]`,
+  number,
+  group,
+  languageCode,
+});
+
 function makeLibrary() {
   return new Library(new InMemoryLibraryStore(), { now: fakeClock() });
 }
@@ -152,6 +161,193 @@ describe("new-chapter detection", () => {
   });
 });
 
+describe("activity feed", () => {
+  test("the baseline sync records nothing; later syncs record one item per new chapter", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    expect(await lib.getActivity()).toHaveLength(0);
+
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
+    const feed = await lib.getActivity();
+    // Newest first by detectedAt (both detected in the same sync — stable by detection order is fine,
+    // here both share the sync timestamp so just assert the set of chapters and snapshot fields).
+    expect(feed.map((a) => a.chapterId).sort()).toEqual(["c2", "c3"]);
+    const c2 = feed.find((a) => a.chapterId === "c2")!;
+    expect(c2).toMatchObject({ bridgeId: "demo", seriesId: "s1", title: "Series One", chapterName: "Ch 2", number: 2 });
+    expect(c2.detectedAt).toBeGreaterThan(0);
+    expect(c2.read).toBe(false);
+  });
+
+  test("feed is newest-first across syncs", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)]); // baseline
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]); // c2 detected first
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]); // c3 detected later
+    expect((await lib.getActivity()).map((a) => a.chapterId)).toEqual(["c3", "c2"]);
+  });
+
+  test("reading a chapter flips its item to read and drops the unread count", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
+    expect(await lib.unreadActivityCount()).toBe(2);
+
+    await lib.markRead(KEY, "c2", true);
+    expect(await lib.unreadActivityCount()).toBe(1);
+    expect((await lib.getActivity()).find((a) => a.chapterId === "c2")?.read).toBe(true);
+  });
+
+  test("unreadOnly and limit filter the feed", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3), ch("c4", 4)]);
+    await lib.markRead(KEY, "c2", true);
+
+    expect((await lib.getActivity({ unreadOnly: true })).map((a) => a.chapterId).sort()).toEqual(["c3", "c4"]);
+    expect(await lib.getActivity({ limit: 1 })).toHaveLength(1);
+  });
+
+  test("removeSeries purges its activity; clearActivity empties the feed", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+    expect(await lib.getActivity()).toHaveLength(1);
+
+    await lib.removeSeries(KEY);
+    expect(await lib.getActivity()).toHaveLength(0);
+
+    // And clearActivity wipes whatever remains.
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+    expect(await lib.getActivity()).toHaveLength(1);
+    await lib.clearActivity();
+    expect(await lib.getActivity()).toHaveLength(0);
+  });
+});
+
+describe("logical chapters (multi-scanlator / multi-language)", () => {
+  test("unreadCount collapses scanlator copies of one (number, language) but counts languages apart", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [
+      chg("c1-a", 1, "A", "en"), // ch1 EN, group A
+      chg("c1-b", 1, "B", "en"), // ch1 EN, group B — same logical chapter as c1-a
+      chg("c2-a", 2, "A", "en"), // ch2 EN
+      chg("c1-es", 1, "A", "es"), // ch1 ES — a distinct logical chapter
+    ]);
+
+    const unread = async () => (await lib.getLibrary()).find((e) => e.seriesId === "s1")?.unreadCount;
+    // Logical chapters: (1,en), (2,en), (1,es) → 3 unread despite 4 raw chapters.
+    expect(await unread()).toBe(3);
+
+    // Reading ONE scanlator copy of ch1 EN marks the whole logical chapter read.
+    await lib.markRead(KEY, "c1-a", true);
+    expect(await unread()).toBe(2); // ch1 EN now read; ch2 EN + ch1 ES remain
+  });
+
+  test("syncChapters: a new scanlator copy of a known chapter is not 'new'; a new number/language is", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [chg("c1-a", 1, "A", "en")]); // baseline
+
+    const r1 = await lib.syncChapters(KEY, [
+      chg("c1-a", 1, "A", "en"),
+      chg("c1-b", 1, "B", "en"), // same logical (1,en) — not new
+      chg("c2-a", 2, "A", "en"), // new number — new
+    ]);
+    expect(r1.added.map((c) => c.id)).toEqual(["c2-a"]);
+
+    const r2 = await lib.syncChapters(KEY, [
+      chg("c1-a", 1, "A", "en"),
+      chg("c1-b", 1, "B", "en"),
+      chg("c2-a", 2, "A", "en"),
+      chg("c1-es", 1, "A", "es"), // same number, different language — new logical chapter
+    ]);
+    expect(r2.added.map((c) => c.id)).toEqual(["c1-es"]);
+  });
+
+  test("activity: reading any scanlator copy flips the logical chapter's feed item to read", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [chg("c1-a", 1, "A", "en")]); // baseline
+    await lib.syncChapters(KEY, [
+      chg("c1-a", 1, "A", "en"),
+      chg("c2-a", 2, "A", "en"),
+      chg("c2-b", 2, "B", "en"), // same logical (2,en) as c2-a — not a separate feed item
+    ]);
+
+    const feed = await lib.getActivity();
+    expect(feed.map((a) => a.chapterId)).toEqual(["c2-a"]);
+    expect(feed[0]?.read).toBe(false);
+
+    // Reading the OTHER group's copy still clears the item — it's the same logical chapter.
+    await lib.markRead(KEY, "c2-b", true);
+    expect((await lib.getActivity()).find((a) => a.chapterId === "c2-a")?.read).toBe(true);
+    expect(await lib.unreadActivityCount()).toBe(0);
+  });
+
+  test("markReadUpTo stays within the target's language and covers every group of those chapters", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    const chapters = [
+      chg("c1-en", 1, "A", "en"),
+      chg("c1b-en", 1, "B", "en"), // second group of ch1 EN
+      chg("c2-en", 2, "A", "en"),
+      chg("c1-es", 1, "A", "es"), // different language — must stay untouched
+    ];
+    await lib.markReadUpTo(KEY, chapters, "c2-en");
+    const read = new Set((await lib.getProgress(KEY)).filter((p) => p.read).map((p) => p.chapterId));
+    expect(read).toEqual(new Set(["c1-en", "c1b-en", "c2-en"]));
+  });
+
+  test("a chapter with no number stays its own logical unit", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [
+      { id: "x1", name: "Oneshot" },
+      { id: "x2", name: "Extra" },
+    ]);
+    const unread = async () => (await lib.getLibrary()).find((e) => e.seriesId === "s1")?.unreadCount;
+    expect(await unread()).toBe(2);
+    await lib.markRead(KEY, "x1", true);
+    expect(await unread()).toBe(1);
+  });
+
+  test("a legacy entry with no knownChapters field doesn't crash derivations", async () => {
+    // Pre-`knownChapters` documents (persisted before the schema change, never re-validated by the
+    // file store) lack the field entirely. Reading them must degrade gracefully, not throw.
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await store.putEntry({
+      bridgeId: SERIES.bridgeId,
+      seriesId: SERIES.seriesId,
+      title: SERIES.title,
+      addedAt: 1,
+      updatedAt: 1,
+      categoryIds: [],
+      // knownChapters intentionally omitted (legacy shape)
+    } as unknown as Parameters<typeof store.putEntry>[0]);
+
+    // toView / unread derivation tolerates the missing field.
+    const view = (await lib.getLibrary()).find((e) => e.seriesId === "s1");
+    expect(view?.unreadCount).toBe(0);
+
+    // A first sync then populates it and subsequent counts are logical.
+    await lib.syncChapters(KEY, [chg("c1-a", 1, "A", "en"), chg("c1-b", 1, "B", "en"), chg("c2-a", 2, "A", "en")]);
+    const unread = async () => (await lib.getLibrary()).find((e) => e.seriesId === "s1")?.unreadCount;
+    expect(await unread()).toBe(2); // (1,en) and (2,en)
+    await lib.markRead(KEY, "c1-a", true);
+    expect(await unread()).toBe(1);
+  });
+});
+
 describe("history", () => {
   test("getHistory is newest-first and one row per series", async () => {
     const lib = makeLibrary();
@@ -258,6 +454,63 @@ describe("reading log (non-library history)", () => {
     // Exactly one entry — library wins, log entry is not persisted separately
     const history = await lib.getHistory();
     expect(history.filter((h) => h.seriesId === SERIES.seriesId)).toHaveLength(1);
+  });
+
+  test("getResume reads the page from the reading log for a non-library series", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({
+      bridgeId: "demo", seriesId: "ext1", title: "External Series",
+      lastReadChapterId: "c2", lastReadChapterName: "Ch 2", lastPage: 12, lastReadAt: 1000,
+    });
+    expect(await lib.getResume(entryKey("demo", "ext1"))).toEqual({ chapterId: "c2", lastPage: 12 });
+  });
+
+  test("getResume falls back to page 0 when the log entry has no recorded page", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({
+      bridgeId: "demo", seriesId: "ext1", title: "External Series",
+      lastReadChapterId: "c2", lastReadAt: 1000,
+    });
+    expect(await lib.getResume(entryKey("demo", "ext1"))).toEqual({ chapterId: "c2", lastPage: 0 });
+  });
+
+  test("getHistory carries the page and page count for a non-library read", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({
+      bridgeId: "demo", seriesId: "ext1", title: "External Series",
+      lastReadChapterId: "c2", lastPage: 13, pageCount: 20, lastReadAt: 1000,
+    });
+    const item = (await lib.getHistory()).find((h) => h.seriesId === "ext1");
+    expect(item?.lastPage).toBe(13);
+    expect(item?.pageCount).toBe(20);
+  });
+
+  test("getHistory fills the page and page count from progress for a library read", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.setProgress(KEY, "c1", 5, 20, "Ch 1");
+    const item = (await lib.getHistory()).find((h) => h.seriesId === SERIES.seriesId);
+    expect(item?.lastReadChapterId).toBe("c1");
+    expect(item?.lastPage).toBe(5);
+    expect(item?.pageCount).toBe(20);
+  });
+
+  test("re-recording a non-library read updates the resume page", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({
+      bridgeId: "demo", seriesId: "ext1", title: "External Series",
+      lastReadChapterId: "c1", lastPage: 3, lastReadAt: 1000,
+    });
+    await lib.recordRead({
+      bridgeId: "demo", seriesId: "ext1", title: "External Series",
+      lastReadChapterId: "c1", lastPage: 9, lastReadAt: 2000,
+    });
+    expect(await lib.getResume(entryKey("demo", "ext1"))).toEqual({ chapterId: "c1", lastPage: 9 });
+  });
+
+  test("getResume returns undefined for an unknown series", async () => {
+    const lib = makeLibrary();
+    expect(await lib.getResume(entryKey("demo", "nope"))).toBeUndefined();
   });
 
   test("clearHistoryEntry removes a log-only series from history", async () => {
