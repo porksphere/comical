@@ -17,3 +17,6 @@ rootProject.name = "comical-android"
 
 include(":host-android")
 project(":host-android").projectDir = file("packages/host-android")
+
+include(":demo-android")
+project(":demo-android").projectDir = file("packages/demo-android")

@@ -76,6 +76,12 @@ describe("/library lifecycle", () => {
     const sync2 = (await (await send("POST", "/library/entries/demo/s1/sync", { chapters: [...chapters, { id: "c4", name: "Ch 4", number: 4 }] })).json()) as { added: { id: string }[] };
     expect(sync2.added.map((c) => c.id)).toEqual(["c4"]);
 
+    // the new chapter shows up in the activity feed (unread), and the badge count reflects it
+    const activity = (await (await get("/library/activity")).json()) as Array<{ chapterId: string; read: boolean }>;
+    expect(activity.map((a) => a.chapterId)).toEqual(["c4"]);
+    expect(activity[0]!.read).toBe(false);
+    expect(((await (await get("/library/activity/count")).json()) as { unread: number }).unread).toBe(1);
+
     // history has the series
     const history = (await (await get("/library/history?limit=10")).json()) as Array<{ seriesId: string }>;
     expect(history.some((h) => h.seriesId === "s1")).toBe(true);
@@ -94,9 +100,28 @@ describe("/library lifecycle", () => {
     expect(entry.entry.categoryIds).toEqual([]);
   });
 
-  test("remove → entry is gone (404)", async () => {
+  test("remove → entry is gone (404) and its activity is purged", async () => {
     expect((await send("DELETE", "/library/entries/demo/s1")).status).toBe(200);
     expect((await get("/library/entries/demo/s1")).status).toBe(404);
+    expect(await (await get("/library/activity")).json()).toEqual([]);
+  });
+
+  test("reading-history records a non-library read's page and updates it on revisit", async () => {
+    expect((await send("POST", "/reading-history", {
+      bridgeId: "demo", seriesId: "ext-1", title: "External", chapterId: "c2", chapterName: "Ch 2", lastPage: 8,
+    })).status).toBe(200);
+
+    const history = (await (await get("/library/history?limit=10")).json()) as Array<{ seriesId: string; lastReadChapterId?: string; lastPage?: number }>;
+    const item = history.find((h) => h.seriesId === "ext-1");
+    expect(item?.lastReadChapterId).toBe("c2");
+    expect(item?.lastPage).toBe(8);
+
+    // A later read at a further page moves the resume point.
+    await send("POST", "/reading-history", {
+      bridgeId: "demo", seriesId: "ext-1", title: "External", chapterId: "c2", chapterName: "Ch 2", lastPage: 14,
+    });
+    const history2 = (await (await get("/library/history?limit=10")).json()) as Array<{ seriesId: string; lastPage?: number }>;
+    expect(history2.find((h) => h.seriesId === "ext-1")?.lastPage).toBe(14);
   });
 
   test("validation: add without bridgeId is 400", async () => {

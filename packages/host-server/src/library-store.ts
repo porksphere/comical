@@ -10,7 +10,7 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { BridgePrefs, Category, ChapterProgress, HistoryItem, LibraryEntry, LibraryStore, SeriesGroup, TrackerLink } from "@comical/library";
+import { activityKey, type ActivityItem, type BridgePrefs, type Category, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -28,6 +28,7 @@ export class FileLibraryStore implements LibraryStore {
   private trackerLinksCache?: Map<string, TrackerLink[]>;
   private readingLogCache?: Map<string, HistoryItem>;
   private bridgePrefsCache?: Map<string, BridgePrefs>;
+  private activityCache?: Map<string, ActivityItem>;
 
   constructor(private readonly dir: string) {}
 
@@ -48,6 +49,9 @@ export class FileLibraryStore implements LibraryStore {
   }
   private get bridgePrefsPath(): string {
     return join(this.dir, "bridge-prefs.json");
+  }
+  private get activityPath(): string {
+    return join(this.dir, "activity.json");
   }
   private progressPath(key: string): string {
     return join(this.dir, "progress", `${encodeURIComponent(key)}.json`);
@@ -258,5 +262,42 @@ export class FileLibraryStore implements LibraryStore {
   async setBridgePrefs(bridgeId: string, prefs: BridgePrefs): Promise<void> {
     (await this.bridgePrefs()).set(bridgeId, prefs);
     await this.flushBridgePrefs();
+  }
+
+  // ── Activity feed ───────────────────────────────────────────────────────────────
+
+  private async activity(): Promise<Map<string, ActivityItem>> {
+    if (!this.activityCache) {
+      const obj = await readJson<Record<string, ActivityItem>>(this.activityPath, {});
+      this.activityCache = new Map(Object.entries(obj));
+    }
+    return this.activityCache;
+  }
+
+  private async flushActivity(): Promise<void> {
+    const obj = Object.fromEntries((await this.activity()).entries());
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(this.activityPath, JSON.stringify(obj, null, 2), "utf8");
+  }
+
+  async listActivity(): Promise<ActivityItem[]> {
+    return [...(await this.activity()).values()];
+  }
+  async putActivity(item: ActivityItem): Promise<void> {
+    (await this.activity()).set(activityKey(item.bridgeId, item.seriesId, item.chapterId), item);
+    await this.flushActivity();
+  }
+  async deleteActivityForEntry(key: string): Promise<void> {
+    const map = await this.activity();
+    const prefix = `${key}:`;
+    let changed = false;
+    for (const k of map.keys()) {
+      if (k.startsWith(prefix) && map.delete(k)) changed = true;
+    }
+    if (changed) await this.flushActivity();
+  }
+  async clearActivity(): Promise<void> {
+    this.activityCache = new Map();
+    await this.flushActivity();
   }
 }

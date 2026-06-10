@@ -6,14 +6,30 @@
   <title>Comical — Browser Demo</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
+    /* Always reserve the scrollbar gutter so the viewport width never changes
+       when a scrollbar appears — otherwise the fixed bottom nav shifts. */
+    html { scrollbar-gutter: stable; }
     body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem calc(3.5rem + env(safe-area-inset-bottom)); background: #0f0f0f; color: #e8e8e8; }
     .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: #111113; border-top: 1px solid #242427; z-index: 50; padding-bottom: env(safe-area-inset-bottom); }
     .bn-item { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0.55rem 0; gap: 0.15rem; cursor: pointer; color: #666; user-select: none; }
     .bn-item.active { color: #2563eb; }
     .bn-item:hover { color: #ccc; }
-    .bn-icon { font-size: 1.1rem; line-height: 1; }
+    .bn-icon { display: flex; align-items: center; justify-content: center; }
+    .bn-icon svg { width: 1.25rem; height: 1.25rem; stroke-width: 1.75; }
+    .bn-item { position: relative; }
+    .bn-badge { position: absolute; top: 0.2rem; left: 50%; margin-left: 0.3rem; background: #f59e0b; color: #111; border-radius: 999px; font-size: 0.66rem; font-weight: 700; padding: 0.02rem 0.32rem; }
     .bn-label { font-size: 0.68rem; }
     h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+    #app-header { position: relative; }
+    #app-title { display: inline-flex; align-items: center; gap: 0.4rem; }
+    #app-title.interactive { cursor: pointer; user-select: none; }
+    .title-caret { font-size: 0.85rem; color: #888; transition: transform 0.15s; }
+    #app-header.open .title-caret { transform: rotate(180deg); }
+    .bridge-dropdown { position: absolute; top: 100%; left: 0; z-index: 60; margin-top: 0.3rem; min-width: 220px; max-height: 60vh; overflow-y: auto; padding: 0.35rem; background: #18181b; border: 1px solid #333; border-radius: 0.6rem; box-shadow: 0 10px 28px rgba(0,0,0,0.55); display: flex; flex-direction: column; gap: 0.1rem; }
+    .bridge-dropdown[hidden] { display: none; }
+    .bridge-dropdown .tab { border-radius: 0.4rem; border: 1px solid transparent; background: transparent; text-align: left; padding: 0.5rem 0.7rem; font-size: 0.9rem; }
+    .bridge-dropdown .tab:hover { background: #232327; }
+    .bridge-dropdown .tab.active { background: #2563eb; border-color: #2563eb; }
     h3 { font-size: 0.95rem; margin: 0 0 0.6rem; }
     .subtitle { color: #888; font-size: 0.85rem; margin-bottom: 1.25rem; }
     .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
@@ -75,13 +91,21 @@
     .tag-option-empty { padding: 0.35rem 0.6rem; font-size: 0.8rem; color: #666; }
     #detail-description { font-size: 0.88rem; line-height: 1.5; color: #ccc; margin: 0.75rem 0 0; }
     #chapters { list-style: none; padding: 0; margin: 0; }
-    #chapters li { padding: 0.4rem 0; border-bottom: 1px solid #2a2a2e; font-size: 0.88rem; cursor: pointer; }
-    #chapters li:hover { color: #60a5fa; }
+    #chapters li { border-bottom: 1px solid #2a2a2e; font-size: 0.88rem; }
+    #chapters .ch-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0; cursor: pointer; }
+    #chapters .ch-row:hover { color: #60a5fa; }
     #reader-view { position: fixed; inset: 0; display: flex; flex-direction: column; overflow: hidden; overscroll-behavior: none; background: #0f0f0f; z-index: 100; }
     .reader-toolbar { position: absolute; top: 0; left: 0; right: 0; z-index: 2; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.75rem 1rem; background: linear-gradient(to bottom, rgba(0,0,0,0.72) 0%, transparent 100%); transition: opacity 0.3s; }
     .reader-toolbar.hidden { opacity: 0; pointer-events: none; }
+    #reader-info { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .reader-toolbar > button, .reader-toolbar > span:last-child { flex-shrink: 0; }
     #reader-page { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; }
     #reader-page img { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; object-fit: contain; user-select: none; -webkit-user-drag: none; cursor: pointer; }
+    #reader-progress { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); z-index: 1; padding: 0.25rem 0.85rem; font-size: 0.8rem; line-height: 1.4; color: rgba(255,255,255,0.82); background: rgba(0,0,0,0.32); border-radius: 0.55rem 0.55rem 0 0; pointer-events: auto; cursor: pointer; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
+    /* font-size must be >=16px or iOS Safari auto-zooms the page on focus. */
+    #reader-progress .page-jump { width: 2.2em; background: transparent; border: none; border-bottom: 1px solid rgba(255,255,255,0.6); color: #fff; font-family: inherit; font-size: 16px; line-height: 1; text-align: center; padding: 0; margin: 0; -moz-appearance: textfield; }
+    #reader-progress .page-jump::-webkit-outer-spin-button, #reader-progress .page-jump::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    #reader-progress .page-jump-go { font: inherit; color: #fff; background: rgba(255,255,255,0.16); border: none; border-radius: 0.35rem; padding: 0.05rem 0.5rem; margin-left: 0.4rem; cursor: pointer; }
     .reg-item { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #242427; font-size: 0.84rem; }
     .reg-item:last-child { border-bottom: none; }
     .view-tabs { margin: 0.5rem 0 1rem; }
@@ -98,16 +122,24 @@
     #lib-toggle:hover, #fav-toggle:hover { border-color: #60a5fa; }
     #lib-category-picker { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.5rem 0 0.75rem; }
     #lib-category-picker label { flex-direction: row; align-items: center; gap: 0.3rem; background: #1c1c1e; border: 1px solid #333; border-radius: 999px; padding: 0.2rem 0.6rem; cursor: pointer; }
-    #chapters li { display: flex; align-items: center; gap: 0.5rem; }
-    #chapters li .ch-name { flex: 1; }
-    #chapters li.read .ch-name { color: #6b7280; }
-    #chapters li .ch-uptohere { font-size: 0.72rem; color: #888; border: 1px solid #333; background: #1c1c1e; border-radius: 6px; padding: 0.1rem 0.4rem; }
-    #chapters li .ch-uptohere:hover { border-color: #60a5fa; color: #ddd; }
+    #chapters .ch-name { flex: 1; }
+    #chapters .ch-row.read .ch-name { color: #6b7280; }
+    #chapters .ch-uptohere { font-size: 0.72rem; color: #888; border: 1px solid #333; background: #1c1c1e; border-radius: 6px; padding: 0.1rem 0.4rem; cursor: pointer; }
+    #chapters .ch-uptohere:hover { border-color: #60a5fa; color: #ddd; }
+    #chapters .ch-versions-toggle { font-size: 0.72rem; color: #aaa; border: 1px solid #333; background: #1c1c1e; border-radius: 999px; padding: 0.1rem 0.5rem; cursor: pointer; white-space: nowrap; }
+    #chapters .ch-versions-toggle:hover { border-color: #60a5fa; color: #ddd; }
+    #chapters .ch-versions { list-style: none; margin: 0 0 0.3rem; padding: 0 0 0 1.25rem; }
+    #chapters .ch-versions li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: none; font-size: 0.82rem; color: #bbb; cursor: pointer; }
+    #chapters .ch-versions li:hover { color: #60a5fa; }
+    #chapters .ch-versions li.read .ch-name { color: #6b7280; }
+    #chapters .ch-versions .ch-dot { width: 0.45rem; height: 0.45rem; border-radius: 999px; background: #444; flex-shrink: 0; }
+    #chapters .ch-versions li.read .ch-dot { background: #2563eb; }
     .history-item { display: flex; gap: 0.75rem; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid #242427; }
     .history-item img { width: 44px; height: 66px; object-fit: cover; border-radius: 4px; background: #333; }
     .history-item .hi-body { flex: 1; }
     .history-item .hi-title { font-size: 0.9rem; font-weight: 600; }
     .history-item .hi-sub { font-size: 0.78rem; color: #888; }
+    .history-item.read { opacity: 0.55; }
     #tracker-panel { border-top: 1px solid #2a2a2e; margin-top: 0.75rem; padding-top: 0.6rem; }
     .tracker-row { display: flex; justify-content: space-between; align-items: center; padding: 0.25rem 0; font-size: 0.85rem; }
     .tracker-row-acts { display: flex; gap: 0.35rem; }
@@ -124,13 +156,17 @@
   </style>
 </head>
 <body>
-  <h1>Comical</h1>
-  <p class="subtitle">Content bridge runtime — browser console (thin client → comical-server)</p>
+  <div id="app-header">
+    <h1 id="app-title"><span id="app-title-text">Comical</span><span id="app-title-caret" class="title-caret" hidden>▾</span></h1>
+    <p class="subtitle" id="app-subtitle">Content bridge runtime — browser console (thin client → comical-server)</p>
+    <div id="bridge-dropdown" class="bridge-dropdown" hidden>
+      <div id="bridge-list"></div>
+    </div>
+  </div>
 
-  <div id="status">Initialising…</div>
+  <div id="status" style="display:none"></div>
 
   <div id="browse-view">
-  <div id="bridge-list" class="tabs" style="margin-bottom:0.4rem"></div>
   <span id="caps" class="muted" style="font-size:0.8rem; display:block; margin-bottom:0.5rem"></span>
 
   <!-- Browse -->
@@ -175,6 +211,16 @@
     <div id="history-list"></div>
   </section>
 
+  <!-- Activity — newly-detected chapters across the library -->
+  <section id="activity-view" style="display:none">
+    <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap">
+      <button id="activity-refresh">⟳ Check for updates</button>
+      <button id="activity-clear" class="secondary">Clear</button>
+      <span id="activity-status" class="muted"></span>
+    </div>
+    <div id="activity-list"></div>
+  </section>
+
   <section id="detail-view" style="display:none">
     <div style="margin-bottom:0.75rem"><button id="back-btn" class="secondary">← Back</button></div>
     <div id="detail">
@@ -211,6 +257,7 @@
       </span>
     </div>
     <div id="reader-page"></div>
+    <div id="reader-progress"></div>
   </section>
 
   <!-- Settings page -->
@@ -243,10 +290,11 @@
   </section>
 
   <nav class="bottom-nav">
-    <div class="bn-item active" data-view="browse"><span class="bn-icon">⊞</span><span class="bn-label">Browse</span></div>
-    <div class="bn-item" data-view="library"><span class="bn-icon">☰</span><span class="bn-label">Library</span></div>
-    <div class="bn-item" data-view="history"><span class="bn-icon">↺</span><span class="bn-label">History</span></div>
-    <div class="bn-item" data-view="settings"><span class="bn-icon">⚙</span><span class="bn-label">Settings</span></div>
+    <div class="bn-item active" data-view="browse"><span class="bn-icon"><i data-lucide="layout-grid"></i></span><span class="bn-label">Browse</span></div>
+    <div class="bn-item" data-view="library"><span class="bn-icon"><i data-lucide="library"></i></span><span class="bn-label">Library</span></div>
+    <div class="bn-item" data-view="history"><span class="bn-icon"><i data-lucide="history"></i></span><span class="bn-label">History</span></div>
+    <div class="bn-item" data-view="activity"><span class="bn-icon"><i data-lucide="bell"></i></span><span class="bn-label">Activity</span><span id="activity-badge" class="bn-badge" hidden></span></div>
+    <div class="bn-item" data-view="settings"><span class="bn-icon"><i data-lucide="settings"></i></span><span class="bn-label">Settings</span></div>
   </nav>
 
   <script type="module" src="./app.js"></script>

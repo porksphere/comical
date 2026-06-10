@@ -23,6 +23,24 @@ export function parseEntryKey(key: string): { bridgeId: string; seriesId: string
   return { bridgeId: key.slice(0, i), seriesId: key.slice(i + 1) };
 }
 
+/** Stable key for a single activity event: a series' entry key plus the chapter it concerns. */
+export function activityKey(bridgeId: string, seriesId: string, chapterId: string): string {
+  return `${bridgeId}:${seriesId}:${chapterId}`;
+}
+
+/**
+ * A chapter known at the last `syncChapters`, with the metadata needed to collapse it to a logical
+ * chapter `(number, languageCode)`. Multiple scanlation groups produce separate chapters that share
+ * a `(number, languageCode)`; the library treats them as one chapter for unread counts and
+ * new-chapter detection.
+ */
+export const knownChapterSchema = z.object({
+  id: z.string().min(1),
+  number: z.number().optional(),
+  languageCode: z.string().optional(),
+});
+export type KnownChapter = z.infer<typeof knownChapterSchema>;
+
 /** A user-defined shelf the library groups entries into (e.g. "Reading", "Plan to Read"). */
 export const categorySchema = z.object({
   id: z.string().min(1),
@@ -48,8 +66,11 @@ export const libraryEntrySchema = z.object({
   lastReadChapterId: z.string().optional(),
   lastReadChapterName: z.string().optional(),
   lastReadAt: z.number().int().optional(),
-  /** Chapter ids known at the last `syncChapters`, for new-chapter detection + unread counts. */
-  knownChapterIds: z.array(z.string()).default([]),
+  /**
+   * Chapters known at the last `syncChapters`, for new-chapter detection + unread counts. Carries
+   * each chapter's `number`/`languageCode` so both collapse by logical chapter `(number, language)`.
+   */
+  knownChapters: z.array(knownChapterSchema).default([]),
   chaptersSyncedAt: z.number().int().optional(),
   /**
    * If set, this entry belongs to a `SeriesGroup` (same title from a different bridge). The group
@@ -94,13 +115,19 @@ export const chapterProgressSchema = z.object({
    * keeping a separate chapter store.
    */
   number: z.number().optional(),
+  /**
+   * Language of the chapter this progress belongs to (mirrors `Chapter.languageCode`), recorded so
+   * read state collapses by logical chapter `(number, languageCode)`. Auto-filled from the entry's
+   * `knownChapters` when not supplied explicitly.
+   */
+  languageCode: z.string().optional(),
   updatedAt: z.number().int(),
 });
 export type ChapterProgress = z.infer<typeof chapterProgressSchema>;
 
 /**
  * A library entry augmented with derived, non-persisted fields a host renders directly.
- * `unreadCount` = known chapters that have no `read` progress record.
+ * `unreadCount` = logical chapters `(number, language)` with no read copy in any scanlation group.
  */
 export interface LibraryEntryView extends LibraryEntry {
   unreadCount: number;
@@ -114,6 +141,13 @@ export interface HistoryItem {
   thumbnailUrl?: string;
   lastReadChapterId?: string;
   lastReadChapterName?: string;
+  /**
+   * Resume page within `lastReadChapterId` (0-based) and the chapter's total page count, for
+   * rendering "page X / N" in history. Reading-log (non-library) entries persist these directly;
+   * for library entries `getHistory` fills them in from the chapter's `ChapterProgress`.
+   */
+  lastPage?: number;
+  pageCount?: number;
   lastReadAt: number;
 }
 
@@ -121,6 +155,40 @@ export interface HistoryItem {
 export interface ResumePoint {
   chapterId: string;
   lastPage: number;
+}
+
+/**
+ * A newly-detected chapter — one event in the activity feed (the "new chapters" news feed).
+ * Recorded by `syncChapters` when a chapter appears that wasn't known at the previous sync. Carries a
+ * display snapshot of its series so the feed renders offline and survives the bridge being removed.
+ */
+export const activityItemSchema = z.object({
+  bridgeId: z.string().min(1),
+  seriesId: z.string().min(1),
+  chapterId: z.string().min(1),
+  /** Series display snapshot at detection time. */
+  title: z.string().min(1),
+  thumbnailUrl: z.string().url().optional(),
+  /** Chapter display snapshot. */
+  chapterName: z.string().optional(),
+  /** Decimal chapter number (mirrors `Chapter.number`), when known. */
+  number: z.number().optional(),
+  /** Language of the chapter (mirrors `Chapter.languageCode`), snapshot so read state collapses logically. */
+  languageCode: z.string().optional(),
+  /** When the source published the chapter (epoch ms), when known. */
+  publishedAt: z.number().int().optional(),
+  /** When `syncChapters` first observed this chapter (epoch ms) — the feed sorts on this, newest first. */
+  detectedAt: z.number().int(),
+});
+export type ActivityItem = z.infer<typeof activityItemSchema>;
+
+/**
+ * An activity item augmented with derived read state. `read` is computed by cross-referencing the
+ * series' chapter progress, so it is never persisted: it flips to true once the user reads the chapter,
+ * which is what clears the item from the unread badge.
+ */
+export interface ActivityItemView extends ActivityItem {
+  read: boolean;
 }
 
 /**

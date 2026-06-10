@@ -3,7 +3,7 @@
  * fallback for hosts without durable storage. Deep-clones on the way in and out so callers can't
  * mutate stored objects by reference.
  */
-import type { BridgePrefs, Category, ChapterProgress, HistoryItem, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
+import { activityKey, type ActivityItem, type BridgePrefs, type Category, type ChapterProgress, type HistoryItem, type LibraryEntry, type SeriesGroup, type TrackerLink } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
 const clone = <T>(v: T): T => structuredClone(v);
@@ -16,6 +16,7 @@ export class InMemoryLibraryStore implements LibraryStore {
   private trackerLinks = new Map<string, Map<string, TrackerLink>>();
   private readingLog = new Map<string, HistoryItem>();
   private bridgePrefs = new Map<string, BridgePrefs>();
+  private activity = new Map<string, ActivityItem>();
 
   async listEntries(): Promise<LibraryEntry[]> {
     return [...this.entries.values()].map(clone);
@@ -91,6 +92,22 @@ export class InMemoryLibraryStore implements LibraryStore {
   }
   async setBridgePrefs(bridgeId: string, prefs: BridgePrefs): Promise<void> {
     this.bridgePrefs.set(bridgeId, clone(prefs));
+  }
+
+  async listActivity(): Promise<ActivityItem[]> {
+    return [...this.activity.values()].map(clone);
+  }
+  async putActivity(item: ActivityItem): Promise<void> {
+    this.activity.set(activityKey(item.bridgeId, item.seriesId, item.chapterId), clone(item));
+  }
+  async deleteActivityForEntry(key: string): Promise<void> {
+    const prefix = `${key}:`;
+    for (const k of this.activity.keys()) {
+      if (k.startsWith(prefix)) this.activity.delete(k);
+    }
+  }
+  async clearActivity(): Promise<void> {
+    this.activity.clear();
   }
 }
 

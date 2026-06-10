@@ -9,8 +9,11 @@ export function validate<S extends z.ZodTypeAny>(
 ): z.infer<S> {
   const result = schema.safeParse(value);
   if (!result.success) {
+    const detail = result.error.issues
+      .map((i) => `${i.path.length ? i.path.join(".") + ": " : ""}${i.message}`)
+      .join("; ");
     throw new BridgeValidationError(
-      `${context}: bridge returned data that failed validation`,
+      `${context}: bridge returned data that failed validation — ${detail}`,
       result.error.issues,
     );
   }

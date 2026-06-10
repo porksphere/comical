@@ -10,7 +10,7 @@
  *   - markRead / setProgress / markReadUpTo: write library state first, then fire bridge read-sync
  *     if the bridge declares the "read-sync" capability (best-effort — bridge errors are swallowed).
  *   - importBridgeFavorites: paginate getFavorites, dedupe, bulk-add to library.
- *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapterIds.
+ *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
 import type { Chapter, PagedResults, TrackerSearchResult } from "@comical/contract";
 import type { LoadedBridge, LoadedTracker } from "@comical/core";

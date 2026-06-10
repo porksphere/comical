@@ -9,10 +9,13 @@ import type { Chapter } from "@comical/contract";
 import {
   entryKey,
   parseEntryKey,
+  type ActivityItem,
+  type ActivityItemView,
   type BridgePrefs,
   type Category,
   type ChapterProgress,
   type HistoryItem,
+  type KnownChapter,
   type LibraryEntry,
   type LibraryEntryView,
   type ResumePoint,
@@ -73,7 +76,7 @@ export class Library {
           categoryIds: snap.categoryIds ?? [],
           addedAt: t,
           updatedAt: t,
-          knownChapterIds: [],
+          knownChapters: [],
         };
     // Optional snapshot fields: only set when provided (exactOptionalPropertyTypes-friendly).
     if (snap.thumbnailUrl !== undefined) entry.thumbnailUrl = snap.thumbnailUrl;
@@ -106,6 +109,7 @@ export class Library {
     await this.leaveGroup(key);
     await this.store.deleteEntry(key);
     await this.store.deleteProgressForEntry(key);
+    await this.store.deleteActivityForEntry(key);
   }
 
   async isInLibrary(key: string): Promise<boolean> {
@@ -134,8 +138,11 @@ export class Library {
 
   private async toView(entry: LibraryEntry): Promise<LibraryEntryView> {
     const progress = await this.store.listProgress(entryKey(entry.bridgeId, entry.seriesId));
-    const readIds = new Set(progress.filter((p) => p.read).map((p) => p.chapterId));
-    const unreadCount = entry.knownChapterIds.filter((id) => !readIds.has(id)).length;
+    // Collapse to logical chapters `(number, language)`: a logical chapter is unread when no
+    // scanlation-group copy of it has been read.
+    const readLogical = new Set(progress.filter((p) => p.read).map((p) => logicalChapterKey(p, p.chapterId)));
+    const knownLogical = new Set((entry.knownChapters ?? []).map((c) => logicalChapterKey(c, c.id)));
+    const unreadCount = [...knownLogical].filter((k) => !readLogical.has(k)).length;
     return { ...entry, unreadCount };
   }
 
@@ -147,12 +154,49 @@ export class Library {
    */
   async syncChapters(key: string, chapters: Chapter[]): Promise<{ added: Chapter[] }> {
     const entry = await this.requireEntry(key);
-    const known = new Set(entry.knownChapterIds);
+    // Diff by logical chapter `(number, language)` — a fresh scanlation-group copy of a chapter we
+    // already know is NOT a new chapter.
+    const known = new Set((entry.knownChapters ?? []).map((c) => logicalChapterKey(c, c.id)));
     const firstSync = entry.chaptersSyncedAt === undefined;
-    const added = firstSync ? [] : chapters.filter((c) => !known.has(c.id));
-    entry.knownChapterIds = chapters.map((c) => c.id);
-    entry.chaptersSyncedAt = this.now();
+    // A logical chapter is "added" once: dedupe both against what we knew AND within this batch, so
+    // two scanlation-group copies of the same new chapter yield a single new-chapter event.
+    const seenLogical = new Set<string>();
+    const added = firstSync
+      ? []
+      : chapters.filter((c) => {
+          const lk = logicalChapterKey(c, c.id);
+          if (known.has(lk) || seenLogical.has(lk)) return false;
+          seenLogical.add(lk);
+          return true;
+        });
+    const t = this.now();
+    entry.knownChapters = chapters.map((c): KnownChapter => {
+      const k: KnownChapter = { id: c.id };
+      if (c.number !== undefined) k.number = c.number;
+      if (c.languageCode !== undefined) k.languageCode = c.languageCode;
+      return k;
+    });
+    entry.chaptersSyncedAt = t;
     await this.store.putEntry(entry);
+
+    // Record each newly-detected chapter as an activity event (the "new chapters" feed). Snapshots
+    // the series display fields so the feed renders offline / after the bridge is removed.
+    for (const c of added) {
+      const item: ActivityItem = {
+        bridgeId: entry.bridgeId,
+        seriesId: entry.seriesId,
+        chapterId: c.id,
+        title: entry.title,
+        detectedAt: t,
+      };
+      if (entry.thumbnailUrl !== undefined) item.thumbnailUrl = entry.thumbnailUrl;
+      if (c.name !== undefined) item.chapterName = c.name;
+      if (c.number !== undefined) item.number = c.number;
+      if (c.languageCode !== undefined) item.languageCode = c.languageCode;
+      if (c.publishedAt !== undefined) item.publishedAt = c.publishedAt;
+      await this.store.putActivity(item);
+    }
+
     return { added };
   }
 
@@ -173,7 +217,16 @@ export class Library {
     const ordered = orderForReading(chapters);
     const cut = ordered.findIndex((c) => c.id === chapterId);
     if (cut === -1) throw new Error(`chapter not found in list: ${chapterId}`);
-    for (const c of ordered.slice(0, cut + 1)) {
+    const target = ordered[cut]!;
+    // Stay within the target chapter's language — clicking "read to here" on an EN row must not mark
+    // a different-language copy read. Within that language, mark every copy up to and including the
+    // cut (by chapter number when known, else reading-order position), covering all scanlation groups.
+    for (let i = 0; i < ordered.length; i++) {
+      const c = ordered[i]!;
+      if (c.languageCode !== target.languageCode) continue;
+      const within =
+        target.number !== undefined && c.number !== undefined ? c.number <= target.number : i <= cut;
+      if (!within) continue;
       const patch: Partial<ChapterProgress> = { read: true };
       if (c.number !== undefined) patch.number = c.number;
       await this.writeProgress(key, c.id, patch, c.name);
@@ -242,26 +295,45 @@ export class Library {
   /** Where to resume: the last-read chapter and the page within it. */
   async getResume(key: string): Promise<ResumePoint | undefined> {
     const entry = await this.store.getEntry(key);
-    if (!entry?.lastReadChapterId) return undefined;
-    const progress = await this.store.listProgress(key);
-    const p = progress.find((x) => x.chapterId === entry.lastReadChapterId);
-    return { chapterId: entry.lastReadChapterId, lastPage: p?.lastPage ?? 0 };
+    if (entry?.lastReadChapterId) {
+      const progress = await this.store.listProgress(key);
+      const p = progress.find((x) => x.chapterId === entry.lastReadChapterId);
+      return { chapterId: entry.lastReadChapterId, lastPage: p?.lastPage ?? 0 };
+    }
+    // Not in the library — resume from the reading log, which tracks the page for non-library reads.
+    const { bridgeId, seriesId } = parseEntryKey(key);
+    const log = (await this.store.listReadingLog()).find(
+      (i) => i.bridgeId === bridgeId && i.seriesId === seriesId,
+    );
+    if (log?.lastReadChapterId) return { chapterId: log.lastReadChapterId, lastPage: log.lastPage ?? 0 };
+    return undefined;
   }
 
   /** Recently-read series, newest first (one row per series for v1). */
   async getHistory(limit = 50): Promise<HistoryItem[]> {
     const entries = await this.store.listEntries();
-    const libraryItems = entries
-      .filter((e): e is LibraryEntry & { lastReadAt: number } => e.lastReadAt !== undefined)
-      .map((e): HistoryItem => ({
-        bridgeId: e.bridgeId,
-        seriesId: e.seriesId,
-        title: e.title,
-        lastReadAt: e.lastReadAt,
-        ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
-        ...(e.lastReadChapterId !== undefined && { lastReadChapterId: e.lastReadChapterId }),
-        ...(e.lastReadChapterName !== undefined && { lastReadChapterName: e.lastReadChapterName }),
-      }));
+    const libraryItems = await Promise.all(
+      entries
+        .filter((e): e is LibraryEntry & { lastReadAt: number } => e.lastReadAt !== undefined)
+        .map(async (e): Promise<HistoryItem> => {
+          // Surface the resume page/count for the last-read chapter so history renders "page X / N".
+          const p = e.lastReadChapterId === undefined
+            ? undefined
+            : (await this.store.listProgress(entryKey(e.bridgeId, e.seriesId)))
+                .find((x) => x.chapterId === e.lastReadChapterId);
+          return {
+            bridgeId: e.bridgeId,
+            seriesId: e.seriesId,
+            title: e.title,
+            lastReadAt: e.lastReadAt,
+            ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
+            ...(e.lastReadChapterId !== undefined && { lastReadChapterId: e.lastReadChapterId }),
+            ...(e.lastReadChapterName !== undefined && { lastReadChapterName: e.lastReadChapterName }),
+            ...(p?.lastPage !== undefined && { lastPage: p.lastPage }),
+            ...(p?.pageCount !== undefined && { pageCount: p.pageCount }),
+          };
+        }),
+    );
 
     const libraryKeys = new Set(libraryItems.map((i) => `${i.bridgeId}:${i.seriesId}`));
     const logItems = (await this.store.listReadingLog()).filter(
@@ -290,6 +362,45 @@ export class Library {
     } else {
       await this.store.deleteReadingLog(bridgeId, seriesId);
     }
+  }
+
+  // ── Activity feed (newly-detected chapters) ─────────────────────────────────────
+
+  /**
+   * The new-chapter feed, newest first. Each item's `read` flag is derived live from chapter
+   * progress, so an item drops out of the unread count the moment the user reads its chapter.
+   */
+  async getActivity(opts: { limit?: number; unreadOnly?: boolean } = {}): Promise<ActivityItemView[]> {
+    const items = (await this.store.listActivity()).sort((a, b) => b.detectedAt - a.detectedAt);
+    const readByKey = new Map<string, Set<string>>();
+    const readSet = async (key: string): Promise<Set<string>> => {
+      let set = readByKey.get(key);
+      if (!set) {
+        const progress = await this.store.listProgress(key);
+        // Logical read set: an item is read once any scanlation-group copy of its `(number, language)` is read.
+        set = new Set(progress.filter((p) => p.read).map((p) => logicalChapterKey(p, p.chapterId)));
+        readByKey.set(key, set);
+      }
+      return set;
+    };
+    const views: ActivityItemView[] = [];
+    for (const item of items) {
+      const read = (await readSet(entryKey(item.bridgeId, item.seriesId))).has(logicalChapterKey(item, item.chapterId));
+      if (opts.unreadOnly && read) continue;
+      views.push({ ...item, read });
+      if (opts.limit !== undefined && views.length >= opts.limit) break;
+    }
+    return views;
+  }
+
+  /** Count of feed items whose chapter the user hasn't read yet — the "new" badge value. */
+  async unreadActivityCount(): Promise<number> {
+    return (await this.getActivity({ unreadOnly: true })).length;
+  }
+
+  /** Empty the feed (user "clear" action). */
+  async clearActivity(): Promise<void> {
+    await this.store.clearActivity();
   }
 
   // ── Categories ────────────────────────────────────────────────────────────────
@@ -450,8 +561,14 @@ export class Library {
     if (lastPage !== undefined) next.lastPage = lastPage;
     const pageCount = patch.pageCount ?? existing?.pageCount;
     if (pageCount !== undefined) next.pageCount = pageCount;
-    const number = patch.number ?? existing?.number;
+    // Backfill the logical-chapter metadata from the synced chapter list when the caller didn't
+    // supply it, so read state always collapses by `(number, language)` — e.g. a "mark read"
+    // checkbox that only sends a chapter id still gets grouped correctly.
+    const meta = (entry.knownChapters ?? []).find((c) => c.id === chapterId);
+    const number = patch.number ?? existing?.number ?? meta?.number;
     if (number !== undefined) next.number = number;
+    const languageCode = patch.languageCode ?? existing?.languageCode ?? meta?.languageCode;
+    if (languageCode !== undefined) next.languageCode = languageCode;
     await this.store.putProgress(key, next);
 
     // Advancing a LOCAL read (marking read, or recording a page) makes this the resume/history
@@ -528,6 +645,16 @@ export class Library {
   async setBridgePrefs(bridgeId: string, update: Pick<BridgePrefs, "trackersDisabled">): Promise<void> {
     await this.store.setBridgePrefs(bridgeId, { bridgeId, ...update });
   }
+}
+
+/**
+ * Key for a logical chapter — what the reader thinks of as "chapter N" regardless of which
+ * scanlation group produced this copy. Copies that share `(number, languageCode)` collapse to one
+ * logical chapter; a chapter with no `number` can't be safely grouped, so it stands alone (keyed by
+ * its id). The leading tag keeps the number- and id-namespaces from ever colliding.
+ */
+function logicalChapterKey(c: { number?: number | undefined; languageCode?: string | undefined }, id: string): string {
+  return c.number !== undefined ? `n:${c.number}:${c.languageCode ?? ""}` : `i:${id}`;
 }
 
 /**
