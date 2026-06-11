@@ -25,6 +25,10 @@
     #app-title.interactive { cursor: pointer; user-select: none; }
     .title-caret { font-size: 0.85rem; color: #888; transition: transform 0.15s; }
     #app-header.open .title-caret { transform: rotate(180deg); }
+    .home-tabs { display: inline-flex; gap: 0.25rem; margin: 0.9rem 0 0; padding: 0.25rem; background: #1c1c1e; border: 1px solid #2a2a2e; border-radius: 0.7rem; }
+    .home-tab { background: none; border: none; border-radius: 0.5rem; color: #aaa; padding: 0.4rem 0.9rem; font-size: 0.9rem; }
+    .home-tab:hover { color: #ddd; background: #232327; }
+    .home-tab.active, .home-tab.active:hover { color: #fff; background: #2563eb; }
     .bridge-dropdown { position: absolute; top: 100%; left: 0; z-index: 60; margin-top: 0.3rem; min-width: 220px; max-height: 60vh; overflow-y: auto; padding: 0.35rem; background: #18181b; border: 1px solid #333; border-radius: 0.6rem; box-shadow: 0 10px 28px rgba(0,0,0,0.55); display: flex; flex-direction: column; gap: 0.1rem; }
     .bridge-dropdown[hidden] { display: none; }
     .bridge-dropdown .tab { border-radius: 0.4rem; border: 1px solid transparent; background: transparent; text-align: left; padding: 0.5rem 0.7rem; font-size: 0.9rem; }
@@ -194,12 +198,17 @@
   <div id="browse-view">
   <span id="caps" class="muted" style="font-size:0.8rem; display:block; margin-bottom:0.5rem"></span>
 
+  <!-- Home-page switcher: Home (list stack) and, when supported, Favorites. -->
+  <div id="home-tabs" class="home-tabs">
+    <button class="home-tab active" data-tab="home">Home</button>
+    <button class="home-tab" id="fav-tab" data-tab="favorites" style="display:none">★ Favorites</button>
+  </div>
+
   <!-- Browse -->
   <div class="controls">
     <input id="query" type="search" placeholder="Search…" style="flex:1; min-width:160px">
     <button id="searchBtn">Search</button>
     <button id="filters-toggle" class="secondary" style="display:none">Filters</button>
-    <button id="fav-section" class="secondary" style="display:none">★ Favorites</button>
   </div>
 
   <!-- Filters / sort / tags (only when the bridge supports them) -->
@@ -214,7 +223,7 @@
   <div id="home-sections"></div>
   <!-- Results: a single full list ("See all") or search results, with load-more pagination. -->
   <div id="results-pane" style="display:none">
-    <div class="results-head"><button id="browse-back" class="link">← Home</button><span id="results-label" class="muted" style="font-size:0.82rem"></span></div>
+    <div id="results-head" class="results-head"><button id="browse-back" class="link">← Home</button><span id="results-label" class="muted" style="font-size:0.82rem"></span></div>
     <div id="grid" class="grid"></div>
     <div style="text-align:center; margin:1rem 0"><button id="load-more" class="secondary" style="display:none">Load more</button></div>
   </div>
