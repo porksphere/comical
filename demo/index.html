@@ -66,17 +66,19 @@
     .grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.9rem 0.6rem; }
     .grid > .card { flex: 0 1 150px; }
     .card { position: relative; padding: 0; background: none; cursor: pointer; }
-    .card:hover, .card.touch-active { z-index: 10; }
+    .card:hover, .card.touch-active, .history-item:hover, .history-item.touch-active { z-index: 10; }
     .card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 6px; background: #333; margin-bottom: 0.4rem; display: block; transition: filter 0.15s; }
     .card:hover img, .card.touch-active img { filter: brightness(1.08); }
-    .card-title { position: relative; font-size: 0.85rem; font-weight: 600; line-height: 1.3; }
-    /* Visible title clamps to 3 lines; the full text lives in data-full and is revealed on hover. */
-    .card-title > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
-    /* Hover (or touch) pops the full title downward as a revealed-background overlay, overlapping
-       whatever is below rather than making the row taller. (Inside carousels it's clipped to the
-       strip.) */
-    .card-title::after { content: attr(data-full); position: absolute; top: -0.25rem; left: -0.4rem; right: -0.4rem; padding: 0.25rem 0.4rem; background: #232327; color: #fff; border-radius: 6px; box-shadow: 0 8px 20px rgba(0,0,0,0.55); opacity: 0; pointer-events: none; transition: opacity 0.12s; z-index: 1; }
-    .card.clamped:hover .card-title::after, .card.clamped.touch-active .card-title::after { opacity: 1; }
+    .card-title { font-size: 0.85rem; font-weight: 600; line-height: 1.3; }
+    /* A clampable title (series cards + history/activity rows): the visible text clamps to 3 lines,
+       and the full text (in data-full) reveals on hover/touch as a popover overlapping whatever is
+       below rather than reflowing the row taller. The enclosing item (.card / .history-item) gets
+       .clamped only when actually truncated, plus .touch-active, via the handlers near init.
+       (Inside the horizontal carousels the popover is clipped to the strip.) */
+    .clampable { position: relative; }
+    .clampable > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+    .clampable::after { content: attr(data-full); position: absolute; top: -0.25rem; left: -0.4rem; right: -0.4rem; padding: 0.25rem 0.4rem; background: #232327; color: #fff; border-radius: 6px; box-shadow: 0 8px 20px rgba(0,0,0,0.55); opacity: 0; pointer-events: none; transition: opacity 0.12s; z-index: 1; }
+    .clamped:hover .clampable::after, .clamped.touch-active .clampable::after { opacity: 1; }
     .card-sub { font-size: 0.75rem; color: #888; margin-top: 0.2rem; }
     /* Home stack: each list is a section rendered per its layout hint. */
     .section { margin: 1.4rem 0; }
@@ -183,7 +185,7 @@
     #chapters .ch-versions li.read .ch-name { color: #6b7280; }
     #chapters .ch-versions .ch-dot { width: 0.45rem; height: 0.45rem; border-radius: 999px; background: #444; flex-shrink: 0; }
     #chapters .ch-versions li.read .ch-dot { background: #2563eb; }
-    .history-item { display: flex; gap: 0.75rem; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid #242427; }
+    .history-item { position: relative; display: flex; gap: 0.75rem; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid #242427; }
     .history-item img { width: 44px; height: 66px; object-fit: cover; border-radius: 4px; background: #333; }
     .history-item .hi-body { flex: 1; }
     .history-item .hi-title { font-size: 0.9rem; font-weight: 600; }
