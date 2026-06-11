@@ -243,11 +243,12 @@
   </section>
   <!-- Home: a vertical stack of list sections (carousel / grid / terminal-infinite grid). -->
   <div id="home-sections"></div>
-  <!-- Results: a single full list ("See all") or search results, with load-more pagination. -->
+  <!-- Results: a single full list ("See all") or search results, with infinite-scroll pagination. -->
   <div id="results-pane" style="display:none">
     <div id="results-head" class="results-head"><button id="browse-back" class="link">← Home</button><span id="results-label" class="muted" style="font-size:0.82rem"></span></div>
     <div id="grid" class="grid"></div>
-    <div style="text-align:center; margin:1rem 0"><button id="load-more" class="secondary" style="display:none">Load more</button></div>
+    <!-- A sentinel at the grid's bottom auto-loads the next page as it scrolls into view. -->
+    <div id="results-sentinel" style="height:1px"></div>
   </div>
   </div><!-- /browse-view -->
 
