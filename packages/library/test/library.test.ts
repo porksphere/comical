@@ -180,6 +180,34 @@ describe("activity feed", () => {
     expect(c2.read).toBe(false);
   });
 
+  test("a partial baseline does not flood the feed with the back-catalogue", async () => {
+    // Reproduces the real bug: the first sync sees an incomplete list (here, empty), so the diff
+    // alone would flag every pre-existing chapter as "new" on the next fuller sync. Gating on
+    // publish time keeps the back-catalogue (published before the series was added) out of the feed.
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES); // addedAt = 1001 (fakeClock)
+
+    await lib.syncChapters(KEY, []); // partial/empty baseline
+    // Fuller sync arrives: many old chapters (published long before add) plus one fresh release.
+    const old = [1, 2, 3].map((n) => ({ id: `c${n}`, name: `Ch ${n}`, number: n, publishedAt: 500 }));
+    const fresh = { id: "c4", name: "Ch 4", number: 4, publishedAt: 9_000 };
+    const { added } = await lib.syncChapters(KEY, [...old, fresh]);
+
+    expect(added.map((c) => c.id)).toEqual(["c4"]);
+    expect((await lib.getActivity()).map((a) => a.chapterId)).toEqual(["c4"]);
+    // The back-catalogue is still tracked for unread counts — just not surfaced as activity.
+    expect((await lib.getLibrary())[0]?.unreadCount).toBe(4);
+  });
+
+  test("chapters without a publish date fall back to the diff (still detected)", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)]); // baseline (ch() omits publishedAt)
+    const { added } = await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+    expect(added.map((c) => c.id)).toEqual(["c2"]);
+    expect((await lib.getActivity()).map((a) => a.chapterId)).toEqual(["c2"]);
+  });
+
   test("feed is newest-first across syncs", async () => {
     const lib = makeLibrary();
     await lib.addSeries(SERIES);

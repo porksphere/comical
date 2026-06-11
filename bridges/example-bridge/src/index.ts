@@ -142,16 +142,16 @@ class ExampleBridge extends BridgeBase<Settings> {
     page: number,
     options?: ListOptions,
   ): Promise<PagedResults<SeriesEntry>> {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ page: String(page) });
     if (options?.query) params.set("q", options.query);
     const sort = this.effectiveSort(options?.sort);
     if (sort) {
       params.set("sort", sort.key);
       params.set("dir", sort.ascending ? "asc" : "desc");
     }
-    const qs = params.toString();
-    const $ = await this.fetchHtml(`${this.base()}/list/${encodeURIComponent(listId)}${qs ? `?${qs}` : ""}`);
-    return { items: this.cards($, "section.list-items"), page, hasNextPage: false };
+    const $ = await this.fetchHtml(`${this.base()}/list/${encodeURIComponent(listId)}?${params.toString()}`);
+    const hasNextPage = $("section.list-items").attr("data-has-next") === "true";
+    return { items: this.cards($, "section.list-items"), page, hasNextPage };
   }
 
   async getFilters(): Promise<Filter[]> {

@@ -166,15 +166,28 @@ export class FixtureBackend {
     };
   }
 
-  /** The backend's self-defined lists. `popular` = all; `completed` = finished series. */
-  private lists(): Array<{ id: string; name: string; series: FixtureSeries[] }> {
+  /**
+   * The backend's self-defined lists, in home-stack order. Each carries a presentation `layout`
+   * the example-bridge surfaces verbatim, so the demo home shows the full spread: a `carousel`
+   * preview row, a non-terminal `grid` (pages with "load more"), and a terminal `grid` (the last
+   * section, which the host renders as infinite-scroll). `popular`/`latest` = all; `completed` =
+   * finished series.
+   */
+  private lists(): Array<{
+    id: string;
+    name: string;
+    layout: "carousel" | "grid" | "ranked" | "hero";
+    series: FixtureSeries[];
+  }> {
     return [
-      { id: "popular", name: "Popular", series: this.catalog },
+      { id: "popular", name: "Popular", layout: "carousel", series: this.catalog },
       {
         id: "completed",
         name: "Completed",
+        layout: "grid",
         series: this.catalog.filter((s) => s.status === "completed"),
       },
+      { id: "latest", name: "Latest", layout: "grid", series: [...this.catalog].reverse() },
     ];
   }
 
@@ -182,16 +195,19 @@ export class FixtureBackend {
     const items = this.lists()
       .map(
         (l) =>
-          `<li class="list-card" data-id="${esc(l.id)}" data-layout="carousel">` +
+          `<li class="list-card" data-id="${esc(l.id)}" data-layout="${esc(l.layout)}">` +
           `<a class="list-name" href="/list/${esc(l.id)}">${esc(l.name)}</a></li>`,
       )
       .join("");
     return layout("Demo Comic Library", `<ul class="lists">${items}</ul>`);
   }
 
+  /** Page size for list pagination — small so the modest fixture catalog spans several pages. */
+  private static readonly LIST_PAGE_SIZE = 6;
+
   private renderList(
     id: string,
-    opts: { query?: string; sort?: string; ascending?: boolean } = {},
+    opts: { query?: string; sort?: string; ascending?: boolean; page?: number } = {},
   ): string | undefined {
     const list = this.lists().find((l) => l.id === id);
     if (!list) return undefined;
@@ -205,9 +221,16 @@ export class FixtureBackend {
       if (opts.ascending === false) series.reverse();
     }
 
+    const size = FixtureBackend.LIST_PAGE_SIZE;
+    const page = Math.max(1, opts.page ?? 1);
+    const start = (page - 1) * size;
+    const pageItems = series.slice(start, start + size);
+    const hasNext = start + size < series.length;
+
     return layout(
       list.name,
-      `<section class="list-items" data-id="${esc(list.id)}">${series.map(seriesCard).join("")}</section>`,
+      `<section class="list-items" data-id="${esc(list.id)}" data-has-next="${hasNext}">` +
+        `${pageItems.map(seriesCard).join("")}</section>`,
     );
   }
 
@@ -297,6 +320,7 @@ export class FixtureBackend {
         ...(lp.get("q") ? { query: lp.get("q")! } : {}),
         ...(lp.get("sort") ? { sort: lp.get("sort")! } : {}),
         ascending: lp.get("dir") !== "desc",
+        page: Math.max(1, Number(lp.get("page") ?? "1") || 1),
       });
       return html ? this.html(html) : this.html(layout("Not Found", "<p>not found</p>"), 404);
     }

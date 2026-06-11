@@ -103,6 +103,8 @@ let activeListId: string | null = null;
 let currentView: "browse" | "library" | "history" | "activity" | "detail" | "reader" | "settings" = "browse";
 let previousView: "browse" | "library" | "history" = "browse";
 let loadMoreFn: (() => Promise<void>) | null = null;
+/** IntersectionObservers driving the home view's terminal infinite-scroll; disconnected on re-render. */
+let homeObservers: IntersectionObserver[] = [];
 let currentSortOptions: SortOption[] = [];
 const filterTagSelections = new Map<string, Array<{ id: string; label: string }>>();
 const tagIdToName = new Map<string, string>();
@@ -388,31 +390,15 @@ async function selectBridge(id: string): Promise<void> {
 
   // Content needs the bridge configured.
   if (detail.missingRequired.length > 0) {
-    $("#list-tabs").innerHTML = "";
-    $("#grid").innerHTML = "";
+    clearHome();
+    showBrowseMode("home");
     status(`"${detail.info.name}" needs configuration: ${detail.missingRequired.join(", ")}`, true);
     return;
   }
 
-  if (detail.info.capabilities.includes("lists")) await loadLists();
-  else { $("#list-tabs").innerHTML = ""; $("#grid").innerHTML = ""; }
-  if (activeCaps.includes("favorites")) addFavoritesTab();
+  await renderHome();
 
   status(`Loaded "${detail.info.name}".`);
-}
-
-/** A "★ Favorites" pseudo-tab (capability "favorites") that loads the account's favorites. */
-function addFavoritesTab(): void {
-  const tabs = $("#list-tabs");
-  const tab = document.createElement("div");
-  tab.className = "tab";
-  tab.textContent = "★ Favorites";
-  tab.onclick = () => {
-    tabs.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    tab.classList.add("active");
-    void loadFavorites();
-  };
-  tabs.append(tab);
 }
 
 async function loadFavorites(page = 1): Promise<void> {
@@ -777,40 +763,213 @@ async function renderMeta(capabilities: string[]): Promise<void> {
   browseBridge = activeBridge;
 }
 
-// ── Lists + grid ─────────────────────────────────────────────────────────────────
-async function loadLists(): Promise<void> {
-  const lists = await api<SeriesList[]>(`/bridges/${activeBridge}/lists`);
-  currentLists = lists;
-  const tabs = $("#list-tabs");
-  tabs.innerHTML = "";
-  if (lists.length === 0) { activeListId = null; return; }
-  const initial = lists.find((l) => l.featured)?.id ?? lists[0]!.id;
-  for (const l of lists) {
-    const tab = document.createElement("div");
-    tab.className = "tab" + (l.id === initial ? " active" : "");
-    tab.textContent = l.name;
-    tab.onclick = () => {
-      if (tab.classList.contains("active")) {
-        // Toggle off → deselect the list; search reverts to global, grid cleared.
-        tab.classList.remove("active");
-        activeListId = null;
-        $("#grid").innerHTML = "";
-        status(`Deselected "${l.name}". Search is now global.`);
-        return;
-      }
-      tabs.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      void loadList(l.id);
-    };
-    tabs.append(tab);
+// ── Home (stacked list sections) + list detail ───────────────────────────────────
+const listPath = (id: string, page: number): string =>
+  `/bridges/${activeBridge}/lists/${enc(id)}?page=${page}`;
+
+function clearHome(): void {
+  for (const io of homeObservers) io.disconnect();
+  homeObservers = [];
+  $("#home-sections").innerHTML = "";
+}
+
+/** Toggle the browse view between the stacked home and the results/list-detail grid. */
+function showBrowseMode(mode: "home" | "results"): void {
+  const home = mode === "home";
+  $("#home-sections").style.display = home ? "" : "none";
+  $("#results-pane").style.display = home ? "none" : "";
+  if (home) {
+    activeListId = null;
+    $("#grid").innerHTML = "";
+    setLoadMore(false, async () => {});
   }
-  await loadList(initial);
+}
+
+/**
+ * Build the home view: a vertical stack of list sections in `getLists()` order. The hint on each
+ * list decides how it renders; a `grid` that is the LAST section infinite-scrolls, earlier grids
+ * page with a "Load more" button (see {@link renderSection}).
+ */
+async function renderHome(): Promise<void> {
+  clearHome();
+  showBrowseMode("home");
+  const host = $("#home-sections");
+  if (activeCaps.includes("favorites")) await renderFavoritesSection(host);
+  if (activeCaps.includes("lists")) {
+    const lists = await api<SeriesList[]>(`/bridges/${activeBridge}/lists`);
+    currentLists = lists;
+    for (let i = 0; i < lists.length; i++) {
+      await renderSection(host, lists[i]!, i === lists.length - 1);
+    }
+  } else {
+    currentLists = [];
+  }
+  if (host.children.length === 0) status("Nothing to show for this bridge yet.");
+}
+
+function sectionHead(name: string, seeAll?: () => void): HTMLElement {
+  const head = document.createElement("div");
+  head.className = "section-head";
+  const h = document.createElement("h3");
+  h.textContent = name;
+  head.append(h);
+  if (seeAll) {
+    const btn = document.createElement("button");
+    btn.className = "see-all";
+    btn.textContent = "See all →";
+    btn.onclick = seeAll;
+    head.append(btn);
+  }
+  return head;
+}
+
+async function renderSection(host: HTMLElement, list: SeriesList, isLast: boolean): Promise<void> {
+  const layout = list.layout ?? "grid";
+  const horizontal = layout === "carousel" || layout === "ranked" || layout === "hero";
+  let r: PagedResults;
+  try {
+    r = await api<PagedResults>(listPath(list.id, 1));
+  } catch (e) {
+    status(`List "${list.name}" failed to load: ${e instanceof Error ? e.message : e}`, true);
+    return;
+  }
+  if (r.items.length === 0) return;
+
+  const section = document.createElement("section");
+  section.className = "section";
+
+  if (horizontal) {
+    section.append(sectionHead(list.name, () => void showListDetail(list)));
+    const row = document.createElement("div");
+    row.className = "carousel" + (layout === "ranked" ? " ranked" : layout === "hero" ? " hero" : "");
+    r.items.forEach((item, idx) => {
+      const card = makeCard(item);
+      if (layout === "ranked") {
+        const badge = document.createElement("span");
+        badge.className = "rank-badge";
+        badge.textContent = String(idx + 1);
+        card.prepend(badge);
+      }
+      row.append(card);
+    });
+    section.append(row);
+  } else {
+    // A non-terminal grid links to its full list and pages with "Load more"; the terminal grid
+    // owns the page's downward scroll and loads more automatically.
+    section.append(sectionHead(list.name, isLast ? undefined : () => void showListDetail(list)));
+    const grid = document.createElement("div");
+    grid.className = "grid";
+    for (const item of r.items) grid.append(makeCard(item));
+    section.append(grid);
+    if (isLast) attachInfinite(section, grid, list, r.hasNextPage);
+    else attachLoadMore(section, grid, list, r.hasNextPage);
+  }
+  host.append(section);
+}
+
+/** A non-terminal grid section: append the next page on each click until exhausted. */
+function attachLoadMore(section: HTMLElement, grid: HTMLElement, list: SeriesList, hasNextInit: boolean): void {
+  let page = 1;
+  let hasNext = hasNextInit;
+  const wrap = document.createElement("div");
+  wrap.className = "load-more-wrap";
+  const btn = document.createElement("button");
+  btn.className = "secondary";
+  btn.textContent = "Load more";
+  btn.style.display = hasNext ? "" : "none";
+  btn.onclick = async () => {
+    if (!hasNext || btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const r = await api<PagedResults>(listPath(list.id, page + 1));
+      page += 1;
+      for (const item of r.items) grid.append(makeCard(item));
+      hasNext = r.hasNextPage;
+      btn.style.display = hasNext ? "" : "none";
+    } catch (e) {
+      status(`Load more failed: ${e instanceof Error ? e.message : e}`, true);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  wrap.append(btn);
+  section.append(wrap);
+}
+
+/**
+ * The terminal grid section: a sentinel at the page bottom auto-loads successive pages as it
+ * scrolls into view. Only ever wired onto the final section, so the "one infinite list, and it's
+ * at the bottom" invariant holds by construction.
+ */
+function attachInfinite(section: HTMLElement, grid: HTMLElement, list: SeriesList, hasNextInit: boolean): void {
+  let page = 1;
+  let hasNext = hasNextInit;
+  let loading = false;
+  const sentinel = document.createElement("div");
+  sentinel.style.height = "1px";
+  section.append(sentinel);
+  if (!hasNext) return;
+  const io = new IntersectionObserver(
+    async (entries) => {
+      if (loading || !hasNext || !entries.some((e) => e.isIntersecting)) return;
+      loading = true;
+      try {
+        const r = await api<PagedResults>(listPath(list.id, page + 1));
+        page += 1;
+        for (const item of r.items) grid.append(makeCard(item));
+        hasNext = r.hasNextPage;
+        if (!hasNext) io.disconnect();
+      } catch (e) {
+        io.disconnect();
+        status(`Infinite scroll stopped: ${e instanceof Error ? e.message : e}`, true);
+      } finally {
+        loading = false;
+      }
+    },
+    { rootMargin: "400px" },
+  );
+  io.observe(sentinel);
+  homeObservers.push(io);
+}
+
+/** Favorites as a carousel atop home (capability "favorites"); silently omitted if unavailable. */
+async function renderFavoritesSection(host: HTMLElement): Promise<void> {
+  let r: PagedResults;
+  try {
+    r = await api<PagedResults>(`/bridges/${activeBridge}/favorites?page=1`);
+  } catch {
+    return; // not signed in / unsupported — just skip the section
+  }
+  if (r.items.length === 0) return;
+  const section = document.createElement("section");
+  section.className = "section";
+  section.append(sectionHead("★ Favorites", () => void showFavoritesDetail()));
+  const row = document.createElement("div");
+  row.className = "carousel";
+  for (const item of r.items) row.append(makeCard(item));
+  section.append(row);
+  host.append(section);
+}
+
+/** Open a list full-screen in the results grid; the search box scopes to it when `searchable`. */
+async function showListDetail(list: SeriesList): Promise<void> {
+  showBrowseMode("results");
+  $("#results-label").textContent = list.searchable
+    ? `${list.name} — search box scopes to this list`
+    : list.name;
+  await loadList(list.id, 1);
+}
+
+async function showFavoritesDetail(): Promise<void> {
+  showBrowseMode("results");
+  $("#results-label").textContent = "★ Favorites";
+  await loadFavorites(1);
 }
 
 async function loadList(listId: string, page = 1): Promise<void> {
   if (page === 1) { activeListId = listId; status(`Loading list "${listId}"…`); }
   try {
-    const r = await api<PagedResults>(`/bridges/${activeBridge}/lists/${enc(listId)}?page=${page}`);
+    const r = await api<PagedResults>(listPath(listId, page));
     if (page === 1) renderGrid(r.items);
     else for (const item of r.items) $("#grid").append(makeCard(item));
     setLoadMore(r.hasNextPage, () => loadList(listId, page + 1));
@@ -1761,6 +1920,30 @@ async function prefetchNextChapter(): Promise<void> {
   } catch { /* silently discard — openChapter will retry */ }
 }
 
+/** One filmstrip slot: an empty pane when the neighbour page doesn't exist, else its image. */
+function readerSlotHtml(p: Page | undefined, pageNumber: number): string {
+  if (!p) return `<div class="reader-slot"></div>`;
+  return `<div class="reader-slot"><img src="${p.imageUrl}" alt="Page ${pageNumber}" `
+    + `onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${pageNumber}'"></div>`;
+}
+
+/** The current filmstrip track (rebuilt on every render), or null when the reader isn't mounted. */
+function readerTrack(): HTMLElement | null {
+  return document.querySelector<HTMLElement>("#reader-page .reader-track");
+}
+
+/**
+ * Position the filmstrip. The resting (centred) state is translateX(-100%) so the middle slot —
+ * the current page — fills the viewport; `dx` (px, +right) shifts it as the finger drags. Percent
+ * keeps the resting/snapped states correct across resizes; px only rides along during a live drag.
+ */
+function setTrackOffset(dx: number, animate: boolean): void {
+  const track = readerTrack();
+  if (!track) return;
+  track.classList.toggle("animate", animate);
+  track.style.transform = dx === 0 ? "translateX(-100%)" : `translateX(calc(-100% + ${dx}px))`;
+}
+
 function renderReaderPage(showOverlay = false): void {
   if (!readerState) return;
   const { ch, pages, currentPage } = readerState;
@@ -1774,10 +1957,55 @@ function renderReaderPage(showOverlay = false): void {
   $<HTMLButtonElement>("#reader-prev").disabled = currentPage === 0;
   $<HTMLButtonElement>("#reader-next").disabled = onLastPage && !nextCh;
   $<HTMLButtonElement>("#reader-next").textContent = onLastPage && nextCh ? "Next ch. ›" : "Next ›";
-  $("#reader-page").innerHTML = `<img src="${p.imageUrl}" alt="Page ${currentPage + 1}" onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${currentPage + 1}'">`;
+  $("#reader-page").innerHTML = `<div class="reader-track">`
+    + readerSlotHtml(pages[currentPage - 1], currentPage)
+    + readerSlotHtml(p, currentPage + 1)
+    + readerSlotHtml(pages[currentPage + 1], currentPage + 2)
+    + `</div>`;
+  setTrackOffset(0, false);
   if (showOverlay) showToolbar();
   preloadImages(pages.slice(Math.max(0, currentPage - 1), currentPage + 4).map(p => p.imageUrl));
   if (currentPage >= pages.length - 1 - 3) void prefetchNextChapter();
+}
+
+/** True when there is a page (or a following chapter) to slide toward in the given direction. */
+function hasNeighbourPage(dir: 1 | -1): boolean {
+  if (!readerState) return false;
+  const { pages, currentPage } = readerState;
+  if (dir === -1) return currentPage > 0;
+  return currentPage < pages.length - 1 || !!getAdjacentChapter(1);
+}
+
+/** Soften the drag past an end with no page to reveal, so the strip rubber-bands instead of tearing off. */
+function applySwipeResistance(dx: number): number {
+  if (dx > 0 && !hasNeighbourPage(-1)) return dx * 0.25;
+  if (dx < 0 && !hasNeighbourPage(1)) return dx * 0.25;
+  return dx;
+}
+
+/** Run `cb` when the track's slide animation finishes, with a timeout fallback if transitionend never fires. */
+function onceTransitionEnd(el: HTMLElement, cb: () => void): void {
+  let done = false;
+  const run = (): void => { if (done) return; done = true; el.removeEventListener("transitionend", run); cb(); };
+  el.addEventListener("transitionend", run);
+  setTimeout(run, 340);
+}
+
+/** Animate the filmstrip fully toward a neighbour, then re-centre on it (the image is already in place). */
+function commitSwipe(dir: 1 | -1): void {
+  const track = readerTrack();
+  if (!track) { void readerNavigate(dir); return; }
+  track.classList.add("animate");
+  track.style.transform = dir === 1 ? "translateX(-200%)" : "translateX(0%)";
+  onceTransitionEnd(track, () => { void readerNavigate(dir); });
+}
+
+/** Resolve a finished horizontal drag: commit to the neighbour past the threshold, else snap back. */
+function finishSwipe(dx: number, width: number): void {
+  const threshold = Math.max(60, width * 0.18);
+  if (dx <= -threshold && hasNeighbourPage(1)) commitSwipe(1);
+  else if (dx >= threshold && hasNeighbourPage(-1)) commitSwipe(-1);
+  else setTrackOffset(0, true);
 }
 
 async function readerNavigate(delta: number): Promise<void> {
@@ -1899,6 +2127,14 @@ async function doSearch(): Promise<void> {
   const q = $<HTMLInputElement>("#query").value;
   const filters = collectFilters();
   const sort = collectSort();
+  // An empty global query (no filters/sort, not scoped to a list) just returns to the home stack.
+  if (q.trim() === "" && activeListId === null && filters.length === 0 && !sort) {
+    showBrowseMode("home");
+    status("");
+    return;
+  }
+  showBrowseMode("results");
+  if (activeListId === null) $("#results-label").textContent = `Search: "${q.trim() || "all"}"`;
   await runSearch(q, filters, sort, 1);
 }
 
@@ -1954,7 +2190,6 @@ async function runSearch(
 
   if (page === 1) {
     status(scoped ? `Searching in "${scoped.name}"…` : "Searching…");
-    if (!scoped) $("#list-tabs").querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
   }
   try {
     const path = scoped
@@ -2395,37 +2630,77 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
   ($("#reader-view") as HTMLElement).addEventListener("mousemove", () => {
     if (currentView === "reader") showToolbar();
   });
-  // Touch swipe navigation (mobile)
+  // Touch navigation (mobile): a single finger physically drags the filmstrip and snaps to the
+  // neighbour page (Mihon-style); two fingers are a pinch and never paginate; a clean tap falls
+  // through to the left/right/centre zone logic below.
+  const readerView = $("#reader-view") as HTMLElement;
   let swipeStartX = 0, swipeStartY = 0;
-  ($("#reader-view") as HTMLElement).addEventListener("touchstart", (e: TouchEvent) => {
-    swipeStartX = e.touches[0].clientX;
-    swipeStartY = e.touches[0].clientY;
-  }, { passive: true });
-  ($("#reader-view") as HTMLElement).addEventListener("touchend", (e: TouchEvent) => {
-    const dx = e.changedTouches[0].clientX - swipeStartX;
-    const dy = e.changedTouches[0].clientY - swipeStartY;
-    // Horizontal swipe → page navigation.
-    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      e.preventDefault();
-      void readerNavigate(dx < 0 ? 1 : -1);
+  let gestureActive = false;     // a single-finger gesture is in flight (still a tap or a drag)
+  let gestureHorizontal = false; // that gesture has locked into a horizontal page-drag
+  let multiTouch = false;        // 2+ fingers seen this gesture → pinch, suppress paging entirely
+  let onControl = false;         // gesture began on a toolbar control → leave taps to native clicks
+  readerView.addEventListener("touchstart", (e: TouchEvent) => {
+    if (e.touches.length >= 2) {
+      // Pinch starting — drop any drag in progress and snap the strip home; never page on a pinch.
+      multiTouch = true;
+      if (gestureHorizontal) setTrackOffset(0, true);
+      gestureActive = false; gestureHorizontal = false;
       return;
     }
-    // Tap → zone logic, handled here rather than via the synthesized click so it doesn't
-    // depend on a "hover-priming" first tap (the mousemove handler would otherwise just pop
-    // the toolbar on the first tap and only navigate on the second). preventDefault also
-    // suppresses the synthesized mouse events, so the #reader-page click handler stays
-    // desktop-only. Controls (toolbar buttons) are left to fire their native click.
-    if (Math.abs(dx) < 12 && Math.abs(dy) < 12) {
-      const target = e.target as HTMLElement;
-      if (target.closest("button,a")) return;
-      if (target.tagName === "INPUT") return; // let the page-jump input handle its own taps
-      if (target.closest("#reader-progress")) { e.preventDefault(); openPageJump(); return; }
-      e.preventDefault();
-      const frac = e.changedTouches[0].clientX / window.innerWidth;
-      if (frac < 0.4) void readerNavigate(-1);
-      else if (frac > 0.6) void readerNavigate(1);
-      else toggleToolbar();
+    const target = e.target as HTMLElement;
+    onControl = !!target.closest("button,a,input,#reader-progress");
+    swipeStartX = e.touches[0].clientX;
+    swipeStartY = e.touches[0].clientY;
+    gestureActive = true; gestureHorizontal = false; multiTouch = false;
+  }, { passive: true });
+  readerView.addEventListener("touchmove", (e: TouchEvent) => {
+    if (e.touches.length >= 2 || multiTouch) {
+      // A second finger landed mid-gesture — abandon the drag and let the browser pinch-zoom.
+      if (gestureHorizontal) setTrackOffset(0, true);
+      multiTouch = true; gestureActive = false; gestureHorizontal = false;
+      return;
     }
+    if (!gestureActive || onControl) return;
+    const dx = e.touches[0].clientX - swipeStartX;
+    const dy = e.touches[0].clientY - swipeStartY;
+    if (!gestureHorizontal) {
+      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) gestureHorizontal = true;
+      else if (Math.abs(dy) > 12) { gestureActive = false; return; } // vertical intent — bail out
+      else return;
+    }
+    e.preventDefault(); // claim the gesture so the page doesn't also scroll/zoom under us
+    setTrackOffset(applySwipeResistance(dx), false);
+  }, { passive: false });
+  const endSwipe = (e: TouchEvent): void => {
+    if (e.touches.length > 0) return; // still fingers down (e.g. lifting one finger of a pinch)
+    const wasMulti = multiTouch, wasHorizontal = gestureHorizontal;
+    const wasActive = gestureActive, startedOnControl = onControl;
+    multiTouch = false; gestureHorizontal = false; gestureActive = false;
+    if (wasMulti) { setTrackOffset(0, true); return; } // pinch released — no page, no tap
+    const dx = e.changedTouches[0].clientX - swipeStartX;
+    const dy = e.changedTouches[0].clientY - swipeStartY;
+    if (wasHorizontal) { finishSwipe(applySwipeResistance(dx), readerView.clientWidth); return; }
+    // Not a drag → tap-zone logic. Handled here (not via the synthesized click) so it doesn't
+    // depend on a hover-priming first tap; preventDefault also suppresses the synthesized mouse
+    // events, keeping the #reader-page click handler desktop-only. Controls keep their native click.
+    if (startedOnControl || !wasActive) return;
+    if (Math.abs(dx) >= 12 || Math.abs(dy) >= 12) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("button,a")) return;
+    if (target.tagName === "INPUT") return; // let the page-jump input handle its own taps
+    if (target.closest("#reader-progress")) { e.preventDefault(); openPageJump(); return; }
+    e.preventDefault();
+    const frac = e.changedTouches[0].clientX / window.innerWidth;
+    if (frac < 0.4) void readerNavigate(-1);
+    else if (frac > 0.6) void readerNavigate(1);
+    else toggleToolbar();
+  };
+  readerView.addEventListener("touchend", endSwipe, { passive: false });
+  readerView.addEventListener("touchcancel", (e: TouchEvent) => {
+    // A cancelled gesture (e.g. the OS taking over) should never page — just settle the strip.
+    multiTouch = false; gestureActive = false;
+    if (gestureHorizontal) { gestureHorizontal = false; setTrackOffset(0, true); }
+    void e;
   });
   $("#load-more").onclick = () => void loadMoreFn?.();
   $("#lib-add-category").onclick = async () => {
@@ -2439,6 +2714,11 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
 
   $<HTMLSelectElement>("#sort-field").addEventListener("change", updateSortDirVisibility);
   $("#searchBtn").onclick = () => void doSearch();
+  $("#browse-back").onclick = () => {
+    $<HTMLInputElement>("#query").value = "";
+    showBrowseMode("home");
+    status("");
+  };
   $("#filters-toggle").onclick = () => {
     const panel = $("#meta-panel");
     const btn = $<HTMLButtonElement>("#filters-toggle");
