@@ -92,6 +92,8 @@ export type Chapter = z.infer<typeof chapterSchema>;
 export const pageSchema = z.object({
   index: z.number().int().nonnegative(),
   imageUrl: z.string().url(),
+  /** Optional cheaper preview variant (e.g. a thumbnail-CDN URL); the reader still uses imageUrl. */
+  thumbnailUrl: z.string().url().optional(),
   headers: z.record(z.string(), z.string()).optional(),
 });
 export type Page = z.infer<typeof pageSchema>;

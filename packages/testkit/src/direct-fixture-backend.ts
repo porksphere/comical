@@ -87,6 +87,11 @@ const cover = (id: string): string =>
 const pageImg = (id: string, n: number): string =>
   `https://picsum.photos/seed/${encodeURIComponent(`direct-${id}-${n}`)}/700/1000`;
 
+// A cheaper preview variant of the same page (small dimensions), mirroring how a real bridge would
+// point at a dedicated thumbnail CDN instead of loading the full-resolution page image.
+const pageThumb = (id: string, n: number): string =>
+  `https://picsum.photos/seed/${encodeURIComponent(`direct-${id}-${n}`)}/160/220`;
+
 function layout(title: string, body: string): string {
   return `<!doctype html><html><head><title>${esc(title)}</title></head><body>${body}</body></html>`;
 }
@@ -141,7 +146,8 @@ export class DirectFixtureBackend {
   private renderPages(s: DirectFixtureSeries): string {
     const imgs = Array.from(
       { length: s.pages },
-      (_, i) => `<img class="page" src="${esc(pageImg(s.id, i + 1))}">`,
+      (_, i) =>
+        `<img class="page" src="${esc(pageImg(s.id, i + 1))}" data-thumb="${esc(pageThumb(s.id, i + 1))}">`,
     ).join("");
     return layout(`${s.title} — Pages`, `<div class="reader">${imgs}</div>`);
   }
