@@ -1053,14 +1053,28 @@ async function showDetail(seriesId: string): Promise<void> {
   if (currentView !== "detail") previousView = currentView as "browse" | "library" | "history";
   switchView("detail");
   pushRoute(`detail/${enc(activeBridge)}/${enc(seriesId)}`);
-  $("#detail-title").textContent = "Loading…";
-  $("#detail-meta").textContent = "";
+  // Show skeleton placeholders (shimmer on cover/title/description) until the fetch resolves, so the
+  // real content fades in without a layout jump rather than popping in from a "Loading…" stub.
+  $("#detail").classList.add("loading");
+  $("#detail-title").textContent = "";
+  $("#detail-meta").innerHTML = "";
+  $("#detail-stats").innerHTML = "";
   $("#detail-genres").innerHTML = "";
   $("#detail-taggroups").innerHTML = "";
   $("#detail-description").textContent = "";
   ($("#detail-cover") as HTMLImageElement).style.display = "none";
+  $("#cover-chapter-badge").hidden = true;
+  $("#lib-menu").hidden = true;
+  $("#lib-category-picker").hidden = true;
+  $("#tracker-menu").hidden = true;
+  $("#tracker-panel").hidden = true;
   $("#chapters").innerHTML = "";
+  $("#chapters-section").hidden = true;
   $("#page-thumbs").innerHTML = "";
+  // Reset the chapters filter/sort to defaults for each newly-opened series.
+  chapterFilter = "overview";
+  chapterSortAsc = false;
+  updateChapterControls();
 
   const isDirect = activeCaps.includes("direct");
   // `currentFilters` is rendered for `browseBridge`; if this series is from a different bridge (opened
@@ -1081,27 +1095,43 @@ async function showDetail(seriesId: string): Promise<void> {
   const creatorId = info.author ? info.authorId : info.artistId;
   const canSearch = activeCaps.includes("search") || activeCaps.includes("filters");
   const authorFilter = currentFilters.find((f) => f.key === "author");
-  const otherMeta = [
-    info.status,
-    info.languages?.length ? info.languages.join(" / ") : undefined,
-  ].filter(Boolean).join(" · ");
-  if (creator && canSearch) {
-    const suffix = otherMeta ? ` · ${esc(otherMeta)}` : "";
-    $("#detail-meta").innerHTML = `<span class="chip chip-link" id="author-chip">${esc(creator)}</span>${suffix}`;
-    document.getElementById("author-chip")!.onclick = () => {
-      if (authorFilter) {
-        const val = creatorId ?? creator;
-        const value = authorFilter.type === "text" ? val : [val];
-        void navigateToFilteredSearch([{ key: "author", value }]);
-      } else {
-        $<HTMLInputElement>("#query").value = creator;
-        switchView("browse");
-        void doSearch();
-      }
-    };
-  } else {
-    $("#detail-meta").textContent = [creator, otherMeta || undefined].filter(Boolean).join(" · ");
+
+  // Stats line (rating/views are not in the contract; we surface the chapter count we can compute).
+  const chapterCount = isDirect ? 0 : groupChapters(chapters).length;
+  $("#detail-stats").innerHTML = chapterCount
+    ? `<span class="stat">📖 ${chapterCount} chapter${chapterCount === 1 ? "" : "s"}</span>`
+    : "";
+  // A small chapter-count badge overlaid on the cover, like the example layout.
+  const coverBadge = $("#cover-chapter-badge");
+  if (chapterCount) { coverBadge.hidden = false; coverBadge.textContent = String(chapterCount); }
+  else coverBadge.hidden = true;
+
+  // Meta grid (label-over-value cells), populated only with fields the contract actually provides.
+  const authorIsClickable = !!creator && canSearch;
+  const metaCells: string[] = [];
+  if (info.status) metaCells.push(metaCell("Status", esc(info.status)));
+  if (creator) {
+    const label = info.author ? "Author" : "Artist";
+    const value = authorIsClickable
+      ? `<span class="meta-value chip-link" id="author-chip">${esc(creator)}</span>`
+      : `<span class="meta-value">${esc(creator)}</span>`;
+    metaCells.push(`<div class="meta-cell"><span class="meta-label">${label}</span>${value}</div>`);
   }
+  if (info.artist && info.artist !== info.author) metaCells.push(metaCell("Artist", esc(info.artist)));
+  if (info.languages?.length) metaCells.push(metaCell("Language", esc(info.languages.join(" / "))));
+  $("#detail-meta").innerHTML = metaCells.join("");
+  const authorChip = document.getElementById("author-chip");
+  if (authorChip) authorChip.onclick = () => {
+    if (authorFilter) {
+      const val = creatorId ?? creator!;
+      const value = authorFilter.type === "text" ? val : [val];
+      void navigateToFilteredSearch([{ key: "author", value }]);
+    } else {
+      $<HTMLInputElement>("#query").value = creator!;
+      switchView("browse");
+      void doSearch();
+    }
+  };
 
   const cover = $("#detail-cover") as HTMLImageElement;
   if (info.thumbnailUrl) {
@@ -1171,17 +1201,29 @@ async function showDetail(seriesId: string): Promise<void> {
     el.onclick = () => void navigateToFilteredSearch([{ key: "tag", value: [el.dataset.tag!] }]);
   });
   $("#detail-description").textContent = info.description ?? "";
+  // Core info is rendered — drop the skeleton so the real content (and the cover) is revealed.
+  $("#detail").classList.remove("loading");
 
-  // Direct series read from page 1 by clicking the cover (there's no per-chapter list to pick
-  // from). Keep the explicit ▶ Read button only as a fallback for the rare direct series with no
-  // cover image to click.
+  // Direct series read from page 1. The cover (when present) stays a click-to-read affordance, and
+  // the primary ▶ button also reads from page 1 so there's an explicit control in the layout. For
+  // chaptered series the button is the first-chapter entry point.
   const coverReadable = isDirect && !!info.thumbnailUrl;
   cover.classList.toggle("readable", coverReadable);
   cover.onclick = coverReadable ? () => void readDirect(seriesId) : null;
   cover.title = coverReadable ? "Read from page 1" : "";
-  const readBtn = $<HTMLButtonElement>("#read-direct-btn");
-  readBtn.hidden = !(isDirect && !info.thumbnailUrl);
-  if (!readBtn.hidden) readBtn.onclick = () => void readDirect(seriesId);
+  const readBtn = $<HTMLButtonElement>("#read-primary-btn");
+  const firstGroup = isDirect ? undefined : groupChapters(chapters)[0];
+  if (isDirect) {
+    readBtn.hidden = false;
+    readBtn.textContent = "▶ Read";
+    readBtn.onclick = () => void readDirect(seriesId);
+  } else if (firstGroup) {
+    readBtn.hidden = false;
+    readBtn.textContent = `▶ ${firstGroup.name}`;
+    readBtn.onclick = () => void openChapter(pickVersion(firstGroup, preferredGroupName));
+  } else {
+    readBtn.hidden = true;
+  }
 
   // Library tracking (optional module): track this series under the bridge it came from.
   prefetchedChapter = null;
@@ -1269,6 +1311,28 @@ interface ChapterGroup {
 /** The scanlation group the user last opened — used to keep the same source across chapter turns. */
 let preferredGroupName: string | undefined;
 
+/** Chapters-list view state (mirrors the Overview/All/Read/Unread tabs + sort arrows). */
+type ChapterFilter = "overview" | "all" | "read" | "unread";
+let chapterFilter: ChapterFilter = "overview";
+let chapterSortAsc = false; // false → newest first (descending), matching the example layout
+/** How many chapters the condensed "Overview" tab shows before offering "Show all". */
+const OVERVIEW_LIMIT = 12;
+
+/** One label-over-value cell in the detail meta grid. */
+function metaCell(label: string, valueHtml: string): string {
+  return `<div class="meta-cell"><span class="meta-label">${esc(label)}</span><span class="meta-value">${valueHtml}</span></div>`;
+}
+
+/** Reflect the current filter/sort state on the chapters-tab and sort-arrow buttons. */
+function updateChapterControls(): void {
+  document.querySelectorAll<HTMLElement>("#chapters-tabs .ch-tab").forEach((b) => {
+    b.classList.toggle("active", b.dataset.filter === chapterFilter);
+  });
+  document.querySelectorAll<HTMLElement>("#chapters-sort button").forEach((b) => {
+    b.classList.toggle("active", (b.dataset.sort === "asc") === chapterSortAsc);
+  });
+}
+
 /** Same logical-chapter key as the library: copies sharing (number, language) collapse; numberless stand alone. */
 function chapterLogicalKey(c: Chapter): string {
   return c.number !== undefined ? `n:${c.number}:${c.languageCode ?? ""}` : `i:${c.id}`;
@@ -1338,11 +1402,13 @@ function preloadImages(urls: string[]): void {
 async function refreshLibraryStatus(): Promise<void> {
   if (!currentSeries) return;
   const { bridgeId, seriesId } = currentSeries;
+  const libMenu = $("#lib-menu");
   const libBtn = $<HTMLButtonElement>("#lib-toggle");
+  const picker = $("#lib-category-picker");
   const newBadge = $("#new-badge");
-  libBtn.hidden = false;
+  libMenu.hidden = false;
   newBadge.hidden = true;
-  libBtn.onclick = () => void toggleLibrary();
+  picker.hidden = true;
   let detail: { entry: LibEntry; progress: ProgressItem[] } | undefined;
   try {
     detail = await api<{ entry: LibEntry; progress: ProgressItem[] }>(
@@ -1350,7 +1416,9 @@ async function refreshLibraryStatus(): Promise<void> {
     );
     currentSeries.inLibrary = true;
     currentSeries.progress = new Map(detail.progress.map((p) => [p.chapterId, p]));
-    libBtn.textContent = "✓ In Library";
+    // In-library: the button opens the list-management dropdown (categories + remove).
+    libBtn.textContent = "✓ In Library ▾";
+    libBtn.onclick = () => { picker.hidden = !picker.hidden; $("#tracker-panel").hidden = true; };
     // Detect new chapters since the last visit.
     const sync = await send("POST", `/library/entries/${bridgeId}/${enc(seriesId)}/sync`, { chapters: currentSeries.chapters });
     const added = (sync.data as { added?: Chapter[] }).added ?? [];
@@ -1358,16 +1426,21 @@ async function refreshLibraryStatus(): Promise<void> {
   } catch {
     currentSeries.inLibrary = false;
     currentSeries.progress = new Map();
+    // Not in library: the button is a plain add affordance, no list management shown.
     libBtn.textContent = "＋ Library";
-    $("#lib-category-picker").hidden = true;
+    libBtn.onclick = () => void toggleLibrary();
+    picker.hidden = true;
+    picker.innerHTML = "";
     $("#group-panel").hidden = true;
+    $("#tracker-menu").hidden = true;
     $("#tracker-panel").hidden = true;
     return;
   }
   // Render UI panels separately — failures here must not reset inLibrary.
   await renderCategoryPicker(detail.entry.categoryIds).catch(() => {});
   await renderGroupPanel(bridgeId, seriesId, detail.entry).catch(() => {});
-  await renderTrackerPanel(bridgeId, seriesId).catch(() => {});
+  const trackersAvailable = await renderTrackerPanel(bridgeId, seriesId).catch(() => false);
+  $("#tracker-menu").hidden = !trackersAvailable;
 }
 
 async function renderGroupPanel(bridgeId: string, seriesId: string, entry: LibEntry): Promise<void> {
@@ -1466,29 +1539,35 @@ async function fetchTrackers(): Promise<TrackerSummary[]> {
   catch { return []; }
 }
 
-async function renderTrackerPanel(bridgeId: string, seriesId: string): Promise<void> {
+/** Render the per-series tracker management UI into #tracker-panel. Returns whether trackers are
+ * available (so the library dropdown can decide whether to surface a "Trackers" button). The panel
+ * stays hidden — it's revealed on demand from the library list-management dropdown. */
+async function renderTrackerPanel(bridgeId: string, seriesId: string): Promise<boolean> {
   const panel = $("#tracker-panel");
+  // Preserve the reveal state across re-renders triggered by link/unlink/sync actions, so the panel
+  // doesn't collapse out from under the user mid-interaction. Fresh series loads reset it hidden.
+  const wasOpen = !panel.hidden;
   panel.hidden = true;
   panel.innerHTML = "";
 
-  if (availableTrackers.length === 0) return;
+  if (availableTrackers.length === 0) return false;
 
   const prefs = await api<BridgePrefs>(`/library/bridges/${enc(bridgeId)}/prefs`).catch(
     () => ({ bridgeId, trackersDisabled: false }),
   );
-  if (prefs.trackersDisabled) return;
+  if (prefs.trackersDisabled) return false;
 
   const links = await api<TrackerLink[]>(
     `/library/entries/${bridgeId}/${enc(seriesId)}/tracker-links`,
   ).catch(() => [] as TrackerLink[]);
 
-  panel.hidden = false;
-
-  const heading = document.createElement("div");
-  heading.className = "muted";
-  heading.style.cssText = "font-size:0.75rem;margin-bottom:0.35rem";
-  heading.textContent = "Trackers";
-  panel.append(heading);
+  if (links.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.style.cssText = "font-size:0.78rem;margin-bottom:0.35rem";
+    empty.textContent = "No trackers linked yet.";
+    panel.append(empty);
+  }
 
   // Render each existing link.
   for (const link of links) {
@@ -1617,6 +1696,8 @@ async function renderTrackerPanel(bridgeId: string, seriesId: string): Promise<v
     searchArea.style.display = open ? "none" : "";
     linkBtn.textContent = open ? "+ Link tracker" : "Cancel";
   };
+  panel.hidden = !wasOpen;
+  return true;
 }
 
 function relativeTime(ts: number): string {
@@ -1624,7 +1705,11 @@ function relativeTime(ts: number): string {
   if (secs < 60) return "just now";
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
+  const days = Math.floor(secs / 86400);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
 }
 
 // ── Tracker config panel (global, like Registry) ──────────────────────────────
@@ -1794,38 +1879,93 @@ async function toggleLibrary(): Promise<void> {
 }
 
 
+/** Populate the list-management dropdown (lists/categories + remove action). Visibility is driven by
+ * the In-Library button; this only fills in contents and never forces the dropdown open. */
 async function renderCategoryPicker(selectedIds: string[]): Promise<void> {
   const picker = $("#lib-category-picker");
-  if (!currentSeries?.inLibrary) { picker.hidden = true; return; }
+  if (!currentSeries?.inLibrary) { picker.hidden = true; picker.innerHTML = ""; return; }
   const cats = await api<Category[]>("/library/categories");
-  picker.hidden = false;
   picker.innerHTML = "";
+
+  const head = document.createElement("div");
+  head.id = "lib-cat-head";
+  head.textContent = "Lists";
+  picker.append(head);
+
   if (cats.length === 0) {
-    picker.innerHTML = '<span class="muted">No categories yet — add some in the Library tab.</span>';
-    return;
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.style.cssText = "font-size:0.78rem;padding:0.1rem 0.4rem 0.3rem";
+    empty.textContent = "No lists yet — add some in the Library tab.";
+    picker.append(empty);
+  } else {
+    for (const cat of cats) {
+      const label = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = selectedIds.includes(cat.id);
+      cb.dataset.id = cat.id;
+      cb.onchange = async () => {
+        const ids = Array.from(picker.querySelectorAll<HTMLInputElement>("input:checked")).map((i) => i.dataset.id!);
+        await send("PUT", `/library/entries/${currentSeries!.bridgeId}/${enc(currentSeries!.seriesId)}/categories`, { categoryIds: ids });
+      };
+      label.append(cb, document.createTextNode(cat.name));
+      picker.append(label);
+    }
   }
-  for (const cat of cats) {
-    const label = document.createElement("label");
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = selectedIds.includes(cat.id);
-    cb.dataset.id = cat.id;
-    cb.onchange = async () => {
-      const ids = Array.from(picker.querySelectorAll<HTMLInputElement>("input:checked")).map((i) => i.dataset.id!);
-      await send("PUT", `/library/entries/${currentSeries!.bridgeId}/${enc(currentSeries!.seriesId)}/categories`, { categoryIds: ids });
-    };
-    label.append(cb, document.createTextNode(cat.name));
-    picker.append(label);
-  }
+
+  const sep = document.createElement("div");
+  sep.className = "lib-menu-sep";
+  picker.append(sep);
+
+  const remove = document.createElement("button");
+  remove.className = "lib-remove-btn";
+  remove.textContent = "✕ Remove from library";
+  remove.onclick = () => void toggleLibrary();
+  picker.append(remove);
 }
 
 function renderChapters(): void {
   if (!currentSeries) return;
   const { chapters, progress, inLibrary } = currentSeries;
+  const section = $("#chapters-section");
   const ul = $("#chapters");
   ul.innerHTML = "";
-  for (const group of groupChapters(chapters)) {
-    ul.append(renderChapterGroup(group, progress, inLibrary));
+
+  let groups = groupChapters(chapters);
+  if (groups.length === 0) { section.hidden = true; return; }
+  section.hidden = false;
+  updateChapterControls();
+
+  // groupChapters returns ascending (reading order); descending is newest-first.
+  if (!chapterSortAsc) groups = groups.slice().reverse();
+
+  const isRead = (g: ChapterGroup) => g.versions.some((v) => progress.get(v.id)?.read);
+  let shown = groups;
+  if (chapterFilter === "read") shown = groups.filter(isRead);
+  else if (chapterFilter === "unread") shown = groups.filter((g) => !isRead(g));
+  else if (chapterFilter === "overview") shown = groups.slice(0, OVERVIEW_LIMIT);
+
+  if (shown.length === 0) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.style.cssText = "padding:0.6rem 0.2rem";
+    li.textContent = chapterFilter === "read" ? "No chapters read yet." : "No unread chapters.";
+    ul.append(li);
+    return;
+  }
+
+  for (const group of shown) ul.append(renderChapterGroup(group, progress, inLibrary));
+
+  // Overview is a condensed peek; offer a jump to the full list when there's more.
+  if (chapterFilter === "overview" && groups.length > shown.length) {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.className = "ch-show-all";
+    btn.textContent = `Show all ${groups.length} chapters`;
+    btn.onclick = () => { chapterFilter = "all"; renderChapters(); };
+    li.append(btn);
+    ul.append(li);
   }
 }
 
@@ -1847,15 +1987,6 @@ function renderChapterGroup(group: ChapterGroup, progress: Map<string, ProgressI
   const row = document.createElement("div");
   row.className = "ch-row";
   if (groupRead) row.classList.add("read");
-
-  if (inLibrary) {
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = groupRead;
-    cb.title = "Mark read";
-    cb.onclick = (e) => { e.stopPropagation(); void markGroupRead(group, cb.checked); };
-    row.append(cb);
-  }
 
   const name = document.createElement("span");
   name.className = "ch-name";
@@ -1895,6 +2026,26 @@ function renderChapterGroup(group: ChapterGroup, progress: Map<string, ProgressI
     up.textContent = "read to here";
     up.onclick = (e) => { e.stopPropagation(); void readUpTo(pickVersion(group, preferredGroupName).id); };
     row.append(up);
+  }
+
+  // Right-aligned: the chapter's publish time, then (in-library) a read checkbox.
+  const publishedAt = group.versions[0]!.publishedAt;
+  if (publishedAt) {
+    const time = document.createElement("span");
+    time.className = "ch-time";
+    time.style.marginLeft = "auto";
+    time.textContent = relativeTime(publishedAt);
+    row.append(time);
+  }
+
+  if (inLibrary) {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = groupRead;
+    cb.title = "Mark read";
+    if (!publishedAt) cb.style.marginLeft = "auto";
+    cb.onclick = (e) => { e.stopPropagation(); void markGroupRead(group, cb.checked); };
+    row.append(cb);
   }
 
   row.onclick = () => void openChapter(pickVersion(group, preferredGroupName));
@@ -2781,6 +2932,32 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     await refreshActivityBadge();
   };
   $("#back-btn").onclick = () => history.back();
+  // The Trackers button toggles its own popover (anchored under the library button).
+  $("#tracker-toggle").onclick = () => {
+    const panel = $("#tracker-panel");
+    panel.hidden = !panel.hidden;
+    $("#lib-category-picker").hidden = true; // don't overlap the two popovers
+  };
+  // Close either popover when clicking outside its menu.
+  document.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    const picker = $("#lib-category-picker");
+    if (!picker.hidden && !target.closest("#lib-menu")) picker.hidden = true;
+    const tracker = $("#tracker-panel");
+    if (!tracker.hidden && !target.closest("#tracker-menu")) tracker.hidden = true;
+  });
+  $("#chapters-tabs").addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>(".ch-tab");
+    if (!btn) return;
+    chapterFilter = btn.dataset.filter as ChapterFilter;
+    renderChapters();
+  });
+  $("#chapters-sort").addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>("button[data-sort]");
+    if (!btn) return;
+    chapterSortAsc = btn.dataset.sort === "asc";
+    renderChapters();
+  });
   $("#reader-back").onclick = () => history.back();
   $("#reader-prev").onclick = () => void readerNavigate(-1);
   $("#reader-next").onclick = () => void readerNavigate(1);

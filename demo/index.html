@@ -134,16 +134,47 @@
     #fav-toggle { float: right; background: #1c1c1e; border: 1px solid #333; color: #ddd; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; }
     #fav-toggle:hover { border-color: #60a5fa; }
     #detail .meta { font-size: 0.82rem; color: #888; }
-    .detail-head { display: flex; gap: 1rem; margin-bottom: 1rem; }
-    .detail-side { display: flex; flex-direction: column; gap: 0.5rem; flex: 1; min-width: 0; }
-    #detail-actions { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
-    #detail-cover { width: 120px; height: 180px; object-fit: cover; border-radius: 6px; background: #333; flex-shrink: 0; }
+    /* Desktop: cover on the left spanning a stacked right column (genres / tags / stats / meta /
+       description). Content rows are min-content and the cover spans an extra 1fr spacer row so a tall
+       cover absorbs its slack there instead of stretching gaps between the right-column items.
+       Vertical spacing comes from each item's own margin-bottom (not grid row-gap) so hidden/empty
+       rows leave no stray gap. */
+    .detail-head { display: grid; grid-template-columns: 150px 1fr; column-gap: 1.25rem; row-gap: 0; align-items: start; margin-bottom: 1rem;
+      grid-template-rows: repeat(5, min-content) 1fr;
+      grid-template-areas: "cover genres" "cover tags" "cover stats" "cover meta" "cover desc" "cover ."; }
+    .detail-head > * { min-width: 0; }
+    .detail-cover-col { grid-area: cover; display: flex; flex-direction: column; gap: 0.5rem; }
+    #detail-genres { grid-area: genres; margin: 0 0 0.5rem; }
+    #detail-taggroups { grid-area: tags; }
+    #detail-stats { grid-area: stats; margin-bottom: 0.5rem; }
+    #detail-meta { grid-area: meta; margin-bottom: 0.5rem; }
+    #detail-description { grid-area: desc; }
+    #detail-taggroups:empty, #detail-description:empty { display: none; }
+    .cover-wrap { position: relative; width: 150px; height: 225px; border-radius: 6px; overflow: hidden; background: #26262a; }
+    .cover-badge { position: absolute; top: 0.45rem; right: 0.45rem; min-width: 1.7rem; height: 1.7rem; padding: 0 0.4rem; border-radius: 999px; background: rgba(0,0,0,0.82); color: #fff; font-size: 0.82rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+    .cover-badge[hidden] { display: none; }
+    #detail-actions { display: flex; flex-direction: column; gap: 0.4rem; align-items: stretch; }
+    #detail-actions button { width: 100%; text-align: center; }
+    #detail-actions .badge-new { align-self: flex-start; }
+    .read-primary { background: #2563eb; border: 1px solid #2563eb; color: #fff; border-radius: 6px; padding: 0.5rem 0.6rem; cursor: pointer; font-size: 0.88rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .read-primary:hover { background: #1d4ed8; }
+    #detail-cover { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; background: transparent; display: block; }
+    .meta-stats { display: flex; flex-wrap: wrap; gap: 0.25rem 1.1rem; font-size: 0.82rem; color: #aaa; }
+    .meta-stats:empty { display: none; }
+    .meta-stats .stat { display: inline-flex; align-items: center; gap: 0.3rem; }
+    .meta-grid { display: flex; flex-wrap: wrap; gap: 0.7rem 1.6rem; padding: 0.6rem 0; border-top: 1px solid #242427; border-bottom: 1px solid #242427; }
+    .meta-grid:empty { display: none; }
+    .meta-cell { display: flex; flex-direction: column; gap: 0.15rem; }
+    .meta-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; color: #777; }
+    .meta-value { font-size: 0.85rem; color: #ddd; }
+    .meta-value.chip-link { display: inline-flex; align-self: flex-start; }
     /* Direct series: the cover is the read affordance (jumps the reader to page 1). */
     #detail-cover.readable { cursor: pointer; transition: filter 0.15s; }
     #detail-cover.readable:hover { filter: brightness(1.12); }
-    #detail-genres { display: flex; align-items: center; gap: 0.35rem; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2rem 0.6rem; padding: 0 1rem 2px; }
+    #detail-genres { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; margin: 0 0 0.2rem; padding: 0 0 2px; }
+    #detail-genres:empty { display: none; }
     #detail-genres::-webkit-scrollbar { display: none; }
-    .tag-group { display: flex; align-items: center; gap: 0.35rem; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2rem 0.4rem; padding: 0 1rem 2px; }
+    .tag-group { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; margin: 0 0 0.3rem; padding: 0 0 2px; }
     .tag-group::-webkit-scrollbar { display: none; }
     .tag-group-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #777; margin-right: 0.25rem; }
     .chip.tag { color: #8ab4f8; border-color: #2c4060; }
@@ -159,11 +190,27 @@
     .tag-option { padding: 0.35rem 0.6rem; font-size: 0.8rem; cursor: pointer; color: #ccc; }
     .tag-option:hover { background: #2a2a2e; }
     .tag-option-empty { padding: 0.35rem 0.6rem; font-size: 0.8rem; color: #666; }
-    #detail-description { font-size: 0.88rem; line-height: 1.5; color: #ccc; margin: 0.75rem 0 0; }
+    #detail-description { font-size: 0.88rem; line-height: 1.5; color: #ccc; margin: 0; }
+    #chapters-section { margin-top: 1.4rem; }
+    .chapters-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.7rem; }
+    .chapters-head h3 { margin: 0; font-size: 1.15rem; }
+    .ch-controls { display: flex; align-items: center; gap: 0.6rem; }
+    .ch-tabs { display: inline-flex; gap: 0.2rem; padding: 0.2rem; background: #1c1c1e; border: 1px solid #2a2a2e; border-radius: 0.6rem; }
+    .ch-tab { background: none; border: none; border-radius: 0.45rem; color: #aaa; padding: 0.3rem 0.7rem; font-size: 0.82rem; cursor: pointer; }
+    .ch-tab:hover { color: #ddd; background: #232327; }
+    .ch-tab.active, .ch-tab.active:hover { color: #fff; background: #2563eb; }
+    .ch-sort { display: inline-flex; gap: 0.2rem; }
+    .ch-sort button { padding: 0.3rem 0.55rem; background: #1c1c1e; border: 1px solid #2a2a2e; border-radius: 0.45rem; color: #aaa; cursor: pointer; font-size: 0.9rem; line-height: 1; }
+    .ch-sort button:hover { color: #ddd; }
+    .ch-sort button.active { color: #fff; border-color: #2563eb; background: #1e3a5f; }
     #chapters { list-style: none; padding: 0; margin: 0; }
-    #chapters li { border-bottom: 1px solid #2a2a2e; font-size: 0.88rem; }
-    #chapters .ch-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0; cursor: pointer; }
-    #chapters .ch-row:hover { color: #60a5fa; }
+    #chapters li { font-size: 0.88rem; margin-bottom: 0.4rem; }
+    #chapters .ch-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem; background: #1b1b1e; border: 1px solid #242427; border-radius: 7px; cursor: pointer; transition: background 0.12s; }
+    #chapters .ch-row:hover { background: #232327; }
+    #chapters .ch-row:hover .ch-name { color: #60a5fa; }
+    #chapters .ch-time { font-size: 0.75rem; color: #777; white-space: nowrap; }
+    .ch-show-all { width: 100%; text-align: center; background: #1c1c1e; border: 1px solid #2a2a2e; color: #60a5fa; border-radius: 7px; padding: 0.55rem; cursor: pointer; font-size: 0.84rem; }
+    .ch-show-all:hover { background: #232327; }
     #reader-view { position: fixed; inset: 0; display: flex; flex-direction: column; overflow: hidden; overscroll-behavior: none; background: #0f0f0f; z-index: 100; }
     .reader-toolbar { position: absolute; top: 0; left: 0; right: 0; z-index: 2; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.75rem 1rem; background: linear-gradient(to bottom, rgba(0,0,0,0.72) 0%, transparent 100%); transition: opacity 0.3s; }
     .reader-toolbar.hidden { opacity: 0; pointer-events: none; }
@@ -195,8 +242,20 @@
     .badge-new { background: #f59e0b; color: #111; border-radius: 999px; font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.5rem; }
     #lib-toggle, #fav-toggle { background: #1c1c1e; border: 1px solid #333; color: #ddd; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; float: none; }
     #lib-toggle:hover, #fav-toggle:hover { border-color: #60a5fa; }
-    #lib-category-picker { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.5rem 0 0.75rem; }
-    #lib-category-picker label { flex-direction: row; align-items: center; gap: 0.3rem; background: #1c1c1e; border: 1px solid #333; border-radius: 999px; padding: 0.2rem 0.6rem; cursor: pointer; }
+    /* Library list management: a dropdown anchored under the In-Library button. Only shown for series
+       already in the library (the button is a plain "＋ Library" add affordance otherwise). */
+    #lib-menu { position: relative; width: 100%; }
+    #lib-menu > #lib-toggle { width: 100%; }
+    #lib-category-picker { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 190px; max-height: 60vh; overflow-y: auto; background: #1c1c1e; border: 1px solid #333; border-radius: 8px; padding: 0.4rem; box-shadow: 0 8px 24px rgba(0,0,0,0.55); display: flex; flex-direction: column; gap: 0.15rem; }
+    #lib-category-picker[hidden] { display: none; }
+    #lib-cat-head { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; color: #777; padding: 0.1rem 0.4rem 0.25rem; }
+    #lib-category-picker label { flex-direction: row; align-items: center; gap: 0.45rem; padding: 0.3rem 0.4rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    #lib-category-picker label:hover { background: #26262a; }
+    .lib-menu-sep { border-top: 1px solid #2c2c30; margin: 0.3rem 0; }
+    #lib-category-picker .lib-menu-btn { width: 100%; background: none; border: none; color: #ddd; text-align: left; padding: 0.3rem 0.4rem; cursor: pointer; font-size: 0.83rem; border-radius: 6px; }
+    #lib-category-picker .lib-menu-btn:hover { background: #26262a; }
+    #lib-category-picker .lib-remove-btn { width: 100%; background: none; border: none; color: #e06c6c; text-align: left; padding: 0.3rem 0.4rem; cursor: pointer; font-size: 0.83rem; border-radius: 6px; }
+    #lib-category-picker .lib-remove-btn:hover { background: #2a1c1c; }
     #chapters .ch-name { flex: 1; }
     #chapters .ch-row.read .ch-name { color: #6b7280; }
     #chapters .ch-uptohere { font-size: 0.72rem; color: #888; border: 1px solid #333; background: #1c1c1e; border-radius: 6px; padding: 0.1rem 0.4rem; cursor: pointer; }
@@ -215,7 +274,12 @@
     .history-item .hi-title { font-size: 0.9rem; font-weight: 600; }
     .history-item .hi-sub { font-size: 0.78rem; color: #888; }
     .history-item.read { opacity: 0.55; }
-    #tracker-panel { border-top: 1px solid #2a2a2e; margin-top: 0.75rem; padding-top: 0.6rem; }
+    /* Trackers: its own button + popover, anchored under the library button in the actions column. */
+    #tracker-menu { position: relative; width: 100%; }
+    #tracker-menu > #tracker-toggle { width: 100%; background: #1c1c1e; border: 1px solid #333; color: #ddd; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; text-align: center; }
+    #tracker-menu > #tracker-toggle:hover { border-color: #60a5fa; }
+    #tracker-panel { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 300px; max-width: 92vw; max-height: 65vh; overflow-y: auto; background: #1c1c1e; border: 1px solid #333; border-radius: 8px; padding: 0.6rem; box-shadow: 0 8px 24px rgba(0,0,0,0.55); }
+    #tracker-panel[hidden] { display: none; }
     .tracker-row { display: flex; justify-content: space-between; align-items: center; padding: 0.25rem 0; font-size: 0.85rem; }
     .tracker-row-acts { display: flex; gap: 0.35rem; }
     .tracker-search-result { padding: 0.3rem 0.4rem; cursor: pointer; border-radius: 4px; font-size: 0.84rem; }
@@ -228,6 +292,36 @@
     .bridge-settings-entry:last-child { border-bottom: none; padding-bottom: 0; }
     .bridge-settings-entry > summary { cursor: pointer; font-weight: 600; font-size: 0.95rem; }
     .tag-group-label { flex-shrink: 0; }
+    /* Loading skeletons: while the series fetch is in flight, #detail carries .loading. The cover box
+       already reserves its space (fixed .cover-wrap), and the title/description show shimmer bars so
+       the real content fades in without a layout jump. Placed after the base rules so the equal-
+       specificity overrides (e.g. #detail-description:empty { display:none }) lose to these. */
+    @keyframes skeleton-shimmer { 100% { transform: translateX(100%); } }
+    #detail.loading .cover-wrap,
+    #detail.loading #detail-title,
+    #detail.loading #detail-description { position: relative; overflow: hidden; background: #1f1f22; border-radius: 6px; }
+    #detail.loading .cover-wrap::after,
+    #detail.loading #detail-title::after,
+    #detail.loading #detail-description::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); animation: skeleton-shimmer 1.3s infinite; }
+    #detail.loading #detail-title { display: block; width: 55%; min-height: 1.5rem; }
+    #detail.loading #detail-description { display: block; min-height: 4.5rem; }
+    /* Mobile detail overrides — placed after the base detail rules so equal-specificity selectors win. */
+    @media (max-width: 560px) {
+      /* Single column: cover + its action buttons share the top row; stats, meta, description then
+         the full-width genres/tag-group scroll strips stack below. */
+      .detail-head { grid-template-columns: 1fr; column-gap: 0; grid-template-rows: none;
+        grid-template-areas: "cover" "stats" "meta" "desc" "genres" "tags"; }
+      .detail-cover-col { flex-direction: row; gap: 0.9rem; align-items: flex-start; margin-bottom: 0.4rem; }
+      .cover-wrap { flex: 0 0 116px; width: 116px; height: 174px; }
+      #detail-actions { flex: 1; }
+      #detail-genres, .tag-group { flex-wrap: nowrap; overflow-x: auto; margin: 0 -2rem 0.3rem; padding: 0 1rem 2px; }
+      #detail-taggroups { margin-top: 0.4rem; }
+      /* Anchor the action-column popovers to the right so a wide menu doesn't overflow the screen. */
+      #lib-category-picker, #tracker-panel { left: auto; right: 0; }
+      #tracker-panel { min-width: 0; width: min(300px, 78vw); }
+      .chapters-head h3 { font-size: 1.05rem; }
+      .ch-controls { gap: 0.4rem; width: 100%; justify-content: space-between; }
+    }
   </style>
 </head>
 <body>
@@ -313,25 +407,51 @@
     <div id="detail">
       <h2 id="detail-title"></h2>
       <div class="detail-head">
-        <img id="detail-cover" alt="" />
-        <div class="detail-side">
-          <div class="meta" id="detail-meta"></div>
+        <div class="detail-cover-col">
+          <div class="cover-wrap">
+            <img id="detail-cover" alt="" />
+            <span id="cover-chapter-badge" class="cover-badge" hidden></span>
+          </div>
           <div id="detail-actions">
-            <span id="new-badge" class="badge-new" hidden></span>
-            <button id="lib-toggle" hidden>＋ Library</button>
+            <button id="read-primary-btn" class="read-primary" hidden>▶ Read</button>
+            <div id="lib-menu" hidden>
+              <button id="lib-toggle">＋ Library</button>
+              <div id="lib-category-picker" hidden></div>
+            </div>
+            <div id="tracker-menu" hidden>
+              <button id="tracker-toggle">⟳ Trackers ▾</button>
+              <div id="tracker-panel" hidden></div>
+            </div>
             <button id="fav-toggle" hidden>☆ Favorite</button>
+            <span id="new-badge" class="badge-new" hidden></span>
           </div>
         </div>
+        <div class="genres" id="detail-genres"></div>
+        <div id="detail-taggroups"></div>
+        <div class="meta-stats" id="detail-stats"></div>
+        <div class="meta-grid" id="detail-meta"></div>
+        <p class="description" id="detail-description"></p>
       </div>
-      <div class="genres" id="detail-genres"></div>
-      <div id="detail-taggroups"></div>
-      <p class="description" id="detail-description"></p>
-      <div id="lib-category-picker" hidden></div>
       <div id="group-panel" hidden></div>
-      <div id="tracker-panel" hidden></div>
-      <button id="read-direct-btn" hidden style="margin-bottom:0.75rem">▶ Read</button>
       <div id="page-thumbs" class="page-thumb-grid"></div>
-      <ul id="chapters"></ul>
+      <section id="chapters-section" hidden>
+        <div class="chapters-head">
+          <h3>Chapters</h3>
+          <div class="ch-controls">
+            <div class="ch-tabs" id="chapters-tabs">
+              <button class="ch-tab active" data-filter="overview">Overview</button>
+              <button class="ch-tab" data-filter="all">All</button>
+              <button class="ch-tab" data-filter="read">Read</button>
+              <button class="ch-tab" data-filter="unread">Unread</button>
+            </div>
+            <div class="ch-sort" id="chapters-sort">
+              <button data-sort="asc" title="Oldest first">↑</button>
+              <button data-sort="desc" class="active" title="Newest first">↓</button>
+            </div>
+          </div>
+        </div>
+        <ul id="chapters"></ul>
+      </section>
     </div>
   </section>
 
