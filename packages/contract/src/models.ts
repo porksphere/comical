@@ -164,13 +164,22 @@ export type Tag = z.infer<typeof tagSchema>;
  * Lists replace the old prescriptive `getPopular`/`getLatest`/`getHomeSections` — each backend
  * declares whatever lists make sense for it. Optional presentation hints (`layout`, `featured`)
  * let a host build a home view as data, without the contract dictating sections.
+ *
+ * Home composition is positional: a host stacks the lists in the order `getLists()` returns them
+ * (array order = top-to-bottom). The `layout` hint says how to render each section:
+ *   - `carousel`/`ranked`/`hero` — a horizontal page-1 preview row under the list name, with a
+ *     "see all" affordance into the full list (`ranked` numbers items; `hero` spotlights one).
+ *   - `grid` — a vertical grid. A grid renders as infinite-scroll **when it is the last section**
+ *     of the home stack (it owns the page's downward scroll); any earlier grid pages with an
+ *     explicit "load more". This makes the "one infinite section, and it's at the bottom"
+ *     invariant hold by construction — it's derived from position, never declared.
  */
 export const seriesListSchema = z.object({
   /** Stable, bridge-namespaced id passed back to `getListItems`. */
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string().optional(),
-  /** Presentation hint for hosts building a home view. */
+  /** Presentation hint for hosts building a home view. See the schema doc above for semantics. */
   layout: z.enum(["carousel", "grid", "ranked", "hero"]).optional(),
   /** Whether the host should surface this list prominently (e.g. on a home screen). */
   featured: z.boolean().optional(),

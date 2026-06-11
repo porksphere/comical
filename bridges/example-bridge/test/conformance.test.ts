@@ -68,6 +68,29 @@ describe("example-bridge", () => {
     expect(items.items[0]!.title).toBeTruthy();
   });
 
+  test("list items paginate: hasNextPage + distinct pages, terminal page ends", async () => {
+    const bridge = load();
+    const p1 = await bridge.getListItems!("latest", 1);
+    expect(p1.page).toBe(1);
+    expect(p1.hasNextPage).toBe(true);
+    expect(p1.items.length).toBeGreaterThan(0);
+
+    const p2 = await bridge.getListItems!("latest", 2);
+    expect(p2.page).toBe(2);
+    // Page 2 is a different slice of the catalog — no id overlap with page 1.
+    const p1ids = new Set(p1.items.map((i) => i.id));
+    expect(p2.items.every((i) => !p1ids.has(i.id))).toBe(true);
+
+    // Walk to the final page; it must report hasNextPage === false.
+    let page = 1;
+    let last = p1;
+    while (last.hasNextPage && page < 50) {
+      page += 1;
+      last = await bridge.getListItems!("latest", page);
+    }
+    expect(last.hasNextPage).toBe(false);
+  });
+
   test("search within a list narrows that list's items", async () => {
     const bridge = load();
     const lists = await bridge.getLists!();

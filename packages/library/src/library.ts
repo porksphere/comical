@@ -167,6 +167,13 @@ export class Library {
           const lk = logicalChapterKey(c, c.id);
           if (known.has(lk) || seenLogical.has(lk)) return false;
           seenLogical.add(lk);
+          // A chapter only counts as "new" if it was published after the series joined the library.
+          // The `firstSync` baseline assumes the very first list we see is complete; in practice it
+          // often isn't (favorites import adds without syncing, a paginated/empty first fetch), and a
+          // later fuller sync would otherwise flag the entire back-catalogue as new. Gating on publish
+          // time keeps old chapters out of the feed regardless of baseline completeness. Chapters with
+          // no `publishedAt` fall back to the diff alone (best effort for bridges that omit dates).
+          if (c.publishedAt !== undefined && c.publishedAt <= entry.addedAt) return false;
           return true;
         });
     const t = this.now();

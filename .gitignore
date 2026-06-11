@@ -12,6 +12,12 @@ demo/.out/
 **/.tmp-registry/
 .comical-demo/
 
+# Playwright e2e capture lane (on-demand recordings/screenshots — never committed)
+e2e/.test-results/
+e2e/.captures/
+playwright-report/
+test-results/
+
 # Generated native runtime bundles — built by `bun run build:native` (and in CI), never committed.
 packages/host-ios/Sources/ComicalHostIOS/Resources/harness.js
 packages/host-android/src/main/assets/comical_harness.js

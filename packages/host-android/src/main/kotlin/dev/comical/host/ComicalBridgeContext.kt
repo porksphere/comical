@@ -63,7 +63,12 @@ class ComicalBridgeContext private constructor(
     dataDir: File?,
 ) {
     private val js = QuickJs.create(Dispatchers.Default)
-    private val http = OkHttpClient.Builder().followRedirects(true).build()
+    private val http = OkHttpClient.Builder()
+        .followRedirects(true)
+        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
     private val storageFile: File
 
     init {
