@@ -102,6 +102,8 @@ let currentLists: SeriesList[] = [];
 let activeListId: string | null = null;
 let currentView: "browse" | "library" | "history" | "activity" | "detail" | "reader" | "settings" = "browse";
 let previousView: "browse" | "library" | "history" = "browse";
+/** Which home page the browse view is on. Drill-downs (search/See all) don't change it; back returns here. */
+let activeHomeTab: "home" | "favorites" = "home";
 let loadMoreFn: (() => Promise<void>) | null = null;
 /** IntersectionObservers driving the home view's terminal infinite-scroll; disconnected on re-render. */
 let homeObservers: IntersectionObserver[] = [];
@@ -387,7 +389,10 @@ async function selectBridge(id: string): Promise<void> {
   const canSearch = detail.info.capabilities.includes("search");
   $("#query").style.display = canSearch ? "" : "none";
   $("#searchBtn").style.display = canSearch ? "" : "none";
-  $("#fav-section").style.display = detail.info.capabilities.includes("favorites") ? "" : "none";
+  // Favorites is a home page only when the bridge supports it; otherwise fall back to Home.
+  const hasFavorites = detail.info.capabilities.includes("favorites");
+  $("#fav-tab").style.display = hasFavorites ? "" : "none";
+  if (!hasFavorites && activeHomeTab === "favorites") activeHomeTab = "home";
 
   // Content needs the bridge configured.
   if (detail.missingRequired.length > 0) {
@@ -786,6 +791,38 @@ function showBrowseMode(mode: "home" | "results"): void {
   }
 }
 
+/** The "← Home" results header is for drill-downs (search / See all); home-page tabs hide it. */
+function setResultsHead(show: boolean): void {
+  $("#results-head").style.display = show ? "" : "none";
+}
+
+function updateHomeTabsActive(): void {
+  document.querySelectorAll<HTMLElement>("#home-tabs .home-tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.tab === activeHomeTab));
+}
+
+/** Switch home pages. Home shows the list stack; Favorites shows the favorites grid (no back link). */
+async function selectHomeTab(tab: "home" | "favorites"): Promise<void> {
+  activeHomeTab = tab;
+  updateHomeTabsActive();
+  $<HTMLInputElement>("#query").value = "";
+  status("");
+  if (tab === "home") {
+    setResultsHead(true);
+    showBrowseMode("home");
+  } else {
+    showBrowseMode("results");
+    setResultsHead(false);
+    $("#results-label").textContent = "";
+    await loadFavorites(1);
+  }
+}
+
+/** Re-show the active home page (e.g. after clearing a search or backing out of a drill-down). */
+function returnToHomeTab(): void {
+  void selectHomeTab(activeHomeTab);
+}
+
 /**
  * Build the home view: a vertical stack of list sections in `getLists()` order. The hint on each
  * list decides how it renders; a `grid` that is the LAST section infinite-scrolls, earlier grids
@@ -793,6 +830,9 @@ function showBrowseMode(mode: "home" | "results"): void {
  */
 async function renderHome(): Promise<void> {
   clearHome();
+  activeHomeTab = "home";
+  updateHomeTabsActive();
+  setResultsHead(true);
   showBrowseMode("home");
   const host = $("#home-sections");
   if (activeCaps.includes("lists")) {
@@ -936,16 +976,11 @@ function attachInfinite(section: HTMLElement, grid: HTMLElement, list: SeriesLis
 /** Open a list full-screen in the results grid; the search box scopes to it when `searchable`. */
 async function showListDetail(list: SeriesList): Promise<void> {
   showBrowseMode("results");
+  setResultsHead(true);
   $("#results-label").textContent = list.searchable
     ? `${list.name} — search box scopes to this list`
     : list.name;
   await loadList(list.id, 1);
-}
-
-async function showFavoritesDetail(): Promise<void> {
-  showBrowseMode("results");
-  $("#results-label").textContent = "★ Favorites";
-  await loadFavorites(1);
 }
 
 async function loadList(listId: string, page = 1): Promise<void> {
@@ -2179,11 +2214,11 @@ async function doSearch(): Promise<void> {
   const sort = collectSort();
   // An empty global query (no filters/sort, not scoped to a list) just returns to the home stack.
   if (q.trim() === "" && activeListId === null && filters.length === 0 && !sort) {
-    showBrowseMode("home");
-    status("");
+    returnToHomeTab();
     return;
   }
   showBrowseMode("results");
+  setResultsHead(true);
   if (activeListId === null) $("#results-label").textContent = `Search: "${q.trim() || "all"}"`;
   await runSearch(q, filters, sort, 1);
 }
@@ -2772,11 +2807,7 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
 
   $<HTMLSelectElement>("#sort-field").addEventListener("change", updateSortDirVisibility);
   $("#searchBtn").onclick = () => void doSearch();
-  $("#browse-back").onclick = () => {
-    $<HTMLInputElement>("#query").value = "";
-    showBrowseMode("home");
-    status("");
-  };
+  $("#browse-back").onclick = () => returnToHomeTab();
   $("#filters-toggle").onclick = () => {
     const panel = $("#meta-panel");
     const btn = $<HTMLButtonElement>("#filters-toggle");
@@ -2784,7 +2815,9 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     panel.style.display = open ? "" : "none";
     btn.textContent = open ? "Filters ✕" : "Filters";
   };
-  $("#fav-section").onclick = () => void showFavoritesDetail();
+  document.querySelectorAll<HTMLElement>("#home-tabs .home-tab").forEach((t) => {
+    t.onclick = () => void selectHomeTab((t.dataset.tab as "home" | "favorites") ?? "home");
+  });
   $<HTMLInputElement>("#query").addEventListener("keydown", (e) => { if (e.key === "Enter") void doSearch(); });
   $("#reg-add").onclick = async () => {
     const url = $<HTMLInputElement>("#reg-url").value.trim();
