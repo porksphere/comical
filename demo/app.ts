@@ -1921,10 +1921,21 @@ async function prefetchNextChapter(): Promise<void> {
 }
 
 /** One filmstrip slot: an empty pane when the neighbour page doesn't exist, else its image. */
-function readerSlotHtml(p: Page | undefined, pageNumber: number): string {
-  if (!p) return `<div class="reader-slot"></div>`;
-  return `<div class="reader-slot"><img src="${p.imageUrl}" alt="Page ${pageNumber}" `
-    + `onerror="this.onerror=null;this.src='https://placehold.co/700x1000?text=Page+${pageNumber}'"></div>`;
+/** Build one filmstrip slot as a real DOM node so it can be recycled across page turns (reused nodes
+ *  keep their already-decoded image; only the newly-revealed neighbour is created on each ±1 turn). */
+function makeReaderSlot(p: Page | undefined, pageNumber: number): HTMLElement {
+  const slot = document.createElement("div");
+  slot.className = "reader-slot";
+  if (!p) return slot; // empty slot past an end / chapter boundary
+  const img = document.createElement("img");
+  img.src = p.imageUrl;
+  img.alt = `Page ${pageNumber}`;
+  img.addEventListener("error", function fallback() {
+    img.removeEventListener("error", fallback);
+    img.src = `https://placehold.co/700x1000?text=Page+${pageNumber}`;
+  });
+  slot.appendChild(img);
+  return slot;
 }
 
 /** The current filmstrip track (rebuilt on every render), or null when the reader isn't mounted. */
@@ -1944,12 +1955,10 @@ function setTrackOffset(dx: number, animate: boolean): void {
   track.style.transform = dx === 0 ? "translateX(-100%)" : `translateX(calc(-100% + ${dx}px))`;
 }
 
-function renderReaderPage(showOverlay = false): void {
+/** Update the toolbar text/buttons for the current page — the cheap part shared by full and incremental renders. */
+function updateReaderChrome(): void {
   if (!readerState) return;
   const { ch, pages, currentPage } = readerState;
-  const p = pages[currentPage];
-  if (!p) return;
-  ($("#reader-view") as HTMLElement).scrollTop = 0;
   const onLastPage = currentPage >= pages.length - 1;
   const nextCh = onLastPage ? getAdjacentChapter(1) : null;
   $("#reader-info").textContent = ch.name;
@@ -1957,15 +1966,58 @@ function renderReaderPage(showOverlay = false): void {
   $<HTMLButtonElement>("#reader-prev").disabled = currentPage === 0;
   $<HTMLButtonElement>("#reader-next").disabled = onLastPage && !nextCh;
   $<HTMLButtonElement>("#reader-next").textContent = onLastPage && nextCh ? "Next ch. ›" : "Next ›";
-  $("#reader-page").innerHTML = `<div class="reader-track">`
-    + readerSlotHtml(pages[currentPage - 1], currentPage)
-    + readerSlotHtml(p, currentPage + 1)
-    + readerSlotHtml(pages[currentPage + 1], currentPage + 2)
-    + `</div>`;
-  setTrackOffset(0, false);
-  if (showOverlay) showToolbar();
+}
+
+/** Warm the images around the current page and pull in the next chapter as the end nears. */
+function primeReaderAround(): void {
+  if (!readerState) return;
+  const { pages, currentPage } = readerState;
   preloadImages(pages.slice(Math.max(0, currentPage - 1), currentPage + 4).map(p => p.imageUrl));
   if (currentPage >= pages.length - 1 - 3) void prefetchNextChapter();
+}
+
+/** Full render: rebuild the whole 3-slot filmstrip from scratch (chapter open, page-jump, resize). */
+function renderReaderPage(showOverlay = false): void {
+  if (!readerState) return;
+  const { pages, currentPage } = readerState;
+  if (!pages[currentPage]) return;
+  ($("#reader-view") as HTMLElement).scrollTop = 0;
+  updateReaderChrome();
+  const track = document.createElement("div");
+  track.className = "reader-track";
+  track.append(
+    makeReaderSlot(pages[currentPage - 1], currentPage),
+    makeReaderSlot(pages[currentPage], currentPage + 1),
+    makeReaderSlot(pages[currentPage + 1], currentPage + 2),
+  );
+  $("#reader-page").replaceChildren(track);
+  setTrackOffset(0, false);
+  if (showOverlay) showToolbar();
+  primeReaderAround();
+}
+
+/**
+ * Incremental render for a ±1 page turn: slide the 3-slot window by one. Drops the slot that scrolled
+ * off, appends/prepends only the newly-revealed neighbour, then re-centres — so the two reused slots
+ * keep their decoded images and a fast swipe doesn't pay a full teardown/redecode. Falls back to a
+ * full render if the track isn't in its expected 3-slot shape. `currentPage` must already be updated.
+ */
+function updateReaderWindow(dir: 1 | -1): void {
+  if (!readerState) return;
+  const track = readerTrack();
+  if (!track || track.children.length !== 3) { renderReaderPage(); return; }
+  const { pages, currentPage } = readerState;
+  if (dir === 1) {
+    track.firstElementChild?.remove();
+    track.appendChild(makeReaderSlot(pages[currentPage + 1], currentPage + 2));
+  } else {
+    track.lastElementChild?.remove();
+    track.insertBefore(makeReaderSlot(pages[currentPage - 1], currentPage), track.firstElementChild);
+  }
+  ($("#reader-view") as HTMLElement).scrollTop = 0;
+  setTrackOffset(0, false);
+  updateReaderChrome();
+  primeReaderAround();
 }
 
 /** True when there is a page (or a following chapter) to slide toward in the given direction. */
@@ -1988,8 +2040,17 @@ function onceTransitionEnd(el: HTMLElement, cb: () => void): void {
   let done = false;
   const run = (): void => { if (done) return; done = true; el.removeEventListener("transitionend", run); cb(); };
   el.addEventListener("transitionend", run);
-  setTimeout(run, 340);
+  setTimeout(run, 460); // > the .reader-track transition (0.38s) so it only fires if transitionend is dropped
 }
+
+/**
+ * A page-turn slide that has been kicked off but not yet advanced `currentPage` (it's still
+ * animating, waiting on `transitionend`), or null when nothing is mid-flight. A fresh gesture
+ * calls this to land the previous turn instantly — otherwise a second swipe cancels the first
+ * slide's transition, stranding it on the timeout fallback, which then fires late and makes the
+ * strip lurch back to an old page.
+ */
+let pendingSwipeFinalize: (() => void) | null = null;
 
 /** Animate the filmstrip fully toward a neighbour, then re-centre on it (the image is already in place). */
 function commitSwipe(dir: 1 | -1): void {
@@ -1997,7 +2058,13 @@ function commitSwipe(dir: 1 | -1): void {
   if (!track) { void readerNavigate(dir); return; }
   track.classList.add("animate");
   track.style.transform = dir === 1 ? "translateX(-200%)" : "translateX(0%)";
-  onceTransitionEnd(track, () => { void readerNavigate(dir); });
+  const finalize = (): void => {
+    if (pendingSwipeFinalize !== finalize) return; // already flushed by a later gesture
+    pendingSwipeFinalize = null;
+    void readerNavigate(dir); // advances currentPage and re-renders (re-centres) synchronously
+  };
+  pendingSwipeFinalize = finalize;
+  onceTransitionEnd(track, finalize);
 }
 
 /** Resolve a finished horizontal drag: commit to the neighbour past the threshold, else snap back. */
@@ -2017,8 +2084,9 @@ async function readerNavigate(delta: number): Promise<void> {
   }
   const next = Math.max(0, Math.min(readerState.pages.length - 1, readerState.currentPage + delta));
   if (next === readerState.currentPage) return;
+  const step = next - readerState.currentPage;
   readerState.currentPage = next;
-  renderReaderPage();
+  if (step === 1 || step === -1) updateReaderWindow(step); else renderReaderPage();
   if (currentSeries?.inLibrary) await setProgress(readerState.ch, readerState.currentPage, readerState.pages.length);
   else recordHistory(readerState.currentPage);
 }
@@ -2640,6 +2708,10 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
   let multiTouch = false;        // 2+ fingers seen this gesture → pinch, suppress paging entirely
   let onControl = false;         // gesture began on a toolbar control → leave taps to native clicks
   readerView.addEventListener("touchstart", (e: TouchEvent) => {
+    // Land any page-turn still sliding so this gesture starts from the real current page, not a
+    // half-finished animation. Without this, a fast second swipe cancels the first slide's
+    // transition and its late timeout re-renders an old page underneath you.
+    pendingSwipeFinalize?.();
     if (e.touches.length >= 2) {
       // Pinch starting — drop any drag in progress and snap the strip home; never page on a pinch.
       multiTouch = true;
@@ -2661,15 +2733,19 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
       return;
     }
     if (!gestureActive || onControl) return;
-    const dx = e.touches[0].clientX - swipeStartX;
     const dy = e.touches[0].clientY - swipeStartY;
     if (!gestureHorizontal) {
-      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) gestureHorizontal = true;
-      else if (Math.abs(dy) > 12) { gestureActive = false; return; } // vertical intent — bail out
+      const dx = e.touches[0].clientX - swipeStartX;
+      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
+        // Re-base the origin to here so the strip tracks the finger from 0 — without this it pops by
+        // the ~10px we waited through to confirm the gesture was a horizontal drag, not a tap/scroll.
+        gestureHorizontal = true;
+        swipeStartX = e.touches[0].clientX;
+      } else if (Math.abs(dy) > 12) { gestureActive = false; return; } // vertical intent — bail out
       else return;
     }
     e.preventDefault(); // claim the gesture so the page doesn't also scroll/zoom under us
-    setTrackOffset(applySwipeResistance(dx), false);
+    setTrackOffset(applySwipeResistance(e.touches[0].clientX - swipeStartX), false);
   }, { passive: false });
   const endSwipe = (e: TouchEvent): void => {
     if (e.touches.length > 0) return; // still fingers down (e.g. lifting one finger of a pinch)
