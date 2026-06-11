@@ -1172,9 +1172,16 @@ async function showDetail(seriesId: string): Promise<void> {
   });
   $("#detail-description").textContent = info.description ?? "";
 
+  // Direct series read from page 1 by clicking the cover (there's no per-chapter list to pick
+  // from). Keep the explicit ▶ Read button only as a fallback for the rare direct series with no
+  // cover image to click.
+  const coverReadable = isDirect && !!info.thumbnailUrl;
+  cover.classList.toggle("readable", coverReadable);
+  cover.onclick = coverReadable ? () => void readDirect(seriesId) : null;
+  cover.title = coverReadable ? "Read from page 1" : "";
   const readBtn = $<HTMLButtonElement>("#read-direct-btn");
-  readBtn.hidden = !isDirect;
-  if (isDirect) readBtn.onclick = () => void readDirect(seriesId);
+  readBtn.hidden = !(isDirect && !info.thumbnailUrl);
+  if (!readBtn.hidden) readBtn.onclick = () => void readDirect(seriesId);
 
   // Library tracking (optional module): track this series under the bridge it came from.
   prefetchedChapter = null;

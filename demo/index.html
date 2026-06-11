@@ -70,7 +70,7 @@
     .card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 6px; background: #333; margin-bottom: 0.4rem; display: block; transition: filter 0.15s; }
     .card:hover img, .card.touch-active img { filter: brightness(1.08); }
     /* Page-thumbnail grid (direct series): small page previews that jump the reader to that page. */
-    .page-thumb-grid { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.75rem; }
+    .page-thumb-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.6rem; margin-bottom: 0.75rem; }
     .page-thumb { position: relative; flex: 0 1 150px; cursor: pointer; }
     .page-thumb img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 6px; background: #333; display: block; transition: filter 0.15s; }
     .page-thumb:hover img, .page-thumb.touch-active img { filter: brightness(1.08); }
@@ -138,6 +138,9 @@
     .detail-side { display: flex; flex-direction: column; gap: 0.5rem; flex: 1; min-width: 0; }
     #detail-actions { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
     #detail-cover { width: 120px; height: 180px; object-fit: cover; border-radius: 6px; background: #333; flex-shrink: 0; }
+    /* Direct series: the cover is the read affordance (jumps the reader to page 1). */
+    #detail-cover.readable { cursor: pointer; transition: filter 0.15s; }
+    #detail-cover.readable:hover { filter: brightness(1.12); }
     #detail-genres { display: flex; align-items: center; gap: 0.35rem; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2rem 0.6rem; padding: 0 1rem 2px; }
     #detail-genres::-webkit-scrollbar { display: none; }
     .tag-group { display: flex; align-items: center; gap: 0.35rem; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2rem 0.4rem; padding: 0 1rem 2px; }
