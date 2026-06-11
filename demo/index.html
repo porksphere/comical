@@ -56,7 +56,10 @@
     .tab.active { background: #2563eb; border-color: #2563eb; }
     .chips { display: flex; gap: 0.35rem; flex-wrap: wrap; }
     .chip { background: #1c1c1e; border: 1px solid #333; border-radius: 999px; padding: 0.2rem 0.6rem; font-size: 0.75rem; color: #bbb; white-space: nowrap; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; }
+    /* Flex (not grid) so an incomplete last row centers; cards keep a fixed 160px basis (matching
+       the carousels) and don't grow, which is what lets justify-content center the orphans. */
+    .grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem; }
+    .grid > .card { flex: 0 1 160px; }
     .card { background: #1c1c1e; border-radius: 8px; padding: 0.75rem; cursor: pointer; transition: background 0.15s; }
     .card:hover { background: #2a2a2e; }
     .card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 4px; background: #333; margin-bottom: 0.5rem; }
@@ -196,6 +199,7 @@
     <input id="query" type="search" placeholder="Search…" style="flex:1; min-width:160px">
     <button id="searchBtn">Search</button>
     <button id="filters-toggle" class="secondary" style="display:none">Filters</button>
+    <button id="fav-section" class="secondary" style="display:none">★ Favorites</button>
   </div>
 
   <!-- Filters / sort / tags (only when the bridge supports them) -->

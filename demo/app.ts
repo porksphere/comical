@@ -387,6 +387,7 @@ async function selectBridge(id: string): Promise<void> {
   const canSearch = detail.info.capabilities.includes("search");
   $("#query").style.display = canSearch ? "" : "none";
   $("#searchBtn").style.display = canSearch ? "" : "none";
+  $("#fav-section").style.display = detail.info.capabilities.includes("favorites") ? "" : "none";
 
   // Content needs the bridge configured.
   if (detail.missingRequired.length > 0) {
@@ -794,7 +795,6 @@ async function renderHome(): Promise<void> {
   clearHome();
   showBrowseMode("home");
   const host = $("#home-sections");
-  if (activeCaps.includes("favorites")) await renderFavoritesSection(host);
   if (activeCaps.includes("lists")) {
     const lists = await api<SeriesList[]>(`/bridges/${activeBridge}/lists`);
     currentLists = lists;
@@ -839,7 +839,8 @@ async function renderSection(host: HTMLElement, list: SeriesList, isLast: boolea
   section.className = "section";
 
   if (horizontal) {
-    section.append(sectionHead(list.name, () => void showListDetail(list)));
+    // "See all" only when there's more than what's already in the carousel.
+    section.append(sectionHead(list.name, r.hasNextPage ? () => void showListDetail(list) : undefined));
     const row = document.createElement("div");
     row.className = "carousel" + (layout === "ranked" ? " ranked" : layout === "hero" ? " hero" : "");
     r.items.forEach((item, idx) => {
@@ -856,7 +857,7 @@ async function renderSection(host: HTMLElement, list: SeriesList, isLast: boolea
   } else {
     // A non-terminal grid links to its full list and pages with "Load more"; the terminal grid
     // owns the page's downward scroll and loads more automatically.
-    section.append(sectionHead(list.name, isLast ? undefined : () => void showListDetail(list)));
+    section.append(sectionHead(list.name, !isLast && r.hasNextPage ? () => void showListDetail(list) : undefined));
     const grid = document.createElement("div");
     grid.className = "grid";
     for (const item of r.items) grid.append(makeCard(item));
@@ -930,25 +931,6 @@ function attachInfinite(section: HTMLElement, grid: HTMLElement, list: SeriesLis
   );
   io.observe(sentinel);
   homeObservers.push(io);
-}
-
-/** Favorites as a carousel atop home (capability "favorites"); silently omitted if unavailable. */
-async function renderFavoritesSection(host: HTMLElement): Promise<void> {
-  let r: PagedResults;
-  try {
-    r = await api<PagedResults>(`/bridges/${activeBridge}/favorites?page=1`);
-  } catch {
-    return; // not signed in / unsupported — just skip the section
-  }
-  if (r.items.length === 0) return;
-  const section = document.createElement("section");
-  section.className = "section";
-  section.append(sectionHead("★ Favorites", () => void showFavoritesDetail()));
-  const row = document.createElement("div");
-  row.className = "carousel";
-  for (const item of r.items) row.append(makeCard(item));
-  section.append(row);
-  host.append(section);
 }
 
 /** Open a list full-screen in the results grid; the search box scopes to it when `searchable`. */
@@ -2802,6 +2784,7 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     panel.style.display = open ? "" : "none";
     btn.textContent = open ? "Filters ✕" : "Filters";
   };
+  $("#fav-section").onclick = () => void showFavoritesDetail();
   $<HTMLInputElement>("#query").addEventListener("keydown", (e) => { if (e.key === "Enter") void doSearch(); });
   $("#reg-add").onclick = async () => {
     const url = $<HTMLInputElement>("#reg-url").value.trim();
