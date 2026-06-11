@@ -1005,7 +1005,7 @@ function makeCard(item: SeriesEntry): HTMLElement {
   card.innerHTML = `
     <img src="${item.thumbnailUrl ?? ""}" alt="${esc(item.title)}" loading="lazy"
       onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
-    <div class="card-title">${esc(item.title)}</div>
+    <div class="card-title" data-full="${esc(item.title)}"><span>${esc(item.title)}</span></div>
     ${item.subtitle ? `<div class="card-sub">${esc(item.subtitle)}</div>` : ""}`;
   card.onclick = () => void showDetail(item.id);
   return card;
@@ -2393,7 +2393,7 @@ async function loadLibrary(): Promise<void> {
       ${sourceCount > 1 ? `<span class="badge-sources">${sourceCount} sources</span>` : ""}
       <img src="${e.thumbnailUrl ?? ""}" alt="${esc(e.title)}" loading="lazy"
         onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
-      <div class="card-title">${esc(e.title)}</div>
+      <div class="card-title" data-full="${esc(e.title)}"><span>${esc(e.title)}</span></div>
       <div class="card-sub">${esc(e.bridgeId)}</div>`;
     if (cats.length > 0) {
       const catsRow = document.createElement("div");
@@ -2829,6 +2829,39 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
   };
 
   window.addEventListener("popstate", () => void handleRoute());
+
+  // Only reveal the full-title overlay when the title is actually clamped. Measuring is cheap when
+  // done lazily for just the card being interacted with (one reflow, not one per rendered card),
+  // and re-measuring each activation keeps it correct across resizes/orientation changes.
+  const markClamped = (card: HTMLElement): void => {
+    const span = card.querySelector<HTMLElement>(".card-title > span");
+    card.classList.toggle("clamped", !!span && span.scrollHeight > span.clientHeight + 1);
+  };
+
+  // Touch "hover": on touch devices :hover doesn't follow the finger, so the overlay never shows
+  // while scrolling. Track whichever card sits under the finger and mark it active.
+  let touchCard: HTMLElement | null = null;
+  const setTouchCard = (el: HTMLElement | null): void => {
+    if (el === touchCard) return;
+    touchCard?.classList.remove("touch-active");
+    touchCard = el;
+    if (el) { markClamped(el); el.classList.add("touch-active"); }
+  };
+  const cardAt = (t: Touch): HTMLElement | null =>
+    (document.elementFromPoint(t.clientX, t.clientY)?.closest(".card") as HTMLElement | null) ?? null;
+  const onTouch = (e: TouchEvent): void => { if (e.touches[0]) setTouchCard(cardAt(e.touches[0])); };
+  document.addEventListener("touchstart", onTouch, { passive: true });
+  document.addEventListener("touchmove", onTouch, { passive: true });
+  document.addEventListener("touchend", () => setTouchCard(null), { passive: true });
+  document.addEventListener("touchcancel", () => setTouchCard(null), { passive: true });
+
+  // Desktop hover: measure as the pointer crosses into a card (not on every descendant), before
+  // :hover reveals the overlay.
+  document.addEventListener("pointerover", (e) => {
+    if (e.pointerType === "touch") return; // touch path handled above
+    const card = (e.target as Element | null)?.closest<HTMLElement>(".card");
+    if (card && !card.contains(e.relatedTarget as Node | null)) markClamped(card);
+  }, { passive: true });
 
   try {
     availableTrackers = await fetchTrackers();
