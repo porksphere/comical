@@ -107,10 +107,14 @@ class DirectExampleBridge extends BridgeBase<Settings> {
     const base = this.base();
     return $("div.reader img.page")
       .toArray()
-      .map((el, index) => ({
-        index,
-        imageUrl: this.resolve(base, $(el).attr("src") ?? ""),
-      }))
+      .map((el, index) => {
+        const thumb = $(el).attr("data-thumb");
+        return {
+          index,
+          imageUrl: this.resolve(base, $(el).attr("src") ?? ""),
+          ...(thumb ? { thumbnailUrl: this.resolve(base, thumb) } : {}),
+        };
+      })
       .filter((p) => p.imageUrl.length > 0);
   }
 }

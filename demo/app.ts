@@ -30,7 +30,7 @@ interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtit
 interface TagGroup { label: string; kind?: string; tags: string[]; tagIds?: string[] }
 interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; authorId?: string; artist?: string; artistId?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[]; externalIds?: Record<string, string | number> }
 interface Chapter { id: string; name: string; number?: number; pageCount?: number; group?: string; languageCode?: string; publishedAt?: number }
-interface Page { index: number; imageUrl: string }
+interface Page { index: number; imageUrl: string; thumbnailUrl?: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
 interface SeriesList { id: string; name: string; layout?: string; featured?: boolean; searchable?: boolean }
 interface Filter { type: "text" | "toggle" | "number" | "select" | "multiselect" | "tag-multiselect"; key: string; label: string; options?: Choice[]; min?: number; max?: number }
@@ -908,8 +908,10 @@ async function renderSection(host: HTMLElement, list: SeriesList, isLast: boolea
   section.className = "section";
 
   if (horizontal) {
-    // "See all" only when there's more than what's already in the carousel.
-    section.append(sectionHead(list.name, r.hasNextPage ? () => void showListDetail(list) : undefined));
+    // "See all" when there's more than what's shown — either further pages, or items past the two
+    // rows the desktop carousel caps at (cards 11+ are hidden via CSS there).
+    const hasMore = r.hasNextPage || r.items.length > 10;
+    section.append(sectionHead(list.name, hasMore ? () => void showListDetail(list) : undefined));
     const row = document.createElement("div");
     row.className = "carousel" + (layout === "ranked" ? " ranked" : layout === "hero" ? " hero" : "");
     r.items.forEach((item, idx) => {
@@ -1058,6 +1060,7 @@ async function showDetail(seriesId: string): Promise<void> {
   $("#detail-description").textContent = "";
   ($("#detail-cover") as HTMLImageElement).style.display = "none";
   $("#chapters").innerHTML = "";
+  $("#page-thumbs").innerHTML = "";
 
   const isDirect = activeCaps.includes("direct");
   // `currentFilters` is rendered for `browseBridge`; if this series is from a different bridge (opened
@@ -1175,11 +1178,54 @@ async function showDetail(seriesId: string): Promise<void> {
 
   // Library tracking (optional module): track this series under the bridge it came from.
   prefetchedChapter = null;
+  directPages = null;
   preloadedUrls.clear();
   preferredGroupName = undefined;
   currentSeries = { bridgeId: activeBridge, seriesId, info, chapters, progress: new Map(), inLibrary: false };
   await refreshLibraryStatus();
   renderChapters();
+  if (isDirect) void loadPageThumbs(activeBridge, seriesId);
+}
+
+/**
+ * For a direct series, fetch its flat page list and render a thumbnail grid (cached on `directPages`
+ * so opening the reader doesn't re-fetch). The grid only renders when the bridge supplies cheaper
+ * `thumbnailUrl`s — we never bulk-load full-resolution page images just for a preview.
+ */
+async function loadPageThumbs(bridgeId: string, seriesId: string): Promise<void> {
+  let pages: Page[];
+  try {
+    pages = await api<Page[]>(`/bridges/${bridgeId}/series/${enc(seriesId)}/pages`);
+  } catch {
+    return; // non-fatal: the ▶ Read button still works (it re-fetches on its own)
+  }
+  // Guard against a stale response after the user navigated to a different series.
+  if (!currentSeries || currentSeries.bridgeId !== bridgeId || currentSeries.seriesId !== seriesId) return;
+  directPages = { bridgeId, seriesId, pages };
+  renderPageThumbs(seriesId, pages);
+}
+
+function renderPageThumbs(seriesId: string, pages: Page[]): void {
+  const grid = $("#page-thumbs");
+  // Gate: only show the grid when the bridge provides real thumbnails.
+  if (!pages.some((p) => p.thumbnailUrl)) {
+    grid.innerHTML = "";
+    return;
+  }
+  grid.innerHTML = pages
+    .filter((p) => p.thumbnailUrl)
+    .map(
+      (p) =>
+        `<div class="page-thumb" data-index="${p.index}">` +
+        `<img loading="lazy" src="${esc(p.thumbnailUrl!)}" alt="Page ${p.index + 1}"` +
+        ` onerror="this.onerror=null;this.src='https://placehold.co/160x220?text=Page+${p.index + 1}'">` +
+        `<span class="page-num">${p.index + 1}</span>` +
+        `</div>`,
+    )
+    .join("");
+  grid.querySelectorAll<HTMLElement>(".page-thumb").forEach((el) => {
+    el.onclick = () => void readDirect(seriesId, Number(el.dataset.index));
+  });
 }
 
 // ── Library: detail-page tracking ────────────────────────────────────────────
@@ -1198,6 +1244,9 @@ let readerState: ReaderState | null = null;
 
 interface PrefetchedChapter { bridgeId: string; seriesId: string; ch: Chapter; pages: Page[] }
 let prefetchedChapter: PrefetchedChapter | null = null;
+
+/** Pages fetched for the direct series' thumbnail grid, reused when opening the reader. */
+let directPages: { bridgeId: string; seriesId: string; pages: Page[] } | null = null;
 
 // ── Logical chapters (scanlator grouping) ────────────────────────────────────────
 // Sites with multiple scanlation groups return one Chapter per group. We collapse copies that share
@@ -1913,11 +1962,17 @@ async function readDirect(seriesId: string, resumePage?: number, replace = false
   const route = `reader/${enc(bridgeId)}/${enc(seriesId)}/__direct__`;
   if (replaceEntry) history.replaceState(null, "", `#${route}`);
   else pushRoute(route);
-  $("#reader-info").textContent = `${info.title} · Loading…`;
-  $<HTMLButtonElement>("#reader-prev").disabled = true;
-  $<HTMLButtonElement>("#reader-next").disabled = true;
-  $("#reader-page").innerHTML = `<p class="muted" style="text-align:center;padding:2rem">Loading pages…</p>`;
-  const pages = await api<Page[]>(`/bridges/${bridgeId}/series/${enc(seriesId)}/pages`);
+  // Reuse the page list already fetched for the thumbnail grid; otherwise fetch it now.
+  let pages: Page[];
+  if (directPages?.bridgeId === bridgeId && directPages.seriesId === seriesId) {
+    pages = directPages.pages;
+  } else {
+    $("#reader-info").textContent = `${info.title} · Loading…`;
+    $<HTMLButtonElement>("#reader-prev").disabled = true;
+    $<HTMLButtonElement>("#reader-next").disabled = true;
+    $("#reader-page").innerHTML = `<p class="muted" style="text-align:center;padding:2rem">Loading pages…</p>`;
+    pages = await api<Page[]>(`/bridges/${bridgeId}/series/${enc(seriesId)}/pages`);
+  }
   const syntheticChapter: Chapter = { id: "__direct__", name: info.title };
   readerState = { ch: syntheticChapter, pages, currentPage: Math.min(resumePage ?? 0, Math.max(0, pages.length - 1)) };
   renderReaderPage(true);
