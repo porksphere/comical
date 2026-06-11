@@ -171,9 +171,38 @@ async function handleRoute(): Promise<void> {
   }
 }
 
+/** Whether the results-grid sentinel is mid-load, guarding against overlapping page fetches. */
+let loadingMore = false;
+let resultsObserver: IntersectionObserver | null = null;
+
+/**
+ * Wire the next page of the shared results grid (search / list / favorites). A sentinel at the
+ * grid's bottom auto-loads successive pages as it scrolls into view; `fn` is the page-(n+1) loader,
+ * or pagination ends when `hasMore` is false.
+ */
 function setLoadMore(hasMore: boolean, fn: () => Promise<void>): void {
   loadMoreFn = hasMore ? fn : null;
-  $<HTMLButtonElement>("#load-more").style.display = hasMore ? "" : "none";
+  ensureResultsObserver();
+}
+
+/** Lazily create the single persistent observer driving the results grid's infinite scroll. */
+function ensureResultsObserver(): void {
+  if (resultsObserver) return;
+  resultsObserver = new IntersectionObserver(
+    async (entries) => {
+      if (loadingMore || !loadMoreFn || !entries.some((e) => e.isIntersecting)) return;
+      loadingMore = true;
+      try {
+        await loadMoreFn();
+      } catch (e) {
+        status(`Load more failed: ${e instanceof Error ? e.message : e}`, true);
+      } finally {
+        loadingMore = false;
+      }
+    },
+    { rootMargin: "400px" },
+  );
+  resultsObserver.observe($("#results-sentinel"));
 }
 
 // ── Filter controls (rendered from getFilters, applied on Search) ────────────────
@@ -2795,7 +2824,6 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     if (gestureHorizontal) { gestureHorizontal = false; setTrackOffset(0, true); }
     void e;
   });
-  $("#load-more").onclick = () => void loadMoreFn?.();
   $("#lib-add-category").onclick = async () => {
     const input = $<HTMLInputElement>("#lib-new-category");
     const name = input.value.trim();
