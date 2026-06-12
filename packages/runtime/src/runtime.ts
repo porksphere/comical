@@ -98,7 +98,7 @@ export class ComicalRuntime {
     const full: SeriesSnapshot = { bridgeId, seriesId, title };
     if (thumbnailUrl !== undefined) full.thumbnailUrl = thumbnailUrl;
     if (author !== undefined) full.author = author;
-    if (snap?.categoryIds !== undefined) full.categoryIds = snap.categoryIds;
+    if (snap?.listIds !== undefined) full.listIds = snap.listIds;
     if (externalIds !== undefined) full.externalIds = externalIds;
 
     const result = await lib.addSeries(full);

@@ -2,7 +2,7 @@
   "name": "@comical/library",
   "version": "0.0.0",
   "type": "module",
-  "description": "Optional local, cross-bridge reading library: collection, read/unread state, resume, history, categories",
+  "description": "Optional local, cross-bridge reading library: collection, read/unread state, resume, history, lists",
   "exports": {
     ".": "./src/index.ts"
   },

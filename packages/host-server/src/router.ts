@@ -337,17 +337,17 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       entryKey(c.req.param("bridgeId"), c.req.param("seriesId"));
 
     app.get("/library", async (c) => {
-      const category = c.req.query("category");
-      const categories = c.req.query("categories");
+      const list = c.req.query("list");
+      const lists = c.req.query("lists");
       const q = c.req.query("q");
       const sort = c.req.query("sort");
       const dir = c.req.query("dir");
       const validSort = sort === "added" || sort === "title" || sort === "lastRead" || sort === "unread";
       return c.json(
         await lib.getLibrary({
-          ...(category && { categoryId: category }),
-          ...(categories && { categoryIds: categories.split(",").filter(Boolean) }),
-          ...(c.req.query("uncategorized") === "true" && { uncategorized: true }),
+          ...(list && { listId: list }),
+          ...(lists && { listIds: lists.split(",").filter(Boolean) }),
+          ...(c.req.query("unlisted") === "true" && { unlisted: true }),
           ...(q && { q }),
           ...(c.req.query("unreadOnly") === "true" && { unreadOnly: true }),
           ...(validSort && { sort: sort as "added" | "title" | "lastRead" | "unread" }),
@@ -383,27 +383,27 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       return c.json({ ok: true });
     });
 
-    // Categories
-    app.get("/library/categories", async (c) => c.json(await lib.listCategories()));
-    app.post("/library/categories", async (c) => {
+    // Lists
+    app.get("/library/lists", async (c) => c.json(await lib.getLists()));
+    app.post("/library/lists", async (c) => {
       const b = await body<{ name?: string }>(c);
       if (!b?.name) return c.json({ error: "name is required" }, 400);
-      return c.json(await lib.createCategory(b.name), 201);
+      return c.json(await lib.createList(b.name), 201);
     });
-    app.post("/library/categories/reorder", async (c) => {
+    app.post("/library/lists/reorder", async (c) => {
       const b = await body<{ orderedIds?: string[] }>(c);
       if (!b?.orderedIds) return c.json({ error: "orderedIds is required" }, 400);
-      await lib.reorderCategories(b.orderedIds);
+      await lib.reorderLists(b.orderedIds);
       return c.json({ ok: true });
     });
-    app.patch("/library/categories/:id", async (c) => {
+    app.patch("/library/lists/:id", async (c) => {
       const b = await body<{ name?: string }>(c);
       if (!b?.name) return c.json({ error: "name is required" }, 400);
-      try { await lib.renameCategory(c.req.param("id"), b.name); return c.json({ ok: true }); }
+      try { await lib.renameList(c.req.param("id"), b.name); return c.json({ ok: true }); }
       catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
     });
-    app.delete("/library/categories/:id", async (c) => {
-      await lib.deleteCategory(c.req.param("id"));
+    app.delete("/library/lists/:id", async (c) => {
+      await lib.deleteList(c.req.param("id"));
       return c.json({ ok: true });
     });
 
@@ -419,7 +419,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     app.post("/library/entries", async (c) => {
       const b = await body<{
         bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string;
-        author?: string; categoryIds?: string[];
+        author?: string; listIds?: string[];
         externalIds?: Record<string, string | number>;
       }>(c);
       if (!b?.bridgeId || !b.seriesId) {
@@ -430,7 +430,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
           ...(b.title !== undefined && { title: b.title }),
           ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
           ...(b.author !== undefined && { author: b.author }),
-          ...(b.categoryIds !== undefined && { categoryIds: b.categoryIds }),
+          ...(b.listIds !== undefined && { listIds: b.listIds }),
           ...(b.externalIds !== undefined && { externalIds: b.externalIds }),
         });
         return c.json(result, 201);
@@ -452,10 +452,10 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       return c.json({ ok: true });
     });
 
-    app.put("/library/entries/:bridgeId/:seriesId/categories", async (c) => {
-      const b = await body<{ categoryIds?: string[] }>(c);
-      if (!b?.categoryIds) return c.json({ error: "categoryIds is required" }, 400);
-      return withLibraryEntry(c, () => lib.setCategories(keyOf(c), b.categoryIds!));
+    app.put("/library/entries/:bridgeId/:seriesId/lists", async (c) => {
+      const b = await body<{ listIds?: string[] }>(c);
+      if (!b?.listIds) return c.json({ error: "listIds is required" }, 400);
+      return withLibraryEntry(c, () => lib.setLists(keyOf(c), b.listIds!));
     });
 
     app.post("/library/entries/:bridgeId/:seriesId/sync", async (c) => {

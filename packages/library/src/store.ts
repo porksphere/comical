@@ -6,7 +6,7 @@
  *
  * Keys are `entryKey(bridgeId, seriesId)`.
  */
-import type { ActivityItem, BridgePrefs, Category, ChapterProgress, HistoryItem, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
+import type { ActivityItem, BridgePrefs, ChapterProgress, HistoryItem, LibraryEntry, LibraryList, SeriesGroup, TrackerLink } from "./models.ts";
 
 export interface LibraryStore {
   // ── Entries ──────────────────────────────────────────────────────────────
@@ -21,10 +21,10 @@ export interface LibraryStore {
   /** Drop all progress for a series (called when an entry is removed). */
   deleteProgressForEntry(key: string): Promise<void>;
 
-  // ── Categories ──────────────────────────────────────────────────────────────
-  listCategories(): Promise<Category[]>;
-  putCategory(category: Category): Promise<void>;
-  deleteCategory(id: string): Promise<void>;
+  // ── Lists ─────────────────────────────────────────────────────────────────────
+  listLists(): Promise<LibraryList[]>;
+  putList(list: LibraryList): Promise<void>;
+  deleteList(id: string): Promise<void>;
 
   // ── Series groups ────────────────────────────────────────────────────────
   listGroups(): Promise<SeriesGroup[]>;

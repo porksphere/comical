@@ -41,8 +41,8 @@ interface SavedRegistry { url: string; name: string }
 interface AvailableBridge { entry: { id: string; name: string; version: string }; registryUrl: string; installedVersion: string | null; updateAvailable: boolean }
 // Library (optional /library module)
 interface ProgressItem { chapterId: string; read: boolean; lastPage?: number; pageCount?: number }
-interface Category { id: string; name: string; order: number }
-interface LibEntry { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; author?: string; categoryIds: string[]; seriesGroupId?: string; externalIds?: Record<string, string | number>; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt?: number }
+interface LibraryList { id: string; name: string; order: number }
+interface LibEntry { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; author?: string; listIds: string[]; seriesGroupId?: string; externalIds?: Record<string, string | number>; lastReadChapterId?: string; lastReadChapterName?: string; lastReadAt?: number }
 interface LibEntryView extends LibEntry { unreadCount: number }
 interface HistoryItem { bridgeId: string; seriesId: string; title: string; thumbnailUrl?: string; lastReadChapterId?: string; lastReadChapterName?: string; lastPage?: number; pageCount?: number; lastReadAt: number }
 interface ActivityItemView { bridgeId: string; seriesId: string; chapterId: string; title: string; thumbnailUrl?: string; chapterName?: string; number?: number; publishedAt?: number; detectedAt: number; read: boolean }
@@ -1111,7 +1111,7 @@ async function showDetail(seriesId: string): Promise<void> {
   ($("#detail-cover") as HTMLImageElement).style.display = "none";
   $("#cover-chapter-badge").hidden = true;
   $("#lib-menu").hidden = true;
-  $("#lib-category-picker").hidden = true;
+  $("#lib-list-picker").hidden = true;
   $("#tracker-menu").hidden = true;
   $("#tracker-panel").hidden = true;
   $("#chapters").innerHTML = "";
@@ -1458,7 +1458,7 @@ async function refreshLibraryStatus(): Promise<void> {
   const { bridgeId, seriesId } = currentSeries;
   const libMenu = $("#lib-menu");
   const libBtn = $<HTMLButtonElement>("#lib-toggle");
-  const picker = $("#lib-category-picker");
+  const picker = $("#lib-list-picker");
   const newBadge = $("#new-badge");
   libMenu.hidden = false;
   newBadge.hidden = true;
@@ -1470,7 +1470,7 @@ async function refreshLibraryStatus(): Promise<void> {
     );
     currentSeries.inLibrary = true;
     currentSeries.progress = new Map(detail.progress.map((p) => [p.chapterId, p]));
-    // In-library: the button opens the list-management dropdown (categories + remove).
+    // In-library: the button opens the list-management dropdown (lists + remove).
     libBtn.textContent = "✓ In Library ▾";
     libBtn.onclick = () => { picker.hidden = !picker.hidden; $("#tracker-panel").hidden = true; $("#group-panel").hidden = true; };
     // Detect new chapters since the last visit.
@@ -1491,7 +1491,7 @@ async function refreshLibraryStatus(): Promise<void> {
     return;
   }
   // Render UI panels separately — failures here must not reset inLibrary.
-  await renderCategoryPicker(detail.entry.categoryIds).catch(() => {});
+  await renderListPicker(detail.entry.listIds).catch(() => {});
   await renderGroupPanel(bridgeId, seriesId, detail.entry).catch(() => {});
   const trackersAvailable = await renderTrackerPanel(bridgeId, seriesId).catch(() => false);
   $("#tracker-menu").hidden = !trackersAvailable;
@@ -1952,37 +1952,37 @@ async function toggleLibrary(): Promise<void> {
 }
 
 
-/** Populate the list-management dropdown (lists/categories + remove action). Visibility is driven by
+/** Populate the list-management dropdown (lists + remove action). Visibility is driven by
  * the In-Library button; this only fills in contents and never forces the dropdown open. */
-async function renderCategoryPicker(selectedIds: string[]): Promise<void> {
-  const picker = $("#lib-category-picker");
+async function renderListPicker(selectedIds: string[]): Promise<void> {
+  const picker = $("#lib-list-picker");
   if (!currentSeries?.inLibrary) { picker.hidden = true; picker.innerHTML = ""; return; }
-  const cats = await api<Category[]>("/library/categories");
+  const lists = await api<LibraryList[]>("/library/lists");
   picker.innerHTML = "";
 
   const head = document.createElement("div");
-  head.id = "lib-cat-head";
+  head.id = "lib-list-head";
   head.textContent = "Lists";
   picker.append(head);
 
-  if (cats.length === 0) {
+  if (lists.length === 0) {
     const empty = document.createElement("div");
     empty.className = "muted";
     empty.style.cssText = "font-size:0.78rem;padding:0.1rem 0.4rem 0.3rem";
-    empty.textContent = "No lists yet — add some in the Library tab.";
+    empty.textContent = "No lists yet — create some via Manage lists in the Library tab.";
     picker.append(empty);
   } else {
-    for (const cat of cats) {
+    for (const list of lists) {
       const label = document.createElement("label");
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.checked = selectedIds.includes(cat.id);
-      cb.dataset.id = cat.id;
+      cb.checked = selectedIds.includes(list.id);
+      cb.dataset.id = list.id;
       cb.onchange = async () => {
         const ids = Array.from(picker.querySelectorAll<HTMLInputElement>("input:checked")).map((i) => i.dataset.id!);
-        await send("PUT", `/library/entries/${currentSeries!.bridgeId}/${enc(currentSeries!.seriesId)}/categories`, { categoryIds: ids });
+        await send("PUT", `/library/entries/${currentSeries!.bridgeId}/${enc(currentSeries!.seriesId)}/lists`, { listIds: ids });
       };
-      label.append(cb, document.createTextNode(cat.name));
+      label.append(cb, document.createTextNode(list.name));
       picker.append(label);
     }
   }
@@ -2667,39 +2667,43 @@ async function refreshAll(): Promise<void> {
 }
 
 // ── Library view (cross-bridge collection) ──────────────────────────────────
-// Cached on full load so search/sort/filter changes only refetch entries, not categories+groups.
-let libCats: Category[] = [];
+// Cached on full load so search/sort/filter changes only refetch entries, not lists+groups.
+let libLists: LibraryList[] = [];
 let libGroups: SeriesGroup[] = [];
-// Filter/sort state. Categories are multi-select (OR); `libUncategorized` is the exclusive
-// "no categories" bucket. Empty selection + no flag = show all.
-const libSelectedCats = new Set<string>();
-let libUncategorized = false;
+// Filter/sort state. The list filter is single-select: null = all, "__unlisted__" = the no-lists
+// bucket, otherwise a list id.
+const UNLISTED = "__unlisted__";
+let libListFilter: string | null = null;
 let librarySearch = "";
 let librarySort: "lastRead" | "added" | "title" | "unread" = "lastRead";
 
-/** Full load: (re)fetch categories + groups, render the controls, then apply the current filters. */
+/** Full load: (re)fetch lists + groups, render the controls, then apply the current filters. */
 async function loadLibrary(): Promise<void> {
-  const [cats, groups] = await Promise.all([
-    api<Category[]>("/library/categories"),
+  const [lists, groups] = await Promise.all([
+    api<LibraryList[]>("/library/lists"),
     api<SeriesGroup[]>("/library/groups").catch(() => [] as SeriesGroup[]),
   ]);
-  libCats = cats;
+  libLists = lists;
   libGroups = groups;
-  renderCategoryChips(cats);
-  renderCategoryManager(cats);
+  // A filtered-on list that was just deleted falls back to "all".
+  if (libListFilter && libListFilter !== UNLISTED && !lists.some((l) => l.id === libListFilter)) {
+    libListFilter = null;
+  }
+  renderListFilter(lists);
+  renderManageLists(lists);
   await applyLibraryFilters();
 }
 
 /** Whether any narrowing filter is active — drives the "no matches" vs "empty library" message. */
 function hasLibraryFilters(): boolean {
-  return libSelectedCats.size > 0 || libUncategorized || librarySearch.trim() !== "";
+  return libListFilter !== null || librarySearch.trim() !== "";
 }
 
 /** Refetch just the entries for the current search/sort/filter state and re-render the grid. */
 async function applyLibraryFilters(): Promise<void> {
   const params = new URLSearchParams();
-  if (libUncategorized) params.set("uncategorized", "true");
-  else if (libSelectedCats.size) params.set("categories", [...libSelectedCats].join(","));
+  if (libListFilter === UNLISTED) params.set("unlisted", "true");
+  else if (libListFilter) params.set("list", libListFilter);
   const q = librarySearch.trim();
   if (q) params.set("q", q);
   params.set("sort", librarySort);
@@ -2717,7 +2721,6 @@ function renderLibraryGrid(entries: LibEntryView[]): void {
     return;
   }
 
-  const cats = libCats;
   // Track which entry keys are non-primary group members (to skip them — covered by the primary card).
   const hiddenKeys = new Set<string>();
   for (const g of libGroups) {
@@ -2738,79 +2741,120 @@ function renderLibraryGrid(entries: LibEntryView[]): void {
         onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
       <div class="card-title clampable" data-full="${esc(e.title)}"><span>${esc(e.title)}</span></div>
       <div class="card-sub">${esc(e.bridgeId)}</div>`;
-    if (cats.length > 0) {
-      const catsRow = document.createElement("div");
-      catsRow.className = "card-categories";
-      const assigned = new Set(e.categoryIds);
-      for (const cat of cats) {
-        const chip = document.createElement("span");
-        chip.className = "chip cat-chip" + (assigned.has(cat.id) ? " cat-chip-on" : "");
-        chip.textContent = cat.name;
-        chip.onclick = async (ev) => {
-          ev.stopPropagation();
-          if (assigned.has(cat.id)) assigned.delete(cat.id);
-          else assigned.add(cat.id);
-          chip.className = "chip cat-chip" + (assigned.has(cat.id) ? " cat-chip-on" : "");
-          await send("PUT", `/library/entries/${e.bridgeId}/${enc(e.seriesId)}/categories`, { categoryIds: [...assigned] });
-          // If a category-based filter is active, the card may no longer match — re-apply.
-          if (libSelectedCats.size || libUncategorized) void applyLibraryFilters();
-        };
-        catsRow.append(chip);
-      }
-      card.append(catsRow);
+    // Per-card quick-assign — only when lists exist (otherwise there's nothing to assign to).
+    if (libLists.length > 0) {
+      const menuBtn = document.createElement("button");
+      menuBtn.className = "card-menu-btn";
+      menuBtn.textContent = "⋯";
+      menuBtn.title = "Add to lists";
+      menuBtn.onclick = (ev) => { ev.stopPropagation(); openCardListMenu(menuBtn, e); };
+      card.append(menuBtn);
     }
     card.onclick = () => void openSeries(e.bridgeId, e.seriesId);
     grid.append(card);
   }
 }
 
-function renderCategoryChips(cats: Category[]): void {
-  const host = $("#lib-category-chips");
-  host.innerHTML = "";
-  const mk = (label: string, active: boolean, onClick: () => void) => {
-    const tab = document.createElement("div");
-    tab.className = "tab" + (active ? " active" : "");
-    tab.textContent = label;
-    tab.onclick = () => { onClick(); renderCategoryChips(cats); void applyLibraryFilters(); };
-    host.append(tab);
-  };
-  const showingAll = !libUncategorized && libSelectedCats.size === 0;
-  mk("All", showingAll, () => { libSelectedCats.clear(); libUncategorized = false; });
-  for (const c of cats) {
-    mk(c.name, libSelectedCats.has(c.id), () => {
-      libUncategorized = false; // category + uncategorized are mutually exclusive
-      if (libSelectedCats.has(c.id)) libSelectedCats.delete(c.id);
-      else libSelectedCats.add(c.id);
-    });
+/** Open the shared list-checkbox popover anchored under a card's "⋯" button. */
+function openCardListMenu(anchor: HTMLElement, entry: LibEntryView): void {
+  const menu = $("#card-list-menu");
+  menu.innerHTML = "";
+  const assigned = new Set(entry.listIds);
+  for (const list of libLists) {
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = assigned.has(list.id);
+    cb.onchange = async () => {
+      if (cb.checked) assigned.add(list.id);
+      else assigned.delete(list.id);
+      entry.listIds = [...assigned];
+      await send("PUT", `/library/entries/${entry.bridgeId}/${enc(entry.seriesId)}/lists`, { listIds: [...assigned] });
+      // If a list filter is active, the card may no longer match — re-apply.
+      if (libListFilter) void applyLibraryFilters();
+    };
+    label.append(cb, document.createTextNode(list.name));
+    menu.append(label);
   }
-  mk("Uncategorized", libUncategorized, () => { libSelectedCats.clear(); libUncategorized = !libUncategorized; });
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = `${window.scrollY + r.bottom + 4}px`;
+  menu.style.left = `${window.scrollX + r.left}px`;
+  menu.hidden = false;
 }
 
-function renderCategoryManager(cats: Category[]): void {
-  const host = $("#lib-category-manage");
+/** Populate the single-select list filter dropdown (All / each list / Unlisted). */
+function renderListFilter(lists: LibraryList[]): void {
+  const sel = $<HTMLSelectElement>("#lib-list-filter");
+  sel.innerHTML = "";
+  const opt = (value: string, label: string) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    sel.append(o);
+  };
+  opt("", "All lists");
+  for (const l of lists) opt(l.id, l.name);
+  opt(UNLISTED, "Unlisted");
+  sel.value = libListFilter ?? "";
+  sel.onchange = () => { libListFilter = sel.value || null; void applyLibraryFilters(); };
+}
+
+/** Render the Manage-lists modal body: add field is wired separately; here we list each list with
+ * inline rename, delete, and drag-to-reorder (HTML5 drag from the handle). */
+function renderManageLists(lists: LibraryList[]): void {
+  const host = $("#lib-list-manage");
   host.innerHTML = "";
-  for (const c of cats) {
+  if (lists.length === 0) {
+    host.innerHTML = "<p class=\"muted\">No lists yet. Add one above.</p>";
+    return;
+  }
+  let dragId: string | null = null;
+  for (const list of lists) {
     const row = document.createElement("div");
-    row.className = "reg-item";
-    row.innerHTML = `<span>${esc(c.name)}</span>`;
-    const actions = document.createElement("span");
-    const rename = document.createElement("button");
-    rename.className = "secondary";
-    rename.textContent = "Rename";
-    rename.onclick = async () => {
-      const name = window.prompt("Rename category", c.name);
-      if (name) { await send("PATCH", `/library/categories/${enc(c.id)}`, { name }); await loadLibrary(); }
+    row.className = "list-row";
+    row.dataset.id = list.id;
+
+    const handle = document.createElement("span");
+    handle.className = "drag-handle";
+    handle.textContent = "⠿";
+    handle.title = "Drag to reorder";
+    handle.draggable = true;
+    handle.ondragstart = (ev) => { dragId = list.id; ev.dataTransfer!.effectAllowed = "move"; };
+
+    const nameInput = document.createElement("input");
+    nameInput.className = "list-name-input";
+    nameInput.value = list.name;
+    nameInput.onkeydown = (ev) => { if (ev.key === "Enter") nameInput.blur(); };
+    nameInput.onblur = async () => {
+      const name = nameInput.value.trim();
+      if (name && name !== list.name) { await send("PATCH", `/library/lists/${enc(list.id)}`, { name }); await loadLibrary(); }
+      else nameInput.value = list.name;
     };
+
     const del = document.createElement("button");
     del.className = "secondary";
-    del.textContent = "Delete";
+    del.textContent = "✕";
+    del.title = "Delete list";
     del.onclick = async () => {
-      libSelectedCats.delete(c.id);
-      await send("DELETE", `/library/categories/${enc(c.id)}`);
+      if (libListFilter === list.id) libListFilter = null;
+      await send("DELETE", `/library/lists/${enc(list.id)}`);
       await loadLibrary();
     };
-    actions.append(rename, del);
-    row.append(actions);
+
+    row.ondragover = (ev) => { ev.preventDefault(); row.classList.add("drag-over"); };
+    row.ondragleave = () => row.classList.remove("drag-over");
+    row.ondrop = async (ev) => {
+      ev.preventDefault();
+      row.classList.remove("drag-over");
+      if (!dragId || dragId === list.id) return;
+      const ids = lists.map((l) => l.id);
+      const [moved] = ids.splice(ids.indexOf(dragId), 1);
+      ids.splice(ids.indexOf(list.id), 0, moved!);
+      await send("POST", "/library/lists/reorder", { orderedIds: ids });
+      await loadLibrary();
+    };
+
+    row.append(handle, nameInput, del);
     host.append(row);
   }
 }
@@ -3050,25 +3094,27 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
   $("#group-toggle").onclick = () => {
     const panel = $("#group-panel");
     panel.hidden = !panel.hidden;
-    $("#lib-category-picker").hidden = true; // don't overlap the popovers
+    $("#lib-list-picker").hidden = true; // don't overlap the popovers
     $("#tracker-panel").hidden = true;
   };
   // The Trackers button toggles its own popover (anchored under the library button).
   $("#tracker-toggle").onclick = () => {
     const panel = $("#tracker-panel");
     panel.hidden = !panel.hidden;
-    $("#lib-category-picker").hidden = true; // don't overlap the popovers
+    $("#lib-list-picker").hidden = true; // don't overlap the popovers
     $("#group-panel").hidden = true;
   };
   // Close any popover when clicking outside its menu.
   document.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
-    const picker = $("#lib-category-picker");
+    const picker = $("#lib-list-picker");
     if (!picker.hidden && !target.closest("#lib-menu")) picker.hidden = true;
     const group = $("#group-panel");
     if (!group.hidden && !target.closest("#group-menu")) group.hidden = true;
     const tracker = $("#tracker-panel");
     if (!tracker.hidden && !target.closest("#tracker-menu")) tracker.hidden = true;
+    const cardMenu = $("#card-list-menu");
+    if (!cardMenu.hidden && !target.closest("#card-list-menu") && !target.closest(".card-menu-btn")) cardMenu.hidden = true;
   });
   $("#chapters-tabs").addEventListener("click", (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLElement>(".ch-tab");
@@ -3187,14 +3233,21 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     if (gestureHorizontal) { gestureHorizontal = false; setTrackOffset(0, true); }
     void e;
   });
-  $("#lib-add-category").onclick = async () => {
-    const input = $<HTMLInputElement>("#lib-new-category");
+  // Manage-lists modal: open/close + add-list. Rename/delete/reorder are wired per-row in renderManageLists.
+  const manageModal = $("#manage-lists-modal");
+  $("#lib-manage-lists").onclick = () => { manageModal.hidden = false; };
+  $("#manage-lists-close").onclick = () => { manageModal.hidden = true; };
+  manageModal.addEventListener("click", (e) => { if (e.target === manageModal) manageModal.hidden = true; });
+  const addList = async () => {
+    const input = $<HTMLInputElement>("#lib-new-list");
     const name = input.value.trim();
     if (!name) return;
-    await send("POST", "/library/categories", { name });
+    await send("POST", "/library/lists", { name });
     input.value = "";
     await loadLibrary();
   };
+  $("#lib-add-list").onclick = () => void addList();
+  $<HTMLInputElement>("#lib-new-list").addEventListener("keydown", (e) => { if (e.key === "Enter") void addList(); });
 
   // Library search/sort/filter controls. Search is debounced live filtering; sort re-queries.
   let libSearchDebounce: ReturnType<typeof setTimeout>;

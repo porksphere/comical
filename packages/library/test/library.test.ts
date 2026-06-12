@@ -1,4 +1,4 @@
-/** The Library domain service over the in-memory store: collection, read state, sync, categories. */
+/** The Library domain service over the in-memory store: collection, read state, sync, lists. */
 import { describe, expect, test } from "bun:test";
 import type { Chapter } from "@comical/contract";
 import { entryKey, InMemoryLibraryStore, Library } from "../src/index.ts";
@@ -359,7 +359,7 @@ describe("logical chapters (multi-scanlator / multi-language)", () => {
       title: SERIES.title,
       addedAt: 1,
       updatedAt: 1,
-      categoryIds: [],
+      listIds: [],
       // knownChapters intentionally omitted (legacy shape)
     } as unknown as Parameters<typeof store.putEntry>[0]);
 
@@ -391,55 +391,55 @@ describe("history", () => {
   });
 });
 
-describe("categories", () => {
-  test("create / filter library by category", async () => {
+describe("lists", () => {
+  test("create / filter library by list", async () => {
     const lib = makeLibrary();
-    const reading = await lib.createCategory("Reading");
-    await lib.addSeries({ ...SERIES, categoryIds: [reading.id] });
+    const reading = await lib.createList("Reading");
+    await lib.addSeries({ ...SERIES, listIds: [reading.id] });
     await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Two" });
 
-    const inReading = await lib.getLibrary({ categoryId: reading.id });
+    const inReading = await lib.getLibrary({ listId: reading.id });
     expect(inReading.map((e) => e.seriesId)).toEqual(["s1"]);
   });
 
-  test("deleting a category strips it from every entry", async () => {
+  test("deleting a list strips it from every entry", async () => {
     const lib = makeLibrary();
-    const cat = await lib.createCategory("Temp");
-    await lib.addSeries({ ...SERIES, categoryIds: [cat.id] });
+    const list = await lib.createList("Temp");
+    await lib.addSeries({ ...SERIES, listIds: [list.id] });
 
-    await lib.deleteCategory(cat.id);
-    expect(await lib.listCategories()).toHaveLength(0);
-    expect((await lib.getEntry(KEY))?.categoryIds).toEqual([]);
+    await lib.deleteList(list.id);
+    expect(await lib.getLists()).toHaveLength(0);
+    expect((await lib.getEntry(KEY))?.listIds).toEqual([]);
   });
 
-  test("createCategory assigns increasing order; reorder updates it", async () => {
+  test("createList assigns increasing order; reorder updates it", async () => {
     const lib = makeLibrary();
-    const a = await lib.createCategory("A");
-    const b = await lib.createCategory("B");
+    const a = await lib.createList("A");
+    const b = await lib.createList("B");
     expect([a.order, b.order]).toEqual([0, 1]);
 
-    await lib.reorderCategories([b.id, a.id]);
-    const ordered = await lib.listCategories();
+    await lib.reorderLists([b.id, a.id]);
+    const ordered = await lib.getLists();
     expect(ordered.map((c) => c.name)).toEqual(["B", "A"]);
   });
 });
 
 describe("getLibrary query (search / sort / filters)", () => {
   /**
-   * Three series with distinct titles/authors/categories/unread counts, added in s1→s2→s3 order:
+   * Three series with distinct titles/authors/lists/unread counts, added in s1→s2→s3 order:
    *  - s1 "Naruto"  (Kishimoto) — Action          — 2 unread
    *  - s2 "Bleach"             — Action + Romance — 0 unread (only chapter read)
-   *  - s3 "Berserk" (Miura)    — uncategorized    — 1 unread
+   *  - s3 "Berserk" (Miura)    — unlisted         — 1 unread
    */
   async function seeded() {
     const lib = makeLibrary();
-    const action = await lib.createCategory("Action");
-    const romance = await lib.createCategory("Romance");
+    const action = await lib.createList("Action");
+    const romance = await lib.createList("Romance");
 
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s1", title: "Naruto", author: "Kishimoto", categoryIds: [action.id] });
+    await lib.addSeries({ bridgeId: "demo", seriesId: "s1", title: "Naruto", author: "Kishimoto", listIds: [action.id] });
     await lib.syncChapters(entryKey("demo", "s1"), [ch("a1", 1), ch("a2", 2)]);
 
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Bleach", categoryIds: [action.id, romance.id] });
+    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Bleach", listIds: [action.id, romance.id] });
     await lib.syncChapters(entryKey("demo", "s2"), [ch("b1", 1)]);
     await lib.markRead(entryKey("demo", "s2"), "b1", true);
 
@@ -480,16 +480,16 @@ describe("getLibrary query (search / sort / filters)", () => {
     expect(ids(await lib.getLibrary({ sort: "added", dir: "asc" }))).toEqual(["s1", "s2", "s3"]);
   });
 
-  test("categoryIds filters to ANY of the given categories", async () => {
+  test("listIds filters to ANY of the given lists", async () => {
     const { lib, action, romance } = await seeded();
-    expect(ids(await lib.getLibrary({ categoryIds: [romance.id] }))).toEqual(["s2"]);
-    expect(ids(await lib.getLibrary({ categoryIds: [action.id, romance.id], sort: "title" }))).toEqual(["s2", "s1"]);
+    expect(ids(await lib.getLibrary({ listIds: [romance.id] }))).toEqual(["s2"]);
+    expect(ids(await lib.getLibrary({ listIds: [action.id, romance.id], sort: "title" }))).toEqual(["s2", "s1"]);
   });
 
-  test("uncategorized returns only entries with no categories, taking precedence over categoryIds", async () => {
+  test("unlisted returns only entries with no lists, taking precedence over listIds", async () => {
     const { lib, action } = await seeded();
-    expect(ids(await lib.getLibrary({ uncategorized: true }))).toEqual(["s3"]);
-    expect(ids(await lib.getLibrary({ uncategorized: true, categoryIds: [action.id] }))).toEqual(["s3"]);
+    expect(ids(await lib.getLibrary({ unlisted: true }))).toEqual(["s3"]);
+    expect(ids(await lib.getLibrary({ unlisted: true, listIds: [action.id] }))).toEqual(["s3"]);
   });
 
   test("filters compose (search + unreadOnly + sort)", async () => {

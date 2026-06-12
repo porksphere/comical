@@ -236,10 +236,26 @@
     .reg-item:last-child { border-bottom: none; }
     .view-tabs { margin: 0.5rem 0 1rem; }
     .badge-unread { position: absolute; z-index: 2; top: 0.5rem; right: 0.5rem; background: #2563eb; color: #fff; border-radius: 999px; font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.45rem; }
-    .card-categories { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-top: 0.35rem; }
-    .cat-chip { cursor: pointer; font-size: 0.7rem; padding: 0.15rem 0.5rem; }
-    .cat-chip:hover { border-color: #60a5fa; color: #ddd; }
-    .cat-chip-on { background: #1e3a5f; border-color: #2563eb; color: #93c5fd; }
+    /* Per-card "⋯" quick-assign button: assign lists without opening the series. Subtle until hover. */
+    .card-menu-btn { position: absolute; z-index: 2; top: 0.4rem; left: 0.4rem; padding: 0; width: 1.6rem; height: 1.6rem; line-height: 1; border-radius: 6px; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.18); color: #eee; font-size: 1rem; opacity: 0; transition: opacity 0.12s; }
+    .card:hover .card-menu-btn, .card.touch-active .card-menu-btn, .card-menu-btn:focus { opacity: 1; }
+    .card-menu-btn:hover { background: rgba(0,0,0,0.8); border-color: #60a5fa; }
+    /* Shared list-checkbox popover, reused by the card quick-assign menu (anchored at the click point). */
+    .list-popover { position: absolute; z-index: 40; min-width: 180px; max-height: 60vh; overflow-y: auto; background: #1c1c1e; border: 1px solid #333; border-radius: 8px; padding: 0.4rem; box-shadow: 0 8px 24px rgba(0,0,0,0.55); display: flex; flex-direction: column; gap: 0.15rem; }
+    .list-popover[hidden] { display: none; }
+    .list-popover label { flex-direction: row; align-items: center; gap: 0.45rem; padding: 0.3rem 0.4rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    .list-popover label:hover { background: #26262a; }
+    /* Manage-lists modal: centered overlay with inline rename + drag-reorder rows. */
+    .modal-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; }
+    .modal-overlay[hidden] { display: none; }
+    .modal { background: #161618; border: 1px solid #242427; border-radius: 10px; padding: 1rem 1.1rem; width: min(420px, 92vw); max-height: 80vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem; font-weight: 600; }
+    .modal-head button { padding: 0.15rem 0.5rem; }
+    .list-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; }
+    .list-row .drag-handle { cursor: grab; color: #777; padding: 0 0.2rem; user-select: none; }
+    .list-row.drag-over { box-shadow: inset 0 2px 0 #2563eb; }
+    .list-row .list-name-input { flex: 1; min-width: 0; }
+    .list-row button { padding: 0.25rem 0.5rem; }
     .badge-new { background: #f59e0b; color: #111; border-radius: 999px; font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.5rem; }
     #lib-toggle, #fav-toggle { background: #1c1c1e; border: 1px solid #333; color: #ddd; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; float: none; }
     #lib-toggle:hover, #fav-toggle:hover { border-color: #60a5fa; }
@@ -247,16 +263,16 @@
        already in the library (the button is a plain "＋ Library" add affordance otherwise). */
     #lib-menu { position: relative; width: 100%; }
     #lib-menu > #lib-toggle { width: 100%; }
-    #lib-category-picker { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 190px; max-height: 60vh; overflow-y: auto; background: #1c1c1e; border: 1px solid #333; border-radius: 8px; padding: 0.4rem; box-shadow: 0 8px 24px rgba(0,0,0,0.55); display: flex; flex-direction: column; gap: 0.15rem; }
-    #lib-category-picker[hidden] { display: none; }
-    #lib-cat-head { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; color: #777; padding: 0.1rem 0.4rem 0.25rem; }
-    #lib-category-picker label { flex-direction: row; align-items: center; gap: 0.45rem; padding: 0.3rem 0.4rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
-    #lib-category-picker label:hover { background: #26262a; }
+    #lib-list-picker { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 190px; max-height: 60vh; overflow-y: auto; background: #1c1c1e; border: 1px solid #333; border-radius: 8px; padding: 0.4rem; box-shadow: 0 8px 24px rgba(0,0,0,0.55); display: flex; flex-direction: column; gap: 0.15rem; }
+    #lib-list-picker[hidden] { display: none; }
+    #lib-list-head { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; color: #777; padding: 0.1rem 0.4rem 0.25rem; }
+    #lib-list-picker label { flex-direction: row; align-items: center; gap: 0.45rem; padding: 0.3rem 0.4rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    #lib-list-picker label:hover { background: #26262a; }
     .lib-menu-sep { border-top: 1px solid #2c2c30; margin: 0.3rem 0; }
-    #lib-category-picker .lib-menu-btn { width: 100%; background: none; border: none; color: #ddd; text-align: left; padding: 0.3rem 0.4rem; cursor: pointer; font-size: 0.83rem; border-radius: 6px; }
-    #lib-category-picker .lib-menu-btn:hover { background: #26262a; }
-    #lib-category-picker .lib-remove-btn { width: 100%; background: none; border: none; color: #e06c6c; text-align: left; padding: 0.3rem 0.4rem; cursor: pointer; font-size: 0.83rem; border-radius: 6px; }
-    #lib-category-picker .lib-remove-btn:hover { background: #2a1c1c; }
+    #lib-list-picker .lib-menu-btn { width: 100%; background: none; border: none; color: #ddd; text-align: left; padding: 0.3rem 0.4rem; cursor: pointer; font-size: 0.83rem; border-radius: 6px; }
+    #lib-list-picker .lib-menu-btn:hover { background: #26262a; }
+    #lib-list-picker .lib-remove-btn { width: 100%; background: none; border: none; color: #e06c6c; text-align: left; padding: 0.3rem 0.4rem; cursor: pointer; font-size: 0.83rem; border-radius: 6px; }
+    #lib-list-picker .lib-remove-btn:hover { background: #2a1c1c; }
     #chapters .ch-name { flex: 1; }
     #chapters .ch-row.read .ch-name { color: #6b7280; }
     #chapters .ch-uptohere { font-size: 0.72rem; color: #888; border: 1px solid #333; background: #1c1c1e; border-radius: 6px; padding: 0.1rem 0.4rem; cursor: pointer; }
@@ -345,7 +361,7 @@
       #detail-genres, .tag-group { flex-wrap: nowrap; overflow-x: auto; margin: 0 -2rem 0.3rem; padding: 0 1rem 2px; }
       #detail-taggroups { margin-top: 0.4rem; }
       /* Anchor the action-column popovers to the right so a wide menu doesn't overflow the screen. */
-      #lib-category-picker, #tracker-panel, #group-panel { left: auto; right: 0; }
+      #lib-list-picker, #tracker-panel, #group-panel { left: auto; right: 0; }
       #tracker-panel, #group-panel { min-width: 0; width: min(300px, 78vw); }
       .chapters-head h3 { font-size: 1.05rem; }
       .ch-controls { gap: 0.4rem; width: 100%; justify-content: space-between; }
@@ -408,21 +424,26 @@
         <option value="title">Title A–Z</option>
         <option value="unread">Most unread</option>
       </select>
+      <select id="lib-list-filter" title="Filter by list"></select>
+      <button id="lib-manage-lists" class="secondary">Manage lists</button>
     </div>
-    <section class="panel" id="lib-categories-panel">
-      <div class="row" style="justify-content:space-between">
-        <div id="lib-category-chips" class="tabs"></div>
-        <details><summary class="muted">Manage categories</summary>
-          <div class="controls" style="margin-top:0.6rem">
-            <input id="lib-new-category" type="text" placeholder="New category…" style="flex:1; min-width:160px">
-            <button id="lib-add-category">Add</button>
-          </div>
-          <div id="lib-category-manage"></div>
-        </details>
-      </div>
-    </section>
     <div id="library-grid" class="grid"></div>
   </section>
+
+  <!-- Manage lists modal -->
+  <div id="manage-lists-modal" class="modal-overlay" hidden>
+    <div class="modal">
+      <div class="modal-head"><span>Manage lists</span><button id="manage-lists-close" class="secondary">✕</button></div>
+      <div class="controls" style="margin:0 0 0.6rem">
+        <input id="lib-new-list" type="text" placeholder="New list…" style="flex:1; min-width:160px">
+        <button id="lib-add-list">Add</button>
+      </div>
+      <div id="lib-list-manage"></div>
+    </div>
+  </div>
+
+  <!-- Shared popover for the per-card quick-assign menu -->
+  <div id="card-list-menu" class="list-popover" hidden></div>
 
   <!-- History -->
   <section id="history-view" style="display:none">
@@ -453,7 +474,7 @@
             <button id="read-primary-btn" class="read-primary" hidden>▶ Read</button>
             <div id="lib-menu" hidden>
               <button id="lib-toggle">＋ Library</button>
-              <div id="lib-category-picker" hidden></div>
+              <div id="lib-list-picker" hidden></div>
             </div>
             <div id="group-menu" hidden>
               <button id="group-toggle">⧉ Sources ▾</button>

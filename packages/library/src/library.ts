@@ -12,12 +12,12 @@ import {
   type ActivityItem,
   type ActivityItemView,
   type BridgePrefs,
-  type Category,
   type ChapterProgress,
   type HistoryItem,
   type KnownChapter,
   type LibraryEntry,
   type LibraryEntryView,
+  type LibraryList,
   type ResumePoint,
   type SeriesGroup,
   type TrackerLink,
@@ -31,7 +31,7 @@ export interface SeriesSnapshot {
   title: string;
   thumbnailUrl?: string;
   author?: string;
-  categoryIds?: string[];
+  listIds?: string[];
   /** Cross-service ids from `SeriesInfo.externalIds`, keyed by tracker id — persisted for auto-grouping + sync. */
   externalIds?: Record<string, string | number>;
 }
@@ -56,12 +56,12 @@ export type LibrarySort = "added" | "title" | "lastRead" | "unread";
 
 /** Filter + sort options for {@link Library.getLibrary}. All optional. */
 export interface LibraryQuery {
-  /** Single-category filter (back-compat). Prefer `categoryIds`. */
-  categoryId?: string;
-  /** Filter to entries assigned to ANY of these categories. Empty/absent means all categories. */
-  categoryIds?: string[];
-  /** Only entries with no categories assigned. Takes precedence over `categoryId`/`categoryIds`. */
-  uncategorized?: boolean;
+  /** Single-list filter (back-compat). Prefer `listIds`. */
+  listId?: string;
+  /** Filter to entries assigned to ANY of these lists. Empty/absent means all lists. */
+  listIds?: string[];
+  /** Only entries with no lists assigned. Takes precedence over `listId`/`listIds`. */
+  unlisted?: boolean;
   /** Case-insensitive substring search over title + author. */
   q?: string;
   /** Only entries with at least one unread chapter. */
@@ -108,7 +108,7 @@ export class Library {
           bridgeId: snap.bridgeId,
           seriesId: snap.seriesId,
           title: snap.title,
-          categoryIds: snap.categoryIds ?? [],
+          listIds: snap.listIds ?? [],
           addedAt: t,
           updatedAt: t,
           knownChapters: [],
@@ -116,7 +116,7 @@ export class Library {
     // Optional snapshot fields: only set when provided (exactOptionalPropertyTypes-friendly).
     if (snap.thumbnailUrl !== undefined) entry.thumbnailUrl = snap.thumbnailUrl;
     if (snap.author !== undefined) entry.author = snap.author;
-    if (!existing && snap.categoryIds) entry.categoryIds = snap.categoryIds;
+    if (!existing && snap.listIds) entry.listIds = snap.listIds;
     if (snap.externalIds !== undefined) entry.externalIds = snap.externalIds;
     await this.store.putEntry(entry);
 
@@ -155,28 +155,28 @@ export class Library {
     return this.store.getEntry(key);
   }
 
-  async setCategories(key: string, categoryIds: string[]): Promise<void> {
+  async setLists(key: string, listIds: string[]): Promise<void> {
     const entry = await this.requireEntry(key);
-    entry.categoryIds = [...new Set(categoryIds)];
+    entry.listIds = [...new Set(listIds)];
     entry.updatedAt = this.now();
     await this.store.putEntry(entry);
   }
 
   /**
-   * Query the library: filter by category/search/read-state and sort, each entry carrying a derived
+   * Query the library: filter by list/search/read-state and sort, each entry carrying a derived
    * `unreadCount`. All options are optional; with none, returns every entry sorted newest-added-first.
    */
   async getLibrary(opts: LibraryQuery = {}): Promise<LibraryEntryView[]> {
     const entries = await this.store.listEntries();
 
-    // Category scope: `uncategorized` (no categories) wins; else single `categoryId` (back-compat) or
-    // `categoryIds` (OR across the set). An empty/absent set means "all".
-    const catIds = opts.categoryIds ?? (opts.categoryId !== undefined ? [opts.categoryId] : undefined);
+    // List scope: `unlisted` (no lists) wins; else single `listId` (back-compat) or
+    // `listIds` (OR across the set). An empty/absent set means "all".
+    const listIds = opts.listIds ?? (opts.listId !== undefined ? [opts.listId] : undefined);
     let filtered = entries;
-    if (opts.uncategorized) {
-      filtered = filtered.filter((e) => e.categoryIds.length === 0);
-    } else if (catIds && catIds.length > 0) {
-      filtered = filtered.filter((e) => e.categoryIds.some((id) => catIds.includes(id)));
+    if (opts.unlisted) {
+      filtered = filtered.filter((e) => e.listIds.length === 0);
+    } else if (listIds && listIds.length > 0) {
+      filtered = filtered.filter((e) => e.listIds.some((id) => listIds.includes(id)));
     }
 
     // Free-text search: case-insensitive substring over title + author.
@@ -486,40 +486,40 @@ export class Library {
     await this.store.clearActivity();
   }
 
-  // ── Categories ────────────────────────────────────────────────────────────────
+  // ── Lists ────────────────────────────────────────────────────────────────────
 
-  async listCategories(): Promise<Category[]> {
-    return (await this.store.listCategories()).sort((a, b) => a.order - b.order);
+  async getLists(): Promise<LibraryList[]> {
+    return (await this.store.listLists()).sort((a, b) => a.order - b.order);
   }
 
-  async createCategory(name: string): Promise<Category> {
-    const existing = await this.store.listCategories();
+  async createList(name: string): Promise<LibraryList> {
+    const existing = await this.store.listLists();
     const order = existing.reduce((max, c) => Math.max(max, c.order), -1) + 1;
-    const category: Category = { id: crypto.randomUUID(), name, order };
-    await this.store.putCategory(category);
-    return category;
+    const list: LibraryList = { id: crypto.randomUUID(), name, order };
+    await this.store.putList(list);
+    return list;
   }
 
-  async renameCategory(id: string, name: string): Promise<void> {
-    const category = (await this.store.listCategories()).find((c) => c.id === id);
-    if (!category) throw new Error(`category not found: ${id}`);
-    await this.store.putCategory({ ...category, name });
+  async renameList(id: string, name: string): Promise<void> {
+    const list = (await this.store.listLists()).find((c) => c.id === id);
+    if (!list) throw new Error(`list not found: ${id}`);
+    await this.store.putList({ ...list, name });
   }
 
-  async reorderCategories(orderedIds: string[]): Promise<void> {
-    const categories = await this.store.listCategories();
-    for (const c of categories) {
+  async reorderLists(orderedIds: string[]): Promise<void> {
+    const lists = await this.store.listLists();
+    for (const c of lists) {
       const idx = orderedIds.indexOf(c.id);
-      if (idx !== -1 && idx !== c.order) await this.store.putCategory({ ...c, order: idx });
+      if (idx !== -1 && idx !== c.order) await this.store.putList({ ...c, order: idx });
     }
   }
 
-  /** Delete a category and strip its id from every entry that referenced it. */
-  async deleteCategory(id: string): Promise<void> {
-    await this.store.deleteCategory(id);
+  /** Delete a list and strip its id from every entry that referenced it. */
+  async deleteList(id: string): Promise<void> {
+    await this.store.deleteList(id);
     for (const entry of await this.store.listEntries()) {
-      if (entry.categoryIds.includes(id)) {
-        entry.categoryIds = entry.categoryIds.filter((c) => c !== id);
+      if (entry.listIds.includes(id)) {
+        entry.listIds = entry.listIds.filter((c) => c !== id);
         entry.updatedAt = this.now();
         await this.store.putEntry(entry);
       }
