@@ -104,6 +104,10 @@ let currentView: "browse" | "library" | "history" | "activity" | "detail" | "rea
 let previousView: "browse" | "library" | "history" = "browse";
 /** Which home page the browse view is on. Drill-downs (search/See all) don't change it; back returns here. */
 let activeHomeTab: "home" | "favorites" = "home";
+/** Set when a favorite is toggled in the detail view, so the favorites grid refetches on the way back. */
+let favoritesDirty = false;
+/** Accumulated favorites pages per bridge, so reopening the tab paints from memory instead of refetching. */
+const favoritesCache = new Map<string, { items: SeriesEntry[]; nextPage: number | null }>();
 let loadMoreFn: (() => Promise<void>) | null = null;
 /** IntersectionObservers driving the home view's terminal infinite-scroll; disconnected on re-render. */
 let homeObservers: IntersectionObserver[] = [];
@@ -437,17 +441,42 @@ async function selectBridge(id: string): Promise<void> {
   }
 
   await renderHome();
+  void prefetchFavorites();
 
   status(`Loaded "${detail.info.name}".`);
 }
 
-async function loadFavorites(page = 1): Promise<void> {
+/** Fetch the first favorites page in the background (no render) so the first tab open is instant. */
+async function prefetchFavorites(): Promise<void> {
+  const bridge = activeBridge;
+  if (!activeCaps.includes("favorites") || favoritesCache.has(bridge)) return;
   try {
-    const r = await api<PagedResults>(`/bridges/${activeBridge}/favorites?page=${page}`);
+    const r = await api<PagedResults>(`/bridges/${bridge}/favorites?page=1`);
+    favoritesCache.set(bridge, { items: [...r.items], nextPage: r.hasNextPage ? 2 : null });
+  } catch { /* non-fatal — the tab fetches (and surfaces any error) on demand */ }
+}
+
+async function loadFavorites(page = 1): Promise<void> {
+  const bridge = activeBridge;
+  // Reopening the tab: repaint every page already loaded straight from cache, no network.
+  const cached = favoritesCache.get(bridge);
+  if (page === 1 && cached) {
+    activeListId = null;
+    renderGrid(cached.items);
+    setLoadMore(cached.nextPage !== null, () => loadFavorites(cached.nextPage!));
+    status(`Favorites: ${cached.items.length} item(s).`);
+    return;
+  }
+  try {
+    const r = await api<PagedResults>(`/bridges/${bridge}/favorites?page=${page}`);
+    const entry = page === 1 || !cached ? { items: [] as SeriesEntry[], nextPage: null as number | null } : cached;
+    entry.items.push(...r.items);
+    entry.nextPage = r.hasNextPage ? page + 1 : null;
+    favoritesCache.set(bridge, entry);
     if (page === 1) { activeListId = null; renderGrid(r.items); }
     else for (const item of r.items) $("#grid").append(makeCard(item));
-    setLoadMore(r.hasNextPage, () => loadFavorites(page + 1));
-    if (page === 1) status(`Favorites: ${r.items.length} item(s).`);
+    setLoadMore(entry.nextPage !== null, () => loadFavorites(entry.nextPage!));
+    if (page === 1) status(`Favorites: ${entry.items.length} item(s).`);
   } catch (e) {
     if (page === 1) { $("#grid").innerHTML = ""; setLoadMore(false, async () => {}); }
     status(`Favorites unavailable — set a session token in settings? (${e instanceof Error ? e.message : String(e)})`, true);
@@ -1178,6 +1207,8 @@ async function showDetail(seriesId: string): Promise<void> {
       if (r.ok) {
         favorited = !favorited;
         favBtn.textContent = favorited ? "★ Favorited" : "☆ Favorite";
+        favoritesDirty = true;
+        favoritesCache.delete(activeBridge);
       } else {
         status(`Favorite failed — set a session token? (${(r.data as { error?: string })?.error ?? r.status})`, true);
       }
@@ -2961,6 +2992,10 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
   $("#settings-view").style.display = view === "settings" ? "" : "none";
   updateHeaderForView(view);
   if (view === "browse" || view === "library" || view === "history" || view === "activity" || view === "settings") pushRoute(view);
+  if (view === "browse" && activeHomeTab === "favorites" && favoritesDirty) {
+    favoritesDirty = false;
+    void loadFavorites(1).catch((e) => status(`Favorites unavailable: ${e instanceof Error ? e.message : e}`, true));
+  }
   if (view === "library") void loadLibrary().catch((e) => status(`Library unavailable: ${e instanceof Error ? e.message : e}`, true));
   if (view === "history") void loadHistory().catch((e) => status(`History unavailable: ${e instanceof Error ? e.message : e}`, true));
   if (view === "activity") void loadActivity().catch((e) => status(`Activity unavailable: ${e instanceof Error ? e.message : e}`, true));
