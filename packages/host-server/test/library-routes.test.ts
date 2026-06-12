@@ -100,6 +100,31 @@ describe("/library lifecycle", () => {
     expect(entry.entry.categoryIds).toEqual([]);
   });
 
+  test("query params: search (title/author), unreadOnly, sort, uncategorized", async () => {
+    // s1 ("Series One", 2 unread, now uncategorized after the prior test deleted its category).
+    // Add s2: a fully-read-free, uncategorized, authored series.
+    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "s2", title: "Other Tale", author: "Zed" });
+
+    const titles = async (p: string) => ((await (await get(p)).json()) as Array<{ title: string }>).map((e) => e.title);
+    const idsOf = async (p: string) => ((await (await get(p)).json()) as Array<{ seriesId: string }>).map((e) => e.seriesId);
+
+    // q matches title (s1) vs author (s2), case-insensitively.
+    expect(await idsOf("/library?q=SERIES")).toEqual(["s1"]);
+    expect(await idsOf("/library?q=zed")).toEqual(["s2"]);
+
+    // unreadOnly drops s2 (no synced chapters → 0 unread).
+    expect(await idsOf("/library?unreadOnly=true")).toEqual(["s1"]);
+
+    // sort=title is ascending.
+    expect(await titles("/library?sort=title")).toEqual(["Other Tale", "Series One"]);
+
+    // both are uncategorized.
+    expect(await idsOf("/library?uncategorized=true&sort=title")).toEqual(["s2", "s1"]);
+
+    // clean up so the later "activity purged" assertion stays unaffected.
+    await send("DELETE", "/library/entries/demo/s2");
+  });
+
   test("remove → entry is gone (404) and its activity is purged", async () => {
     expect((await send("DELETE", "/library/entries/demo/s1")).status).toBe(200);
     expect((await get("/library/entries/demo/s1")).status).toBe(404);

@@ -334,8 +334,13 @@ function updateSortDirVisibility(): void {
 }
 
 // ── Bridge picker ────────────────────────────────────────────────────────────────
+/** bridgeId → friendly display name, cached on load for the Sources panel (falls back to the id). */
+const bridgeNames = new Map<string, string>();
+
 async function loadBridges(): Promise<void> {
   const bridges = await api<BridgeSummary[]>("/bridges");
+  bridgeNames.clear();
+  for (const b of bridges) bridgeNames.set(b.info.id, b.info.name);
   const list = $("#bridge-list");
   list.innerHTML = "";
   for (const b of bridges) {
@@ -1096,15 +1101,17 @@ async function showDetail(seriesId: string): Promise<void> {
   const canSearch = activeCaps.includes("search") || activeCaps.includes("filters");
   const authorFilter = currentFilters.find((f) => f.key === "author");
 
-  // Stats line (rating/views are not in the contract; we surface the chapter count we can compute).
+  // Chapter count: shown solely as the pip overlaid on the cover (the title tooltip spells out the
+  // unit), so we don't also repeat it as a redundant "📖 N chapters" stats line.
   const chapterCount = isDirect ? 0 : groupChapters(chapters).length;
-  $("#detail-stats").innerHTML = chapterCount
-    ? `<span class="stat">📖 ${chapterCount} chapter${chapterCount === 1 ? "" : "s"}</span>`
-    : "";
-  // A small chapter-count badge overlaid on the cover, like the example layout.
   const coverBadge = $("#cover-chapter-badge");
-  if (chapterCount) { coverBadge.hidden = false; coverBadge.textContent = String(chapterCount); }
-  else coverBadge.hidden = true;
+  if (chapterCount) {
+    coverBadge.hidden = false;
+    coverBadge.textContent = String(chapterCount);
+    coverBadge.title = `${chapterCount} chapter${chapterCount === 1 ? "" : "s"}`;
+  } else {
+    coverBadge.hidden = true;
+  }
 
   // Meta grid (label-over-value cells), populated only with fields the contract actually provides.
   const authorIsClickable = !!creator && canSearch;
@@ -1418,7 +1425,7 @@ async function refreshLibraryStatus(): Promise<void> {
     currentSeries.progress = new Map(detail.progress.map((p) => [p.chapterId, p]));
     // In-library: the button opens the list-management dropdown (categories + remove).
     libBtn.textContent = "✓ In Library ▾";
-    libBtn.onclick = () => { picker.hidden = !picker.hidden; $("#tracker-panel").hidden = true; };
+    libBtn.onclick = () => { picker.hidden = !picker.hidden; $("#tracker-panel").hidden = true; $("#group-panel").hidden = true; };
     // Detect new chapters since the last visit.
     const sync = await send("POST", `/library/entries/${bridgeId}/${enc(seriesId)}/sync`, { chapters: currentSeries.chapters });
     const added = (sync.data as { added?: Chapter[] }).added ?? [];
@@ -1431,7 +1438,7 @@ async function refreshLibraryStatus(): Promise<void> {
     libBtn.onclick = () => void toggleLibrary();
     picker.hidden = true;
     picker.innerHTML = "";
-    $("#group-panel").hidden = true;
+    $("#group-menu").hidden = true;
     $("#tracker-menu").hidden = true;
     $("#tracker-panel").hidden = true;
     return;
@@ -1443,26 +1450,43 @@ async function refreshLibraryStatus(): Promise<void> {
   $("#tracker-menu").hidden = !trackersAvailable;
 }
 
+/** When true, the next renderGroupPanel auto-opens the Sources popover (set by the library badge). */
+let pendingOpenSources = false;
+
 async function renderGroupPanel(bridgeId: string, seriesId: string, entry: LibEntry): Promise<void> {
+  const menu = $("#group-menu");
   const panel = $("#group-panel");
+  menu.hidden = true;
   panel.hidden = true;
   panel.innerHTML = "";
+  // Consume the badge's "open straight to Sources" request once, regardless of early returns below.
+  const autoOpen = pendingOpenSources;
+  pendingOpenSources = false;
 
   const [groups, allEntries] = await Promise.all([
     api<SeriesGroup[]>("/library/groups").catch(() => [] as SeriesGroup[]),
     api<LibEntryView[]>("/library").catch(() => [] as LibEntryView[]),
   ]);
 
-  const groupId = entry.seriesGroupId;
   const currentKey = `${bridgeId}:${seriesId}`;
+  const entryByKey = new Map(allEntries.map((e) => [`${e.bridgeId}:${e.seriesId}`, e]));
+  const group = entry.seriesGroupId ? groups.find((g) => g.id === entry.seriesGroupId) : undefined;
+  const bridgeOf = (key: string) => key.slice(0, key.indexOf(":"));
+  const nameOf = (key: string) => bridgeNames.get(bridgeOf(key)) ?? bridgeOf(key);
 
-  function makeRow(label: string, isPrimary: boolean, actions: HTMLElement): HTMLDivElement {
-    const row = document.createElement("div");
-    row.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:0.25rem 0;";
-    row.innerHTML = `<span style="font-size:0.85rem">${esc(label)}${isPrimary ? " <span class=\"ok\" style=\"font-size:0.7rem\">primary</span>" : ""}</span>`;
-    row.append(actions);
-    return row;
-  }
+  // Same-title copies on other bridges not already in this group — the link/add candidates. Merging
+  // two existing groups isn't supported (joinGroup doesn't detach a prior group), so from the grouped
+  // side we only offer ungrouped candidates.
+  const titleNorm = entry.title.trim().toLowerCase();
+  const memberKeys = new Set(group?.memberKeys ?? [currentKey]);
+  const candidates = allEntries.filter((e) =>
+    e.title.trim().toLowerCase() === titleNorm &&
+    !memberKeys.has(`${e.bridgeId}:${e.seriesId}`) &&
+    !(group && e.seriesGroupId),
+  );
+
+  if (!group && candidates.length === 0) return; // nothing to show
+
   function makeBtn(text: string, fn: () => void): HTMLButtonElement {
     const b = document.createElement("button");
     b.className = "secondary";
@@ -1471,64 +1495,73 @@ async function renderGroupPanel(bridgeId: string, seriesId: string, entry: LibEn
     b.onclick = fn;
     return b;
   }
+  function sectionHead(text: string): void {
+    if (panel.childElementCount > 0) {
+      const sep = document.createElement("div");
+      sep.className = "lib-menu-sep";
+      panel.append(sep);
+    }
+    const h = document.createElement("div");
+    h.className = "src-section-head";
+    h.textContent = text;
+    panel.append(h);
+  }
+  function makeRow(key: string, isPrimary: boolean): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "src-row";
+    const id = document.createElement("div");
+    id.className = "src-id";
+    const thumb = entryByKey.get(key)?.thumbnailUrl;
+    id.innerHTML =
+      (thumb ? `<img src="${esc(thumb)}" alt="" loading="lazy">` : "") +
+      `<span class="src-name">${esc(nameOf(key))}${isPrimary ? " <span class=\"ok\" style=\"font-size:0.7rem\">primary</span>" : ""}</span>`;
+    const acts = document.createElement("span");
+    acts.className = "src-acts";
+    row.append(id, acts);
+    panel.append(row);
+    return acts;
+  }
 
-  if (groupId) {
-    const group = groups.find((g) => g.id === groupId);
-    if (!group) return;
-    panel.hidden = false;
-    const heading = document.createElement("div");
-    heading.className = "muted";
-    heading.style.cssText = "font-size:0.75rem;margin-bottom:0.35rem";
-    heading.textContent = "Sources";
-    panel.append(heading);
+  // Manage: existing group members with switch / set-primary / unlink.
+  if (group) {
+    sectionHead("Sources");
     for (const key of group.memberKeys) {
-      const i = key.indexOf(":");
-      const bid = key.slice(0, i);
-      const sid = key.slice(i + 1);
-      const isCurrent = key === currentKey;
-      const isPrimary = key === group.primaryKey;
-      const acts = document.createElement("span");
-      acts.style.cssText = "display:flex;gap:0.4rem";
-      if (!isCurrent) acts.append(makeBtn("Switch", () => void openSeries(bid, sid)));
-      if (!isPrimary) acts.append(makeBtn("Set primary", async () => {
-        await send("PUT", `/library/groups/${groupId}/primary`, { primaryKey: key });
+      const acts = makeRow(key, key === group.primaryKey);
+      const bid = bridgeOf(key);
+      const sid = key.slice(key.indexOf(":") + 1);
+      if (key !== currentKey) acts.append(makeBtn("Switch", () => void openSeries(bid, sid)));
+      if (key !== group.primaryKey) acts.append(makeBtn("Set primary", async () => {
+        await send("PUT", `/library/groups/${group.id}/primary`, { primaryKey: key });
         await refreshLibraryStatus();
       }));
-      if (isCurrent) acts.append(makeBtn("Unlink", async () => {
+      if (key === currentKey) acts.append(makeBtn("Unlink", async () => {
         await send("DELETE", `/library/entries/${bridgeId}/${enc(seriesId)}/leave-group`);
         await refreshLibraryStatus();
       }));
-      panel.append(makeRow(bid, isPrimary, acts));
     }
-  } else {
-    // Find other library entries with the same title from different bridges.
-    const titleNorm = entry.title.trim().toLowerCase();
-    const candidates = allEntries.filter((e) =>
-      e.title.trim().toLowerCase() === titleNorm &&
-      !(e.bridgeId === bridgeId && e.seriesId === seriesId),
-    );
-    if (candidates.length === 0) return;
-    panel.hidden = false;
-    const heading = document.createElement("div");
-    heading.className = "muted";
-    heading.style.cssText = "font-size:0.75rem;margin-bottom:0.35rem";
-    heading.textContent = "Same title found in other sources — link them?";
-    panel.append(heading);
+  }
+
+  // Discover: same-title copies on other bridges, kept visually distinct from the managed members.
+  if (candidates.length > 0) {
+    sectionHead(group ? "Add another source" : "Same title on other sources");
     for (const c of candidates) {
       const candidateKey = `${c.bridgeId}:${c.seriesId}`;
-      const acts = document.createElement("span");
-      acts.style.cssText = "display:flex;gap:0.4rem";
+      const acts = makeRow(candidateKey, false);
       acts.append(makeBtn("Link", async () => {
-        if (c.seriesGroupId) {
+        if (group) {
+          await send("POST", `/library/entries/${c.bridgeId}/${enc(c.seriesId)}/join-group`, { groupId: group.id });
+        } else if (c.seriesGroupId) {
           await send("POST", `/library/entries/${bridgeId}/${enc(seriesId)}/join-group`, { groupId: c.seriesGroupId });
         } else {
           await send("POST", "/library/groups", { memberKeys: [currentKey, candidateKey], primaryKey: candidateKey });
         }
         await refreshLibraryStatus();
       }));
-      panel.append(makeRow(c.bridgeId, false, acts));
     }
   }
+
+  menu.hidden = false;
+  if (autoOpen) panel.hidden = false;
 }
 
 // ── Tracker panel (per-series) ────────────────────────────────────────────────
@@ -2594,28 +2627,61 @@ async function refreshAll(): Promise<void> {
 }
 
 // ── Library view (cross-bridge collection) ──────────────────────────────────
-let libActiveCategory: string | null = null;
+// Cached on full load so search/sort/filter changes only refetch entries, not categories+groups.
+let libCats: Category[] = [];
+let libGroups: SeriesGroup[] = [];
+// Filter/sort state. Categories are multi-select (OR); `libUncategorized` is the exclusive
+// "no categories" bucket. Empty selection + no flag = show all.
+const libSelectedCats = new Set<string>();
+let libUncategorized = false;
+let librarySearch = "";
+let librarySort: "lastRead" | "added" | "title" | "unread" = "lastRead";
 
+/** Full load: (re)fetch categories + groups, render the controls, then apply the current filters. */
 async function loadLibrary(): Promise<void> {
   const [cats, groups] = await Promise.all([
     api<Category[]>("/library/categories"),
     api<SeriesGroup[]>("/library/groups").catch(() => [] as SeriesGroup[]),
   ]);
+  libCats = cats;
+  libGroups = groups;
   renderCategoryChips(cats);
   renderCategoryManager(cats);
-  const path = libActiveCategory ? `/library?category=${enc(libActiveCategory)}` : "/library";
-  const entries = await api<LibEntryView[]>(path);
+  await applyLibraryFilters();
+}
+
+/** Whether any narrowing filter is active — drives the "no matches" vs "empty library" message. */
+function hasLibraryFilters(): boolean {
+  return libSelectedCats.size > 0 || libUncategorized || librarySearch.trim() !== "";
+}
+
+/** Refetch just the entries for the current search/sort/filter state and re-render the grid. */
+async function applyLibraryFilters(): Promise<void> {
+  const params = new URLSearchParams();
+  if (libUncategorized) params.set("uncategorized", "true");
+  else if (libSelectedCats.size) params.set("categories", [...libSelectedCats].join(","));
+  const q = librarySearch.trim();
+  if (q) params.set("q", q);
+  params.set("sort", librarySort);
+  const entries = await api<LibEntryView[]>(`/library?${params.toString()}`);
+  renderLibraryGrid(entries);
+}
+
+function renderLibraryGrid(entries: LibEntryView[]): void {
   const grid = $("#library-grid");
   grid.innerHTML = "";
   if (entries.length === 0) {
-    grid.innerHTML = "<p class=\"muted\">Your library is empty. Open a series and tap \"＋ Library\".</p>";
+    grid.innerHTML = hasLibraryFilters()
+      ? "<p class=\"muted\">No series match your search or filters.</p>"
+      : "<p class=\"muted\">Your library is empty. Open a series and tap \"＋ Library\".</p>";
     return;
   }
 
+  const cats = libCats;
   // Build group map and track which entry keys are non-primary group members (to skip them).
-  const groupById = new Map(groups.map((g) => [g.id, g]));
+  const groupById = new Map(libGroups.map((g) => [g.id, g]));
   const hiddenKeys = new Set<string>();
-  for (const g of groups) {
+  for (const g of libGroups) {
     for (const k of g.memberKeys) {
       if (k !== g.primaryKey) hiddenKeys.add(k);
     }
@@ -2651,13 +2717,20 @@ async function loadLibrary(): Promise<void> {
           else assigned.add(cat.id);
           chip.className = "chip cat-chip" + (assigned.has(cat.id) ? " cat-chip-on" : "");
           await send("PUT", `/library/entries/${e.bridgeId}/${enc(e.seriesId)}/categories`, { categoryIds: [...assigned] });
-          if (libActiveCategory) void loadLibrary();
+          // If a category-based filter is active, the card may no longer match — re-apply.
+          if (libSelectedCats.size || libUncategorized) void applyLibraryFilters();
         };
         catsRow.append(chip);
       }
       card.append(catsRow);
     }
     card.onclick = () => void openSeries(e.bridgeId, e.seriesId);
+    // The "N sources" badge is a live entry point: open the series with the Sources popover already up.
+    card.querySelector(".badge-sources")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      pendingOpenSources = true;
+      void openSeries(e.bridgeId, e.seriesId);
+    });
     grid.append(card);
   }
 }
@@ -2665,15 +2738,23 @@ async function loadLibrary(): Promise<void> {
 function renderCategoryChips(cats: Category[]): void {
   const host = $("#lib-category-chips");
   host.innerHTML = "";
-  const mk = (id: string | null, label: string) => {
+  const mk = (label: string, active: boolean, onClick: () => void) => {
     const tab = document.createElement("div");
-    tab.className = "tab" + (libActiveCategory === id ? " active" : "");
+    tab.className = "tab" + (active ? " active" : "");
     tab.textContent = label;
-    tab.onclick = () => { libActiveCategory = id; void loadLibrary(); };
+    tab.onclick = () => { onClick(); renderCategoryChips(cats); void applyLibraryFilters(); };
     host.append(tab);
   };
-  mk(null, "All");
-  for (const c of cats) mk(c.id, c.name);
+  const showingAll = !libUncategorized && libSelectedCats.size === 0;
+  mk("All", showingAll, () => { libSelectedCats.clear(); libUncategorized = false; });
+  for (const c of cats) {
+    mk(c.name, libSelectedCats.has(c.id), () => {
+      libUncategorized = false; // category + uncategorized are mutually exclusive
+      if (libSelectedCats.has(c.id)) libSelectedCats.delete(c.id);
+      else libSelectedCats.add(c.id);
+    });
+  }
+  mk("Uncategorized", libUncategorized, () => { libSelectedCats.clear(); libUncategorized = !libUncategorized; });
 }
 
 function renderCategoryManager(cats: Category[]): void {
@@ -2695,7 +2776,7 @@ function renderCategoryManager(cats: Category[]): void {
     del.className = "secondary";
     del.textContent = "Delete";
     del.onclick = async () => {
-      if (libActiveCategory === c.id) libActiveCategory = null;
+      libSelectedCats.delete(c.id);
       await send("DELETE", `/library/categories/${enc(c.id)}`);
       await loadLibrary();
     };
@@ -2932,17 +3013,27 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     await refreshActivityBadge();
   };
   $("#back-btn").onclick = () => history.back();
+  // The Sources button toggles its own popover (anchored under the library button).
+  $("#group-toggle").onclick = () => {
+    const panel = $("#group-panel");
+    panel.hidden = !panel.hidden;
+    $("#lib-category-picker").hidden = true; // don't overlap the popovers
+    $("#tracker-panel").hidden = true;
+  };
   // The Trackers button toggles its own popover (anchored under the library button).
   $("#tracker-toggle").onclick = () => {
     const panel = $("#tracker-panel");
     panel.hidden = !panel.hidden;
-    $("#lib-category-picker").hidden = true; // don't overlap the two popovers
+    $("#lib-category-picker").hidden = true; // don't overlap the popovers
+    $("#group-panel").hidden = true;
   };
-  // Close either popover when clicking outside its menu.
+  // Close any popover when clicking outside its menu.
   document.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
     const picker = $("#lib-category-picker");
     if (!picker.hidden && !target.closest("#lib-menu")) picker.hidden = true;
+    const group = $("#group-panel");
+    if (!group.hidden && !target.closest("#group-menu")) group.hidden = true;
     const tracker = $("#tracker-panel");
     if (!tracker.hidden && !target.closest("#tracker-menu")) tracker.hidden = true;
   });
@@ -3071,6 +3162,18 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     input.value = "";
     await loadLibrary();
   };
+
+  // Library search/sort/filter controls. Search is debounced live filtering; sort re-queries.
+  let libSearchDebounce: ReturnType<typeof setTimeout>;
+  $<HTMLInputElement>("#lib-search").addEventListener("input", (e) => {
+    librarySearch = (e.target as HTMLInputElement).value;
+    clearTimeout(libSearchDebounce);
+    libSearchDebounce = setTimeout(() => void applyLibraryFilters(), 200);
+  });
+  $<HTMLSelectElement>("#lib-sort").addEventListener("change", (e) => {
+    librarySort = (e.target as HTMLSelectElement).value as typeof librarySort;
+    void applyLibraryFilters();
+  });
 
   $<HTMLSelectElement>("#sort-field").addEventListener("change", updateSortDirVisibility);
   $("#searchBtn").onclick = () => void doSearch();

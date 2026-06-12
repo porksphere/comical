@@ -44,6 +44,7 @@
     button:hover { background: #1d4ed8; }
     button.secondary { background: #2a2a2e; border-color: #333; }
     button.secondary:hover { background: #333; }
+    button.secondary.active { background: #2563eb; border-color: #2563eb; color: #fff; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     #status { font-size: 0.82rem; color: #888; margin-bottom: 0.75rem; min-height: 1.2em; }
     #status.error { color: #f87171; }
@@ -149,7 +150,7 @@
     #detail-stats { grid-area: stats; margin-bottom: 0.5rem; }
     #detail-meta { grid-area: meta; margin-bottom: 0.5rem; }
     #detail-description { grid-area: desc; }
-    #detail-taggroups:empty, #detail-description:empty { display: none; }
+    #detail-taggroups:empty, #detail-description:empty, #detail-stats:empty { display: none; }
     .cover-wrap { position: relative; width: 150px; height: 225px; border-radius: 6px; overflow: hidden; background: #26262a; }
     .cover-badge { position: absolute; top: 0.45rem; right: 0.45rem; min-width: 1.7rem; height: 1.7rem; padding: 0 0.4rem; border-radius: 999px; background: rgba(0,0,0,0.82); color: #fff; font-size: 0.82rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
     .cover-badge[hidden] { display: none; }
@@ -232,9 +233,9 @@
     .reg-item { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #242427; font-size: 0.84rem; }
     .reg-item:last-child { border-bottom: none; }
     .view-tabs { margin: 0.5rem 0 1rem; }
-    .badge-unread { position: absolute; top: 0.5rem; right: 0.5rem; background: #2563eb; color: #fff; border-radius: 999px; font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.45rem; }
-    .badge-sources { position: absolute; top: 0.5rem; left: 0.5rem; background: #4b5563; color: #e5e7eb; border-radius: 999px; font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.4rem; }
-    #group-panel { border-top: 1px solid #2a2a2e; margin-top: 0.75rem; padding-top: 0.6rem; }
+    .badge-unread { position: absolute; z-index: 2; top: 0.5rem; right: 0.5rem; background: #2563eb; color: #fff; border-radius: 999px; font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.45rem; }
+    .badge-sources { position: absolute; z-index: 2; top: 0.5rem; left: 0.5rem; background: #4b5563; color: #e5e7eb; border-radius: 999px; font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.4rem; cursor: pointer; }
+    .badge-sources:hover { background: #2563eb; color: #fff; }
     .card-categories { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-top: 0.35rem; }
     .cat-chip { cursor: pointer; font-size: 0.7rem; padding: 0.15rem 0.5rem; }
     .cat-chip:hover { border-color: #60a5fa; color: #ddd; }
@@ -274,6 +275,18 @@
     .history-item .hi-title { font-size: 0.9rem; font-weight: 600; }
     .history-item .hi-sub { font-size: 0.78rem; color: #888; }
     .history-item.read { opacity: 0.55; }
+    /* Sources (multi-bridge SeriesGroup): its own button + popover, matching the tracker menu. */
+    #group-menu { position: relative; width: 100%; }
+    #group-menu > #group-toggle { width: 100%; background: #1c1c1e; border: 1px solid #333; color: #ddd; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; text-align: center; }
+    #group-menu > #group-toggle:hover { border-color: #60a5fa; }
+    #group-panel { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 240px; max-width: 92vw; max-height: 65vh; overflow-y: auto; background: #1c1c1e; border: 1px solid #333; border-radius: 8px; padding: 0.6rem; box-shadow: 0 8px 24px rgba(0,0,0,0.55); }
+    #group-panel[hidden] { display: none; }
+    .src-section-head { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; color: #777; margin: 0.1rem 0 0.3rem; }
+    .src-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.3rem 0; }
+    .src-id { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+    .src-id img { width: 28px; height: 40px; object-fit: cover; border-radius: 3px; background: #333; flex-shrink: 0; }
+    .src-name { font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .src-acts { display: flex; gap: 0.4rem; flex-shrink: 0; }
     /* Trackers: its own button + popover, anchored under the library button in the actions column. */
     #tracker-menu { position: relative; width: 100%; }
     #tracker-menu > #tracker-toggle { width: 100%; background: #1c1c1e; border: 1px solid #333; color: #ddd; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; text-align: center; }
@@ -307,6 +320,9 @@
     #detail.loading #detail-description { display: block; min-height: 4.5rem; }
     /* Mobile detail overrides — placed after the base detail rules so equal-specificity selectors win. */
     @media (max-width: 560px) {
+      /* iOS Safari auto-zooms when focusing any text field below 16px — keep inputs at 16px on
+         mobile so tapping the library search bar (et al.) doesn't zoom the page. */
+      input, select, textarea { font-size: 16px; }
       /* Single column: cover + its action buttons share the top row; stats, meta, description then
          the full-width genres/tag-group scroll strips stack below. */
       .detail-head { grid-template-columns: 1fr; column-gap: 0; grid-template-rows: none;
@@ -314,11 +330,13 @@
       .detail-cover-col { flex-direction: row; gap: 0.9rem; align-items: flex-start; margin-bottom: 0.4rem; }
       .cover-wrap { flex: 0 0 116px; width: 116px; height: 174px; }
       #detail-actions { flex: 1; }
+      /* In this stacked order the description sits directly above the genres strip — give it room. */
+      #detail-description { margin-bottom: 0.9rem; }
       #detail-genres, .tag-group { flex-wrap: nowrap; overflow-x: auto; margin: 0 -2rem 0.3rem; padding: 0 1rem 2px; }
       #detail-taggroups { margin-top: 0.4rem; }
       /* Anchor the action-column popovers to the right so a wide menu doesn't overflow the screen. */
-      #lib-category-picker, #tracker-panel { left: auto; right: 0; }
-      #tracker-panel { min-width: 0; width: min(300px, 78vw); }
+      #lib-category-picker, #tracker-panel, #group-panel { left: auto; right: 0; }
+      #tracker-panel, #group-panel { min-width: 0; width: min(300px, 78vw); }
       .chapters-head h3 { font-size: 1.05rem; }
       .ch-controls { gap: 0.4rem; width: 100%; justify-content: space-between; }
     }
@@ -372,6 +390,15 @@
 
   <!-- Library -->
   <section id="library-view" style="display:none">
+    <div class="controls">
+      <input id="lib-search" type="search" placeholder="Search your library…" style="flex:1; min-width:160px">
+      <select id="lib-sort">
+        <option value="lastRead">Recently read</option>
+        <option value="added">Recently added</option>
+        <option value="title">Title A–Z</option>
+        <option value="unread">Most unread</option>
+      </select>
+    </div>
     <section class="panel" id="lib-categories-panel">
       <div class="row" style="justify-content:space-between">
         <div id="lib-category-chips" class="tabs"></div>
@@ -418,6 +445,10 @@
               <button id="lib-toggle">＋ Library</button>
               <div id="lib-category-picker" hidden></div>
             </div>
+            <div id="group-menu" hidden>
+              <button id="group-toggle">⧉ Sources ▾</button>
+              <div id="group-panel" hidden></div>
+            </div>
             <div id="tracker-menu" hidden>
               <button id="tracker-toggle">⟳ Trackers ▾</button>
               <div id="tracker-panel" hidden></div>
@@ -432,7 +463,6 @@
         <div class="meta-grid" id="detail-meta"></div>
         <p class="description" id="detail-description"></p>
       </div>
-      <div id="group-panel" hidden></div>
       <div id="page-thumbs" class="page-thumb-grid"></div>
       <section id="chapters-section" hidden>
         <div class="chapters-head">

@@ -424,6 +424,81 @@ describe("categories", () => {
   });
 });
 
+describe("getLibrary query (search / sort / filters)", () => {
+  /**
+   * Three series with distinct titles/authors/categories/unread counts, added in s1→s2→s3 order:
+   *  - s1 "Naruto"  (Kishimoto) — Action          — 2 unread
+   *  - s2 "Bleach"             — Action + Romance — 0 unread (only chapter read)
+   *  - s3 "Berserk" (Miura)    — uncategorized    — 1 unread
+   */
+  async function seeded() {
+    const lib = makeLibrary();
+    const action = await lib.createCategory("Action");
+    const romance = await lib.createCategory("Romance");
+
+    await lib.addSeries({ bridgeId: "demo", seriesId: "s1", title: "Naruto", author: "Kishimoto", categoryIds: [action.id] });
+    await lib.syncChapters(entryKey("demo", "s1"), [ch("a1", 1), ch("a2", 2)]);
+
+    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Bleach", categoryIds: [action.id, romance.id] });
+    await lib.syncChapters(entryKey("demo", "s2"), [ch("b1", 1)]);
+    await lib.markRead(entryKey("demo", "s2"), "b1", true);
+
+    await lib.addSeries({ bridgeId: "demo", seriesId: "s3", title: "Berserk", author: "Miura" });
+    await lib.syncChapters(entryKey("demo", "s3"), [ch("k1", 1)]);
+
+    return { lib, action, romance };
+  }
+  const ids = (entries: { seriesId: string }[]) => entries.map((e) => e.seriesId);
+
+  test("q matches title (case-insensitive substring)", async () => {
+    const { lib } = await seeded();
+    expect(ids(await lib.getLibrary({ q: "BER" }))).toEqual(["s3"]);
+  });
+
+  test("q also matches author", async () => {
+    const { lib } = await seeded();
+    expect(ids(await lib.getLibrary({ q: "miura" }))).toEqual(["s3"]);
+  });
+
+  test("unreadOnly drops fully-read entries", async () => {
+    const { lib } = await seeded();
+    expect(ids(await lib.getLibrary({ unreadOnly: true })).sort()).toEqual(["s1", "s3"]);
+  });
+
+  test("sort=title is ascending A–Z", async () => {
+    const { lib } = await seeded();
+    expect((await lib.getLibrary({ sort: "title" })).map((e) => e.title)).toEqual(["Berserk", "Bleach", "Naruto"]);
+  });
+
+  test("sort=unread defaults to descending (most unread first)", async () => {
+    const { lib } = await seeded();
+    expect(ids(await lib.getLibrary({ sort: "unread" }))).toEqual(["s1", "s3", "s2"]);
+  });
+
+  test("dir overrides the default direction", async () => {
+    const { lib } = await seeded();
+    expect(ids(await lib.getLibrary({ sort: "added", dir: "asc" }))).toEqual(["s1", "s2", "s3"]);
+  });
+
+  test("categoryIds filters to ANY of the given categories", async () => {
+    const { lib, action, romance } = await seeded();
+    expect(ids(await lib.getLibrary({ categoryIds: [romance.id] }))).toEqual(["s2"]);
+    expect(ids(await lib.getLibrary({ categoryIds: [action.id, romance.id], sort: "title" }))).toEqual(["s2", "s1"]);
+  });
+
+  test("uncategorized returns only entries with no categories, taking precedence over categoryIds", async () => {
+    const { lib, action } = await seeded();
+    expect(ids(await lib.getLibrary({ uncategorized: true }))).toEqual(["s3"]);
+    expect(ids(await lib.getLibrary({ uncategorized: true, categoryIds: [action.id] }))).toEqual(["s3"]);
+  });
+
+  test("filters compose (search + unreadOnly + sort)", async () => {
+    const { lib } = await seeded();
+    // "e" matches Berserk + Bleach; unreadOnly drops fully-read Bleach.
+    expect(ids(await lib.getLibrary({ q: "e", unreadOnly: true, sort: "title" }))).toEqual(["s3"]);
+  });
+});
+
 describe("guards", () => {
   test("mutating a series not in the library throws", async () => {
     const lib = makeLibrary();
