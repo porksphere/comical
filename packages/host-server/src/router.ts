@@ -338,7 +338,22 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
 
     app.get("/library", async (c) => {
       const category = c.req.query("category");
-      return c.json(await lib.getLibrary(category ? { categoryId: category } : {}));
+      const categories = c.req.query("categories");
+      const q = c.req.query("q");
+      const sort = c.req.query("sort");
+      const dir = c.req.query("dir");
+      const validSort = sort === "added" || sort === "title" || sort === "lastRead" || sort === "unread";
+      return c.json(
+        await lib.getLibrary({
+          ...(category && { categoryId: category }),
+          ...(categories && { categoryIds: categories.split(",").filter(Boolean) }),
+          ...(c.req.query("uncategorized") === "true" && { uncategorized: true }),
+          ...(q && { q }),
+          ...(c.req.query("unreadOnly") === "true" && { unreadOnly: true }),
+          ...(validSort && { sort: sort as "added" | "title" | "lastRead" | "unread" }),
+          ...((dir === "asc" || dir === "desc") && { dir }),
+        }),
+      );
     });
 
     app.get("/library/history", async (c) => {

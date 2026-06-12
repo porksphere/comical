@@ -51,6 +51,41 @@ export interface LibraryOptions {
   now?: () => number;
 }
 
+/** Sort keys for {@link Library.getLibrary}. */
+export type LibrarySort = "added" | "title" | "lastRead" | "unread";
+
+/** Filter + sort options for {@link Library.getLibrary}. All optional. */
+export interface LibraryQuery {
+  /** Single-category filter (back-compat). Prefer `categoryIds`. */
+  categoryId?: string;
+  /** Filter to entries assigned to ANY of these categories. Empty/absent means all categories. */
+  categoryIds?: string[];
+  /** Only entries with no categories assigned. Takes precedence over `categoryId`/`categoryIds`. */
+  uncategorized?: boolean;
+  /** Case-insensitive substring search over title + author. */
+  q?: string;
+  /** Only entries with at least one unread chapter. */
+  unreadOnly?: boolean;
+  /** Sort key. Defaults to `"added"`. */
+  sort?: LibrarySort;
+  /** Sort direction. Defaults to `"asc"` for `title`, `"desc"` otherwise. */
+  dir?: "asc" | "desc";
+}
+
+/** Compare two entry views by `sort` key in ascending order (callers apply direction). */
+function compareEntries(a: LibraryEntryView, b: LibraryEntryView, sort: LibrarySort): number {
+  switch (sort) {
+    case "title":
+      return a.title.localeCompare(b.title);
+    case "lastRead":
+      return (a.lastReadAt ?? 0) - (b.lastReadAt ?? 0);
+    case "unread":
+      return a.unreadCount - b.unreadCount;
+    case "added":
+      return a.addedAt - b.addedAt;
+  }
+}
+
 export class Library {
   private readonly now: () => number;
 
@@ -127,13 +162,40 @@ export class Library {
     await this.store.putEntry(entry);
   }
 
-  /** All entries (optionally filtered to a category), each with a derived `unreadCount`. */
-  async getLibrary(opts: { categoryId?: string } = {}): Promise<LibraryEntryView[]> {
+  /**
+   * Query the library: filter by category/search/read-state and sort, each entry carrying a derived
+   * `unreadCount`. All options are optional; with none, returns every entry sorted newest-added-first.
+   */
+  async getLibrary(opts: LibraryQuery = {}): Promise<LibraryEntryView[]> {
     const entries = await this.store.listEntries();
-    const filtered = opts.categoryId
-      ? entries.filter((e) => e.categoryIds.includes(opts.categoryId!))
-      : entries;
-    return Promise.all(filtered.map((e) => this.toView(e)));
+
+    // Category scope: `uncategorized` (no categories) wins; else single `categoryId` (back-compat) or
+    // `categoryIds` (OR across the set). An empty/absent set means "all".
+    const catIds = opts.categoryIds ?? (opts.categoryId !== undefined ? [opts.categoryId] : undefined);
+    let filtered = entries;
+    if (opts.uncategorized) {
+      filtered = filtered.filter((e) => e.categoryIds.length === 0);
+    } else if (catIds && catIds.length > 0) {
+      filtered = filtered.filter((e) => e.categoryIds.some((id) => catIds.includes(id)));
+    }
+
+    // Free-text search: case-insensitive substring over title + author.
+    const q = opts.q?.trim().toLowerCase();
+    if (q) {
+      filtered = filtered.filter(
+        (e) => e.title.toLowerCase().includes(q) || (e.author?.toLowerCase().includes(q) ?? false),
+      );
+    }
+
+    let views = await Promise.all(filtered.map((e) => this.toView(e)));
+    if (opts.unreadOnly) views = views.filter((v) => v.unreadCount > 0);
+
+    // Sort. Title defaults to ascending (A–Z); the recency/count keys default to descending
+    // (newest / most-unread first) since that's the useful direction.
+    const sort = opts.sort ?? "added";
+    const sign = (opts.dir ?? (sort === "title" ? "asc" : "desc")) === "asc" ? 1 : -1;
+    views.sort((a, b) => sign * compareEntries(a, b, sort));
+    return views;
   }
 
   private async toView(entry: LibraryEntry): Promise<LibraryEntryView> {
