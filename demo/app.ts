@@ -50,7 +50,7 @@ interface SeriesGroup { id: string; title: string; primaryKey: string; memberKey
 interface AddSeriesResult { entry: LibEntry; autoLinked?: { matchedKey: string; sharedId: { service: string; value: number | string } } }
 // Trackers
 interface TrackerSummary { info: { id: string; name: string; capabilities: string[] }; settings: SettingDescriptor[]; values: Record<string, string | number | boolean | string[]>; secretsSet: string[]; configured: boolean; missingRequired: string[] }
-interface BridgePrefs { bridgeId: string; trackersDisabled: boolean }
+interface BridgePrefs { bridgeId: string; trackersDisabled: boolean; historyDisabled: boolean }
 interface TrackerLink { trackerId: string; externalId: string | number; status?: string; chaptersRead?: number; lastSyncAt?: number }
 interface TrackerSearchPageResult { items: Array<{ externalId: string | number; title: string; thumbnailUrl?: string }>; page: number; hasNextPage: boolean }
 interface AvailableTracker { entry: { id: string; name: string; version: string; capabilities: string[] }; registryUrl: string; installedVersion: string | null; updateAvailable: boolean }
@@ -550,18 +550,26 @@ async function renderBridgeSettingsBody(detail: BridgeDetail, container: HTMLEle
   }
 
   const prefs = await api<BridgePrefs>(`/library/bridges/${enc(detail.info.id)}/prefs`).catch(
-    () => ({ bridgeId: detail.info.id, trackersDisabled: false }),
+    () => ({ bridgeId: detail.info.id, trackersDisabled: false, historyDisabled: false }),
   );
-  const trackerLbl = document.createElement("label");
-  trackerLbl.style.cssText = "display:flex;align-items:center;gap:0.4rem;font-size:0.84rem;margin-top:0.6rem";
-  const chk = document.createElement("input");
-  chk.type = "checkbox";
-  chk.checked = prefs.trackersDisabled;
-  chk.onchange = async () => {
-    await send("PUT", `/library/bridges/${enc(detail.info.id)}/prefs`, { trackersDisabled: chk.checked });
+
+  const prefToggle = (checked: boolean, label: string, key: "trackersDisabled" | "historyDisabled"): HTMLLabelElement => {
+    const lbl = document.createElement("label");
+    lbl.style.cssText = "display:flex;align-items:center;gap:0.4rem;font-size:0.84rem;margin-top:0.6rem";
+    const chk = document.createElement("input");
+    chk.type = "checkbox";
+    chk.checked = checked;
+    chk.onchange = async () => {
+      await send("PUT", `/library/bridges/${enc(detail.info.id)}/prefs`, { [key]: chk.checked });
+    };
+    lbl.append(chk, label);
+    return lbl;
   };
-  trackerLbl.append(chk, "Disable tracker sync for this bridge");
-  container.append(trackerLbl);
+
+  container.append(
+    prefToggle(prefs.trackersDisabled, "Disable tracker sync for this bridge", "trackersDisabled"),
+    prefToggle(prefs.historyDisabled, "Don't track reading history for this bridge", "historyDisabled"),
+  );
 }
 
 async function saveBridgeSettings(bridgeId: string, form: HTMLElement, msgEl: HTMLElement, sumEl: HTMLElement): Promise<void> {
@@ -1450,18 +1458,12 @@ async function refreshLibraryStatus(): Promise<void> {
   $("#tracker-menu").hidden = !trackersAvailable;
 }
 
-/** When true, the next renderGroupPanel auto-opens the Sources popover (set by the library badge). */
-let pendingOpenSources = false;
-
 async function renderGroupPanel(bridgeId: string, seriesId: string, entry: LibEntry): Promise<void> {
   const menu = $("#group-menu");
   const panel = $("#group-panel");
   menu.hidden = true;
   panel.hidden = true;
   panel.innerHTML = "";
-  // Consume the badge's "open straight to Sources" request once, regardless of early returns below.
-  const autoOpen = pendingOpenSources;
-  pendingOpenSources = false;
 
   const [groups, allEntries] = await Promise.all([
     api<SeriesGroup[]>("/library/groups").catch(() => [] as SeriesGroup[]),
@@ -1561,7 +1563,6 @@ async function renderGroupPanel(bridgeId: string, seriesId: string, entry: LibEn
   }
 
   menu.hidden = false;
-  if (autoOpen) panel.hidden = false;
 }
 
 // ── Tracker panel (per-series) ────────────────────────────────────────────────
@@ -2678,8 +2679,7 @@ function renderLibraryGrid(entries: LibEntryView[]): void {
   }
 
   const cats = libCats;
-  // Build group map and track which entry keys are non-primary group members (to skip them).
-  const groupById = new Map(libGroups.map((g) => [g.id, g]));
+  // Track which entry keys are non-primary group members (to skip them — covered by the primary card).
   const hiddenKeys = new Set<string>();
   for (const g of libGroups) {
     for (const k of g.memberKeys) {
@@ -2691,14 +2691,10 @@ function renderLibraryGrid(entries: LibEntryView[]): void {
     const key = `${e.bridgeId}:${e.seriesId}`;
     if (hiddenKeys.has(key)) continue; // covered by primary card
 
-    const group = e.seriesGroupId ? groupById.get(e.seriesGroupId) : undefined;
-    const sourceCount = group ? group.memberKeys.length : 0;
-
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `
       ${e.unreadCount > 0 ? `<span class="badge-unread">${e.unreadCount}</span>` : ""}
-      ${sourceCount > 1 ? `<span class="badge-sources">${sourceCount} sources</span>` : ""}
       <img src="${e.thumbnailUrl ?? ""}" alt="${esc(e.title)}" loading="lazy"
         onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
       <div class="card-title clampable" data-full="${esc(e.title)}"><span>${esc(e.title)}</span></div>
@@ -2725,12 +2721,6 @@ function renderLibraryGrid(entries: LibEntryView[]): void {
       card.append(catsRow);
     }
     card.onclick = () => void openSeries(e.bridgeId, e.seriesId);
-    // The "N sources" badge is a live entry point: open the series with the Sources popover already up.
-    card.querySelector(".badge-sources")?.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      pendingOpenSources = true;
-      void openSeries(e.bridgeId, e.seriesId);
-    });
     grid.append(card);
   }
 }
@@ -2866,6 +2856,12 @@ async function loadActivity(): Promise<void> {
         <div class="hi-title clampable" data-full="${esc(a.title)}"><span>${esc(a.title)}</span></div>
         <div class="hi-sub">${esc(chap)} · ${relTime(a.detectedAt)}</div>
       </div>`;
+    // Title / thumbnail open the series page; Read jumps straight into the chapter.
+    const openDetail = () => void openSeries(a.bridgeId, a.seriesId);
+    for (const sel of ["img", ".hi-body"]) {
+      const el = row.querySelector<HTMLElement>(sel);
+      if (el) { el.style.cursor = "pointer"; el.addEventListener("click", openDetail); }
+    }
     const read = document.createElement("button");
     read.textContent = a.read ? "Read again" : "Read";
     read.onclick = () => void openSeries(a.bridgeId, a.seriesId, a.chapterId);
@@ -3003,12 +2999,6 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     const res = await send("POST", "/library/sync");
     const data = res.data as { newChapters?: number };
     s.textContent = res.ok ? `Found ${data.newChapters ?? 0} new chapter(s).` : "Sync failed.";
-    await loadActivity();
-    await refreshActivityBadge();
-  };
-  $("#activity-clear").onclick = async () => {
-    await send("DELETE", "/library/activity");
-    $("#activity-status").textContent = "";
     await loadActivity();
     await refreshActivityBadge();
   };

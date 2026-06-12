@@ -571,11 +571,14 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     );
 
     app.put("/library/bridges/:bridgeId/prefs", async (c) => {
-      const b = await body<{ trackersDisabled?: boolean }>(c);
-      if (typeof b?.trackersDisabled !== "boolean") {
-        return c.json({ error: "trackersDisabled (boolean) is required" }, 400);
+      const b = await body<{ trackersDisabled?: boolean; historyDisabled?: boolean }>(c);
+      const update: { trackersDisabled?: boolean; historyDisabled?: boolean } = {};
+      if (typeof b?.trackersDisabled === "boolean") update.trackersDisabled = b.trackersDisabled;
+      if (typeof b?.historyDisabled === "boolean") update.historyDisabled = b.historyDisabled;
+      if (Object.keys(update).length === 0) {
+        return c.json({ error: "trackersDisabled or historyDisabled (boolean) is required" }, 400);
       }
-      await lib.setBridgePrefs(c.req.param("bridgeId"), { trackersDisabled: b.trackersDisabled });
+      await lib.setBridgePrefs(c.req.param("bridgeId"), update);
       return c.json({ ok: true });
     });
   }
