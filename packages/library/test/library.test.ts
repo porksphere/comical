@@ -683,6 +683,7 @@ describe("bridge prefs", () => {
     const prefs = await lib.getBridgePrefs("demo");
     expect(prefs.bridgeId).toBe("demo");
     expect(prefs.trackersDisabled).toBe(false);
+    expect(prefs.historyDisabled).toBe(false);
   });
 
   test("set trackersDisabled then read it back", async () => {
@@ -691,9 +692,65 @@ describe("bridge prefs", () => {
     expect((await lib.getBridgePrefs("demo")).trackersDisabled).toBe(true);
   });
 
+  test("set historyDisabled then read it back", async () => {
+    const lib = makeLibrary();
+    await lib.setBridgePrefs("demo", { historyDisabled: true });
+    expect((await lib.getBridgePrefs("demo")).historyDisabled).toBe(true);
+  });
+
+  test("a partial update leaves the other flag untouched", async () => {
+    const lib = makeLibrary();
+    await lib.setBridgePrefs("demo", { trackersDisabled: true });
+    await lib.setBridgePrefs("demo", { historyDisabled: true });
+    const prefs = await lib.getBridgePrefs("demo");
+    expect(prefs.trackersDisabled).toBe(true);
+    expect(prefs.historyDisabled).toBe(true);
+  });
+
   test("prefs are per-bridge — different bridges are independent", async () => {
     const lib = makeLibrary();
     await lib.setBridgePrefs("bridge-a", { trackersDisabled: true });
     expect((await lib.getBridgePrefs("bridge-b")).trackersDisabled).toBe(false);
+  });
+});
+
+describe("history tracking opt-out", () => {
+  test("recordRead is suppressed for a bridge with history disabled", async () => {
+    const lib = makeLibrary();
+    await lib.setBridgePrefs("demo", { historyDisabled: true });
+    await lib.recordRead({ bridgeId: "demo", seriesId: "ext1", title: "External Series", lastReadAt: 1000 });
+    expect(await lib.getHistory()).toHaveLength(0);
+  });
+
+  test("getHistory hides library reads from a bridge with history disabled", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.markRead(KEY, "c1", true);
+    expect((await lib.getHistory()).some((h) => h.seriesId === SERIES.seriesId)).toBe(true);
+
+    await lib.setBridgePrefs(SERIES.bridgeId, { historyDisabled: true });
+    expect(await lib.getHistory()).toHaveLength(0);
+  });
+
+  test("disabling history for one bridge leaves another bridge's history intact", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ bridgeId: "muted", seriesId: "a", title: "A", lastReadAt: 1000 });
+    await lib.recordRead({ bridgeId: "kept", seriesId: "b", title: "B", lastReadAt: 2000 });
+    await lib.setBridgePrefs("muted", { historyDisabled: true });
+
+    const history = await lib.getHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0]?.bridgeId).toBe("kept");
+  });
+
+  test("re-enabling history restores previously-hidden library reads", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.markRead(KEY, "c1", true);
+    await lib.setBridgePrefs(SERIES.bridgeId, { historyDisabled: true });
+    expect(await lib.getHistory()).toHaveLength(0);
+
+    await lib.setBridgePrefs(SERIES.bridgeId, { historyDisabled: false });
+    expect((await lib.getHistory()).some((h) => h.seriesId === SERIES.seriesId)).toBe(true);
   });
 });

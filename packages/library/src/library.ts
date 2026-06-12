@@ -409,15 +409,29 @@ export class Library {
       (i) => !libraryKeys.has(`${i.bridgeId}:${i.seriesId}`),
     );
 
-    return [...libraryItems, ...logItems]
+    const merged = [...libraryItems, ...logItems];
+    // Drop reads from bridges whose history tracking is turned off (covers both library and log rows).
+    const muted = await this.historyDisabledBridges(merged.map((i) => i.bridgeId));
+    return merged
+      .filter((i) => !muted.has(i.bridgeId))
       .sort((a, b) => b.lastReadAt - a.lastReadAt)
       .slice(0, limit);
+  }
+
+  /** The subset of the given bridge ids whose `historyDisabled` pref is set. */
+  private async historyDisabledBridges(bridgeIds: string[]): Promise<Set<string>> {
+    const muted = new Set<string>();
+    for (const id of new Set(bridgeIds)) {
+      if ((await this.getBridgePrefs(id)).historyDisabled) muted.add(id);
+    }
+    return muted;
   }
 
   /** Record a non-library read. Ignored if the series is already in the library (setProgress handles those). */
   async recordRead(item: HistoryItem): Promise<void> {
     const existing = await this.store.getEntry(entryKey(item.bridgeId, item.seriesId));
     if (existing) return;
+    if ((await this.getBridgePrefs(item.bridgeId)).historyDisabled) return;
     await this.store.upsertReadingLog(item);
   }
 
@@ -708,11 +722,16 @@ export class Library {
   // ── Bridge preferences ─────────────────────────────────────────────────────
 
   async getBridgePrefs(bridgeId: string): Promise<BridgePrefs> {
-    return (await this.store.getBridgePrefs(bridgeId)) ?? { bridgeId, trackersDisabled: false };
+    return (await this.store.getBridgePrefs(bridgeId)) ?? { bridgeId, trackersDisabled: false, historyDisabled: false };
   }
 
-  async setBridgePrefs(bridgeId: string, update: Pick<BridgePrefs, "trackersDisabled">): Promise<void> {
-    await this.store.setBridgePrefs(bridgeId, { bridgeId, ...update });
+  /** Merge a partial update so toggling one flag (e.g. history) never clears another (e.g. trackers). */
+  async setBridgePrefs(
+    bridgeId: string,
+    update: Partial<Pick<BridgePrefs, "trackersDisabled" | "historyDisabled">>,
+  ): Promise<void> {
+    const current = await this.getBridgePrefs(bridgeId);
+    await this.store.setBridgePrefs(bridgeId, { ...current, ...update, bridgeId });
   }
 }
 

@@ -209,5 +209,7 @@ export const bridgePrefsSchema = z.object({
   bridgeId: z.string().min(1),
   /** When true, tracker sync (push and pull) is skipped for all series from this bridge. */
   trackersDisabled: z.boolean().default(false),
+  /** When true, reads from this bridge are excluded from reading history. */
+  historyDisabled: z.boolean().default(false),
 });
 export type BridgePrefs = z.infer<typeof bridgePrefsSchema>;
