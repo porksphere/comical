@@ -154,8 +154,10 @@
     .cover-wrap { position: relative; width: 150px; height: 225px; border-radius: 6px; overflow: hidden; background: #26262a; }
     .cover-badge { position: absolute; top: 0.45rem; right: 0.45rem; min-width: 1.7rem; height: 1.7rem; padding: 0 0.4rem; border-radius: 999px; background: rgba(0,0,0,0.82); color: #fff; font-size: 0.82rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
     .cover-badge[hidden] { display: none; }
-    #detail-actions { display: flex; flex-direction: column; gap: 0.4rem; align-items: stretch; }
-    #detail-actions button { width: 100%; text-align: center; }
+    /* min-width:0 so the column can shrink below its longest button's content (e.g. a long chapter
+       name on the Read button) and let the ellipsis kick in, rather than overflowing the viewport. */
+    #detail-actions { display: flex; flex-direction: column; gap: 0.4rem; align-items: stretch; min-width: 0; }
+    #detail-actions button { width: 100%; max-width: 100%; text-align: center; }
     #detail-actions .badge-new { align-self: flex-start; }
     .read-primary { background: #2563eb; border: 1px solid #2563eb; color: #fff; border-radius: 6px; padding: 0.5rem 0.6rem; cursor: pointer; font-size: 0.88rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .read-primary:hover { background: #1d4ed8; }
@@ -314,8 +316,16 @@
     #detail.loading .cover-wrap::after,
     #detail.loading #detail-title::after,
     #detail.loading #detail-description::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); animation: skeleton-shimmer 1.3s infinite; }
-    #detail.loading #detail-title { display: block; width: 55%; min-height: 1.5rem; }
+    #detail.loading #detail-title { display: block; width: 100%; min-height: 1.5rem; }
     #detail.loading #detail-description { display: block; min-height: 4.5rem; }
+    /* Action-column skeleton: one shimmer block standing in for the whole right-hand button stack
+       (read/library/sources/trackers/favorite — a variable set) while the series fetch is in flight.
+       The real buttons carry the previous series' state until the fetch resolves and re-renders them,
+       so we hide them (and show the block) under .loading. */
+    .actions-skeleton { display: none; position: relative; overflow: hidden; height: 225px; border-radius: 6px; background: #1f1f22; }
+    #detail.loading .actions-skeleton { display: block; }
+    #detail.loading #detail-actions > :not(.actions-skeleton) { display: none !important; }
+    .actions-skeleton::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); animation: skeleton-shimmer 1.3s infinite; }
     /* Mobile detail overrides — placed after the base detail rules so equal-specificity selectors win. */
     @media (max-width: 560px) {
       /* iOS Safari auto-zooms when focusing any text field below 16px — keep inputs at 16px on
@@ -328,6 +338,8 @@
       .detail-cover-col { flex-direction: row; gap: 0.9rem; align-items: flex-start; margin-bottom: 0.4rem; }
       .cover-wrap { flex: 0 0 116px; width: 116px; height: 174px; }
       #detail-actions { flex: 1; }
+      /* Match the loading facade to the smaller mobile cover so the two sit as an equal-height pair. */
+      .actions-skeleton { height: 174px; }
       /* In this stacked order the description sits directly above the genres strip — give it room. */
       #detail-description { margin-bottom: 0.9rem; }
       #detail-genres, .tag-group { flex-wrap: nowrap; overflow-x: auto; margin: 0 -2rem 0.3rem; padding: 0 1rem 2px; }
@@ -437,6 +449,7 @@
             <span id="cover-chapter-badge" class="cover-badge" hidden></span>
           </div>
           <div id="detail-actions">
+            <div id="actions-skeleton" class="actions-skeleton" aria-hidden="true"></div>
             <button id="read-primary-btn" class="read-primary" hidden>▶ Read</button>
             <div id="lib-menu" hidden>
               <button id="lib-toggle">＋ Library</button>
