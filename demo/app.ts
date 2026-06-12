@@ -1345,6 +1345,14 @@ let currentSeries: CurrentSeries | null = null;
 interface ReaderState { ch: Chapter; pages: Page[]; currentPage: number; }
 let readerState: ReaderState | null = null;
 
+// ── Reader settings (persisted) ──────────────────────────────────────────────────
+type ReadDirection = "ltr" | "rtl";
+let readDirection: ReadDirection = localStorage.getItem("readDirection") === "rtl" ? "rtl" : "ltr";
+/** +1 for left-to-right (western), -1 for right-to-left (manga) — mirrors taps, swipes, and the filmstrip. */
+function dirSign(): 1 | -1 { return readDirection === "rtl" ? -1 : 1; }
+/** A resumePage large enough that openChapter clamps it to the chapter's last page (used when stepping back). */
+const RESUME_LAST_PAGE = Number.MAX_SAFE_INTEGER;
+
 interface PrefetchedChapter { bridgeId: string; seriesId: string; ch: Chapter; pages: Page[] }
 let prefetchedChapter: PrefetchedChapter | null = null;
 
@@ -1441,6 +1449,31 @@ function toggleToolbar(): void {
     if (toolbarHideTimer) clearTimeout(toolbarHideTimer);
     tb.classList.add("hidden");
   }
+}
+
+/** Reflect the active read direction onto the settings panel's toggle buttons. */
+function syncReaderDirUI(): void {
+  document.querySelectorAll<HTMLElement>("#reader-dir-options .reader-dir-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.dir === readDirection);
+  });
+}
+
+function openReaderSettings(): void {
+  syncReaderDirUI();
+  $("#reader-settings-panel").hidden = false;
+}
+
+function closeReaderSettings(): void {
+  $("#reader-settings-panel").hidden = true;
+}
+
+/** Switch reading direction, persist it, and re-lay the filmstrip so slot order follows. */
+function setReadDirection(dir: ReadDirection): void {
+  if (dir === readDirection) return;
+  readDirection = dir;
+  localStorage.setItem("readDirection", dir);
+  syncReaderDirUI();
+  if (readerState) renderReaderPage();
 }
 
 function preloadImages(urls: string[]): void {
@@ -2292,10 +2325,13 @@ function updateReaderChrome(): void {
   if (!readerState) return;
   const { ch, pages, currentPage } = readerState;
   const onLastPage = currentPage >= pages.length - 1;
+  const onFirstPage = currentPage <= 0;
   const nextCh = onLastPage ? getAdjacentChapter(1) : null;
+  const prevCh = onFirstPage ? getAdjacentChapter(-1) : null;
   $("#reader-info").textContent = ch.name;
   $("#reader-progress").textContent = `${currentPage + 1} / ${pages.length}`;
-  $<HTMLButtonElement>("#reader-prev").disabled = currentPage === 0;
+  $<HTMLButtonElement>("#reader-prev").disabled = onFirstPage && !prevCh;
+  $<HTMLButtonElement>("#reader-prev").textContent = onFirstPage && prevCh ? "‹ Prev ch." : "‹ Prev";
   $<HTMLButtonElement>("#reader-next").disabled = onLastPage && !nextCh;
   $<HTMLButtonElement>("#reader-next").textContent = onLastPage && nextCh ? "Next ch. ›" : "Next ›";
 }
@@ -2308,6 +2344,14 @@ function primeReaderAround(): void {
   if (currentPage >= pages.length - 1 - 3) void prefetchNextChapter();
 }
 
+/**
+ * Page indices occupying the left and right filmstrip slots. LTR puts the previous page on the left
+ * and the next on the right; RTL (manga) mirrors that so the next page sits on the left.
+ */
+function neighbourSlots(cp: number): { left: number; right: number } {
+  return dirSign() === 1 ? { left: cp - 1, right: cp + 1 } : { left: cp + 1, right: cp - 1 };
+}
+
 /** Full render: rebuild the whole 3-slot filmstrip from scratch (chapter open, page-jump, resize). */
 function renderReaderPage(showOverlay = false): void {
   if (!readerState) return;
@@ -2317,10 +2361,11 @@ function renderReaderPage(showOverlay = false): void {
   updateReaderChrome();
   const track = document.createElement("div");
   track.className = "reader-track";
+  const { left, right } = neighbourSlots(currentPage);
   track.append(
-    makeReaderSlot(pages[currentPage - 1], currentPage),
+    makeReaderSlot(pages[left], left + 1),
     makeReaderSlot(pages[currentPage], currentPage + 1),
-    makeReaderSlot(pages[currentPage + 1], currentPage + 2),
+    makeReaderSlot(pages[right], right + 1),
   );
   $("#reader-page").replaceChildren(track);
   setTrackOffset(0, false);
@@ -2339,12 +2384,15 @@ function updateReaderWindow(dir: 1 | -1): void {
   const track = readerTrack();
   if (!track || track.children.length !== 3) { renderReaderPage(); return; }
   const { pages, currentPage } = readerState;
-  if (dir === 1) {
+  const { left, right } = neighbourSlots(currentPage);
+  // dir is a page delta; multiply by dirSign to get the physical slot we slid toward (RTL mirrors it).
+  if (dir * dirSign() === 1) {
+    // slid toward the right slot — drop the left, reveal a fresh right neighbour
     track.firstElementChild?.remove();
-    track.appendChild(makeReaderSlot(pages[currentPage + 1], currentPage + 2));
+    track.appendChild(makeReaderSlot(pages[right], right + 1));
   } else {
     track.lastElementChild?.remove();
-    track.insertBefore(makeReaderSlot(pages[currentPage - 1], currentPage), track.firstElementChild);
+    track.insertBefore(makeReaderSlot(pages[left], left + 1), track.firstElementChild);
   }
   ($("#reader-view") as HTMLElement).scrollTop = 0;
   setTrackOffset(0, false);
@@ -2356,14 +2404,15 @@ function updateReaderWindow(dir: 1 | -1): void {
 function hasNeighbourPage(dir: 1 | -1): boolean {
   if (!readerState) return false;
   const { pages, currentPage } = readerState;
-  if (dir === -1) return currentPage > 0;
+  if (dir === -1) return currentPage > 0 || !!getAdjacentChapter(-1);
   return currentPage < pages.length - 1 || !!getAdjacentChapter(1);
 }
 
 /** Soften the drag past an end with no page to reveal, so the strip rubber-bands instead of tearing off. */
 function applySwipeResistance(dx: number): number {
-  if (dx > 0 && !hasNeighbourPage(-1)) return dx * 0.25;
-  if (dx < 0 && !hasNeighbourPage(1)) return dx * 0.25;
+  // A rightward drag reveals the right slot (page delta -dirSign); a leftward drag the left slot (+dirSign).
+  if (dx > 0 && !hasNeighbourPage(-dirSign() as 1 | -1)) return dx * 0.25;
+  if (dx < 0 && !hasNeighbourPage(dirSign())) return dx * 0.25;
   return dx;
 }
 
@@ -2389,7 +2438,8 @@ function commitSwipe(dir: 1 | -1): void {
   const track = readerTrack();
   if (!track) { void readerNavigate(dir); return; }
   track.classList.add("animate");
-  track.style.transform = dir === 1 ? "translateX(-200%)" : "translateX(0%)";
+  // Slide toward whichever physical slot holds this page in the current reading direction.
+  track.style.transform = dir * dirSign() === 1 ? "translateX(-200%)" : "translateX(0%)";
   const finalize = (): void => {
     if (pendingSwipeFinalize !== finalize) return; // already flushed by a later gesture
     pendingSwipeFinalize = null;
@@ -2402,8 +2452,11 @@ function commitSwipe(dir: 1 | -1): void {
 /** Resolve a finished horizontal drag: commit to the neighbour past the threshold, else snap back. */
 function finishSwipe(dx: number, width: number): void {
   const threshold = Math.max(60, width * 0.18);
-  if (dx <= -threshold && hasNeighbourPage(1)) commitSwipe(1);
-  else if (dx >= threshold && hasNeighbourPage(-1)) commitSwipe(-1);
+  // A leftward drag advances by +dirSign (LTR: next), a rightward drag by -dirSign (LTR: prev).
+  const leftDelta = dirSign();
+  const rightDelta = -dirSign() as 1 | -1;
+  if (dx <= -threshold && hasNeighbourPage(leftDelta)) commitSwipe(leftDelta);
+  else if (dx >= threshold && hasNeighbourPage(rightDelta)) commitSwipe(rightDelta);
   else setTrackOffset(0, true);
 }
 
@@ -2412,6 +2465,12 @@ async function readerNavigate(delta: number): Promise<void> {
   if (delta > 0 && readerState.currentPage >= readerState.pages.length - 1) {
     const nextCh = getAdjacentChapter(1);
     if (nextCh) await openChapter(nextCh);
+    return;
+  }
+  if (delta < 0 && readerState.currentPage <= 0) {
+    // Scrolling back off the first page lands on the last page of the preceding chapter.
+    const prevCh = getAdjacentChapter(-1);
+    if (prevCh) await openChapter(prevCh, RESUME_LAST_PAGE);
     return;
   }
   const next = Math.max(0, Math.min(readerState.pages.length - 1, readerState.currentPage + delta));
@@ -3131,6 +3190,15 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
   $("#reader-back").onclick = () => history.back();
   $("#reader-prev").onclick = () => void readerNavigate(-1);
   $("#reader-next").onclick = () => void readerNavigate(1);
+  $("#reader-settings").onclick = () => openReaderSettings();
+  $("#reader-settings-close").onclick = () => closeReaderSettings();
+  $("#reader-settings-panel").addEventListener("click", (e: MouseEvent) => {
+    if (e.target === e.currentTarget) closeReaderSettings(); // tap the backdrop to dismiss
+  });
+  $("#reader-dir-options").addEventListener("click", (e: MouseEvent) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>(".reader-dir-btn");
+    if (btn) setReadDirection(btn.dataset.dir === "rtl" ? "rtl" : "ltr");
+  });
   $("#reader-progress").addEventListener("click", (e: MouseEvent) => {
     if ((e.target as HTMLElement).tagName === "INPUT") return;
     openPageJump();
@@ -3139,15 +3207,19 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     if ((e.target as HTMLElement).closest("button,a")) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const frac = (e.clientX - rect.left) / rect.width;
-    // Left 40% → prev, right 40% → next, center 20% band → toggle the overlay.
-    if (frac < 0.4) void readerNavigate(-1);
-    else if (frac > 0.6) void readerNavigate(1);
+    // Left 40% / right 40% page (mirrored for RTL); center 20% band toggles the overlay.
+    if (frac < 0.4) void readerNavigate(-dirSign());
+    else if (frac > 0.6) void readerNavigate(dirSign());
     else toggleToolbar();
   });
   document.addEventListener("keydown", (e: KeyboardEvent) => {
     if (currentView !== "reader") return;
-    if (e.key === "ArrowLeft") { e.preventDefault(); void readerNavigate(-1); }
-    else if (e.key === "ArrowRight") { e.preventDefault(); void readerNavigate(1); }
+    if (!$("#reader-settings-panel").hidden) {
+      if (e.key === "Escape") { e.preventDefault(); closeReaderSettings(); }
+      return;
+    }
+    if (e.key === "ArrowLeft") { e.preventDefault(); void readerNavigate(-dirSign()); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); void readerNavigate(dirSign()); }
   });
   // Show toolbar on mouse movement (desktop idle recovery)
   ($("#reader-view") as HTMLElement).addEventListener("mousemove", () => {
@@ -3222,8 +3294,8 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     if (target.closest("#reader-progress")) { e.preventDefault(); openPageJump(); return; }
     e.preventDefault();
     const frac = e.changedTouches[0].clientX / window.innerWidth;
-    if (frac < 0.4) void readerNavigate(-1);
-    else if (frac > 0.6) void readerNavigate(1);
+    if (frac < 0.4) void readerNavigate(-dirSign());
+    else if (frac > 0.6) void readerNavigate(dirSign());
     else toggleToolbar();
   };
   readerView.addEventListener("touchend", endSwipe, { passive: false });
