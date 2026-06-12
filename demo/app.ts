@@ -1081,7 +1081,7 @@ function makeCard(item: SeriesEntry): HTMLElement {
   card.className = "card";
   card.innerHTML = `
     <img src="${item.thumbnailUrl ?? ""}" alt="${esc(item.title)}" loading="lazy"
-      onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
+      data-fallback="ph:300x450">
     <div class="card-title clampable" data-full="${esc(item.title)}"><span>${esc(item.title)}</span></div>
     ${item.subtitle ? `<div class="card-sub">${esc(item.subtitle)}</div>` : ""}`;
   card.onclick = () => void showDetail(item.id);
@@ -1186,10 +1186,8 @@ async function showDetail(seriesId: string): Promise<void> {
     cover.src = info.thumbnailUrl;
     cover.alt = info.title;
     cover.style.display = "";
-    cover.onerror = () => {
-      cover.onerror = null;
-      cover.src = `https://placehold.co/200x300?text=${encodeURIComponent(info.title)}`;
-    };
+    cover.dataset.fallback = "ph:200x300";
+    delete cover.dataset.retried; // #detail-cover is reused across detail views
   }
   const favBtn = $("#fav-toggle") as HTMLButtonElement;
   if (activeCaps.includes("favorites")) {
@@ -1320,8 +1318,7 @@ function renderPageThumbs(seriesId: string, pages: Page[]): void {
     .map(
       (p) =>
         `<div class="page-thumb" data-index="${p.index}">` +
-        `<img loading="lazy" src="${esc(p.thumbnailUrl!)}" alt="Page ${p.index + 1}"` +
-        ` onerror="this.onerror=null;this.src='https://placehold.co/160x220?text=Page+${p.index + 1}'">` +
+        `<img loading="lazy" src="${esc(p.thumbnailUrl!)}" alt="Page ${p.index + 1}" data-fallback="ph:160x220">` +
         `<span class="page-num">${p.index + 1}</span>` +
         `</div>`,
     )
@@ -1773,7 +1770,7 @@ async function renderTrackerPanel(bridgeId: string, seriesId: string): Promise<b
           const row = document.createElement("div");
           row.className = "tracker-search-result";
           row.innerHTML =
-            (item.thumbnailUrl ? `<img src="${esc(item.thumbnailUrl)}" alt="" onerror="this.style.display='none'">` : "") +
+            (item.thumbnailUrl ? `<img src="${esc(item.thumbnailUrl)}" alt="" data-fallback="hide:display">` : "") +
             esc(item.title) +
             `<span class="muted"> (${esc(String(item.externalId))})</span>`;
           row.onclick = async () => {
@@ -2293,14 +2290,85 @@ function makeReaderSlot(p: Page | undefined, pageNumber: number): HTMLElement {
   slot.className = "reader-slot";
   if (!p) return slot; // empty slot past an end / chapter boundary
   const img = document.createElement("img");
-  img.src = p.imageUrl;
   img.alt = `Page ${pageNumber}`;
-  img.addEventListener("error", function fallback() {
-    img.removeEventListener("error", fallback);
-    img.src = `https://placehold.co/700x1000?text=Page+${pageNumber}`;
-  });
+  attachReaderImage(slot, img, p.imageUrl, pageNumber);
   slot.appendChild(img);
   return slot;
+}
+
+/** Backoff before each retry, in ms. Its length is the number of retries after the initial attempt. */
+const READER_RETRY_DELAYS = [600, 1500];
+
+/**
+ * Load a reader page image with a bounded retry for transient failures (timeout / 5xx / dropped
+ * connection). The happy path is unchanged — the visible <img> loads directly so it renders
+ * progressively. Only on error do we shimmer the pane and re-fetch via a fresh Image() probe (a new
+ * element re-requests the same URL — no cache-bust param that could break a signed CDN URL). On a
+ * successful probe we swap the already-decoded element in; once retries are exhausted we fall back to
+ * the placeholder, matching the prior behaviour.
+ */
+function attachReaderImage(slot: HTMLElement, img: HTMLImageElement, url: string, pageNumber: number): void {
+  let attempt = 0;
+  const giveUp = (): void => {
+    slot.classList.remove("loading");
+    img.src = `https://placehold.co/700x1000?text=Page+${pageNumber}`;
+  };
+  const onError = (): void => {
+    if (attempt >= READER_RETRY_DELAYS.length) { giveUp(); return; }
+    const delay = READER_RETRY_DELAYS[attempt++]!;
+    slot.classList.add("loading"); // shimmer + hide the broken <img> via CSS while we wait/probe
+    setTimeout(() => {
+      if (!img.isConnected) return; // slot was recycled away by a fast page-turn — drop the retry
+      const probe = new Image();
+      probe.onload = () => {
+        if (!img.isConnected) return;
+        probe.alt = img.alt;
+        slot.classList.remove("loading");
+        img.replaceWith(probe); // probe is already decoded — display with no second fetch
+      };
+      probe.onerror = onError; // chain to the next retry, or giveUp() once exhausted
+      probe.src = url;
+    }, delay);
+  };
+  img.addEventListener("error", onError);
+  img.src = url;
+}
+
+const THUMB_RETRY_DELAY = 500;
+
+/**
+ * Wire one lightweight retry for cover/thumbnail images. A managed <img> declares
+ * `data-fallback="ph:<w>x<h>"` (fall back to a placehold.co stand-in, text from its alt) or
+ * `data-fallback="hide:display" | "hide:visibility"` (just hide it). On the first load error we
+ * re-fetch the same URL once after a short delay; if that also fails we apply the terminal fallback.
+ * A single capturing listener covers every managed image (the `error` event doesn't bubble, hence
+ * capture), so call sites only set the attribute. Reader pages opt out — they carry no data-fallback
+ * and run the richer {@link attachReaderImage} retry instead.
+ */
+function setupThumbnailRetry(): void {
+  document.addEventListener("error", (e: Event) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement)) return;
+    const fallback = img.dataset.fallback;
+    if (!fallback) return; // unmanaged image (reader page, or nothing declared)
+    if (img.dataset.retried !== "1" && img.getAttribute("src")) {
+      img.dataset.retried = "1";
+      const url = img.src; // absolute form of the failed URL
+      img.removeAttribute("src"); // clear so re-assigning the same URL actually re-fetches
+      setTimeout(() => { if (img.isConnected) img.src = url; }, THUMB_RETRY_DELAY);
+      return;
+    }
+    // Retry exhausted (or nothing to retry) → terminal fallback. Drop data-fallback first so a
+    // failing placeholder can't loop back through here.
+    delete img.dataset.fallback;
+    if (fallback.startsWith("ph:")) {
+      img.src = `https://placehold.co/${fallback.slice(3)}?text=${encodeURIComponent(img.alt || "No Cover")}`;
+    } else if (fallback === "hide:display") {
+      img.style.display = "none";
+    } else if (fallback === "hide:visibility") {
+      img.style.visibility = "hidden";
+    }
+  }, true); // capture — error events don't bubble
 }
 
 /** The current filmstrip track (rebuilt on every render), or null when the reader isn't mounted. */
@@ -2797,7 +2865,7 @@ function renderLibraryGrid(entries: LibEntryView[]): void {
     card.innerHTML = `
       ${e.unreadCount > 0 ? `<span class="badge-unread">${e.unreadCount}</span>` : ""}
       <img src="${e.thumbnailUrl ?? ""}" alt="${esc(e.title)}" loading="lazy"
-        onerror="this.onerror=null;this.src='https://placehold.co/300x450?text='+encodeURIComponent(this.alt||'No Cover')">
+        data-fallback="ph:300x450">
       <div class="card-title clampable" data-full="${esc(e.title)}"><span>${esc(e.title)}</span></div>
       <div class="card-sub">${esc(e.bridgeId)}</div>`;
     // Per-card quick-assign — only when lists exist (otherwise there's nothing to assign to).
@@ -2939,7 +3007,7 @@ async function loadHistory(): Promise<void> {
       : "";
     const sub = [chapterLabel, pageLabel, when].filter(Boolean).join(" · ");
     row.innerHTML = `
-      <img src="${h.thumbnailUrl ?? ""}" alt="" onerror="this.style.visibility='hidden'">
+      <img src="${h.thumbnailUrl ?? ""}" alt="" data-fallback="hide:visibility">
       <div class="hi-body">
         <div class="hi-title clampable" data-full="${esc(h.title)}"><span>${esc(h.title)}</span></div>
         <div class="hi-sub">${sub}</div>
@@ -2993,7 +3061,7 @@ async function loadActivity(): Promise<void> {
     row.className = a.read ? "history-item read" : "history-item";
     const chap = a.chapterName ?? (a.number !== undefined ? `Chapter ${a.number}` : "New chapter");
     row.innerHTML = `
-      <img src="${a.thumbnailUrl ?? ""}" alt="" onerror="this.style.visibility='hidden'">
+      <img src="${a.thumbnailUrl ?? ""}" alt="" data-fallback="hide:visibility">
       <div class="hi-body">
         <div class="hi-title clampable" data-full="${esc(a.title)}"><span>${esc(a.title)}</span></div>
         <div class="hi-sub">${esc(chap)} · ${relTime(a.detectedAt)}</div>
@@ -3128,6 +3196,8 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     status(`Cannot reach server at ${SERVER}. Is comical-server running? (bun run demo:server)`, true);
     return;
   }
+
+  setupThumbnailRetry();
 
   document.querySelectorAll<HTMLElement>(".bn-item").forEach((t) => {
     t.onclick = () => switchView((t.dataset.view as "browse" | "library" | "history" | "activity" | "settings") ?? "browse");
