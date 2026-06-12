@@ -41,14 +41,14 @@ export const knownChapterSchema = z.object({
 });
 export type KnownChapter = z.infer<typeof knownChapterSchema>;
 
-/** A user-defined shelf the library groups entries into (e.g. "Reading", "Plan to Read"). */
-export const categorySchema = z.object({
+/** A user-defined list the library groups entries into (e.g. "Reading", "Plan to Read"). */
+export const libraryListSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  /** Sort position among categories (ascending). */
+  /** Sort position among lists (ascending). */
   order: z.number(),
 });
-export type Category = z.infer<typeof categorySchema>;
+export type LibraryList = z.infer<typeof libraryListSchema>;
 
 /** One tracked series in the library. */
 export const libraryEntrySchema = z.object({
@@ -58,8 +58,8 @@ export const libraryEntrySchema = z.object({
   title: z.string().min(1),
   thumbnailUrl: z.string().url().optional(),
   author: z.string().optional(),
-  /** Category memberships (ids into `Category`). Empty = uncategorized. */
-  categoryIds: z.array(z.string()).default([]),
+  /** List memberships (ids into `LibraryList`). Empty = unlisted. */
+  listIds: z.array(z.string()).default([]),
   addedAt: z.number().int(),
   updatedAt: z.number().int(),
   /** Resume cache, updated on every read so history/resume need no progress scan. */

@@ -87,22 +87,25 @@ describe("/library lifecycle", () => {
     expect(history.some((h) => h.seriesId === "s1")).toBe(true);
   });
 
-  test("categories: create → assign → filter → delete strips membership", async () => {
-    const cat = (await (await send("POST", "/library/categories", { name: "Reading" })).json()) as { id: string };
-    expect(cat.id).toBeTruthy();
+  test("lists: create → reorder → assign → filter → delete strips membership", async () => {
+    const list = (await (await send("POST", "/library/lists", { name: "Reading" })).json()) as { id: string };
+    expect(list.id).toBeTruthy();
 
-    await send("PUT", "/library/entries/demo/s1/categories", { categoryIds: [cat.id] });
-    const inCat = (await (await get(`/library?category=${cat.id}`)).json()) as Array<{ seriesId: string }>;
-    expect(inCat.map((e) => e.seriesId)).toEqual(["s1"]);
+    // reorder is a no-op with a single list but exercises the endpoint.
+    expect((await send("POST", "/library/lists/reorder", { orderedIds: [list.id] })).status).toBe(200);
 
-    await send("DELETE", `/library/categories/${cat.id}`);
-    const entry = (await (await get("/library/entries/demo/s1")).json()) as { entry: { categoryIds: string[] } };
-    expect(entry.entry.categoryIds).toEqual([]);
+    await send("PUT", "/library/entries/demo/s1/lists", { listIds: [list.id] });
+    const inList = (await (await get(`/library?list=${list.id}`)).json()) as Array<{ seriesId: string }>;
+    expect(inList.map((e) => e.seriesId)).toEqual(["s1"]);
+
+    await send("DELETE", `/library/lists/${list.id}`);
+    const entry = (await (await get("/library/entries/demo/s1")).json()) as { entry: { listIds: string[] } };
+    expect(entry.entry.listIds).toEqual([]);
   });
 
-  test("query params: search (title/author), unreadOnly, sort, uncategorized", async () => {
-    // s1 ("Series One", 2 unread, now uncategorized after the prior test deleted its category).
-    // Add s2: a fully-read-free, uncategorized, authored series.
+  test("query params: search (title/author), unreadOnly, sort, unlisted", async () => {
+    // s1 ("Series One", 2 unread, now unlisted after the prior test deleted its list).
+    // Add s2: a fully-read-free, unlisted, authored series.
     await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "s2", title: "Other Tale", author: "Zed" });
 
     const titles = async (p: string) => ((await (await get(p)).json()) as Array<{ title: string }>).map((e) => e.title);
@@ -118,8 +121,8 @@ describe("/library lifecycle", () => {
     // sort=title is ascending.
     expect(await titles("/library?sort=title")).toEqual(["Other Tale", "Series One"]);
 
-    // both are uncategorized.
-    expect(await idsOf("/library?uncategorized=true&sort=title")).toEqual(["s2", "s1"]);
+    // both are unlisted.
+    expect(await idsOf("/library?unlisted=true&sort=title")).toEqual(["s2", "s1"]);
 
     // clean up so the later "activity purged" assertion stays unaffected.
     await send("DELETE", "/library/entries/demo/s2");

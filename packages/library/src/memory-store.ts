@@ -3,7 +3,7 @@
  * fallback for hosts without durable storage. Deep-clones on the way in and out so callers can't
  * mutate stored objects by reference.
  */
-import { activityKey, type ActivityItem, type BridgePrefs, type Category, type ChapterProgress, type HistoryItem, type LibraryEntry, type SeriesGroup, type TrackerLink } from "./models.ts";
+import { activityKey, type ActivityItem, type BridgePrefs, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type SeriesGroup, type TrackerLink } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
 const clone = <T>(v: T): T => structuredClone(v);
@@ -11,7 +11,7 @@ const clone = <T>(v: T): T => structuredClone(v);
 export class InMemoryLibraryStore implements LibraryStore {
   private entries = new Map<string, LibraryEntry>();
   private progress = new Map<string, Map<string, ChapterProgress>>();
-  private categories = new Map<string, Category>();
+  private lists = new Map<string, LibraryList>();
   private groups = new Map<string, SeriesGroup>();
   private trackerLinks = new Map<string, Map<string, TrackerLink>>();
   private readingLog = new Map<string, HistoryItem>();
@@ -44,14 +44,14 @@ export class InMemoryLibraryStore implements LibraryStore {
     this.progress.delete(key);
   }
 
-  async listCategories(): Promise<Category[]> {
-    return [...this.categories.values()].map(clone);
+  async listLists(): Promise<LibraryList[]> {
+    return [...this.lists.values()].map(clone);
   }
-  async putCategory(category: Category): Promise<void> {
-    this.categories.set(category.id, clone(category));
+  async putList(list: LibraryList): Promise<void> {
+    this.lists.set(list.id, clone(list));
   }
-  async deleteCategory(id: string): Promise<void> {
-    this.categories.delete(id);
+  async deleteList(id: string): Promise<void> {
+    this.lists.delete(id);
   }
 
   async listGroups(): Promise<SeriesGroup[]> {

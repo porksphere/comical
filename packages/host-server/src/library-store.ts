@@ -3,14 +3,14 @@
  * write-through to JSON under `{dir}/`:
  *
  *   {dir}/entries.json                  → { [entryKey]: LibraryEntry }
- *   {dir}/categories.json               → Category[]
+ *   {dir}/lists.json                    → LibraryList[]
  *   {dir}/progress/{encoded-key}.json   → { [chapterId]: ChapterProgress }
  *
  * Single-user, local scale: small files, full read/parse on first touch, then cached.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { activityKey, type ActivityItem, type BridgePrefs, type Category, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
+import { activityKey, type ActivityItem, type BridgePrefs, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -22,7 +22,7 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
 
 export class FileLibraryStore implements LibraryStore {
   private entriesCache?: Map<string, LibraryEntry>;
-  private categoriesCache?: Category[];
+  private listsCache?: LibraryList[];
   private groupsCache?: Map<string, SeriesGroup>;
   private progressCache = new Map<string, Map<string, ChapterProgress>>();
   private trackerLinksCache?: Map<string, TrackerLink[]>;
@@ -35,8 +35,8 @@ export class FileLibraryStore implements LibraryStore {
   private get entriesPath(): string {
     return join(this.dir, "entries.json");
   }
-  private get categoriesPath(): string {
-    return join(this.dir, "categories.json");
+  private get listsPath(): string {
+    return join(this.dir, "lists.json");
   }
   private get groupsPath(): string {
     return join(this.dir, "groups.json");
@@ -61,8 +61,20 @@ export class FileLibraryStore implements LibraryStore {
 
   private async entries(): Promise<Map<string, LibraryEntry>> {
     if (!this.entriesCache) {
-      const obj = await readJson<Record<string, LibraryEntry>>(this.entriesPath, {});
+      const obj = await readJson<Record<string, LibraryEntry & { categoryIds?: unknown }>>(this.entriesPath, {});
+      // One-time migration: entries written before the "categories → lists" rename carry
+      // `categoryIds` and no `listIds`. Give them an empty `listIds` (memberships are dropped — the
+      // list ids were regenerated) and drop the stale field, persisting the fix so it runs once.
+      let migrated = false;
+      for (const entry of Object.values(obj)) {
+        if (entry.listIds === undefined || "categoryIds" in entry) {
+          entry.listIds ??= [];
+          delete entry.categoryIds;
+          migrated = true;
+        }
+      }
       this.entriesCache = new Map(Object.entries(obj));
+      if (migrated) await this.flushEntries();
     }
     return this.entriesCache;
   }
@@ -117,33 +129,33 @@ export class FileLibraryStore implements LibraryStore {
     await this.flushProgress(key);
   }
 
-  // ── Categories ───────────────────────────────────────────────────────────────────
+  // ── Lists ────────────────────────────────────────────────────────────────────────
 
-  private async categories(): Promise<Category[]> {
-    if (!this.categoriesCache) {
-      this.categoriesCache = await readJson<Category[]>(this.categoriesPath, []);
+  private async lists(): Promise<LibraryList[]> {
+    if (!this.listsCache) {
+      this.listsCache = await readJson<LibraryList[]>(this.listsPath, []);
     }
-    return this.categoriesCache;
+    return this.listsCache;
   }
 
-  private async flushCategories(): Promise<void> {
+  private async flushLists(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    await writeFile(this.categoriesPath, JSON.stringify(await this.categories(), null, 2), "utf8");
+    await writeFile(this.listsPath, JSON.stringify(await this.lists(), null, 2), "utf8");
   }
 
-  async listCategories(): Promise<Category[]> {
-    return [...(await this.categories())];
+  async listLists(): Promise<LibraryList[]> {
+    return [...(await this.lists())];
   }
-  async putCategory(category: Category): Promise<void> {
-    const cats = await this.categories();
-    const idx = cats.findIndex((c) => c.id === category.id);
-    if (idx === -1) cats.push(category);
-    else cats[idx] = category;
-    await this.flushCategories();
+  async putList(list: LibraryList): Promise<void> {
+    const lists = await this.lists();
+    const idx = lists.findIndex((c) => c.id === list.id);
+    if (idx === -1) lists.push(list);
+    else lists[idx] = list;
+    await this.flushLists();
   }
-  async deleteCategory(id: string): Promise<void> {
-    this.categoriesCache = (await this.categories()).filter((c) => c.id !== id);
-    await this.flushCategories();
+  async deleteList(id: string): Promise<void> {
+    this.listsCache = (await this.lists()).filter((c) => c.id !== id);
+    await this.flushLists();
   }
 
   // ── Groups ───────────────────────────────────────────────────────────────────────
