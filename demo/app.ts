@@ -61,6 +61,10 @@ const enc = encodeURIComponent;
 const esc = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
 
+/** Title-case a free-form value (bridges report e.g. "ongoing"/"on hiatus" in arbitrary casing). */
+const titleCase = (s: string): string =>
+  s.replace(/\b\w/g, (c) => c.toUpperCase());
+
 function status(msg: string, isError = false): void {
   // Informational chatter ("Loaded …", "Searching…", counts) is suppressed — the status bar only
   // surfaces for errors, and hides again on the next non-error message.
@@ -1153,7 +1157,7 @@ async function showDetail(seriesId: string): Promise<void> {
   // Meta grid (label-over-value cells), populated only with fields the contract actually provides.
   const authorIsClickable = !!creator && canSearch;
   const metaCells: string[] = [];
-  if (info.status) metaCells.push(metaCell("Status", esc(info.status)));
+  if (info.status) metaCells.push(metaCell("Status", esc(titleCase(info.status))));
   if (creator) {
     const label = info.author ? "Author" : "Artist";
     const value = authorIsClickable
@@ -1262,10 +1266,14 @@ async function showDetail(seriesId: string): Promise<void> {
   if (isDirect) {
     readBtn.hidden = false;
     readBtn.textContent = "▶ Read";
+    readBtn.title = "";
     readBtn.onclick = () => void readDirect(seriesId);
   } else if (firstGroup) {
     readBtn.hidden = false;
     readBtn.textContent = `▶ ${firstGroup.name}`;
+    // The button truncates with an ellipsis (long chapter names would otherwise widen the column);
+    // expose the full name via the tooltip.
+    readBtn.title = firstGroup.name;
     readBtn.onclick = () => void openChapter(pickVersion(firstGroup, preferredGroupName));
   } else {
     readBtn.hidden = true;
