@@ -2,11 +2,53 @@
 
 ## Testing
 
-**Comprehensive tests are required for every change to `packages/core`, `packages/runtime`, and any tracker code (`packages/library`, `packages/host-server/src/tracker-manager.ts`, `bridges/*`).**
+**Comprehensive tests are required for every change to these packages/areas:**
 
-- Write or update tests before marking a task done.
-- Run `bun test` (or a scoped filter) to confirm all tests pass.
+| Area | Test location |
+|------|--------------|
+| `packages/core` | `packages/core/test/` |
+| `packages/runtime` | `packages/runtime/test/` |
+| `packages/library` | `packages/library/test/` |
+| `packages/host-server` — router, bridge-manager, tracker-manager, library-store | `packages/host-server/test/` |
+| `bridges/*` | `bridges/*/test/` |
+
+- Write or update tests **before** marking a task done.
+- Run `bun test` (full suite) or `bun test packages/host-server` (scoped) to confirm all tests pass.
 - New public APIs must have at least one happy-path and one error/edge-case test.
+
+### host-server integration test pattern
+
+All `packages/host-server` tests are HTTP integration tests: spin up a real `Bun.serve` on port 0, hit it with `fetch`, assert on HTTP status + JSON body. This pattern exercises the full request/response stack without mocking Hono internals.
+
+**Server setup:**
+```ts
+import { BridgeManager } from "../src/bridge-manager.ts";
+import { createRouter } from "../src/router.ts";
+import { SettingsStore } from "../src/settings-store.ts";
+import { FixtureBackend } from "@comical/testkit"; // for content endpoint tests
+
+const manager = new BridgeManager({ bridgesDir: BRIDGES_DIR, dataDir: DATA_DIR, settings: new SettingsStore(DATA_DIR) });
+const srv = Bun.serve({ port: 0, fetch: createRouter(manager, opts).fetch });
+const baseUrl = `http://localhost:${srv.port}`;
+// Remember to srv.stop(true) in afterAll.
+```
+
+**Optional capabilities (trackers, registry)** — use a minimal plain-object mock cast to the expected type:
+```ts
+const mockMgr = {
+  list: async () => [...],
+  get: async (id) => { if (id !== "known-id") throw new Error("not found: " + id); return mockObj; },
+  // ...only the methods the router actually calls
+} as unknown as TrackerManager; // or RegistryManager
+
+createRouter(manager, { trackers: mockMgr })
+```
+
+**Absence tests** — create a second server without the optional manager and assert the route returns 404:
+```ts
+const noTrackerSrv = Bun.serve({ port: 0, fetch: createRouter(manager).fetch });
+expect((await fetch(`http://localhost:${noTrackerSrv.port}/trackers`)).status).toBe(404);
+```
 
 ## Demo browser dev workflow
 

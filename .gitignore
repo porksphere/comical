@@ -10,6 +10,7 @@ demo/.out/
 .comical/
 **/.tmp-storage/
 **/.tmp-registry/
+**/.tmp-bridge-extras/
 .comical-demo/
 
 # Playwright e2e capture lane (on-demand recordings/screenshots — never committed)
