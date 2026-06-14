@@ -1394,7 +1394,7 @@ function renderPageThumbs(seriesId: string, pages: Page[]): void {
     .map(
       (p) =>
         `<div class="page-thumb" data-index="${p.index}">` +
-        `<div class="page-cover"><img loading="lazy" src="${esc(p.thumbnailUrl!)}" alt="Page ${p.index + 1}" data-fallback="ph:160x240"></div>` +
+        `<img loading="lazy" src="${esc(p.thumbnailUrl!)}" alt="Page ${p.index + 1}" data-fallback="ph:160x220">` +
         `<span class="page-num">${p.index + 1}</span>` +
         `</div>`,
     )
