@@ -7,8 +7,8 @@
  *   bun run demo:server   — comical-server on :3100 (wired to the fixture backend)
  *   bun run demo:dev      — builds + serves this page on :3300
  */
-import { createIcons, LayoutGrid, Library, History, Bell, Settings, SlidersHorizontal } from "lucide";
-createIcons({ icons: { LayoutGrid, Library, History, Bell, Settings, SlidersHorizontal } });
+import { createIcons, ChevronLeft, LayoutGrid, Library, History, Bell, Settings, SlidersHorizontal } from "lucide";
+createIcons({ icons: { ChevronLeft, LayoutGrid, Library, History, Bell, Settings, SlidersHorizontal } });
 
 // Default the API host to the same host the page was loaded from (so it works over LAN / from a
 // phone), on the server port 3100. Override with window.COMICAL_SERVER if needed.
@@ -1168,6 +1168,7 @@ async function showDetail(seriesId: string): Promise<void> {
   if (currentView !== "detail") previousView = currentView as "browse" | "library" | "history";
   switchView("detail");
   pushRoute(`detail/${enc(activeBridge)}/${enc(seriesId)}`);
+  $("#detail-bridge-name").textContent = bridgeNames.get(activeBridge) ?? activeBridgeName;
   // Show skeleton placeholders (shimmer on cover/title/description) until the fetch resolves, so the
   // real content fades in without a layout jump rather than popping in from a "Loading…" stub.
   $("#detail").classList.add("loading");
@@ -3204,6 +3205,7 @@ async function ensureBridge(bridgeId: string): Promise<void> {
   try {
     const d = await api<BridgeDetail>(`/bridges/${bridgeId}`);
     activeCaps = d.info.capabilities;
+    activeBridgeName = d.info.name;
   } catch {
     activeCaps = [];
   }
