@@ -50,6 +50,19 @@ const noTrackerSrv = Bun.serve({ port: 0, fetch: createRouter(manager).fetch });
 expect((await fetch(`http://localhost:${noTrackerSrv.port}/trackers`)).status).toBe(404);
 ```
 
+## Demo browser icons
+
+The demo uses **[Lucide](https://lucide.dev)** for all icons (`lucide` npm package).
+
+- **Import** the named icon in `demo/app.ts` and register it in `createIcons`:
+  ```ts
+  import { createIcons, SlidersHorizontal /* ... */ } from "lucide";
+  createIcons({ icons: { SlidersHorizontal /* ... */ } });
+  ```
+- **Use in HTML** with a `<i data-lucide="icon-name"></i>` element (kebab-case icon name). `createIcons` replaces it with an inline `<svg>` on load.
+- **Size/stroke** via CSS on the `svg` descendant: `svg { width: 1rem; height: 1rem; stroke-width: 1.75; }`.
+- Find icon names at [lucide.dev/icons](https://lucide.dev/icons).
+
 ## Demo browser dev workflow
 
 When the user is iterating on the demo browser app, spin up **two background terminals** — one for each process:
