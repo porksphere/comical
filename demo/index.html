@@ -59,6 +59,13 @@
     .err { color: #f87171; font-size: 0.82rem; white-space: pre-wrap; }
     #settings-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; margin: 0.5rem 0; }
     #settings-form .field-secret label::after { content: " 🔒"; }
+    .toggle-label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.2rem 0; font-size: 0.9rem; }
+    .toggle-wrap { display: inline-flex; align-items: center; flex-shrink: 0; }
+    .toggle-input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+    .toggle-track { width: 2.4rem; height: 1.35rem; background: #505057; border-radius: 999px; position: relative; cursor: pointer; transition: background 0.2s; flex-shrink: 0; }
+    .toggle-track::before { content: ""; position: absolute; width: 1rem; height: 1rem; background: #fff; border-radius: 50%; top: 50%; left: 0.175rem; transform: translateY(-50%); transition: transform 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+    .toggle-input:checked ~ .toggle-track { background: #2563eb; }
+    .toggle-input:checked ~ .toggle-track::before { transform: translateY(-50%) translateX(1.05rem); }
     .tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.75rem 0; }
     .tab { padding: 0.35rem 0.7rem; border-radius: 999px; background: #1c1c1e; border: 1px solid #333; cursor: pointer; font-size: 0.82rem; }
     .tab.active { background: #2563eb; border-color: #2563eb; }
@@ -336,6 +343,7 @@
     #chapters .ch-versions li.read .ch-dot { background: #2563eb; }
     .history-item { position: relative; display: flex; gap: 0.75rem; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid #242427; }
     .history-item img { width: 44px; height: 66px; object-fit: cover; border-radius: 4px; background: #333; }
+    .hi-thumb-empty { width: 44px; height: 66px; flex-shrink: 0; border-radius: 4px; background: #333; cursor: pointer; }
     .history-item .hi-body { flex: 1; }
     .history-item .hi-title { font-size: 0.9rem; font-weight: 600; }
     .history-item .hi-sub { font-size: 0.78rem; color: #888; }
@@ -613,8 +621,8 @@
     <!-- General -->
     <section class="panel" id="general-settings">
       <h3 style="margin:0 0 0.6rem">General</h3>
-      <label style="display:flex; align-items:center; gap:0.5rem; font-size:0.9rem; cursor:pointer">
-        <input type="checkbox" id="hide-nsfw-toggle"> Hide NSFW content
+      <label class="toggle-label">
+        <span class="toggle-wrap"><input type="checkbox" id="hide-nsfw-toggle" class="toggle-input"><span class="toggle-track"></span></span> Hide NSFW content
       </label>
     </section>
 
