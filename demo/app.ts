@@ -463,35 +463,40 @@ async function selectBridge(id: string): Promise<void> {
   activeCaps = [];
   filterTagSelections.clear();
   switchView("browse");
-  const detail = await api<BridgeDetail>(`/bridges/${id}`, browseController.signal);
-  activeCaps = detail.info.capabilities;
-  activeBridgeName = detail.info.name;
-  if (currentView === "browse") $("#app-title-text").textContent = detail.info.name;
-  $("#caps").textContent = `[${detail.info.capabilities.join(", ")}]`;
+  try {
+    const detail = await api<BridgeDetail>(`/bridges/${id}`, browseController.signal);
+    activeCaps = detail.info.capabilities;
+    activeBridgeName = detail.info.name;
+    if (currentView === "browse") $("#app-title-text").textContent = detail.info.name;
+    $("#caps").textContent = `[${detail.info.capabilities.join(", ")}]`;
 
-  await renderMeta(detail.info.capabilities);
+    await renderMeta(detail.info.capabilities);
 
-  const canSearch = detail.info.capabilities.includes("search");
-  $("#query").style.display = canSearch ? "" : "none";
-  $("#searchBtn").style.display = canSearch ? "" : "none";
-  // Favorites is a home page only when the bridge supports it; otherwise fall back to Home.
-  const hasFavorites = detail.info.capabilities.includes("favorites");
-  if (!hasFavorites && activeHomeTab === "favorites") activeHomeTab = "home";
-  $("#page-sel-wrap").style.display = hasFavorites ? "" : "none";
-  updateHomeTabsActive();
+    const canSearch = detail.info.capabilities.includes("search");
+    $("#query").style.display = canSearch ? "" : "none";
+    $("#searchBtn").style.display = canSearch ? "" : "none";
+    // Favorites is a home page only when the bridge supports it; otherwise fall back to Home.
+    const hasFavorites = detail.info.capabilities.includes("favorites");
+    if (!hasFavorites && activeHomeTab === "favorites") activeHomeTab = "home";
+    $("#page-sel-wrap").style.display = hasFavorites ? "" : "none";
+    updateHomeTabsActive();
 
-  // Content needs the bridge configured.
-  if (detail.missingRequired.length > 0) {
-    clearHome();
-    showBrowseMode("home");
-    status(`"${detail.info.name}" needs configuration: ${detail.missingRequired.join(", ")}`, true);
-    return;
+    // Content needs the bridge configured.
+    if (detail.missingRequired.length > 0) {
+      clearHome();
+      showBrowseMode("home");
+      status(`"${detail.info.name}" needs configuration: ${detail.missingRequired.join(", ")}`, true);
+      return;
+    }
+
+    await renderHome();
+    void prefetchFavorites();
+
+    status(`Loaded "${detail.info.name}".`);
+  } catch (e) {
+    if (isAbort(e)) return;
+    status(`Failed to load bridge: ${e instanceof Error ? e.message : e}`, true);
   }
-
-  await renderHome();
-  void prefetchFavorites();
-
-  status(`Loaded "${detail.info.name}".`);
 }
 
 /** Fetch the first favorites page in the background (no render) so the first tab open is instant. */
