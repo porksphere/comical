@@ -98,27 +98,33 @@ class ComicalBridgeContext private constructor(
         settings: Map<String, Any>,
         networkOptionsJson: String?,
     ) {
-        registerNativeCallbacks()
-        registerRuntimeGlobals()
+        val t0 = System.currentTimeMillis()
+        fun ms() = System.currentTimeMillis() - t0
 
-        // Provide the (large) bundle + settings via bindings to avoid escaping them into a script.
+        registerNativeCallbacks()
+        Log.d(TAG, "load: callbacks registered (+${ms()}ms)")
+        registerRuntimeGlobals()
+        Log.d(TAG, "load: runtime globals registered (+${ms()}ms)")
+
         val settingsJson = JSONObject(settings).toString()
         js.function("__comical_bundle") { _ -> bundleCode }
         js.function("__comical_settings") { _ -> settingsJson }
         if (networkOptionsJson != null) {
             js.function("__comical_network") { _ -> networkOptionsJson }
         }
+        Log.d(TAG, "load: bindings registered (+${ms()}ms)")
 
-        // The bundled runtime installs comical_init / comical_call as globals.
         val harness = androidContext.assets.open("comical_harness.js").bufferedReader().readText()
+        Log.d(TAG, "load: harness read (${harness.length} chars, +${ms()}ms)")
         js.evaluate<Any?>(harness)
+        Log.d(TAG, "load: harness evaluated (+${ms()}ms)")
 
-        // Initialise the bridge through core (loadBridge: contract check, settings, rate limit, …).
         val initCall = if (networkOptionsJson != null)
             "comical_init(__comical_bundle(), __comical_settings(), __comical_network())"
         else
             "comical_init(__comical_bundle(), __comical_settings())"
         js.evaluate<Any?>(initCall)
+        Log.d(TAG, "load: comical_init done (+${ms()}ms)")
     }
 
     suspend fun bridgeInfo(): BridgeInfo? {
