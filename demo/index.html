@@ -83,8 +83,8 @@
     .grid > .card { flex: 0 1 150px; }
     .card { position: relative; padding: 0; background: none; cursor: pointer; }
     .card:hover, .card.touch-active, .history-item:hover, .history-item.touch-active { z-index: 10; }
-    .card-cover { width: 100%; aspect-ratio: 2/3; overflow: hidden; border-radius: 10px; background: #333; margin-bottom: 0.4rem; }
-    .card-cover img { width: 100%; height: 100%; object-fit: cover; display: block; transition: filter 0.15s; }
+    .card-cover { width: 100%; aspect-ratio: 2/3; overflow: hidden; border-radius: 10px; background: #333; margin-bottom: 0.4rem; position: relative; }
+    .card-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; transition: filter 0.15s; }
     .card:hover .card-cover img, .card.touch-active .card-cover img { filter: brightness(1.08); }
     /* Page-thumbnail grid (direct series): small page previews that jump the reader to that page. */
     .page-thumb-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.6rem; margin-bottom: 0.75rem; }
