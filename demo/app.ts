@@ -23,7 +23,7 @@ type SettingDescriptor =
   | { type: "number"; key: string; label: string; description?: string; required?: boolean; default?: number; min?: number; max?: number }
   | { type: "boolean"; key: string; label: string; description?: string; required?: boolean; default?: boolean }
   | { type: "enum"; key: string; label: string; description?: string; required?: boolean; default?: string | string[]; options: Choice[]; multiple?: boolean };
-interface BridgeInfo { id: string; name: string; capabilities: string[] }
+interface BridgeInfo { id: string; name: string; capabilities: string[]; nsfw?: boolean }
 interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values: Record<string, string | number | boolean | string[]>; secretsSet: string[]; missingRequired: string[]; configured: boolean }
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
@@ -344,14 +344,22 @@ function updateSortDirVisibility(): void {
 // ── Bridge picker ────────────────────────────────────────────────────────────────
 /** bridgeId → friendly display name, cached on load for the Sources panel (falls back to the id). */
 const bridgeNames = new Map<string, string>();
+/** bridgeId → nsfw flag, populated in loadBridges() for cross-view filtering. */
+const bridgeNsfw = new Map<string, boolean>();
+let hideNsfw: boolean = localStorage.getItem("hideNsfw") === "true";
 
 async function loadBridges(): Promise<void> {
   const bridges = await api<BridgeSummary[]>("/bridges");
   bridgeNames.clear();
-  for (const b of bridges) bridgeNames.set(b.info.id, b.info.name);
+  bridgeNsfw.clear();
+  for (const b of bridges) {
+    bridgeNames.set(b.info.id, b.info.name);
+    bridgeNsfw.set(b.info.id, b.info.nsfw ?? false);
+  }
+  const visible = hideNsfw ? bridges.filter((b) => !(b.info.nsfw ?? false)) : bridges;
   const list = $("#bridge-list");
   list.innerHTML = "";
-  for (const b of bridges) {
+  for (const b of visible) {
     const btn = document.createElement("div");
     btn.className = "tab";
     btn.dataset.id = b.info.id;
@@ -366,17 +374,17 @@ async function loadBridges(): Promise<void> {
   }
   const settingsList = $("#bridge-settings-list");
   settingsList.innerHTML = "";
-  if (bridges.length > 0) {
+  if (visible.length > 0) {
     settingsList.style.display = "";
-    for (const b of bridges) settingsList.append(buildBridgeSettingsEntry(b));
+    for (const b of visible) settingsList.append(buildBridgeSettingsEntry(b));
     // Auto-expand the first bridge that needs configuration so it's visible without a click.
-    const firstBadIdx = bridges.findIndex((b) => b.missingRequired.length > 0);
+    const firstBadIdx = visible.findIndex((b) => b.missingRequired.length > 0);
     if (firstBadIdx >= 0) {
       const entries = settingsList.querySelectorAll<HTMLDetailsElement>(".bridge-settings-entry");
       if (entries[firstBadIdx]) entries[firstBadIdx]!.open = true;
     }
     const saved = localStorage.getItem("lastBridge");
-    const initial = bridges.find((b) => b.info.id === saved) ? saved! : bridges[0]!.info.id;
+    const initial = visible.find((b) => b.info.id === saved) ? saved! : visible[0]!.info.id;
     await selectBridge(initial);
   } else {
     settingsList.style.display = "none";
@@ -388,6 +396,7 @@ async function loadBridges(): Promise<void> {
 function openBridgeDropdown(): void {
   // Only meaningful in the browse view, where the title shows the bridge name.
   if (currentView !== "browse") return;
+  closePageDropdown();
   $("#app-header").classList.add("open");
   $("#bridge-dropdown").hidden = false;
 }
@@ -398,6 +407,21 @@ function closeBridgeDropdown(): void {
 function toggleBridgeDropdown(): void {
   if ($("#bridge-dropdown").hidden) openBridgeDropdown();
   else closeBridgeDropdown();
+}
+
+// ── Page selector dropdown (home / favorites switcher in the title) ────────────
+function openPageDropdown(): void {
+  closeBridgeDropdown();
+  $("#page-sel-wrap").classList.add("open");
+  $("#page-dropdown").hidden = false;
+}
+function closePageDropdown(): void {
+  $("#page-sel-wrap").classList.remove("open");
+  $("#page-dropdown").hidden = true;
+}
+function togglePageDropdown(): void {
+  if ($("#page-dropdown").hidden) openPageDropdown();
+  else closePageDropdown();
 }
 
 /**
@@ -412,7 +436,7 @@ function updateHeaderForView(view: string): void {
   $("#app-title-caret").hidden = !interactive;
   $("#app-subtitle").style.display = "none";
   if (interactive) $("#app-title-text").textContent = activeBridgeName || "Comical";
-  else closeBridgeDropdown();
+  else { closeBridgeDropdown(); closePageDropdown(); }
 }
 
 // ── Select a bridge: load info, settings, meta, lists ────────────────────────────
@@ -439,8 +463,9 @@ async function selectBridge(id: string): Promise<void> {
   $("#searchBtn").style.display = canSearch ? "" : "none";
   // Favorites is a home page only when the bridge supports it; otherwise fall back to Home.
   const hasFavorites = detail.info.capabilities.includes("favorites");
-  $("#fav-tab").style.display = hasFavorites ? "" : "none";
   if (!hasFavorites && activeHomeTab === "favorites") activeHomeTab = "home";
+  $("#page-sel-wrap").style.display = hasFavorites ? "" : "none";
+  updateHomeTabsActive();
 
   // Content needs the bridge configured.
   if (detail.missingRequired.length > 0) {
@@ -877,8 +902,9 @@ function setResultsHead(show: boolean): void {
 }
 
 function updateHomeTabsActive(): void {
-  document.querySelectorAll<HTMLElement>("#home-tabs .home-tab").forEach((t) =>
-    t.classList.toggle("active", t.dataset.tab === activeHomeTab));
+  $("#page-sel-text").textContent = activeHomeTab;
+  document.querySelectorAll<HTMLElement>("#page-dropdown .tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.page === activeHomeTab));
 }
 
 /** Switch home pages. Home shows the list stack; Favorites shows the favorites grid (no back link). */
@@ -1199,13 +1225,19 @@ async function showDetail(seriesId: string): Promise<void> {
     favBtn.hidden = false;
     favBtn.textContent = "☆ Favorite";
     let favorited = false;
-    // Fire-and-forget: don't block readBtn wiring on the network round-trip
-    api<{ favorited: boolean }>(`/bridges/${activeBridge}/favorites/${encodeURIComponent(seriesId)}`)
-      .then((check) => {
-        favorited = check.favorited;
-        favBtn.textContent = favorited ? "★ Favorited" : "☆ Favorite";
-      })
-      .catch(() => { /* non-fatal */ });
+    const cachedFavs = favoritesCache.get(activeBridge);
+    if (cachedFavs) {
+      favorited = cachedFavs.items.some((item) => item.id === seriesId);
+      favBtn.textContent = favorited ? "★ Favorited" : "☆ Favorite";
+    } else {
+      // Fire-and-forget: don't block readBtn wiring on the network round-trip
+      api<{ favorited: boolean }>(`/bridges/${activeBridge}/favorites/${encodeURIComponent(seriesId)}`)
+        .then((check) => {
+          favorited = check.favorited;
+          favBtn.textContent = favorited ? "★ Favorited" : "☆ Favorite";
+        })
+        .catch(() => { /* non-fatal */ });
+    }
     favBtn.onclick = async () => {
       const r = await send(
         favorited ? "DELETE" : "PUT",
@@ -2868,6 +2900,7 @@ async function applyLibraryFilters(): Promise<void> {
 }
 
 function renderLibraryGrid(entries: LibEntryView[]): void {
+  if (hideNsfw) entries = entries.filter((e) => !bridgeNsfw.get(e.bridgeId));
   const grid = $("#library-grid");
   grid.innerHTML = "";
   if (entries.length === 0) {
@@ -3024,7 +3057,8 @@ async function loadHistory(): Promise<void> {
     host.innerHTML = '<p class="muted">No reading history yet.</p>';
     return;
   }
-  for (const h of items) {
+  const shownHistory = hideNsfw ? items.filter((h) => !bridgeNsfw.get(h.bridgeId)) : items;
+  for (const h of shownHistory) {
     const row = document.createElement("div");
     row.className = "history-item";
     const when = new Date(h.lastReadAt).toLocaleString();
@@ -3078,31 +3112,31 @@ function relTime(ms: number): string {
 }
 
 async function loadActivity(): Promise<void> {
-  const items = await api<ActivityItemView[]>("/library/activity");
-  const host = $("#activity-list");
-  host.innerHTML = "";
-  if (items.length === 0) {
-    host.innerHTML = '<p class="muted">No new chapters yet. Hit “Check for updates” to scan your library.</p>';
+  const all = (await api('/library/activity')) as ActivityItemView[];
+  const visible = hideNsfw ? all.filter((a) => !bridgeNsfw.get(a.bridgeId)) : all;
+  const host = $<HTMLElement>('#activity-list');
+  host.innerHTML = '';
+  if (visible.length === 0) {
+    host.innerHTML = '<p class=”muted”>No new chapters yet. Hit “Check for updates” to scan your library.</p>';
     return;
   }
-  for (const a of items) {
-    const row = document.createElement("div");
-    row.className = a.read ? "history-item read" : "history-item";
-    const chap = a.chapterName ?? (a.number !== undefined ? `Chapter ${a.number}` : "New chapter");
+  for (const a of visible) {
+    const row = document.createElement('div');
+    row.className = a.read ? 'history-item read' : 'history-item';
+    const chap = a.chapterName ?? (a.number !== undefined ? `Chapter ${a.number}` : 'New chapter');
     row.innerHTML = `
-      <img src="${a.thumbnailUrl ?? ""}" alt="" data-fallback="hide:visibility">
-      <div class="hi-body">
-        <div class="hi-title clampable" data-full="${esc(a.title)}"><span>${esc(a.title)}</span></div>
-        <div class="hi-sub">${esc(chap)} · ${relTime(a.detectedAt)}</div>
+      <img src=”${a.thumbnailUrl ?? ''}” alt=”” data-fallback=”hide:visibility”>
+      <div class=”hi-body”>
+        <div class=”hi-title clampable” data-full=”${esc(a.title)}”><span>${esc(a.title)}</span></div>
+        <div class=”hi-sub”>${esc(chap)} · ${relTime(a.detectedAt)}</div>
       </div>`;
-    // Title / thumbnail open the series page; Read jumps straight into the chapter.
     const openDetail = () => void openSeries(a.bridgeId, a.seriesId);
-    for (const sel of ["img", ".hi-body"]) {
+    for (const sel of ['img', '.hi-body']) {
       const el = row.querySelector<HTMLElement>(sel);
-      if (el) { el.style.cursor = "pointer"; el.addEventListener("click", openDetail); }
+      if (el) { el.style.cursor = 'pointer'; el.addEventListener('click', openDetail); }
     }
-    const read = document.createElement("button");
-    read.textContent = a.read ? "Read again" : "Read";
+    const read = document.createElement('button');
+    read.textContent = a.read ? 'Read again' : 'Read';
     read.onclick = () => void openSeries(a.bridgeId, a.seriesId, a.chapterId);
     row.append(read);
     host.append(row);
@@ -3234,8 +3268,16 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
 
   // Browse-view title doubles as a bridge switcher: click to toggle the dropdown of bridges.
   $("#app-title").onclick = () => { if (currentView === "browse") toggleBridgeDropdown(); };
+  // Page selector: tap the current tab name to open the home/favorites picker.
+  $("#page-sel").onclick = (e) => { e.stopPropagation(); togglePageDropdown(); };
+  $("#page-sel-wrap").addEventListener("click", (e) => e.stopPropagation());
+  document.querySelectorAll<HTMLElement>("#page-dropdown .tab").forEach((btn) => {
+    btn.onclick = (e) => { e.stopPropagation(); void selectHomeTab((btn.dataset.page as "home" | "favorites") ?? "home"); closePageDropdown(); };
+  });
   document.addEventListener("click", (e: MouseEvent) => {
-    if (!$("#bridge-dropdown").hidden && !(e.target as HTMLElement).closest("#app-header")) closeBridgeDropdown();
+    const target = e.target as HTMLElement;
+    if (!$("#bridge-dropdown").hidden && !target.closest("#app-header")) closeBridgeDropdown();
+    if (!$("#page-dropdown").hidden && !target.closest("#page-sel-wrap")) closePageDropdown();
   });
 
   $("#activity-refresh").onclick = async () => {
@@ -3447,9 +3489,6 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     panel.style.display = open ? "" : "none";
     btn.classList.toggle("active", open);
   };
-  document.querySelectorAll<HTMLElement>("#home-tabs .home-tab").forEach((t) => {
-    t.onclick = () => void selectHomeTab((t.dataset.tab as "home" | "favorites") ?? "home");
-  });
   $<HTMLInputElement>("#query").addEventListener("keydown", (e) => { if (e.key === "Enter") void doSearch(); });
   $("#reg-add").onclick = async () => {
     const url = $<HTMLInputElement>("#reg-url").value.trim();
@@ -3458,6 +3497,17 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     const msg = $("#reg-msg");
     if (res.ok) { msg.textContent = "Added ✓"; msg.className = "ok"; $<HTMLInputElement>("#reg-url").value = ""; await refreshAll(); }
     else { const e = res.data as { error?: string }; msg.textContent = e.error ?? `error ${res.status}`; msg.className = "err"; }
+  };
+
+  const nsfwToggle = $<HTMLInputElement>("#hide-nsfw-toggle");
+  nsfwToggle.checked = hideNsfw;
+  nsfwToggle.onchange = async () => {
+    hideNsfw = nsfwToggle.checked;
+    localStorage.setItem("hideNsfw", String(hideNsfw));
+    await loadBridges();
+    if (currentView === "library") await applyLibraryFilters();
+    if (currentView === "history") await loadHistory();
+    if (currentView === "activity") await loadActivity();
   };
 
   window.addEventListener("popstate", () => void handleRoute());
