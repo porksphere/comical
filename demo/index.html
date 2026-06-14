@@ -405,6 +405,11 @@
     #detail.loading .actions-skeleton { display: block; }
     #detail.loading #detail-actions > :not(.actions-skeleton) { display: none !important; }
     .actions-skeleton::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); animation: skeleton-shimmer 1.3s infinite; }
+    /* Skeleton cards in home sections while per-section content loads. */
+    .card.skeleton .card-cover { background: #1f1f22; border-radius: 6px; position: relative; overflow: hidden; }
+    .card.skeleton .card-cover::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); animation: skeleton-shimmer 1.3s infinite; }
+    .card.skeleton .card-title { margin-top: 0.4rem; height: 0.85rem; width: 70%; background: #1f1f22; border-radius: 4px; position: relative; overflow: hidden; }
+    .card.skeleton .card-title::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); animation: skeleton-shimmer 1.3s infinite; animation-delay: 0.15s; }
     /* Mobile detail overrides — placed after the base detail rules so equal-specificity selectors win. */
     @media (max-width: 560px) {
       /* iOS Safari auto-zooms when focusing any text field below 16px — keep inputs at 16px on

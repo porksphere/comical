@@ -981,7 +981,7 @@ function returnToHomeTab(): void {
 /**
  * Build the home view: a vertical stack of list sections in `getLists()` order. The hint on each
  * list decides how it renders; a `grid` that is the LAST section infinite-scrolls, earlier grids
- * page with a "Load more" button (see {@link renderSection}).
+ * page with a "Load more" button (see {@link fillSection}).
  */
 async function renderHome(): Promise<void> {
   clearHome();
@@ -993,9 +993,10 @@ async function renderHome(): Promise<void> {
   if (activeCaps.includes("lists")) {
     const lists = await api<SeriesList[]>(`/bridges/${activeBridge}/lists`, browseController.signal);
     currentLists = lists;
-    for (let i = 0; i < lists.length; i++) {
-      await renderSection(host, lists[i]!, i === lists.length - 1);
-    }
+    // Render all skeleton sections immediately so headers are visible before any content loads.
+    const sectionEls = lists.map(list => appendSkeletonSection(host, list));
+    // Fill each section in parallel; individual failures are handled inside fillSection.
+    await Promise.allSettled(lists.map((list, i) => fillSection(sectionEls[i]!, list, i === lists.length - 1)));
   } else {
     currentLists = [];
   }
@@ -1018,29 +1019,53 @@ function sectionHead(name: string, seeAll?: () => void): HTMLElement {
   return head;
 }
 
-async function renderSection(host: HTMLElement, list: SeriesList, isLast: boolean): Promise<void> {
+const SKELETON_CARD_COUNT = 6;
+
+function appendSkeletonSection(host: HTMLElement, list: SeriesList): HTMLElement {
+  const layout = list.layout ?? "grid";
+  const horizontal = layout === "carousel" || layout === "ranked" || layout === "hero";
+  const section = document.createElement("section");
+  section.className = "section";
+  section.append(sectionHead(list.name));
+  const row = document.createElement("div");
+  row.className = horizontal
+    ? "carousel" + (layout === "ranked" ? " ranked" : layout === "hero" ? " hero" : "")
+    : "grid";
+  for (let i = 0; i < SKELETON_CARD_COUNT; i++) row.append(makeSkeletonCard());
+  section.append(row);
+  host.append(section);
+  return section;
+}
+
+async function fillSection(sectionEl: HTMLElement, list: SeriesList, isLast: boolean): Promise<void> {
   const layout = list.layout ?? "grid";
   const horizontal = layout === "carousel" || layout === "ranked" || layout === "hero";
   let r: PagedResults;
   try {
     r = await api<PagedResults>(listPath(list.id, 1), browseController.signal);
   } catch (e) {
+    sectionEl.remove();
     if (isAbort(e)) return;
     status(`List "${list.name}" failed to load: ${e instanceof Error ? e.message : e}`, true);
     return;
   }
-  if (r.items.length === 0) return;
+  if (r.items.length === 0) { sectionEl.remove(); return; }
 
-  const section = document.createElement("section");
-  section.className = "section";
+  const row = sectionEl.querySelector<HTMLElement>(".carousel, .grid")!;
+  row.innerHTML = "";
 
   if (horizontal) {
     // "See all" when there's more than what's shown — either further pages, or items past the two
     // rows the desktop carousel caps at (cards 11+ are hidden via CSS there).
     const hasMore = r.hasNextPage || r.items.length > 10;
-    section.append(sectionHead(list.name, hasMore ? () => void showListDetail(list) : undefined));
-    const row = document.createElement("div");
-    row.className = "carousel" + (layout === "ranked" ? " ranked" : layout === "hero" ? " hero" : "");
+    if (hasMore) {
+      const head = sectionEl.querySelector(".section-head")!;
+      const btn = document.createElement("button");
+      btn.className = "see-all";
+      btn.textContent = "See all →";
+      btn.onclick = () => void showListDetail(list);
+      head.append(btn);
+    }
     r.items.forEach((item, idx) => {
       const card = makeCard(item);
       if (layout === "ranked") {
@@ -1051,19 +1076,21 @@ async function renderSection(host: HTMLElement, list: SeriesList, isLast: boolea
       }
       row.append(card);
     });
-    section.append(row);
   } else {
     // A non-terminal grid links to its full list and pages with "Load more"; the terminal grid
     // owns the page's downward scroll and loads more automatically.
-    section.append(sectionHead(list.name, !isLast && r.hasNextPage ? () => void showListDetail(list) : undefined));
-    const grid = document.createElement("div");
-    grid.className = "grid";
-    for (const item of r.items) grid.append(makeCard(item));
-    section.append(grid);
-    if (isLast) attachInfinite(section, grid, list, r.hasNextPage);
-    else attachLoadMore(section, grid, list, r.hasNextPage);
+    if (!isLast && r.hasNextPage) {
+      const head = sectionEl.querySelector(".section-head")!;
+      const btn = document.createElement("button");
+      btn.className = "see-all";
+      btn.textContent = "See all →";
+      btn.onclick = () => void showListDetail(list);
+      head.append(btn);
+    }
+    for (const item of r.items) row.append(makeCard(item));
+    if (isLast) attachInfinite(sectionEl, row, list, r.hasNextPage);
+    else attachLoadMore(sectionEl, row, list, r.hasNextPage);
   }
-  host.append(section);
 }
 
 /** A non-terminal grid section: append the next page on each click until exhausted. */
@@ -1155,6 +1182,17 @@ async function loadList(listId: string, page = 1): Promise<void> {
   } catch (e) {
     status(`List load failed: ${e instanceof Error ? e.message : e}`, true);
   }
+}
+
+function makeSkeletonCard(): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "card skeleton";
+  const cover = document.createElement("div");
+  cover.className = "card-cover";
+  const title = document.createElement("div");
+  title.className = "card-title";
+  card.append(cover, title);
+  return card;
 }
 
 function makeCard(item: SeriesEntry): HTMLElement {
