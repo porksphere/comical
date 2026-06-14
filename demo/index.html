@@ -271,6 +271,13 @@
     .reader-dir-btn:hover { border-color: #60a5fa; }
     .reader-dir-btn.active { background: #2563eb; border-color: #2563eb; color: #fff; }
     .reader-dir-arrow { font-size: 1.5rem; line-height: 1; }
+    /* Fit-width mode: reader-page scrolls vertically; track/slots grow to image height */
+    #reader-page.fit-width { overflow-x: hidden; overflow-y: auto; }
+    #reader-page.fit-width .reader-track { position: static; }
+    #reader-page.fit-width .reader-slot { height: auto; }
+    #reader-page.fit-width .reader-slot img { width: 100%; max-height: none; height: auto; }
+    /* Divider between adjacent settings sections in the reader options panel */
+    .reader-settings-section + .reader-settings-section { margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid #242427; }
     .reg-item { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #242427; font-size: 0.84rem; }
     .reg-item:last-child { border-bottom: none; }
     .view-tabs { margin: 0.5rem 0 1rem; }
@@ -583,6 +590,19 @@
             <button class="reader-dir-btn" data-dir="rtl">
               <span class="reader-dir-arrow">←</span>
               <span>Right to left</span>
+            </button>
+          </div>
+        </section>
+        <section class="reader-settings-section">
+          <h4>Page fit</h4>
+          <div id="reader-fit-options" class="reader-dir-options">
+            <button class="reader-dir-btn" data-fit="fit-page">
+              <span class="reader-dir-arrow">↕</span>
+              <span>Fit page</span>
+            </button>
+            <button class="reader-dir-btn" data-fit="fit-width">
+              <span class="reader-dir-arrow">↔</span>
+              <span>Fit width</span>
             </button>
           </div>
         </section>
