@@ -1149,8 +1149,8 @@ function makeCard(item: SeriesEntry): HTMLElement {
   const card = document.createElement("div");
   card.className = "card";
   card.innerHTML = `
-    <img src="${item.thumbnailUrl ?? ""}" alt="${esc(item.title)}" loading="lazy"
-      data-fallback="ph:300x450">
+    <div class="card-cover"><img src="${item.thumbnailUrl ?? ""}" alt="${esc(item.title)}" loading="lazy"
+      data-fallback="ph:300x450"></div>
     <div class="card-title clampable" data-full="${esc(item.title)}"><span>${esc(item.title)}</span></div>
     ${item.subtitle ? `<div class="card-sub">${esc(item.subtitle)}</div>` : ""}`;
   card.onclick = () => void showDetail(item.id);
@@ -2959,8 +2959,8 @@ function renderLibraryGrid(entries: LibEntryView[]): void {
     card.className = "card";
     card.innerHTML = `
       ${e.unreadCount > 0 ? `<span class="badge-unread">${e.unreadCount}</span>` : ""}
-      <img src="${e.thumbnailUrl ?? ""}" alt="${esc(e.title)}" loading="lazy"
-        data-fallback="ph:300x450">
+      <div class="card-cover"><img src="${e.thumbnailUrl ?? ""}" alt="${esc(e.title)}" loading="lazy"
+        data-fallback="ph:300x450"></div>
       <div class="card-title clampable" data-full="${esc(e.title)}"><span>${esc(e.title)}</span></div>
       <div class="card-sub">${esc(e.bridgeId)}</div>`;
     // Per-card quick-assign — only when lists exist (otherwise there's nothing to assign to).
