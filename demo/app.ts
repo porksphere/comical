@@ -348,7 +348,7 @@ const bridgeNames = new Map<string, string>();
 const bridgeNsfw = new Map<string, boolean>();
 let hideNsfw: boolean = localStorage.getItem("hideNsfw") === "true";
 
-async function loadBridges(): Promise<void> {
+async function loadBridges(selectInitial = true): Promise<void> {
   const bridges = await api<BridgeSummary[]>("/bridges");
   bridgeNames.clear();
   bridgeNsfw.clear();
@@ -383,9 +383,17 @@ async function loadBridges(): Promise<void> {
       const entries = settingsList.querySelectorAll<HTMLDetailsElement>(".bridge-settings-entry");
       if (entries[firstBadIdx]) entries[firstBadIdx]!.open = true;
     }
-    const saved = localStorage.getItem("lastBridge");
-    const initial = visible.find((b) => b.info.id === saved) ? saved! : visible[0]!.info.id;
-    await selectBridge(initial);
+    const activeStillVisible = visible.some((b) => b.info.id === activeBridge);
+    if (selectInitial || !activeStillVisible) {
+      const saved = localStorage.getItem("lastBridge");
+      const initial = visible.find((b) => b.info.id === saved) ? saved! : visible[0]!.info.id;
+      await selectBridge(initial);
+    } else {
+      // Refresh the active-tab highlight without re-selecting (avoids view switch).
+      document.querySelectorAll<HTMLElement>("#bridge-list .tab").forEach((el) => {
+        el.classList.toggle("active", el.dataset.id === activeBridge);
+      });
+    }
   } else {
     settingsList.style.display = "none";
     status("No bridges installed. Add a registry below, or build one locally.");
@@ -565,14 +573,7 @@ async function renderBridgeSettingsBody(detail: BridgeDetail, container: HTMLEle
     const grid = document.createElement("div");
     grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.75rem;margin:0.5rem 0 0.75rem";
     for (const d of detail.settings) {
-      const wrap = document.createElement("div");
-      if (d.type === "string" && d.secret) wrap.className = "field-secret";
-      const lbl = document.createElement("label");
-      lbl.textContent = d.label + (d.required ? " *" : "");
-      if (d.description) lbl.title = d.description;
-      lbl.append(buildInput(d, detail.values[d.key], detail.secretsSet.includes(d.key)));
-      wrap.append(lbl);
-      grid.append(wrap);
+      grid.append(buildField(d, detail.values[d.key], detail.secretsSet.includes(d.key)));
     }
     container.append(grid);
 
@@ -622,11 +623,17 @@ async function renderBridgeSettingsBody(detail: BridgeDetail, container: HTMLEle
     lbl.style.cssText = "display:flex;align-items:center;gap:0.4rem;font-size:0.84rem;margin-top:0.6rem";
     const chk = document.createElement("input");
     chk.type = "checkbox";
+    chk.className = "toggle-input";
     chk.checked = checked;
     chk.onchange = async () => {
       await send("PUT", `/library/bridges/${enc(detail.info.id)}/prefs`, { [key]: chk.checked });
     };
-    lbl.append(chk, label);
+    const track = document.createElement("span");
+    track.className = "toggle-track";
+    const toggleWrap = document.createElement("span");
+    toggleWrap.className = "toggle-wrap";
+    toggleWrap.append(chk, track);
+    lbl.append(toggleWrap, label);
     return lbl;
   };
 
@@ -671,6 +678,30 @@ async function saveBridgeSettings(bridgeId: string, form: HTMLElement, msgEl: HT
     msgEl.textContent = (res.data as { error?: string }).error ?? `error ${res.status}`;
     msgEl.className = "err";
   }
+}
+
+/** Wrap a settings descriptor into a labelled field cell (label + control). Boolean fields render
+ *  as a toggle-left-of-label row; all others use the standard stack layout. */
+function buildField(
+  d: SettingDescriptor,
+  current: string | number | boolean | string[] | undefined,
+  secretSet: boolean,
+  ctx?: { trackerId: string; form: HTMLElement },
+): HTMLElement {
+  const wrap = document.createElement("div");
+  if (d.type === "string" && d.secret) wrap.className = "field-secret";
+  const lbl = document.createElement("label");
+  if (d.description) lbl.title = d.description;
+  const input = buildInput(d, current, secretSet, ctx);
+  if (d.type === "boolean") {
+    lbl.className = "toggle-label";
+    lbl.append(input, d.label + (d.required ? " *" : ""));
+  } else {
+    lbl.textContent = d.label + (d.required ? " *" : "");
+    lbl.append(input);
+  }
+  wrap.append(lbl);
+  return wrap;
 }
 
 /** Build a control prefilled with the current stored value (falling back to the descriptor default). */
@@ -775,7 +806,14 @@ function buildInput(
   input.dataset.kind = d.type;
   if (d.type === "boolean") {
     input.type = "checkbox";
+    input.className = "toggle-input";
     input.checked = typeof current === "boolean" ? current : (d.default ?? false);
+    const wrap = document.createElement("span");
+    wrap.className = "toggle-wrap";
+    const track = document.createElement("span");
+    track.className = "toggle-track";
+    wrap.append(input, track);
+    return wrap;
   } else if (d.type === "number") {
     input.type = "number";
     if (d.min !== undefined) input.min = String(d.min);
@@ -1908,13 +1946,7 @@ async function loadTrackerConfig(): Promise<void> {
       form.className = "tracker-config-form";
 
       for (const d of t.settings) {
-        const wrap = document.createElement("div");
-        const label = document.createElement("label");
-        label.textContent = d.label + (d.required ? " *" : "");
-        if (d.description) label.title = d.description;
-        label.append(buildInput(d, t.values[d.key], t.secretsSet.includes(d.key), { trackerId: t.info.id, form }));
-        wrap.append(label);
-        form.append(wrap);
+        form.append(buildField(d, t.values[d.key], t.secretsSet.includes(d.key), { trackerId: t.info.id, form }));
       }
 
       const row = document.createElement("div");
@@ -2410,7 +2442,7 @@ function setupThumbnailRetry(): void {
     if (!(img instanceof HTMLImageElement)) return;
     const fallback = img.dataset.fallback;
     if (!fallback) return; // unmanaged image (reader page, or nothing declared)
-    if (img.dataset.retried !== "1" && img.getAttribute("src")) {
+    if (img.dataset.retried !== "1" && img.getAttribute("src") && !fallback.startsWith("hide:")) {
       img.dataset.retried = "1";
       const url = img.src; // absolute form of the failed URL
       img.removeAttribute("src"); // clear so re-assigning the same URL actually re-fetches
@@ -3069,15 +3101,17 @@ async function loadHistory(): Promise<void> {
       ? (h.pageCount ? `${h.lastPage + 1} / ${h.pageCount}` : `Page ${h.lastPage + 1}`)
       : "";
     const sub = [chapterLabel, pageLabel, when].filter(Boolean).join(" · ");
-    row.innerHTML = `
-      <img src="${h.thumbnailUrl ?? ""}" alt="" data-fallback="hide:visibility">
+    const hThumb = h.thumbnailUrl ? `<img src="${esc(h.thumbnailUrl)}" alt="">` : '<span class="hi-thumb-empty"></span>';
+    row.innerHTML = `${hThumb}
       <div class="hi-body">
         <div class="hi-title clampable" data-full="${esc(h.title)}"><span>${esc(h.title)}</span></div>
         <div class="hi-sub">${sub}</div>
       </div>`;
+    const img = row.querySelector<HTMLImageElement>("img");
+    if (img) img.onerror = () => { img.style.visibility = "hidden"; };
     // Title / thumbnail open the series page; Resume jumps back into the reader.
     const openDetail = () => void openSeries(h.bridgeId, h.seriesId);
-    for (const sel of ["img", ".hi-body"]) {
+    for (const sel of ["img", ".hi-thumb-empty", ".hi-body"]) {
       const el = row.querySelector<HTMLElement>(sel);
       if (el) { el.style.cursor = "pointer"; el.addEventListener("click", openDetail); }
     }
@@ -3117,21 +3151,23 @@ async function loadActivity(): Promise<void> {
   const host = $<HTMLElement>('#activity-list');
   host.innerHTML = '';
   if (visible.length === 0) {
-    host.innerHTML = '<p class=”muted”>No new chapters yet. Hit “Check for updates” to scan your library.</p>';
+    host.innerHTML = '<p class="muted">No new chapters yet. Hit "Check for updates" to scan your library.</p>';
     return;
   }
   for (const a of visible) {
     const row = document.createElement('div');
     row.className = a.read ? 'history-item read' : 'history-item';
     const chap = a.chapterName ?? (a.number !== undefined ? `Chapter ${a.number}` : 'New chapter');
-    row.innerHTML = `
-      <img src=”${a.thumbnailUrl ?? ''}” alt=”” data-fallback=”hide:visibility”>
-      <div class=”hi-body”>
-        <div class=”hi-title clampable” data-full=”${esc(a.title)}”><span>${esc(a.title)}</span></div>
-        <div class=”hi-sub”>${esc(chap)} · ${relTime(a.detectedAt)}</div>
+    const aThumb = a.thumbnailUrl ? `<img src="${esc(a.thumbnailUrl)}" alt="">` : '<span class="hi-thumb-empty"></span>';
+    row.innerHTML = `${aThumb}
+      <div class="hi-body">
+        <div class="hi-title clampable" data-full="${esc(a.title)}"><span>${esc(a.title)}</span></div>
+        <div class="hi-sub">${esc(chap)} · ${relTime(a.detectedAt)}</div>
       </div>`;
+    const actImg = row.querySelector<HTMLImageElement>("img");
+    if (actImg) actImg.onerror = () => { actImg.style.visibility = "hidden"; };
     const openDetail = () => void openSeries(a.bridgeId, a.seriesId);
-    for (const sel of ['img', '.hi-body']) {
+    for (const sel of ['img', '.hi-thumb-empty', '.hi-body']) {
       const el = row.querySelector<HTMLElement>(sel);
       if (el) { el.style.cursor = 'pointer'; el.addEventListener('click', openDetail); }
     }
@@ -3504,7 +3540,7 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
   nsfwToggle.onchange = async () => {
     hideNsfw = nsfwToggle.checked;
     localStorage.setItem("hideNsfw", String(hideNsfw));
-    await loadBridges();
+    await loadBridges(false);
     if (currentView === "library") await applyLibraryFilters();
     if (currentView === "history") await loadHistory();
     if (currentView === "activity") await loadActivity();
