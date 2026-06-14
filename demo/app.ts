@@ -74,8 +74,8 @@ function status(msg: string, isError = false): void {
   el.style.display = isError ? "" : "none";
 }
 
-async function api<T>(path: string): Promise<T> {
-  const res = await fetch(`${SERVER}${path}`);
+async function api<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(`${SERVER}${path}`, signal !== undefined ? { signal } : undefined);
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `${res.status} ${res.statusText}`);
@@ -93,6 +93,10 @@ async function send(method: string, path: string, body?: unknown): Promise<{ ok:
   const data = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, data };
 }
+
+let browseController = new AbortController();
+function abortBrowse(): void { browseController.abort(); browseController = new AbortController(); }
+const isAbort = (e: unknown): boolean => e instanceof DOMException && e.name === "AbortError";
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let activeBridge = "";
@@ -449,6 +453,7 @@ function updateHeaderForView(view: string): void {
 
 // ── Select a bridge: load info, settings, meta, lists ────────────────────────────
 async function selectBridge(id: string): Promise<void> {
+  abortBrowse();
   activeBridge = id;
   localStorage.setItem("lastBridge", id);
   document.querySelectorAll<HTMLElement>("#bridge-list .tab").forEach((el) => {
@@ -458,7 +463,7 @@ async function selectBridge(id: string): Promise<void> {
   activeCaps = [];
   filterTagSelections.clear();
   switchView("browse");
-  const detail = await api<BridgeDetail>(`/bridges/${id}`);
+  const detail = await api<BridgeDetail>(`/bridges/${id}`, browseController.signal);
   activeCaps = detail.info.capabilities;
   activeBridgeName = detail.info.name;
   if (currentView === "browse") $("#app-title-text").textContent = detail.info.name;
@@ -511,7 +516,7 @@ async function loadFavorites(page = 1): Promise<void> {
     return;
   }
   try {
-    const r = await api<PagedResults>(`/bridges/${bridge}/favorites?page=${page}`);
+    const r = await api<PagedResults>(`/bridges/${bridge}/favorites?page=${page}`, browseController.signal);
     const entry = page === 1 || !cached ? { items: [] as SeriesEntry[], nextPage: null as number | null } : cached;
     entry.items.push(...r.items);
     entry.nextPage = r.hasNextPage ? page + 1 : null;
@@ -521,6 +526,7 @@ async function loadFavorites(page = 1): Promise<void> {
     setLoadMore(entry.nextPage !== null, () => loadFavorites(entry.nextPage!));
     if (page === 1) status(`Favorites: ${entry.items.length} item(s).`);
   } catch (e) {
+    if (isAbort(e)) return;
     if (page === 1) { $("#grid").innerHTML = ""; setLoadMore(false, async () => {}); }
     status(`Favorites unavailable — set a session token in settings? (${e instanceof Error ? e.message : String(e)})`, true);
   }
@@ -878,16 +884,16 @@ async function renderMeta(capabilities: string[]): Promise<void> {
   currentFilters = [];
   if (capabilities.includes("filters")) {
     try {
-      currentFilters = await api<Filter[]>(`/bridges/${activeBridge}/filters`);
+      currentFilters = await api<Filter[]>(`/bridges/${activeBridge}/filters`, browseController.signal);
       renderFilterControls(currentFilters);
       filtersBlock.style.display = "";
       any = true;
-    } catch { /* ignore */ }
+    } catch (e) { if (isAbort(e)) return; }
   }
   currentSortOptions = [];
   if (capabilities.includes("sort")) {
     try {
-      const sorts = await api<SortOption[]>(`/bridges/${activeBridge}/sort`);
+      const sorts = await api<SortOption[]>(`/bridges/${activeBridge}/sort`, browseController.signal);
       currentSortOptions = sorts;
       const field = $<HTMLSelectElement>("#sort-field");
       field.innerHTML = "";
@@ -896,15 +902,15 @@ async function renderMeta(capabilities: string[]): Promise<void> {
       updateSortDirVisibility();
       sortBlock.style.display = "";
       any = true;
-    } catch { /* ignore */ }
+    } catch (e) { if (isAbort(e)) return; }
   }
   if (capabilities.includes("tags")) {
     try {
-      const tags = await api<Tag[]>(`/bridges/${activeBridge}/tags`);
+      const tags = await api<Tag[]>(`/bridges/${activeBridge}/tags`, browseController.signal);
       $("#tags").innerHTML = tags.map((t) => `<span class="chip">${esc(t.label)}</span>`).join("");
       tagsBlock.style.display = "";
       any = true;
-    } catch { /* ignore */ }
+    } catch (e) { if (isAbort(e)) return; }
   }
   panel.style.display = "none";
   const toggleBtn = $<HTMLButtonElement>("#filters-toggle");
@@ -980,7 +986,7 @@ async function renderHome(): Promise<void> {
   showBrowseMode("home");
   const host = $("#home-sections");
   if (activeCaps.includes("lists")) {
-    const lists = await api<SeriesList[]>(`/bridges/${activeBridge}/lists`);
+    const lists = await api<SeriesList[]>(`/bridges/${activeBridge}/lists`, browseController.signal);
     currentLists = lists;
     for (let i = 0; i < lists.length; i++) {
       await renderSection(host, lists[i]!, i === lists.length - 1);
@@ -1012,8 +1018,9 @@ async function renderSection(host: HTMLElement, list: SeriesList, isLast: boolea
   const horizontal = layout === "carousel" || layout === "ranked" || layout === "hero";
   let r: PagedResults;
   try {
-    r = await api<PagedResults>(listPath(list.id, 1));
+    r = await api<PagedResults>(listPath(list.id, 1), browseController.signal);
   } catch (e) {
+    if (isAbort(e)) return;
     status(`List "${list.name}" failed to load: ${e instanceof Error ? e.message : e}`, true);
     return;
   }
@@ -2816,7 +2823,7 @@ async function runSearch(
     const path = scoped
       ? `/bridges/${activeBridge}/lists/${enc(scoped.id)}?${qs.join("&")}`
       : `/bridges/${activeBridge}/search?${qs.join("&")}`;
-    const r = await api<PagedResults>(path);
+    const r = await api<PagedResults>(path, browseController.signal);
     if (page === 1) renderGrid(r.items);
     else for (const item of r.items) $("#grid").append(makeCard(item));
     setLoadMore(r.hasNextPage, () => runSearch(q, filters, sort, page + 1));
@@ -2826,6 +2833,7 @@ async function runSearch(
       status(`${r.items.length} result(s) for "${q}"${where}${notes ? ` (${notes})` : ""}.`);
     }
   } catch (e) {
+    if (isAbort(e)) return;
     status(`Search failed: ${e instanceof Error ? e.message : e}`, true);
   }
 }
