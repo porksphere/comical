@@ -38,6 +38,8 @@
     .subtitle { color: #888; font-size: 0.85rem; margin-bottom: 1.25rem; }
     .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
     .controls { display: flex; gap: 0.5rem; margin: 1rem 0; flex-wrap: wrap; }
+    #filters-toggle { padding: 0.4rem 0.5rem; display: inline-flex; align-items: center; justify-content: center; }
+    #filters-toggle svg { width: 1rem; height: 1rem; stroke-width: 1.75; }
     input, button, select { padding: 0.4rem 0.75rem; border-radius: 6px; border: 1px solid #333; background: #1c1c1e; color: inherit; font-size: 0.9rem; }
     label { font-size: 0.82rem; color: #bbb; display: flex; flex-direction: column; gap: 0.25rem; }
     button { cursor: pointer; background: #2563eb; border-color: #2563eb; }
@@ -438,7 +440,7 @@
   <div class="controls">
     <input id="query" type="search" placeholder="Search…" style="flex:1; min-width:160px">
     <button id="searchBtn">Search</button>
-    <button id="filters-toggle" class="secondary" style="display:none">Filters</button>
+    <button id="filters-toggle" class="secondary" style="display:none" title="Filters" aria-label="Filters"><i data-lucide="sliders-horizontal"></i></button>
   </div>
 
   <!-- Filters / sort / tags (only when the bridge supports them) -->

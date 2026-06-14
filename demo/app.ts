@@ -7,8 +7,8 @@
  *   bun run demo:server   — comical-server on :3100 (wired to the fixture backend)
  *   bun run demo:dev      — builds + serves this page on :3300
  */
-import { createIcons, LayoutGrid, Library, History, Bell, Settings } from "lucide";
-createIcons({ icons: { LayoutGrid, Library, History, Bell, Settings } });
+import { createIcons, LayoutGrid, Library, History, Bell, Settings, SlidersHorizontal } from "lucide";
+createIcons({ icons: { LayoutGrid, Library, History, Bell, Settings, SlidersHorizontal } });
 
 // Default the API host to the same host the page was loaded from (so it works over LAN / from a
 // phone), on the server port 3100. Override with window.COMICAL_SERVER if needed.
@@ -846,7 +846,6 @@ async function renderMeta(capabilities: string[]): Promise<void> {
   panel.style.display = "none";
   const toggleBtn = $<HTMLButtonElement>("#filters-toggle");
   toggleBtn.style.display = any ? "" : "none";
-  toggleBtn.textContent = "Filters";
   browseBridge = activeBridge;
 }
 
@@ -3446,7 +3445,7 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     const btn = $<HTMLButtonElement>("#filters-toggle");
     const open = panel.style.display === "none";
     panel.style.display = open ? "" : "none";
-    btn.textContent = open ? "Filters ✕" : "Filters";
+    btn.classList.toggle("active", open);
   };
   document.querySelectorAll<HTMLElement>("#home-tabs .home-tab").forEach((t) => {
     t.onclick = () => void selectHomeTab((t.dataset.tab as "home" | "favorites") ?? "home");
