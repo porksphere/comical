@@ -369,6 +369,12 @@ async function loadBridges(): Promise<void> {
   if (bridges.length > 0) {
     settingsList.style.display = "";
     for (const b of bridges) settingsList.append(buildBridgeSettingsEntry(b));
+    // Auto-expand the first bridge that needs configuration so it's visible without a click.
+    const firstBadIdx = bridges.findIndex((b) => b.missingRequired.length > 0);
+    if (firstBadIdx >= 0) {
+      const entries = settingsList.querySelectorAll<HTMLDetailsElement>(".bridge-settings-entry");
+      if (entries[firstBadIdx]) entries[firstBadIdx]!.open = true;
+    }
     const saved = localStorage.getItem("lastBridge");
     const initial = bridges.find((b) => b.info.id === saved) ? saved! : bridges[0]!.info.id;
     await selectBridge(initial);
@@ -1457,6 +1463,7 @@ function syncReaderDirUI(): void {
 
 function openReaderSettings(): void {
   syncReaderDirUI();
+  syncPageFitUI();
   $("#reader-settings-panel").hidden = false;
 }
 
@@ -1471,6 +1478,27 @@ function setReadDirection(dir: ReadDirection): void {
   localStorage.setItem("readDirection", dir);
   syncReaderDirUI();
   if (readerState) renderReaderPage();
+}
+
+type PageFit = "fit-page" | "fit-width";
+let pageFit: PageFit = (localStorage.getItem("pageFit") as PageFit) ?? "fit-page";
+
+function applyPageFit(): void {
+  $("#reader-page").classList.toggle("fit-width", pageFit === "fit-width");
+}
+
+function syncPageFitUI(): void {
+  document.querySelectorAll<HTMLElement>("#reader-fit-options .reader-dir-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.fit === pageFit);
+  });
+}
+
+function setPageFit(fit: PageFit): void {
+  if (fit === pageFit) return;
+  pageFit = fit;
+  localStorage.setItem("pageFit", fit);
+  syncPageFitUI();
+  applyPageFit();
 }
 
 function preloadImages(urls: string[]): void {
@@ -2426,6 +2454,7 @@ function renderReaderPage(showOverlay = false): void {
   const { pages, currentPage } = readerState;
   if (!pages[currentPage]) return;
   ($("#reader-view") as HTMLElement).scrollTop = 0;
+  ($("#reader-page") as HTMLElement).scrollTop = 0;
   updateReaderChrome();
   const track = document.createElement("div");
   track.className = "reader-track";
@@ -2463,6 +2492,7 @@ function updateReaderWindow(dir: 1 | -1): void {
     track.insertBefore(makeReaderSlot(pages[left], left + 1), track.firstElementChild);
   }
   ($("#reader-view") as HTMLElement).scrollTop = 0;
+  ($("#reader-page") as HTMLElement).scrollTop = 0;
   setTrackOffset(0, false);
   updateReaderChrome();
   primeReaderAround();
@@ -3269,6 +3299,11 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     const btn = (e.target as HTMLElement).closest<HTMLElement>(".reader-dir-btn");
     if (btn) setReadDirection(btn.dataset.dir === "rtl" ? "rtl" : "ltr");
   });
+  $("#reader-fit-options").addEventListener("click", (e: MouseEvent) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>(".reader-dir-btn");
+    if (btn?.dataset.fit === "fit-width") setPageFit("fit-width");
+    else if (btn?.dataset.fit === "fit-page") setPageFit("fit-page");
+  });
   $("#reader-progress").addEventListener("click", (e: MouseEvent) => {
     if ((e.target as HTMLElement).tagName === "INPUT") return;
     openPageJump();
@@ -3462,6 +3497,8 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
     const item = (e.target as Element | null)?.closest<HTMLElement>(ITEM_SEL);
     if (item && !item.contains(e.relatedTarget as Node | null)) markClamped(item);
   }, { passive: true });
+
+  applyPageFit();
 
   try {
     availableTrackers = await fetchTrackers();
