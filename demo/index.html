@@ -21,6 +21,11 @@
     .bn-label { font-size: 0.68rem; }
     h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
     #app-header { position: relative; }
+    #detail-header { position: sticky; top: 0; z-index: 40; display: grid; grid-template-columns: 2.5rem 1fr 2.5rem; align-items: center; background: #0f0f0f; border-bottom: 1px solid #242427; padding: 0.5rem 0.75rem; margin: 0 -1.5rem 1rem; }
+    #detail-bridge-name { text-align: center; font-size: 0.95rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-back { background: transparent; border: none; color: #e8e8e8; padding: 0.35rem; display: flex; align-items: center; justify-content: center; border-radius: 6px; }
+    .detail-back:hover { background: rgba(255,255,255,0.1); }
+    .detail-back svg { width: 1.4rem; height: 1.4rem; stroke-width: 2.25; }
     #app-title { display: inline-flex; align-items: center; gap: 0.4rem; }
     #app-title.interactive { cursor: pointer; user-select: none; }
     .title-caret { font-size: 0.85rem; color: #888; transition: transform 0.15s; }
@@ -512,7 +517,10 @@
   </section>
 
   <section id="detail-view" style="display:none">
-    <div style="margin-bottom:0.75rem"><button id="back-btn" class="secondary">← Back</button></div>
+    <header id="detail-header">
+      <button id="back-btn" class="detail-back"><i data-lucide="chevron-left"></i></button>
+      <span id="detail-bridge-name"></span>
+    </header>
     <div id="detail">
       <h2 id="detail-title"></h2>
       <div class="detail-head">
