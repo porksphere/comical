@@ -55,6 +55,30 @@ describe("example-bridge", () => {
     expect(pages).toMatchSnapshot("sherlock-1-pages");
   });
 
+  test("parses related-series rails into labeled, kinded groups", async () => {
+    const bridge = load();
+    const details = await bridge.getSeriesDetails("dracula");
+    const groups = details.relatedSeriesGroups ?? [];
+    expect(groups.length).toBe(2);
+
+    const gothic = groups.find((g) => g.label === "Gothic Horror");
+    expect(gothic?.kind).toBe("similar");
+    expect(gothic?.series.map((s) => s.id)).toEqual(["frankenstein", "jekyll", "wuthering"]);
+    // Cards carry real titles + resolved covers so the host can render tappable rails.
+    expect(gothic?.series[0]!.title).toBe("Frankenstein");
+    expect(gothic?.series[0]!.thumbnailUrl).toStartWith("https://picsum.photos/seed/");
+
+    const recommended = groups.find((g) => g.label === "Recommended");
+    expect(recommended?.kind).toBe("recommended");
+    expect(recommended?.series.length).toBe(3);
+  });
+
+  test("omits relatedSeriesGroups when a series has no related rails", async () => {
+    const bridge = load();
+    const details = await bridge.getSeriesDetails("sherlock");
+    expect(details.relatedSeriesGroups).toBeUndefined();
+  });
+
   test("lists catalog + items (presentation-as-data)", async () => {
     const bridge = load();
     const lists = await bridge.getLists!();

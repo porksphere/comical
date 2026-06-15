@@ -29,6 +29,11 @@ export interface FixtureSeries {
   genres: string[];
   /** Other taxonomies beyond genres — each a labeled group (optional). */
   tagGroups?: Array<{ label: string; kind?: string; tags: string[] }>;
+  /**
+   * Related-series rails surfaced on the detail page — each a labeled group referencing other
+   * catalog series by id (sequels, "same universe", similar, recommended, …). Optional.
+   */
+  related?: Array<{ label: string; kind?: string; ids: string[] }>;
   status: "ongoing" | "completed" | "hiatus";
   chapters: FixtureChapter[];
 }
@@ -81,7 +86,7 @@ export const DEFAULT_CATALOG: FixtureSeries[] = [
     chapters: [{ id: "frankenstein-1", name: "Letters", number: 1, pages: 2 }],
   },
   // — additional public-domain titles for a fuller demo —
-  { id: "dracula", title: "Dracula", author: "Bram Stoker", description: "A vampire count's move to England.", genres: ["Horror", "Gothic"], tagGroups: [{ label: "Themes", kind: "theme", tags: ["vampire", "epistolary"] }, { label: "Setting", tags: ["Victorian England"] }], status: "completed", chapters: chaps("dracula", 3) },
+  { id: "dracula", title: "Dracula", author: "Bram Stoker", description: "A vampire count's move to England.", genres: ["Horror", "Gothic"], tagGroups: [{ label: "Themes", kind: "theme", tags: ["vampire", "epistolary"] }, { label: "Setting", tags: ["Victorian England"] }], related: [{ label: "Gothic Horror", kind: "similar", ids: ["frankenstein", "jekyll", "wuthering"] }, { label: "Recommended", kind: "recommended", ids: ["raven", "turn-of-the-screw", "metamorphosis"] }], status: "completed", chapters: chaps("dracula", 3) },
   { id: "moby-dick", title: "Moby-Dick", author: "Herman Melville", description: "A captain's obsessive hunt for a white whale.", genres: ["Adventure"], status: "completed", chapters: chaps("moby-dick", 3) },
   { id: "treasure-island", title: "Treasure Island", author: "Robert Louis Stevenson", description: "A boy, a map, and buried pirate gold.", genres: ["Adventure"], status: "completed", chapters: chaps("treasure-island") },
   { id: "war-of-the-worlds", title: "The War of the Worlds", author: "H. G. Wells", description: "Martians invade Victorian England.", genres: ["Sci-Fi", "Horror"], status: "completed", chapters: chaps("war-of-the-worlds") },
@@ -301,6 +306,23 @@ export class FixtureBackend {
               grp.tags.map((t) => `<li>${esc(t)}</li>`).join("") +
               `</ul>`,
           )
+          .join("") +
+        (s.related ?? [])
+          .map((grp) => {
+            const items = grp.ids
+              .map((id) => this.find(id))
+              .filter((r): r is FixtureSeries => !!r)
+              .map(
+                (r) =>
+                  `<li class="related-item" data-id="${esc(r.id)}">` +
+                  `<a href="/series/${esc(r.id)}"><img class="cover" src="${esc(cover(r.id))}"><span class="title">${esc(r.title)}</span></a>` +
+                  `</li>`,
+              )
+              .join("");
+            return items
+              ? `<ul class="related-group" data-label="${esc(grp.label)}"${grp.kind ? ` data-kind="${esc(grp.kind)}"` : ""}>${items}</ul>`
+              : "";
+          })
           .join("") +
         `<ul class="chapters">${chapters}</ul>` +
         `</article>`,
