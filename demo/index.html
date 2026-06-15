@@ -70,14 +70,16 @@
     #status { font-size: 0.82rem; color: #888; margin-bottom: 0.75rem; min-height: 1.2em; }
     #status.error { color: #f87171; }
     section.panel { background: #161618; border: 1px solid #242427; border-radius: 8px; padding: 0.9rem 1rem; margin-bottom: 1rem; }
-    details > summary { cursor: pointer; font-size: 0.95rem; font-weight: 600; }
+    details > summary { list-style: none; cursor: pointer; font-size: 0.95rem; font-weight: 600; display: flex; align-items: center; justify-content: space-between; user-select: none; }
+    details > summary::-webkit-details-marker { display: none; }
+    details > summary::after { content: ""; flex-shrink: 0; margin-left: 0.75rem; width: 0.45rem; height: 0.45rem; border-right: 1.5px solid #888; border-bottom: 1.5px solid #888; transform: rotate(-45deg); transition: transform 0.2s ease; }
+    details[open] > summary::after { transform: rotate(45deg); }
     .muted { color: #888; font-size: 0.8rem; }
     .warn { color: #fbbf24; font-size: 0.82rem; }
     .ok { color: #34d399; font-size: 0.82rem; }
     .err { color: #f87171; font-size: 0.82rem; white-space: pre-wrap; }
-    #settings-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; margin: 0.5rem 0; }
-    #settings-form .field-secret label::after { content: " 🔒"; }
-    .toggle-label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.2rem 0; font-size: 0.9rem; }
+    .field-status { display: block; font-size: 0.75rem; min-height: 0.9rem; margin-top: 0.15rem; }
+    .toggle-label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 0 0.75rem; cursor: pointer; padding: 0.35rem 0; font-size: 0.9rem; }
     .toggle-wrap { display: inline-flex; align-items: center; flex-shrink: 0; }
     .toggle-input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
     .toggle-track { width: 2.4rem; height: 1.35rem; background: #505057; border-radius: 999px; position: relative; cursor: pointer; transition: background 0.2s; flex-shrink: 0; }
@@ -682,12 +684,17 @@
     <section class="panel" id="general-settings">
       <h3 style="margin:0 0 0.6rem">General</h3>
       <label class="toggle-label">
-        <span class="toggle-wrap"><input type="checkbox" id="hide-nsfw-toggle" class="toggle-input"><span class="toggle-track"></span></span> Hide NSFW content
+        Hide NSFW content <span class="toggle-wrap"><input type="checkbox" id="hide-nsfw-toggle" class="toggle-input"><span class="toggle-track"></span></span>
       </label>
     </section>
 
     <!-- Bridge Settings -->
-    <section class="panel" id="bridge-settings-list" style="display:none"></section>
+    <section class="panel" id="bridge-settings-list" style="display:none">
+      <details id="bridges-details">
+        <summary>Bridges</summary>
+        <div id="bridge-settings-inner" style="margin-top:0.75rem"></div>
+      </details>
+    </section>
 
     <!-- Trackers -->
     <section class="panel" id="trackers-config-panel" style="display:none">
