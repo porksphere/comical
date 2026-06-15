@@ -7,8 +7,8 @@
  *   bun run demo:server   — comical-server on :3100 (wired to the fixture backend)
  *   bun run demo:dev      — builds + serves this page on :3300
  */
-import { createIcons, ChevronLeft, LayoutGrid, Library, History, Bell, Settings, SlidersHorizontal } from "lucide";
-createIcons({ icons: { ChevronLeft, LayoutGrid, Library, History, Bell, Settings, SlidersHorizontal } });
+import { createIcons, ChevronLeft, LayoutGrid, Library, History, Bell, Settings, SlidersHorizontal, Search, X } from "lucide";
+createIcons({ icons: { ChevronLeft, LayoutGrid, Library, History, Bell, Settings, SlidersHorizontal, Search, X } });
 
 // Default the API host to the same host the page was loaded from (so it works over LAN / from a
 // phone), on the server port 3100. Override with window.COMICAL_SERVER if needed.
@@ -24,9 +24,9 @@ type SettingDescriptor =
   | { type: "boolean"; key: string; label: string; description?: string; required?: boolean; default?: boolean }
   | { type: "enum"; key: string; label: string; description?: string; required?: boolean; default?: string | string[]; options: Choice[]; multiple?: boolean };
 interface BridgeInfo { id: string; name: string; capabilities: string[]; nsfw?: boolean }
-interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values: Record<string, string | number | boolean | string[]>; secretsSet: string[]; missingRequired: string[]; configured: boolean }
+interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values: Record<string, string | number | boolean | string[]>; secretsSet: string[]; missingRequired: string[]; configured: boolean; excludedTags?: string[]; excludedTagLabels?: Record<string, string> }
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
-interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string }
+interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string; excluded?: boolean }
 interface TagGroup { label: string; kind?: string; tags: string[]; tagIds?: string[] }
 interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; authorId?: string; artist?: string; artistId?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[]; externalIds?: Record<string, string | number> }
 interface Chapter { id: string; name: string; number?: number; pageCount?: number; group?: string; languageCode?: string; publishedAt?: number }
@@ -64,6 +64,56 @@ const esc = (s: string): string =>
 /** Title-case a free-form value (bridges report e.g. "ongoing"/"on hiatus" in arbitrary casing). */
 const titleCase = (s: string): string =>
   s.replace(/\b\w/g, (c) => c.toUpperCase());
+
+// Lucide "search"/"x" as raw SVG — inlined so createSearchField works without re-running createIcons
+// on dynamically built nodes (CSS sizes them; the 24×24 attrs are overridden).
+const SEARCH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>';
+const X_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+
+/**
+ * Wire a `.search-field` wrapper: show the inline clear button only when there's text, and on click
+ * clear + refocus the input (dispatching `input` so live listeners — e.g. library filtering — react).
+ * The single behaviour shared by every search box; see {@link createSearchField} for the JS-built one.
+ */
+function wireSearchField(wrap: HTMLElement): void {
+  const input = wrap.querySelector<HTMLInputElement>("input");
+  const clear = wrap.querySelector<HTMLButtonElement>(".search-field-clear");
+  if (!input || !clear) return;
+  const sync = (): void => { wrap.classList.toggle("has-value", input.value.length > 0); };
+  input.addEventListener("input", sync);
+  clear.addEventListener("click", () => {
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+  });
+  sync();
+}
+
+/** Set a search input's value in code and keep its `.search-field` clear button in sync (no native
+ *  event fires for programmatic `.value` writes, so dispatch one). */
+function setSearchValue(input: HTMLInputElement, value: string): void {
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/**
+ * Build a styled search field (icon + input + inline clear), pre-wired via {@link wireSearchField}.
+ * Use wherever a search box is created in JS so every field looks and behaves identically; HTML-authored
+ * fields use the same `.search-field` markup + a `wireSearchField()` call instead.
+ */
+function createSearchField(opts: { placeholder?: string; id?: string } = {}): { field: HTMLElement; input: HTMLInputElement } {
+  const field = document.createElement("div");
+  field.className = "search-field";
+  field.innerHTML =
+    `<span class="search-field-icon">${SEARCH_SVG}</span>` +
+    '<input type="text" autocomplete="off" autocapitalize="off" spellcheck="false">' +
+    `<button type="button" class="search-field-clear" aria-label="Clear search" tabindex="-1">${X_SVG}</button>`;
+  const input = field.querySelector<HTMLInputElement>("input")!;
+  if (opts.id) input.id = opts.id;
+  if (opts.placeholder) input.placeholder = opts.placeholder;
+  wireSearchField(field);
+  return { field, input };
+}
 
 function status(msg: string, isError = false): void {
   // Informational chatter ("Loaded …", "Searching…", counts) is suppressed — the status bar only
@@ -473,7 +523,8 @@ async function selectBridge(id: string): Promise<void> {
     await renderMeta(detail.info.capabilities);
 
     const canSearch = detail.info.capabilities.includes("search");
-    $("#query").style.display = canSearch ? "" : "none";
+    // Hide the whole `.search-field` (icon + clear), not just the input, or the search icon lingers.
+    ($("#query").closest(".search-field") as HTMLElement).style.display = canSearch ? "" : "none";
     $("#searchBtn").style.display = canSearch ? "" : "none";
     // Favorites is a home page only when the bridge supports it; otherwise fall back to Home.
     const hasFavorites = detail.info.capabilities.includes("favorites");
@@ -576,6 +627,238 @@ function buildBridgeSettingsEntry(b: BridgeSummary): HTMLElement {
   return det;
 }
 
+/**
+ * Persistent per-bridge "Excluded tags" control. Free-form chips (Enter to add) for every bridge,
+ * plus live `getTags()` autocomplete where the bridge exposes it — the only extra request, and only
+ * for display. Saved ids are forwarded to capable bridges as `options.excludedTags`. Bridges without
+ * the `exclude-tags` capability get a muted note instead, since exclusions can't apply there.
+ */
+function buildExcludedTagsControl(detail: BridgeDetail): HTMLElement {
+  const section = document.createElement("div");
+  section.style.cssText = "margin-top:0.9rem";
+  const heading = document.createElement("div");
+  heading.style.cssText = "font-size:0.84rem;font-weight:600;margin-bottom:0.3rem";
+  heading.textContent = "Excluded tags";
+  section.append(heading);
+
+  if (!detail.info.capabilities.includes("exclude-tags")) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.style.cssText = "font-size:0.82rem;margin:0";
+    note.textContent = "This bridge can't filter by tag, so excluded tags won't apply to its results.";
+    section.append(note);
+    return section;
+  }
+
+  const desc = document.createElement("p");
+  desc.className = "muted";
+  desc.style.cssText = "font-size:0.82rem;margin:0 0 0.4rem";
+  desc.textContent = "Series carrying any of these tags are hidden from this bridge's lists and search.";
+  section.append(desc);
+
+  // Names are folded in by the host (shared cache + the bridge's resolve-tags); fall back to the id.
+  const selected: { id: string; label: string }[] = (detail.excludedTags ?? []).map((t) => ({ id: t, label: detail.excludedTagLabels?.[t] ?? t }));
+
+  const wrap = document.createElement("div");
+  wrap.className = "tag-filter";
+  const pills = document.createElement("div");
+  pills.className = "tag-filter-pills";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "tag-filter-input";
+  input.placeholder = "Type a tag, press Enter…";
+  const dropdown = document.createElement("div");
+  dropdown.className = "tag-filter-dropdown";
+  dropdown.style.display = "none";
+  wrap.append(pills, input, dropdown);
+  section.append(wrap);
+
+  const row = document.createElement("div");
+  row.className = "row";
+  row.style.marginTop = "0.5rem";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "secondary";
+  saveBtn.textContent = "Save excluded tags";
+  const msg = document.createElement("span");
+  msg.className = "muted";
+  msg.style.cssText = "font-size:0.82rem;margin-left:0.5rem";
+  row.append(saveBtn, msg);
+  section.append(row);
+
+  function renderPills(): void {
+    pills.innerHTML = selected
+      .map((t) => `<span class="tag-pill" data-id="${esc(t.id)}">${esc(t.label)} <button type="button">×</button></span>`)
+      .join("");
+    pills.querySelectorAll<HTMLElement>(".tag-pill button").forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.closest<HTMLElement>(".tag-pill")!.dataset.id!;
+        const i = selected.findIndex((t) => t.id === id);
+        if (i >= 0) selected.splice(i, 1);
+        renderPills();
+      };
+    });
+  }
+  renderPills();
+
+  function add(id: string, label: string): void {
+    const trimmed = id.trim();
+    if (!trimmed || selected.some((t) => t.id === trimmed)) return;
+    selected.push({ id: trimmed, label: label.trim() || trimmed });
+    input.value = "";
+    dropdown.style.display = "none";
+    renderPills();
+  }
+
+  // Enter adds a free-form tag — the universal path for bridges without getTags.
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); add(input.value, input.value); }
+  });
+
+  // Live autocomplete where the bridge serves /tags; dropdown stays hidden when there's nothing.
+  let debounce: ReturnType<typeof setTimeout>;
+  input.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(async () => {
+      const q = input.value.trim();
+      if (!q) { dropdown.style.display = "none"; return; }
+      const tags = await api<Tag[]>(`/bridges/${enc(detail.info.id)}/tags?q=${enc(q)}`).catch(() => [] as Tag[]);
+      const current = new Set(selected.map((t) => t.id));
+      const opts = tags.filter((t) => !current.has(t.id));
+      if (opts.length === 0) { dropdown.style.display = "none"; return; }
+      dropdown.innerHTML = opts
+        .map((t) => `<div class="tag-option" data-id="${esc(t.id)}" data-label="${esc(t.label)}">${esc(t.label)}</div>`)
+        .join("");
+      dropdown.style.display = "block";
+      dropdown.querySelectorAll<HTMLElement>(".tag-option[data-id]").forEach((opt) => {
+        opt.onmousedown = (ev) => { ev.preventDefault(); add(opt.dataset.id!, opt.dataset.label!); };
+      });
+    }, 200);
+  });
+  input.addEventListener("blur", () => setTimeout(() => { dropdown.style.display = "none"; }, 150));
+
+  saveBtn.onclick = async () => {
+    saveBtn.disabled = true;
+    msg.textContent = "Saving…";
+    msg.className = "muted";
+    // Send the labels we know so the host caches them — a later reload folds names back in.
+    const labels: Record<string, string> = {};
+    for (const t of selected) if (t.label && t.label !== t.id) labels[t.id] = t.label;
+    const res = await send("PUT", `/bridges/${enc(detail.info.id)}/excluded-tags`, { tags: selected.map((t) => t.id), labels });
+    saveBtn.disabled = false;
+    if (res.ok) { msg.textContent = "Saved ✓"; msg.className = "ok"; }
+    else { msg.textContent = (res.data as { error?: string })?.error ?? `error ${res.status}`; msg.className = "err"; }
+  };
+
+  return section;
+}
+
+interface GenreExclusions { available: { id: string; label: string }[]; excluded: string[] }
+
+/**
+ * Persistent per-bridge "Excluded genres" control (capability `"exclude-genres"`). Unlike the tag
+ * control, genre exclusions live on the bridge's backend account and apply across every surface, so
+ * this loads the available genres + current selection from `GET /genre-exclusions` and writes back via
+ * `PUT`. The state can require account auth — a failed load renders a muted note instead of the picker.
+ * The section element returns synchronously and populates itself once the fetch resolves.
+ */
+function buildExcludedGenresControl(detail: BridgeDetail): HTMLElement {
+  const section = document.createElement("div");
+  section.style.cssText = "margin-top:0.9rem";
+  const heading = document.createElement("div");
+  heading.style.cssText = "font-size:0.84rem;font-weight:600;margin-bottom:0.3rem";
+  heading.textContent = "Excluded genres";
+  section.append(heading);
+
+  const desc = document.createElement("p");
+  desc.className = "muted";
+  desc.style.cssText = "font-size:0.82rem;margin:0 0 0.4rem";
+  desc.textContent = "Hidden account-wide on this bridge — across lists, search and series — by your backend account.";
+  section.append(desc);
+
+  const slot = document.createElement("div");
+  slot.className = "muted";
+  slot.style.cssText = "font-size:0.82rem";
+  slot.textContent = "Loading…";
+  section.append(slot);
+
+  void (async () => {
+    const res = await send("GET", `/bridges/${enc(detail.info.id)}/genre-exclusions`);
+    if (!res.ok) {
+      slot.textContent =
+        (res.data as { error?: string })?.error?.match(/login|username|password|auth/i)
+          ? "Sign in (set this bridge's username & password) to manage genre exclusions."
+          : (res.data as { error?: string })?.error ?? `Couldn't load genres (error ${res.status}).`;
+      return;
+    }
+    const state = res.data as GenreExclusions;
+    const excluded = new Set(state.excluded);
+    slot.replaceWith(renderGenrePicker(detail.info.id, state.available, excluded));
+  })();
+
+  return section;
+}
+
+/** The genre toggle grid + Save button, built once `getGenreExclusions()` has resolved. */
+function renderGenrePicker(
+  bridgeId: string,
+  available: { id: string; label: string }[],
+  excluded: Set<string>,
+): HTMLElement {
+  const wrap = document.createElement("div");
+  if (available.length === 0) {
+    wrap.className = "muted";
+    wrap.style.cssText = "font-size:0.82rem";
+    wrap.textContent = "This bridge exposes no genres to exclude.";
+    return wrap;
+  }
+
+  const chips = document.createElement("div");
+  chips.style.cssText = "display:flex;flex-wrap:wrap;gap:0.4rem";
+  for (const g of available) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = excluded.has(g.id) ? "tag-pill" : "secondary";
+    chip.style.cssText = "font-size:0.8rem;padding:0.15rem 0.55rem;border-radius:999px";
+    chip.textContent = g.label;
+    chip.setAttribute("aria-pressed", String(excluded.has(g.id)));
+    chip.onclick = () => {
+      if (excluded.has(g.id)) excluded.delete(g.id);
+      else excluded.add(g.id);
+      chip.className = excluded.has(g.id) ? "tag-pill" : "secondary";
+      chip.style.cssText = "font-size:0.8rem;padding:0.15rem 0.55rem;border-radius:999px";
+      chip.setAttribute("aria-pressed", String(excluded.has(g.id)));
+    };
+    chips.append(chip);
+  }
+  wrap.append(chips);
+
+  const row = document.createElement("div");
+  row.className = "row";
+  row.style.marginTop = "0.5rem";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "secondary";
+  saveBtn.textContent = "Save excluded genres";
+  const msg = document.createElement("span");
+  msg.className = "muted";
+  msg.style.cssText = "font-size:0.82rem;margin-left:0.5rem";
+  row.append(saveBtn, msg);
+  wrap.append(row);
+
+  saveBtn.onclick = async () => {
+    saveBtn.disabled = true;
+    msg.textContent = "Saving…";
+    msg.className = "muted";
+    const res = await send("PUT", `/bridges/${enc(bridgeId)}/genre-exclusions`, { genres: [...excluded] });
+    saveBtn.disabled = false;
+    if (res.ok) { msg.textContent = "Saved ✓"; msg.className = "ok"; }
+    else { msg.textContent = (res.data as { error?: string })?.error ?? `error ${res.status}`; msg.className = "err"; }
+  };
+
+  return wrap;
+}
+
 async function renderBridgeSettingsBody(detail: BridgeDetail, container: HTMLElement, sumEl: HTMLElement): Promise<void> {
   container.innerHTML = "";
   updateBridgeSummary(sumEl, detail);
@@ -623,6 +906,11 @@ async function renderBridgeSettingsBody(detail: BridgeDetail, container: HTMLEle
     container.append(row);
   } else {
     container.append(Object.assign(document.createElement("p"), { className: "muted", style: "font-size:0.84rem", textContent: "No configurable settings." }));
+  }
+
+  container.append(buildExcludedTagsControl(detail));
+  if (detail.info.capabilities.includes("exclude-genres")) {
+    container.append(buildExcludedGenresControl(detail));
   }
 
   const prefs = await api<BridgePrefs>(`/library/bridges/${enc(detail.info.id)}/prefs`).catch(
@@ -875,16 +1163,14 @@ async function saveSettings(): Promise<void> {
   }
 }
 
-// ── Filters / sort / tags (capability-gated) ─────────────────────────────────────
+// ── Filters / sort (capability-gated) ─────────────────────────────────────
 async function renderMeta(capabilities: string[]): Promise<void> {
   const panel = $("#meta-panel");
   let any = false;
   const filtersBlock = $("#filters-block");
   const sortBlock = $("#sort-block");
-  const tagsBlock = $("#tags-block");
   filtersBlock.style.display = "none";
   sortBlock.style.display = "none";
-  tagsBlock.style.display = "none";
 
   currentFilters = [];
   if (capabilities.includes("filters")) {
@@ -906,14 +1192,6 @@ async function renderMeta(capabilities: string[]): Promise<void> {
       for (const s of sorts) field.append(new Option(s.label, s.key));
       updateSortDirVisibility();
       sortBlock.style.display = "";
-      any = true;
-    } catch (e) { if (isAbort(e)) return; }
-  }
-  if (capabilities.includes("tags")) {
-    try {
-      const tags = await api<Tag[]>(`/bridges/${activeBridge}/tags`, browseController.signal);
-      $("#tags").innerHTML = tags.map((t) => `<span class="chip">${esc(t.label)}</span>`).join("");
-      tagsBlock.style.display = "";
       any = true;
     } catch (e) { if (isAbort(e)) return; }
   }
@@ -960,7 +1238,7 @@ function updateHomeTabsActive(): void {
 async function selectHomeTab(tab: "home" | "favorites"): Promise<void> {
   activeHomeTab = tab;
   updateHomeTabsActive();
-  $<HTMLInputElement>("#query").value = "";
+  setSearchValue($<HTMLInputElement>("#query"), "");
   status("");
   if (tab === "home") {
     setResultsHead(true);
@@ -1198,6 +1476,16 @@ function makeSkeletonCard(): HTMLElement {
 function makeCard(item: SeriesEntry): HTMLElement {
   const card = document.createElement("div");
   card.className = "card";
+  // Redacted placeholder for a series hidden by the bridge's tag exclusions: keep the slot but
+  // render no <img> (so the cover is never fetched) and no real title, and leave it non-clickable
+  // (opening the detail would re-fetch the title/cover we're deliberately hiding).
+  if (item.excluded) {
+    card.classList.add("card-excluded");
+    card.innerHTML = `
+      <div class="card-cover card-cover-excluded"><span class="card-excluded-label">Hidden</span></div>
+      <div class="card-title card-title-excluded"><span>—</span></div>`;
+    return card;
+  }
   card.innerHTML = `
     <div class="card-cover"><img src="${item.thumbnailUrl ?? ""}" alt="${esc(item.title)}" loading="lazy"
       data-fallback="ph:300x450"></div>
@@ -1295,7 +1583,7 @@ async function showDetail(seriesId: string): Promise<void> {
       const value = authorFilter.type === "text" ? val : [val];
       void navigateToFilteredSearch([{ key: "author", value }]);
     } else {
-      $<HTMLInputElement>("#query").value = creator!;
+      setSearchValue($<HTMLInputElement>("#query"), creator!);
       switchView("browse");
       void doSearch();
     }
@@ -1366,13 +1654,15 @@ async function showDetail(seriesId: string): Promise<void> {
         `<div class="tag-group"><span class="tag-group-label">${esc(grp.label)}</span>` +
         grp.tags.map((t, i) => {
           const id = grp.tagIds?.[i] ?? "";
-          return `<span class="chip tag chip-link" data-tag="${esc(id || t)}">${esc(t)}</span>`;
+          return `<span class="chip tag chip-link" data-tag="${esc(id || t)}" data-label="${esc(t)}">${esc(t)}</span>`;
         }).join("") +
         `</div>`,
     )
     .join("");
   $("#detail-taggroups").querySelectorAll<HTMLElement>("[data-tag]").forEach((el) => {
-    el.onclick = () => void navigateToFilteredSearch([{ key: "tag", value: [el.dataset.tag!] }]);
+    // Carry the chip's name through so the restored filter pill shows it without an id→label lookup.
+    el.onclick = () =>
+      void navigateToFilteredSearch([{ key: "tag", value: [el.dataset.tag!] }], { [el.dataset.tag!]: el.dataset.label! });
   });
   $("#detail-description").textContent = info.description ?? "";
   // Core info is rendered — drop the skeleton so the real content (and the cover) is revealed.
@@ -1884,10 +2174,8 @@ async function renderTrackerPanel(bridgeId: string, seriesId: string): Promise<b
     trackerSel.append(opt);
   }
 
-  const searchInput = document.createElement("input");
-  searchInput.type = "text";
-  searchInput.placeholder = "Search title…";
-  searchInput.style.cssText = "font-size:0.82rem;width:14rem;margin-right:0.4rem";
+  const { field: searchField, input: searchInput } = createSearchField({ placeholder: "Search title…" });
+  searchInput.style.fontSize = "0.82rem";
 
   const goBtn = document.createElement("button");
   goBtn.textContent = "Search";
@@ -1900,7 +2188,10 @@ async function renderTrackerPanel(bridgeId: string, seriesId: string): Promise<b
     // No tracker supports search — skip the search UI.
     searchArea.innerHTML = '<span class="muted">No configured trackers support search.</span>';
   } else {
-    searchArea.append(trackerSel, searchInput, goBtn, resultsDiv);
+    const controlsRow = document.createElement("div");
+    controlsRow.style.cssText = "display:flex;gap:0.4rem;align-items:center";
+    controlsRow.append(trackerSel, searchField, goBtn);
+    searchArea.append(controlsRow, resultsDiv);
     const doSearch = async () => {
       const q = searchInput.value.trim();
       if (!q) return;
@@ -2809,7 +3100,7 @@ async function doSearch(): Promise<void> {
   await runSearch(q, filters, sort, 1);
 }
 
-async function navigateToFilteredSearch(filters: FilterValue[]): Promise<void> {
+async function navigateToFilteredSearch(filters: FilterValue[], labels: Record<string, string> = {}): Promise<void> {
   // The chip belongs to the series' bridge, which may differ from whatever bridge the browse view
   // last rendered its filter controls for (e.g. clicked a series from another bridge in history).
   // Rebuild browse for the active bridge first, otherwise the values below land in the wrong DOM.
@@ -2817,14 +3108,15 @@ async function navigateToFilteredSearch(filters: FilterValue[]): Promise<void> {
     await selectBridge(activeBridge);
   }
   switchView("browse");
-  $<HTMLInputElement>("#query").value = "";
+  setSearchValue($<HTMLInputElement>("#query"), "");
   for (const f of filters) {
     const el = $("#filters").querySelector<HTMLElement>(`[data-key="${f.key}"]`);
     if (!el) continue;
     if (el instanceof HTMLSelectElement && Array.isArray(f.value)) {
       for (const opt of el.options) opt.selected = (f.value as string[]).includes(opt.value);
     } else if (el.dataset.kind === "tag-multiselect" && Array.isArray(f.value)) {
-      const tags = (f.value as string[]).map((id) => ({ id, label: tagIdToName.get(id) ?? id }));
+      // Prefer the label carried from the clicked chip, then the in-session detail map, then the id.
+      const tags = (f.value as string[]).map((id) => ({ id, label: labels[id] ?? tagIdToName.get(id) ?? id }));
       filterTagSelections.set(f.key, tags);
       const pills = el.querySelector<HTMLElement>(".tag-filter-pills");
       if (pills) {
@@ -3555,6 +3847,9 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
   };
   $("#lib-add-list").onclick = () => void addList();
   $<HTMLInputElement>("#lib-new-list").addEventListener("keydown", (e) => { if (e.key === "Enter") void addList(); });
+
+  // Activate the inline icon + clear affordance on the static (HTML-authored) search fields.
+  document.querySelectorAll<HTMLElement>(".search-field").forEach(wireSearchField);
 
   // Library search/sort/filter controls. Search is debounced live filtering; sort re-queries.
   let libSearchDebounce: ReturnType<typeof setTimeout>;
