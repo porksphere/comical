@@ -54,6 +54,19 @@
     button.secondary:hover { background: #333; }
     button.secondary.active { background: #2563eb; border-color: #2563eb; color: #fff; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Reusable search field — icon + input + inline clear. Build via createSearchField() in JS, or
+       author the same markup in HTML and call wireSearchField(); both share these styles. */
+    .search-field { position: relative; display: flex; align-items: center; flex: 1; min-width: 160px; }
+    .search-field-icon { position: absolute; left: 0.65rem; display: flex; align-items: center; color: #6f6f76; pointer-events: none; }
+    .search-field-icon svg { width: 1rem; height: 1rem; stroke-width: 2; }
+    .search-field input { flex: 1; width: 100%; box-sizing: border-box; padding: 0.5rem 2rem 0.5rem 2.15rem; border: 1px solid #303034; border-radius: 8px; background: #161618; transition: border-color 0.15s, box-shadow 0.15s, background 0.15s; }
+    .search-field input:hover { border-color: #3d3d42; }
+    .search-field input:focus { outline: none; border-color: #2563eb; background: #1c1c1e; box-shadow: 0 0 0 3px rgba(37,99,235,0.22); }
+    .search-field input::placeholder { color: #6a6a70; }
+    .search-field-clear { position: absolute; right: 0.4rem; display: none; align-items: center; justify-content: center; padding: 0.25rem; background: transparent; border: none; border-radius: 50%; color: #888; cursor: pointer; }
+    .search-field-clear:hover { background: #2d2d31; color: #ddd; }
+    .search-field-clear svg { width: 0.8rem; height: 0.8rem; stroke-width: 2.5; }
+    .search-field.has-value .search-field-clear { display: inline-flex; }
     #status { font-size: 0.82rem; color: #888; margin-bottom: 0.75rem; min-height: 1.2em; }
     #status.error { color: #f87171; }
     section.panel { background: #161618; border: 1px solid #242427; border-radius: 8px; padding: 0.9rem 1rem; margin-bottom: 1rem; }
@@ -410,6 +423,16 @@
     .card.skeleton .card-cover::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); animation: skeleton-shimmer 1.3s infinite; }
     .card.skeleton .card-title { margin-top: 0.4rem; height: 0.85rem; width: 70%; background: #1f1f22; border-radius: 4px; position: relative; overflow: hidden; }
     .card.skeleton .card-title::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); animation: skeleton-shimmer 1.3s infinite; animation-delay: 0.15s; }
+    /* Excluded-tag placeholder card: a series redacted by the user's per-bridge tag exclusions. It is
+       deliberately inert — not clickable, no cover fetch, no real title — so the grid keeps its slot
+       without leaking what was hidden. */
+    .card-excluded { cursor: default; }
+    .card-cover-excluded { background: repeating-linear-gradient(45deg, #232327, #232327 10px, #1f1f22 10px, #1f1f22 20px); }
+    /* The cover is a zero-height/padding-bottom aspect-ratio box, so flex centering collapses to the
+       top edge — center the label absolutely against the (position:relative) cover instead. */
+    .card-excluded-label { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      margin: 0; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: #6b6b72; }
+    .card-title-excluded { color: #4b4b50; text-align: center; }
     /* Mobile detail overrides — placed after the base detail rules so equal-specificity selectors win. */
     @media (max-width: 560px) {
       /* iOS Safari auto-zooms when focusing any text field below 16px — keep inputs at 16px on
@@ -453,18 +476,21 @@
 
   <!-- Browse -->
   <div class="controls">
-    <input id="query" type="search" placeholder="Search…" style="flex:1; min-width:160px">
+    <div class="search-field">
+      <span class="search-field-icon"><i data-lucide="search"></i></span>
+      <input id="query" type="text" placeholder="Search…" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button type="button" class="search-field-clear" aria-label="Clear search" tabindex="-1"><i data-lucide="x"></i></button>
+    </div>
     <button id="searchBtn">Search</button>
     <button id="filters-toggle" class="secondary" style="display:none" title="Filters" aria-label="Filters"><i data-lucide="sliders-horizontal"></i></button>
   </div>
 
-  <!-- Filters / sort / tags (only when the bridge supports them) -->
+  <!-- Filters / sort (only when the bridge supports them) -->
   <section class="panel" id="meta-panel" style="display:none">
     <div id="filters-block" style="display:none"><h3>Filters</h3><div id="filters" class="row"></div></div>
     <div id="sort-block" style="display:none; margin-top:0.6rem"><h3>Sort</h3>
       <div class="row"><select id="sort-field"></select><select id="sort-dir"><option value="asc">Asc</option><option value="desc">Desc</option></select></div>
     </div>
-    <div id="tags-block" style="display:none; margin-top:0.6rem"><h3>Tags</h3><div id="tags" class="chips"></div></div>
   </section>
   <!-- Home: a vertical stack of list sections (carousel / grid / terminal-infinite grid). -->
   <div id="home-sections"></div>
@@ -480,7 +506,11 @@
   <!-- Library -->
   <section id="library-view" style="display:none">
     <div class="controls">
-      <input id="lib-search" type="search" placeholder="Search your library…" style="flex:1; min-width:160px">
+      <div class="search-field">
+        <span class="search-field-icon"><i data-lucide="search"></i></span>
+        <input id="lib-search" type="text" placeholder="Search your library…" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button type="button" class="search-field-clear" aria-label="Clear search" tabindex="-1"><i data-lucide="x"></i></button>
+      </div>
       <select id="lib-sort">
         <option value="lastRead">Recently read</option>
         <option value="added">Recently added</option>
