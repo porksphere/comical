@@ -12,7 +12,7 @@ const ROOT = join(import.meta.dir, "..");
 const DATA_DIR = join(ROOT, ".comical-demo");
 const BRIDGES_DIRS = [
   join(ROOT, "bridges"),
-  join(ROOT, "..", "example-bridge-repo", ".build"),
+  join(ROOT, "..", "bridges-repo", ".build"),
 ];
 const TRACKERS_DIR = join(ROOT, "..", "comical-trackers", ".build");
 
