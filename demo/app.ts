@@ -428,10 +428,11 @@ async function loadBridges(selectInitial = true): Promise<void> {
     list.append(btn);
   }
   const settingsList = $("#bridge-settings-list");
-  settingsList.innerHTML = "";
+  const settingsInner = $("#bridge-settings-inner");
+  settingsInner.innerHTML = "";
   if (visible.length > 0) {
     settingsList.style.display = "";
-    for (const b of visible) settingsList.append(buildBridgeSettingsEntry(b));
+    for (const b of visible) settingsInner.append(buildBridgeSettingsEntry(b));
     // Auto-expand the first bridge that needs configuration so it's visible without a click.
     const firstBadIdx = visible.findIndex((b) => b.missingRequired.length > 0);
     if (firstBadIdx >= 0) {
@@ -872,41 +873,95 @@ async function renderBridgeSettingsBody(detail: BridgeDetail, container: HTMLEle
     }
     container.append(grid);
 
-    const row = document.createElement("div");
-    row.className = "row";
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.textContent = "Save";
-    const msgEl = document.createElement("span");
-    saveBtn.onclick = () => void saveBridgeSettings(detail.info.id, grid, msgEl, sumEl);
-    row.append(saveBtn, msgEl);
+    // Track last-saved values so blur can skip no-op saves.
+    const savedValues: Record<string, string | number | boolean | string[]> = { ...detail.values };
 
-    if (detail.info.capabilities.includes("favorites")) {
-      const impBtn = document.createElement("button");
-      impBtn.type = "button";
-      impBtn.className = "secondary";
-      impBtn.textContent = "Import favorites → Library";
-      const impMsg = document.createElement("span");
-      impMsg.className = "muted";
-      impBtn.onclick = async () => {
-        impBtn.disabled = true;
-        impMsg.textContent = "Importing…";
-        const res = await send("POST", `/library/import/bridges/${detail.info.id}/favorites`);
-        impBtn.disabled = false;
-        if (res.ok) {
-          const { imported, skipped } = res.data as { imported: number; skipped: number };
-          impMsg.textContent = `Done — ${imported} added, ${skipped} already in library.`;
-          impMsg.className = "ok";
-        } else {
-          impMsg.textContent = (res.data as { error?: string })?.error ?? `error ${res.status}`;
-          impMsg.className = "err";
+    async function saveField(key: string, kind: string, el: HTMLInputElement | HTMLSelectElement): Promise<void> {
+      let value: string | number | boolean | string[] | undefined;
+      if (kind === "boolean") {
+        value = (el as HTMLInputElement).checked;
+      } else if (kind === "enum" && (el as HTMLSelectElement).multiple) {
+        value = Array.from((el as HTMLSelectElement).selectedOptions).map((o) => o.value);
+      } else if (kind === "number") {
+        const v = (el as HTMLInputElement).value.trim();
+        if (!v) return;
+        value = Number(v);
+      } else {
+        const v = (el as HTMLInputElement).value.trim();
+        if (!v) return;
+        value = v;
+      }
+      const desc = detail.settings.find((s) => s.key === key);
+      const isSecret = desc && "secret" in desc && desc.secret;
+      // Skip if unchanged (skip the check for secrets since stored values aren't sent to the client).
+      if (!isSecret && JSON.stringify(value) === JSON.stringify(savedValues[key])) return;
+      const statusEl = el.closest<HTMLElement>(".field-wrap")?.querySelector<HTMLSpanElement>(".field-status");
+      const res = await send("PUT", `/bridges/${detail.info.id}/settings`, { [key]: value });
+      if (res.ok) {
+        savedValues[key] = value;
+        if (statusEl) {
+          statusEl.textContent = "✓";
+          statusEl.className = "field-status ok";
+          clearTimeout(Number(statusEl.dataset.t));
+          statusEl.dataset.t = String(setTimeout(() => { statusEl.textContent = ""; statusEl.className = "field-status"; }, 2000));
         }
-      };
-      row.append(impBtn, impMsg);
+        const updated = await api<BridgeDetail>(`/bridges/${detail.info.id}`);
+        updateBridgeSummary(sumEl, updated);
+      } else {
+        if (statusEl) {
+          statusEl.textContent = (res.data as { error?: string }).error ?? `error ${res.status}`;
+          statusEl.className = "field-status err";
+        }
+      }
     }
-    container.append(row);
+
+    // Track which fields the user has actually edited; blur-save only fires for dirty fields
+    // so clicking away to "Save excluded tags" (or anything else) never triggers a spurious write.
+    const dirty = new Set<string>();
+    grid.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-key]").forEach((el) => {
+      const key = el.dataset.key!;
+      const kind = el.dataset.kind!;
+      if (kind === "boolean" || kind === "enum") {
+        el.addEventListener("change", () => void saveField(key, kind, el));
+      } else if (kind === "string" || kind === "number") {
+        el.addEventListener("input", () => dirty.add(key));
+        el.addEventListener("blur", () => {
+          if (!dirty.has(key)) return;
+          dirty.delete(key);
+          void saveField(key, kind, el);
+        });
+      }
+    });
   } else {
     container.append(Object.assign(document.createElement("p"), { className: "muted", style: "font-size:0.84rem", textContent: "No configurable settings." }));
+  }
+
+  if (detail.info.capabilities.includes("favorites")) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.marginTop = "0.5rem";
+    const impBtn = document.createElement("button");
+    impBtn.type = "button";
+    impBtn.className = "secondary";
+    impBtn.textContent = "Import favorites → Library";
+    const impMsg = document.createElement("span");
+    impMsg.className = "muted";
+    impBtn.onclick = async () => {
+      impBtn.disabled = true;
+      impMsg.textContent = "Importing…";
+      const res = await send("POST", `/library/import/bridges/${detail.info.id}/favorites`);
+      impBtn.disabled = false;
+      if (res.ok) {
+        const { imported, skipped } = res.data as { imported: number; skipped: number };
+        impMsg.textContent = `Done — ${imported} added, ${skipped} already in library.`;
+        impMsg.className = "ok";
+      } else {
+        impMsg.textContent = (res.data as { error?: string })?.error ?? `error ${res.status}`;
+        impMsg.className = "err";
+      }
+    };
+    row.append(impBtn, impMsg);
+    container.append(row);
   }
 
   container.append(buildExcludedTagsControl(detail));
@@ -920,7 +975,8 @@ async function renderBridgeSettingsBody(detail: BridgeDetail, container: HTMLEle
 
   const prefToggle = (checked: boolean, label: string, key: "trackersDisabled" | "historyDisabled"): HTMLLabelElement => {
     const lbl = document.createElement("label");
-    lbl.style.cssText = "display:flex;align-items:center;gap:0.4rem;font-size:0.84rem;margin-top:0.6rem";
+    lbl.className = "toggle-label";
+    lbl.style.cssText = "font-size:0.84rem;margin-top:0.2rem";
     const chk = document.createElement("input");
     chk.type = "checkbox";
     chk.className = "toggle-input";
@@ -933,7 +989,7 @@ async function renderBridgeSettingsBody(detail: BridgeDetail, container: HTMLEle
     const toggleWrap = document.createElement("span");
     toggleWrap.className = "toggle-wrap";
     toggleWrap.append(chk, track);
-    lbl.append(toggleWrap, label);
+    lbl.append(label, toggleWrap);
     return lbl;
   };
 
@@ -989,18 +1045,20 @@ function buildField(
   ctx?: { trackerId: string; form: HTMLElement },
 ): HTMLElement {
   const wrap = document.createElement("div");
-  if (d.type === "string" && d.secret) wrap.className = "field-secret";
+  wrap.className = d.type === "string" && d.secret ? "field-wrap field-secret" : "field-wrap";
   const lbl = document.createElement("label");
   if (d.description) lbl.title = d.description;
   const input = buildInput(d, current, secretSet, ctx);
   if (d.type === "boolean") {
     lbl.className = "toggle-label";
-    lbl.append(input, d.label + (d.required ? " *" : ""));
+    lbl.append(d.label + (d.required ? " *" : ""), input);
   } else {
     lbl.textContent = d.label + (d.required ? " *" : "");
     lbl.append(input);
   }
-  wrap.append(lbl);
+  const statusEl = document.createElement("span");
+  statusEl.className = "field-status";
+  wrap.append(lbl, statusEl);
   return wrap;
 }
 
