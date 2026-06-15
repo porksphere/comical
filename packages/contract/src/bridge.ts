@@ -9,6 +9,7 @@ import type {
   Chapter,
   Filter,
   FilterValue,
+  GenreExclusions,
   Page,
   PagedResults,
   SeriesEntry,
@@ -24,6 +25,13 @@ import type {
 export interface SearchOptions {
   filters?: FilterValue[];
   sort?: SortSelection;
+  /**
+   * Persistent per-bridge tag exclusions the host injects (capability `"exclude-tags"`). The
+   * bridge pushes these to its backend's native negation — e.g. excluding a tag from every
+   * result — and they are independent of the ad-hoc `filters` a user picks per search. Entries
+   * are whatever the bridge's `getTags()` returns as `id` for getTags-capable bridges.
+   */
+  excludedTags?: string[];
 }
 
 /** Optional refinements for browsing a list: an in-list text query, plus filters/sort. */
@@ -31,6 +39,8 @@ export interface ListOptions {
   query?: string;
   filters?: FilterValue[];
   sort?: SortSelection;
+  /** Persistent per-bridge tag exclusions the host injects (capability `"exclude-tags"`). See `SearchOptions.excludedTags`. */
+  excludedTags?: string[];
 }
 
 export interface Bridge {
@@ -101,6 +111,24 @@ export interface Bridge {
   getSortOptions?(): Promise<SortOption[]>;
 
   getTags?(query?: string): Promise<Tag[]>;
+
+  /**
+   * Resolve bare tag ids back to their labels (capability "resolve-tags"). The inverse of the
+   * name-keyed `getTags` search: given ids the host holds (e.g. persisted `excludedTags`), return
+   * the `{ id, label }` for each it can resolve, silently omitting any it cannot. The host caches
+   * the result, so this is called only for ids it has never seen a label for.
+   */
+  resolveTags?(ids: string[]): Promise<Tag[]>;
+
+  // ---- Genre exclusions — capability "exclude-genres" ----
+  // Backed by the bridge's backend account (server-side, applies to every surface), so these typically
+  // need auth and throw a clear error when credentials are absent — unlike host-injected `excludedTags`.
+
+  /** The pickable genres plus the account's currently-excluded subset. (capability "exclude-genres") */
+  getGenreExclusions?(): Promise<GenreExclusions>;
+
+  /** Replace the account's excluded-genre set (a write-through to the backend); returns the new state. (capability "exclude-genres") */
+  setExcludedGenres?(genreIds: string[]): Promise<GenreExclusions>;
 
   /**
    * Declarative settings this bridge needs from the user (backend URL, credentials, options).

@@ -7,13 +7,14 @@
  */
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { bridgeSeriesStatusSchema } from "@comical/contract";
+import { bridgeSeriesStatusSchema, EXCLUDED_TAGS_KEY } from "@comical/contract";
 import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } from "@comical/contract";
 import { BridgeSettingsError, validateSettingsInput } from "@comical/core";
 import { entryKey, type Library } from "@comical/library";
 import type { RegistryManager } from "@comical/registry";
 import type { ComicalRuntime } from "@comical/runtime";
 import type { BridgeManager } from "./bridge-manager.ts";
+import { TagLabelCache } from "./tag-label-cache.ts";
 import type { TrackerManager } from "./tracker-manager.ts";
 
 export interface RouterOptions {
@@ -53,6 +54,10 @@ type Vars = { manager: BridgeManager };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): Hono<any> {
   const app = new Hono<{ Bindings: Bindings; Variables: Vars }>();
+
+  // Shared id→label memory so the host can fold tag names back into id-only responses (e.g.
+  // `excludedTags`). Warms once for every client of this server. See TagLabelCache.
+  const tagLabels = new TagLabelCache();
 
   app.use("*", cors({
     origin: opts.origin ?? "*",
@@ -107,10 +112,12 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       const values: Record<string, SettingValue> = {};
       const secretsSet: string[] = [];
       for (const [k, v] of Object.entries(stored)) {
+        if (k === EXCLUDED_TAGS_KEY) continue; // reserved host-managed key, surfaced separately
         if (secretKeys.has(k)) { if (v !== undefined && v !== "") secretsSet.push(k); }
         else values[k] = v;
       }
 
+      const excludedTags = readExcludedTags(stored);
       return c.json({
         info: bridge.info,
         settings,
@@ -118,6 +125,10 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
         secretsSet,
         missingRequired,
         configured: missingRequired.length === 0,
+        excludedTags,
+        // Names folded in from the shared cache (resolving cold ids via the bridge once, then
+        // cached). The client renders `excludedTagLabels[id] ?? id`; storage stays id-only.
+        excludedTagLabels: await tagLabels.resolve(bridge, excludedTags),
       });
     });
   });
@@ -145,6 +156,44 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     }
   });
 
+  /**
+   * Replace the bridge's persistent tag exclusions (reserved key, separate from descriptor
+   * settings so it sidesteps `validateSettingsInput`'s unknown-key rejection). Body: `{ tags: string[] }`.
+   */
+  app.put("/bridges/:id/excluded-tags", async (c) => {
+    const id = c.req.param("id");
+    let body: { tags?: unknown; labels?: unknown };
+    try {
+      body = await c.req.json<{ tags?: unknown; labels?: unknown }>();
+    } catch {
+      return c.json({ error: "invalid JSON" }, 400);
+    }
+    if (!Array.isArray(body.tags) || body.tags.some((t) => typeof t !== "string")) {
+      return c.json({ error: "expected { tags: string[] }" }, 400);
+    }
+    const tags = [...new Set(body.tags as string[])].filter((t) => t.trim().length > 0);
+    // Optional `labels` (id→label) the client already holds — seed the cache so a later detail load
+    // folds names in without a `resolveTags` round-trip. Tolerant of a missing/odd shape.
+    if (body.labels && typeof body.labels === "object" && !Array.isArray(body.labels)) {
+      tagLabels.remember(
+        id,
+        Object.entries(body.labels as Record<string, unknown>)
+          .filter(([, v]) => typeof v === "string")
+          .map(([k, v]) => ({ id: k, label: v as string })),
+      );
+    }
+    const manager = c.get("manager") as BridgeManager;
+    try {
+      await manager.get(id); // surface 404 for an unknown bridge before persisting
+      const updated = await manager.updateSettings(id, { [EXCLUDED_TAGS_KEY]: tags });
+      const excludedTags = readExcludedTags(updated);
+      return c.json({ excludedTags, excludedTagLabels: tagLabels.known(id, excludedTags) });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
+    }
+  });
+
   // ── Content endpoints ────────────────────────────────────────────────────────
 
   app.get("/bridges/:id/search", (c) =>
@@ -165,6 +214,8 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       // Sort: ?sort=<key>&dir=asc|desc (dir defaults to asc).
       const sortKey = c.req.query("sort");
       if (sortKey) options.sort = { key: sortKey, ascending: c.req.query("dir") !== "desc" };
+      const excluded = await excludedTagsFor(c, bridge);
+      if (excluded.length) options.excludedTags = excluded;
       return c.json(await bridge.getSearchResults(q, page, options));
     }),
   );
@@ -201,6 +252,8 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       }
       const sortKey = c.req.query("sort");
       if (sortKey) options.sort = { key: sortKey, ascending: c.req.query("dir") !== "desc" };
+      const excluded = await excludedTagsFor(c, bridge);
+      if (excluded.length) options.excludedTags = excluded;
       return c.json(await bridge.getListItems(c.req.param("listId"), page, options));
     }),
   );
@@ -217,6 +270,34 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
       if (!bridge.getTags) return c.json({ error: "not supported" }, 400);
       const q = c.req.query("q") ?? "";
       return c.json(await bridge.getTags(q));
+    }),
+  );
+
+  // ── Genre exclusions (capability "exclude-genres") — backend-account state, the bridge owns auth ──
+  // Distinct from the host-stored, query-injected tag exclusions: the account is the source of truth,
+  // so the host neither persists nor injects these — it just reads/writes through the bridge.
+
+  app.get("/bridges/:id/genre-exclusions", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.getGenreExclusions) return c.json({ error: "not supported" }, 400);
+      return c.json(await bridge.getGenreExclusions());
+    }),
+  );
+
+  app.put("/bridges/:id/genre-exclusions", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.setExcludedGenres) return c.json({ error: "not supported" }, 400);
+      let body: { genres?: unknown };
+      try {
+        body = await c.req.json<{ genres?: unknown }>();
+      } catch {
+        return c.json({ error: "invalid JSON" }, 400);
+      }
+      if (!Array.isArray(body.genres) || body.genres.some((g) => typeof g !== "string")) {
+        return c.json({ error: "expected { genres: string[] }" }, 400);
+      }
+      const genres = [...new Set(body.genres as string[])].filter((g) => g.trim().length > 0);
+      return c.json(await bridge.setExcludedGenres(genres));
     }),
   );
 
@@ -265,7 +346,18 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
 
   app.get("/bridges/:id/series/:seriesId", (c) =>
     withContentBridge(c, async (bridge) => {
-      return c.json(await bridge.getSeriesDetails(c.req.param("seriesId")));
+      const info = await bridge.getSeriesDetails(c.req.param("seriesId"));
+      // Series detail is the one surface that pairs tag id + name — warm the cache for free so
+      // later id→label folds (e.g. excluded tags) need no `resolveTags` call.
+      for (const grp of info.tagGroups ?? []) {
+        if (grp.tagIds) {
+          tagLabels.remember(
+            bridge.info.id,
+            grp.tags.map((label, i) => ({ id: grp.tagIds![i] ?? "", label })).filter((p) => p.id),
+          );
+        }
+      }
+      return c.json(info);
     }),
   );
 
@@ -943,6 +1035,26 @@ async function withLibraryEntry(
     const code = msg.includes("not in library") || msg.includes("not found") ? 404 : 500;
     return c.json({ error: msg }, code);
   }
+}
+
+/** The persisted tag exclusions from a stored-settings map (reserved key, tolerant of bad shapes). */
+function readExcludedTags(stored: Record<string, SettingValue>): string[] {
+  const v = stored[EXCLUDED_TAGS_KEY];
+  return Array.isArray(v) ? v.filter((t): t is string => typeof t === "string") : [];
+}
+
+/**
+ * Tag exclusions to inject for a content call — empty unless the bridge advertises `"exclude-tags"`,
+ * so a non-capable bridge never sees them and the result path stays untouched.
+ */
+async function excludedTagsFor(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  bridge: Awaited<ReturnType<BridgeManager["get"]>>,
+): Promise<string[]> {
+  if (!bridge.info.capabilities?.includes("exclude-tags")) return [];
+  const stored = await (c.get("manager") as BridgeManager).storedSettings(bridge.info.id);
+  return readExcludedTags(stored);
 }
 
 /** Like `withBridge`, but refuses to dispatch a content call to a bridge missing required settings. */
