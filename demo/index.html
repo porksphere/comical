@@ -89,10 +89,11 @@
     .tab.active { background: #2563eb; border-color: #2563eb; }
     .chips { display: flex; gap: 0.35rem; flex-wrap: wrap; }
     .chip { background: #1c1c1e; border: 1px solid #333; border-radius: 999px; padding: 0.2rem 0.6rem; font-size: 0.75rem; color: #bbb; white-space: nowrap; }
-    /* Flex (not grid) so an incomplete last row centers; cards don't grow, which is what lets
-       justify-content center the orphans. Cards are chrome-less: just a cover image with text
-       below it (and any badges overlaid on the image). */
-    .grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 1.2rem 0.9rem; }
+    /* Flex (not grid) wrap; cards don't grow. Left-aligned so the first item starts at the content
+       edge, lining up with section headers and the wrapped carousels (a centered incomplete row
+       would drift the whole rail right of its title). Cards are chrome-less: just a cover image
+       with text below it (and any badges overlaid on the image). */
+    .grid { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 1.2rem 0.9rem; }
     .grid > .card { flex: 0 1 150px; }
     .card { position: relative; padding: 0; background: none; cursor: pointer; min-width: 0; overflow-wrap: break-word; }
     .card:hover, .card.touch-active, .history-item:hover, .history-item.touch-active { z-index: 10; }
@@ -146,7 +147,10 @@
     @media (min-width: 561px) {
       .carousel:not(.ranked):not(.hero) {
         flex-wrap: wrap;
-        justify-content: center;
+        /* Left-align so the first card starts at the content edge, lining up with the section
+           header and the browse grid's first item (the grid only centers its trailing partial
+           row; a capped carousel is one block, so centering it would drift the whole rail right). */
+        justify-content: flex-start;
         overflow: visible;
         scroll-snap-type: none;
         gap: 1.2rem 0.9rem;
@@ -170,7 +174,16 @@
       .grid { gap: 1rem 0.6rem; }
       /* 3 columns: full width minus the two 0.6rem inter-card gaps, split three ways. */
       .grid > .card { flex: 0 1 calc((100% - 1.2rem) / 3); }
-      .carousel { gap: 0.5rem; }
+      /* Full-bleed scroll strips: break the carousel out to both true screen edges so cards slide
+         off the screen as you scroll (instead of being clipped at the page / #detail padding), while
+         the matching padding rests the first card at the content edge — aligned with the section
+         title and the grid. The calc() auto-adapts to nesting depth (body-level home or inside
+         #detail's own padding). scroll-snap MUST be off here: mandatory snap auto-scrolls the strip
+         by the left padding on load, pinning the first card to the screen edge instead of the title. */
+      .carousel { gap: 0.5rem;
+        margin-left: calc(50% - 50vw); margin-right: calc(50% - 50vw);
+        padding-left: calc(50vw - 50%); padding-right: calc(50vw - 50%);
+        scroll-snap-type: none; }
       .carousel > .card,
       .carousel.ranked > .card { flex-basis: 30%; }
       .carousel.hero > .card { flex-basis: 72%; }
