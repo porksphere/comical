@@ -17,6 +17,8 @@ import {
   type ListOptions,
   type Page,
   type PagedResults,
+  type RelatedKind,
+  type RelatedSeriesGroup,
   type SearchOptions,
   type SeriesEntry,
   type SeriesInfo,
@@ -260,6 +262,33 @@ class ExampleBridge extends BridgeBase<Settings> {
       })
       .filter((g) => g.tags.length > 0);
 
+    // Related-series rails — each `ul.related-group` is a labeled list of other series cards.
+    const relatedSeriesGroups: RelatedSeriesGroup[] = article
+      .find("ul.related-group")
+      .toArray()
+      .map((el) => {
+        const node = $(el);
+        const series: SeriesEntry[] = node
+          .find("li.related-item")
+          .toArray()
+          .map((li) => {
+            const item = $(li);
+            const entry: SeriesEntry = {
+              id: item.attr("data-id") ?? "",
+              title: item.find(".title").first().text().trim(),
+            };
+            const itemCover = item.find("img.cover").first().attr("src");
+            if (itemCover) entry.thumbnailUrl = this.resolve(this.base(), itemCover);
+            return entry;
+          })
+          .filter((e) => e.id && e.title);
+        const group: RelatedSeriesGroup = { label: node.attr("data-label") ?? "Related", series };
+        const kind = node.attr("data-kind");
+        if (kind) group.kind = kind as RelatedKind;
+        return group;
+      })
+      .filter((g) => g.series.length > 0);
+
     const info: SeriesInfo = {
       id: seriesId,
       title: article.find("h1.title").first().text().trim(),
@@ -272,6 +301,7 @@ class ExampleBridge extends BridgeBase<Settings> {
     if (cover) info.thumbnailUrl = this.resolve(this.base(), cover);
     if (genres.length > 0) info.genres = genres;
     if (tagGroups.length > 0) info.tagGroups = tagGroups;
+    if (relatedSeriesGroups.length > 0) info.relatedSeriesGroups = relatedSeriesGroups;
     return info;
   }
 

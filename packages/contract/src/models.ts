@@ -53,6 +53,41 @@ export const tagGroupSchema = z.object({
 });
 export type TagGroup = z.infer<typeof tagGroupSchema>;
 
+/**
+ * Optional semantic hint for a related-series group so hosts that care can treat a group specially
+ * (icon, ordering); the free-form `label` still drives display. Sites model relatedness differently —
+ * editorial links (sequel/prequel/spin-off/…) vs algorithmic rails (similar/recommended).
+ */
+export const relatedKindSchema = z.enum([
+  "sequel",
+  "prequel",
+  "spin-off",
+  "side-story",
+  "alternative",
+  "same-universe",
+  "adaptation",
+  "recommended",
+  "similar",
+  "other",
+]);
+export type RelatedKind = z.infer<typeof relatedKindSchema>;
+
+/**
+ * A labeled group of related series surfaced on a detail page (e.g. "Sequels", "Same Universe",
+ * "Similar"). Mirrors {@link tagGroupSchema}: a free-form `label` plus an optional `kind`, but the
+ * payload is full {@link seriesEntrySchema} cards so hosts can render tappable rails that navigate
+ * straight to each series. Each bridge maps its own native related-data into whatever groups make
+ * sense — that per-bridge mapping is the configurability.
+ */
+export const relatedSeriesGroupSchema = z.object({
+  /** Display label, e.g. "Sequels", "Spin-offs", "Same Universe", "Similar". */
+  label: z.string().min(1),
+  kind: relatedKindSchema.optional(),
+  /** The related series as lightweight cards; never empty (omit the group instead). */
+  series: z.array(seriesEntrySchema).min(1),
+});
+export type RelatedSeriesGroup = z.infer<typeof relatedSeriesGroupSchema>;
+
 /** Full detail for a single series. */
 export const seriesInfoSchema = z.object({
   id: z.string().min(1),
@@ -66,6 +101,12 @@ export const seriesInfoSchema = z.object({
   genres: z.array(z.string()).optional(),
   /** Other site taxonomies beyond genres (themes, demographics, format, content warnings, …). */
   tagGroups: z.array(tagGroupSchema).optional(),
+  /**
+   * Related series surfaced on the detail page, grouped and labeled by the bridge (sequels,
+   * spin-offs, "same universe", algorithmic "similar"/"recommended", …). Hosts render each group as
+   * a rail of tappable cards; bridges omit the field when there is nothing related to show.
+   */
+  relatedSeriesGroups: z.array(relatedSeriesGroupSchema).optional(),
   status: seriesStatusSchema.optional(),
   languages: z.array(z.string()).optional(),
   /**

@@ -28,7 +28,8 @@ interface BridgeDetail { info: BridgeInfo; settings: SettingDescriptor[]; values
 interface BridgeSummary { info: BridgeInfo; missingRequired: string[]; source: string; availableVersion?: string }
 interface SeriesEntry { id: string; title: string; thumbnailUrl?: string; subtitle?: string; excluded?: boolean }
 interface TagGroup { label: string; kind?: string; tags: string[]; tagIds?: string[] }
-interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; authorId?: string; artist?: string; artistId?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; languages?: string[]; externalIds?: Record<string, string | number> }
+interface RelatedSeriesGroup { label: string; kind?: string; series: SeriesEntry[] }
+interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?: string; authorId?: string; artist?: string; artistId?: string; status?: string; description?: string; genres?: string[]; tagGroups?: TagGroup[]; relatedSeriesGroups?: RelatedSeriesGroup[]; languages?: string[]; externalIds?: Record<string, string | number> }
 interface Chapter { id: string; name: string; number?: number; pageCount?: number; group?: string; languageCode?: string; publishedAt?: number }
 interface Page { index: number; imageUrl: string; thumbnailUrl?: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
@@ -1495,6 +1496,28 @@ function makeCard(item: SeriesEntry): HTMLElement {
   return card;
 }
 
+/**
+ * Render the related-series rails on the detail page (sequels, spin-offs, "same universe", similar,
+ * recommended, …). Each group becomes a labeled horizontal carousel of cards built with `makeCard`,
+ * so taps navigate straight to that series via `showDetail`. Bridges omit empty groups, so we just
+ * render whatever arrives; nothing renders when the field is absent.
+ */
+function renderRelated(groups: RelatedSeriesGroup[] | undefined): void {
+  const host = $("#detail-related");
+  host.innerHTML = "";
+  for (const grp of groups ?? []) {
+    if (!grp.series?.length) continue;
+    const section = document.createElement("section");
+    section.className = "section related-group";
+    section.append(sectionHead(grp.label));
+    const row = document.createElement("div");
+    row.className = "carousel";
+    for (const item of grp.series) row.append(makeCard(item));
+    section.append(row);
+    host.append(section);
+  }
+}
+
 function renderGrid(items: SeriesEntry[]): void {
   const grid = $("#grid");
   grid.innerHTML = "";
@@ -1524,6 +1547,7 @@ async function showDetail(seriesId: string): Promise<void> {
   $("#tracker-panel").hidden = true;
   $("#chapters").innerHTML = "";
   $("#chapters-section").hidden = true;
+  $("#detail-related").innerHTML = "";
   $("#page-thumbs").innerHTML = "";
   // Reset the chapters filter/sort to defaults for each newly-opened series.
   chapterFilter = "overview";
@@ -1665,6 +1689,7 @@ async function showDetail(seriesId: string): Promise<void> {
       void navigateToFilteredSearch([{ key: "tag", value: [el.dataset.tag!] }], { [el.dataset.tag!]: el.dataset.label! });
   });
   $("#detail-description").textContent = info.description ?? "";
+  renderRelated(info.relatedSeriesGroups);
   // Core info is rendered — drop the skeleton so the real content (and the cover) is revealed.
   $("#detail").classList.remove("loading");
 
