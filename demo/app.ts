@@ -1747,15 +1747,16 @@ async function loadPageThumbs(bridgeId: string, seriesId: string): Promise<void>
   renderPageThumbs(seriesId, pages);
 }
 
-function renderPageThumbs(seriesId: string, pages: Page[]): void {
+function renderPageThumbs(seriesId: string, pages: Page[], showAll = false): void {
   const grid = $("#page-thumbs");
+  const withThumbs = pages.filter((p) => p.thumbnailUrl);
   // Gate: only show the grid when the bridge provides real thumbnails.
-  if (!pages.some((p) => p.thumbnailUrl)) {
+  if (!withThumbs.length) {
     grid.innerHTML = "";
     return;
   }
-  grid.innerHTML = pages
-    .filter((p) => p.thumbnailUrl)
+  const visible = showAll ? withThumbs : withThumbs.slice(0, PAGE_THUMBS_INITIAL);
+  grid.innerHTML = visible
     .map(
       (p) =>
         `<div class="page-thumb" data-index="${p.index}">` +
@@ -1767,6 +1768,13 @@ function renderPageThumbs(seriesId: string, pages: Page[]): void {
   grid.querySelectorAll<HTMLElement>(".page-thumb").forEach((el) => {
     el.onclick = () => void readDirect(seriesId, Number(el.dataset.index));
   });
+  if (!showAll && withThumbs.length > PAGE_THUMBS_INITIAL) {
+    const btn = document.createElement("button");
+    btn.className = "ch-show-all";
+    btn.textContent = `Show all ${withThumbs.length} pages`;
+    btn.onclick = () => renderPageThumbs(seriesId, pages, true);
+    grid.append(btn);
+  }
 }
 
 // ── Library: detail-page tracking ────────────────────────────────────────────
@@ -1817,6 +1825,8 @@ let chapterFilter: ChapterFilter = "overview";
 let chapterSortAsc = false; // false → newest first (descending), matching the example layout
 /** How many chapters the condensed "Overview" tab shows before offering "Show all". */
 const OVERVIEW_LIMIT = 12;
+/** How many page thumbnails show before the "Show all" button for direct series. */
+const PAGE_THUMBS_INITIAL = 12;
 
 /** One label-over-value cell in the detail meta grid. */
 function metaCell(label: string, valueHtml: string): string {
