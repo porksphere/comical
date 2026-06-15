@@ -14,6 +14,7 @@ import {
   chapterSchema,
   filterSchema,
   filterValueSchema,
+  genreExclusionsSchema,
   type HostCapabilities,
   isContractCompatible,
   pageSchema,
@@ -50,17 +51,19 @@ export function setDefaultEvaluator(factory: (evalTimeoutMs: number) => BundleEv
   defaultEvaluatorFactory = factory;
 }
 
-/** Boundary schema for the search options bag (filters + sort). */
+/** Boundary schema for the search options bag (filters + sort + persistent tag exclusions). */
 const searchOptionsSchema = z.object({
   filters: z.array(filterValueSchema).optional(),
   sort: sortSelectionSchema.optional(),
+  excludedTags: z.array(z.string()).optional(),
 });
 
-/** Boundary schema for the list options bag (in-list query + filters + sort). */
+/** Boundary schema for the list options bag (in-list query + filters + sort + tag exclusions). */
 const listOptionsSchema = z.object({
   query: z.string().optional(),
   filters: z.array(filterValueSchema).optional(),
   sort: sortSelectionSchema.optional(),
+  excludedTags: z.array(z.string()).optional(),
 });
 import { errorMessage, withTimeout } from "./util.ts";
 import { validate } from "./validation.ts";
@@ -245,6 +248,17 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
   }
   if (raw.getTags) {
     bridge.getTags = (q) => call("getTags", z.array(tagSchema), () => raw.getTags!(q));
+  }
+  if (raw.resolveTags) {
+    bridge.resolveTags = (ids) => call("resolveTags", z.array(tagSchema), () => raw.resolveTags!(ids));
+  }
+  if (raw.getGenreExclusions) {
+    bridge.getGenreExclusions = () =>
+      call("getGenreExclusions", genreExclusionsSchema, () => raw.getGenreExclusions!());
+  }
+  if (raw.setExcludedGenres) {
+    bridge.setExcludedGenres = (ids) =>
+      call("setExcludedGenres", genreExclusionsSchema, () => raw.setExcludedGenres!(ids));
   }
   if (raw.getFavorites) {
     bridge.getFavorites = (p) => call("getFavorites", entryPage, () => raw.getFavorites!(p));

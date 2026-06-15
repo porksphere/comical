@@ -24,6 +24,13 @@ export const seriesEntrySchema = z.object({
   title: z.string().min(1),
   thumbnailUrl: z.string().url().optional(),
   subtitle: z.string().optional(),
+  /**
+   * Set by a bridge (capability "exclude-tags") when this slot matched the user's persistent tag
+   * exclusions. The entry is a redacted placeholder: `title` carries no real name and
+   * `thumbnailUrl` is intentionally omitted so the host renders a blank card and never fetches a
+   * cover. Hosts unaware of this flag degrade gracefully to a coverless, neutrally-titled card.
+   */
+  excluded: z.boolean().optional(),
 });
 export type SeriesEntry = z.infer<typeof seriesEntrySchema>;
 
@@ -157,6 +164,19 @@ export type SortSelection = z.infer<typeof sortSelectionSchema>;
 /** A tag/genre a bridge can enumerate via `getTags()`. */
 export const tagSchema = z.object({ id: z.string(), label: z.string() });
 export type Tag = z.infer<typeof tagSchema>;
+
+/**
+ * The genre-exclusion state for a bridge advertising `"exclude-genres"`. Unlike tag exclusions
+ * (which the host stores and injects per-query), genre exclusions live on the bridge's backend
+ * account — `available` is the full pickable genre set and `excluded` the currently-hidden subset,
+ * both read straight from that account. A single GET yields both, so the picker and current state
+ * stay consistent.
+ */
+export const genreExclusionsSchema = z.object({
+  available: z.array(tagSchema),
+  excluded: z.array(z.string()),
+});
+export type GenreExclusions = z.infer<typeof genreExclusionsSchema>;
 
 /**
  * A browsable collection a bridge offers — its own self-defined "list" (Trending, Recently
@@ -308,13 +328,41 @@ export const bridgeCapabilitySchema = z.enum([
   "search",
   "filters",
   "sort",
-  "tags",
   "settings",
   "favorites",
   "direct",
   "read-sync",
+  /**
+   * Honors persistent per-bridge tag exclusions natively: the host injects the user's configured
+   * `excludedTags` into `SearchOptions`/`ListOptions` and the bridge pushes them to its backend's
+   * negation. Advertise this ONLY when exclusion costs no extra request on the result path; without
+   * it, configured exclusions are stored but inert.
+   */
+  "exclude-tags",
+  /**
+   * Honors persistent per-bridge GENRE exclusions, written through to the backend account so they
+   * apply across every surface server-side (search, lists, everything) — distinct from the
+   * per-query, host-injected `"exclude-tags"`. The bridge enumerates pickable genres and the current
+   * exclusion set via `getGenreExclusions()` and replaces it via `setExcludedGenres()`. These
+   * typically require the bridge's account auth; without it the methods throw and the UI says so.
+   */
+  "exclude-genres",
+  /**
+   * Resolves bare tag ids to labels via `resolveTags(ids)` — the inverse of the name-keyed `getTags`
+   * search. The host uses it to put names back on ids it persists (e.g. `excludedTags`) without the
+   * client carrying labels. Without it, such ids are displayed as their raw id.
+   */
+  "resolve-tags",
 ]);
 export type BridgeCapability = z.infer<typeof bridgeCapabilitySchema>;
+
+/**
+ * Reserved per-bridge settings key under which the host persists the user's tag exclusions
+ * (a `string[]`). It is host-managed: bridges must NOT declare a `getSettings()` descriptor with
+ * this key. The host reads it from storage and forwards it via `options.excludedTags` to bridges
+ * advertising the `"exclude-tags"` capability — it is never passed as a bridge setting.
+ */
+export const EXCLUDED_TAGS_KEY = "excludedTags" as const;
 
 /**
  * Reading status values a bridge may report or receive when the bridge supports `"read-sync"`.

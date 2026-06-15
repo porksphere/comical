@@ -248,4 +248,33 @@ describe("sandbox isolation", () => {
     // Host says "no spacing, 10 concurrent" — the declared 1/80ms must not apply.
     expect(startSpread(res.items)).toBeLessThan(60);
   });
+
+  // A bridge that echoes the options bag it received back through item titles, so the test can
+  // assert which option keys survive the loader's boundary schema.
+  const ECHO_INFO = `{ id: "smoke", name: "Smoke", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["search", "lists", "exclude-tags"] }`;
+  const ECHO_OPTS = bundle(`{
+    info: ${ECHO_INFO},
+    getSeriesDetails: async (id) => ({ id, title: id }),
+    getChapters: async () => [],
+    getChapterPages: async () => [],
+    getSearchResults: async (q, p, opts) => ({ items: [{ id: "x", title: JSON.stringify(opts ?? null) }], page: p, hasNextPage: false }),
+    getListItems: async (l, p, opts) => ({ items: [{ id: "x", title: JSON.stringify(opts ?? null) }], page: p, hasNextPage: false }),
+  }`);
+
+  test("excludedTags survives the search/list options boundary schema", async () => {
+    const b = loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
+
+    const search = await b.getSearchResults!("q", 1, { excludedTags: ["t1", "t2"] });
+    expect(JSON.parse(search.items[0]!.title)).toEqual({ excludedTags: ["t1", "t2"] });
+
+    const list = await b.getListItems!("popular", 1, { excludedTags: ["t3"] });
+    expect(JSON.parse(list.items[0]!.title)).toEqual({ excludedTags: ["t3"] });
+  });
+
+  test("unknown option keys are still stripped at the boundary", async () => {
+    const b = loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const search = await b.getSearchResults!("q", 1, { excludedTags: ["t1"], bogus: 1 } as any);
+    expect(JSON.parse(search.items[0]!.title)).toEqual({ excludedTags: ["t1"] });
+  });
 });

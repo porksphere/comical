@@ -12,6 +12,7 @@ import {
   type Chapter,
   type CheerioRoot,
   type Filter,
+  type GenreExclusions,
   type InferSettings,
   type ListOptions,
   type Page,
@@ -24,6 +25,7 @@ import {
   type SettingDescriptor,
   type SortOption,
   type SortSelection,
+  type Tag,
   type TagGroup,
   type TagKind,
   defineBridge,
@@ -76,11 +78,46 @@ class ExampleBridge extends BridgeBase<Settings> {
     contractVersion: "1.0.0",
     languages: ["en"],
     nsfw: false,
-    capabilities: ["lists", "search", "filters", "sort", "settings", "favorites"],
+    capabilities: ["lists", "search", "filters", "sort", "settings", "favorites", "exclude-tags", "exclude-genres", "resolve-tags"],
   };
+
+  /** The pickable genre universe for the "exclude-genres" control (mirrors the genre filter axis). */
+  private static readonly GENRES = ["Fantasy", "Adventure", "Mystery", "Crime", "Horror", "Gothic"];
+  /** Currently-excluded genres. In a real bridge this lives on the backend account; here it's in-memory
+   *  state on the (manager-cached) instance — enough to exercise the host read/write round-trip. */
+  private excludedGenres: string[] = [];
 
   getSettings(): SettingDescriptor[] {
     return [...SETTINGS];
+  }
+
+  getGenreExclusions(): Promise<GenreExclusions> {
+    return Promise.resolve({
+      available: ExampleBridge.GENRES.map((g) => ({ id: g, label: g })),
+      excluded: [...this.excludedGenres],
+    });
+  }
+
+  setExcludedGenres(genreIds: string[]): Promise<GenreExclusions> {
+    const allowed = new Set(ExampleBridge.GENRES);
+    this.excludedGenres = [...new Set(genreIds)].filter((g) => allowed.has(g));
+    return this.getGenreExclusions();
+  }
+
+  /** A tiny id→label table so the host's reverse lookup ("resolve-tags") has something to resolve. */
+  private static readonly TAG_LABELS: Record<string, string> = {
+    t1: "Action",
+    t2: "Romance",
+    t3: "Comedy",
+  };
+
+  /** Resolve bare tag ids to labels (capability "resolve-tags"); ids we don't know are omitted. */
+  resolveTags(ids: string[]): Promise<Tag[]> {
+    return Promise.resolve(
+      ids
+        .map((id) => ({ id, label: ExampleBridge.TAG_LABELS[id] }))
+        .filter((t): t is Tag => t.label !== undefined),
+    );
   }
 
   private base(): string {
@@ -149,6 +186,8 @@ class ExampleBridge extends BridgeBase<Settings> {
       params.set("sort", sort.key);
       params.set("dir", sort.ascending ? "asc" : "desc");
     }
+    // Excluded tags map onto this demo backend's genre axis, pushed down as a backend negation.
+    if (options?.excludedTags?.length) params.set("excludeGenre", options.excludedTags.join(","));
     const $ = await this.fetchHtml(`${this.base()}/list/${encodeURIComponent(listId)}?${params.toString()}`);
     const hasNextPage = $("section.list-items").attr("data-has-next") === "true";
     return { items: this.cards($, "section.list-items"), page, hasNextPage };
@@ -186,6 +225,8 @@ class ExampleBridge extends BridgeBase<Settings> {
       if (f.key === "genre" && Array.isArray(f.value)) params.set("genre", f.value.join(","));
       if (f.key === "author" && typeof f.value === "string") params.set("author", f.value);
     }
+    // Excluded tags map onto this demo backend's genre axis, pushed down as a backend negation.
+    if (options?.excludedTags?.length) params.set("excludeGenre", options.excludedTags.join(","));
     const sort = this.effectiveSort(options?.sort);
     if (sort) {
       params.set("sort", sort.key);

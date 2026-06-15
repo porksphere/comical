@@ -67,7 +67,6 @@ const CAPABILITY_METHOD: Partial<Record<BridgeCapability, keyof Bridge>> = {
   search: "getSearchResults",
   filters: "getFilters",
   sort: "getSortOptions",
-  tags: "getTags",
   settings: "getSettings",
   favorites: "getFavorites",
   direct: "getSeriesPages",
@@ -215,18 +214,6 @@ export async function evaluateBridge(
       }
     } catch (e) {
       fail("sort", "sort.threw", `getSortOptions threw: ${msg(e)}`);
-    }
-  }
-
-  // ── Tags ────────────────────────────────────────────────────────────────────
-  if (has("tags") && bridge.getTags) {
-    exercised.add("tags");
-    try {
-      const tags = await bridge.getTags();
-      if (!Array.isArray(tags)) fail("tags", "tags.array", "getTags did not return an array");
-      else pass("tags", "tags.list", `getTags returned ${tags.length} tag group(s)`);
-    } catch (e) {
-      fail("tags", "tags.threw", `getTags threw: ${msg(e)}`);
     }
   }
 

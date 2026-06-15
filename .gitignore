@@ -8,10 +8,11 @@ coverage/
 demo/.out/
 .cache/
 .comical/
-**/.tmp-storage/
-**/.tmp-registry/
-**/.tmp-bridge-extras/
+**/.tmp-*/
 .comical-demo/
+
+# Local Claude Code state (worktrees, settings, memory) — never committed
+.claude/
 
 # Playwright e2e capture lane (on-demand recordings/screenshots — never committed)
 e2e/.test-results/

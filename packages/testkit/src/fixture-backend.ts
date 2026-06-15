@@ -207,7 +207,7 @@ export class FixtureBackend {
 
   private renderList(
     id: string,
-    opts: { query?: string; sort?: string; ascending?: boolean; page?: number } = {},
+    opts: { query?: string; sort?: string; ascending?: boolean; page?: number; excludeGenres?: string[] } = {},
   ): string | undefined {
     const list = this.lists().find((l) => l.id === id);
     if (!list) return undefined;
@@ -215,6 +215,10 @@ export class FixtureBackend {
     let series = [...list.series];
     const q = opts.query?.trim().toLowerCase();
     if (q) series = series.filter((s) => s.title.toLowerCase().includes(q) || s.author.toLowerCase().includes(q));
+    if (opts.excludeGenres && opts.excludeGenres.length > 0) {
+      const banned = new Set(opts.excludeGenres.map((g) => g.toLowerCase()));
+      series = series.filter((s) => !s.genres.some((g) => banned.has(g.toLowerCase())));
+    }
     if (opts.sort === "title" || opts.sort === "author") {
       const key = opts.sort;
       series.sort((a, b) => a[key].localeCompare(b[key]));
@@ -236,7 +240,7 @@ export class FixtureBackend {
 
   private renderSearch(
     query: string,
-    opts: { genres?: string[]; sort?: string; ascending?: boolean; author?: string } = {},
+    opts: { genres?: string[]; sort?: string; ascending?: boolean; author?: string; excludeGenres?: string[] } = {},
   ): string {
     const q = query.trim().toLowerCase();
     let matches = q
@@ -248,6 +252,11 @@ export class FixtureBackend {
     if (opts.genres && opts.genres.length > 0) {
       const wanted = new Set(opts.genres.map((g) => g.toLowerCase()));
       matches = matches.filter((s) => s.genres.some((g) => wanted.has(g.toLowerCase())));
+    }
+
+    if (opts.excludeGenres && opts.excludeGenres.length > 0) {
+      const banned = new Set(opts.excludeGenres.map((g) => g.toLowerCase()));
+      matches = matches.filter((s) => !s.genres.some((g) => banned.has(g.toLowerCase())));
     }
 
     if (opts.author) {
@@ -316,11 +325,13 @@ export class FixtureBackend {
     const listMatch = /^\/list\/([^/]+)$/.exec(path);
     if (listMatch) {
       const lp = url.searchParams;
+      const excludeGenres = lp.get("excludeGenre")?.split(",").map((g) => g.trim()).filter(Boolean);
       const html = this.renderList(decodeURIComponent(listMatch[1]!), {
         ...(lp.get("q") ? { query: lp.get("q")! } : {}),
         ...(lp.get("sort") ? { sort: lp.get("sort")! } : {}),
         ascending: lp.get("dir") !== "desc",
         page: Math.max(1, Number(lp.get("page") ?? "1") || 1),
+        ...(excludeGenres && excludeGenres.length ? { excludeGenres } : {}),
       });
       return html ? this.html(html) : this.html(layout("Not Found", "<p>not found</p>"), 404);
     }
@@ -328,12 +339,14 @@ export class FixtureBackend {
     if (path === "/search") {
       const p = url.searchParams;
       const genres = p.get("genre")?.split(",").map((g) => g.trim()).filter(Boolean);
+      const excludeGenres = p.get("excludeGenre")?.split(",").map((g) => g.trim()).filter(Boolean);
       const sort = p.get("sort") ?? undefined;
       const ascending = p.get("dir") !== "desc";
       const author = p.get("author") ?? undefined;
       return this.html(
         this.renderSearch(p.get("q") ?? "", {
           ...(genres && genres.length ? { genres } : {}),
+          ...(excludeGenres && excludeGenres.length ? { excludeGenres } : {}),
           ...(sort ? { sort } : {}),
           ascending,
           ...(author ? { author } : {}),
