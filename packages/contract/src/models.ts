@@ -115,6 +115,11 @@ export const seriesInfoSchema = z.object({
    * library entries to tracker entries without manual matching.
    */
   externalIds: z.record(z.string(), z.union([z.string().min(1), z.number().int().positive()])).optional(),
+  /**
+   * Total page count for direct (page-flat) series, when the bridge can supply it
+   * without fetching the full page list. Hosts render it as a metadata cell.
+   */
+  pageCount: z.number().int().positive().optional(),
 });
 export type SeriesInfo = z.infer<typeof seriesInfoSchema>;
 
