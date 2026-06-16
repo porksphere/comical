@@ -99,16 +99,17 @@ describe("loadBridge", () => {
     await expect(b.getSeriesDetails("x")).rejects.toBeInstanceOf(BridgeValidationError);
   });
 
-  test("rejects relative page image URLs (must be absolute)", async () => {
-    const bad = bundle(`{
+  test("accepts server-relative page image URLs (proxy pattern)", async () => {
+    const code = bundle(`{
       info: ${GOOD_INFO},
       getSeriesDetails: async (id) => ({ id, title: "T" }),
       getChapters: async () => [],
-      getChapterPages: async () => [{ index: 0, imageUrl: "/relative/0.png" }],
+      getChapterPages: async () => [{ index: 0, imageUrl: "/bridges/smoke/series/x/page-image/abc123/42-1" }],
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
-    const b = loadBridge({ code: bad, capabilities: mockHost() });
-    await expect(b.getChapterPages!("m", "c")).rejects.toBeInstanceOf(BridgeValidationError);
+    const b = loadBridge({ code, capabilities: mockHost() });
+    const pages = await b.getChapterPages!("m", "c");
+    expect(pages[0]!.imageUrl).toBe("/bridges/smoke/series/x/page-image/abc123/42-1");
   });
 
   test("rejects an incompatible contract version", () => {

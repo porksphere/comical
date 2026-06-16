@@ -192,12 +192,15 @@
       .carousel.hero > .card { flex-basis: 72%; }
       .card-title { font-size: 0.8rem; }
       .card-sub { font-size: 0.72rem; }
+      /* Restore horizontal padding on mobile so the full-bleed carousel technique works:
+         the calc(50% - 50vw) negative margin depends on this 1rem inset to reach the viewport edge. */
+      #detail { padding-left: 1rem; padding-right: 1rem; }
     }
     .load-more-wrap { text-align: center; margin: 0.8rem 0 0; }
     .results-head { display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.8rem; }
     .link { background: none; border: none; color: #60a5fa; cursor: pointer; font-size: 0.85rem; padding: 0; }
     .link:hover { text-decoration: underline; }
-    #detail { padding: 1rem; margin-top: 1rem; }
+    #detail { padding: 1rem 0; margin-top: 1rem; }
     #detail h2 { margin: 0 0 0.4rem; }
     #fav-toggle { float: right; background: #1c1c1e; border: 1px solid #333; color: #ddd; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; }
     #fav-toggle:hover { border-color: #60a5fa; }
@@ -478,7 +481,7 @@
 </head>
 <body>
   <div id="app-header">
-    <h1 id="app-title"><span id="app-title-text">Comical</span><span id="app-title-caret" class="title-caret" hidden>▾</span><span id="page-sel-wrap" style="display:none"><button id="page-sel"><span id="page-sel-text">home</span><span id="page-sel-caret">▾</span></button><div id="page-dropdown" class="bridge-dropdown" hidden><button class="tab" data-page="home">home</button><button class="tab" data-page="favorites">favorites</button></div></span></h1>
+    <h1 id="app-title"><span id="app-title-text">Comical</span><span id="app-title-caret" class="title-caret" hidden>▾</span><span id="page-sel-wrap" style="display:none"><button id="page-sel"><span id="page-sel-text">home</span><span id="page-sel-caret">▾</span></button><div id="page-dropdown" class="bridge-dropdown" hidden><button class="tab" data-page="home">home</button></div></span></h1>
     <p class="subtitle" id="app-subtitle">Content bridge runtime — browser console (thin client → comical-server)</p>
     <div id="bridge-dropdown" class="bridge-dropdown" hidden>
       <div id="bridge-list"></div>

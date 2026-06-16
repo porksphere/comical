@@ -278,6 +278,10 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
     bridge.getSeriesPages = (id) =>
       call("getSeriesPages", z.array(pageSchema), () => raw.getSeriesPages!(id));
   }
+  if (raw.resolvePage) {
+    bridge.resolvePage = (seriesId, hash, gidRef) =>
+      call("resolvePage", z.string(), () => raw.resolvePage!(seriesId, hash, gidRef));
+  }
   if (raw.getReadChapters) {
     bridge.getReadChapters = (seriesId) =>
       call("getReadChapters", z.array(z.string()), () => raw.getReadChapters!(seriesId));

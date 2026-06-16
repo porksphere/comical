@@ -384,6 +384,21 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     }),
   );
 
+  // Lazy per-page image resolver: the bridge's getSeriesPages returns proxy URLs pointing here
+  // instead of resolving every CDN URL upfront. The hash and gid-pagenum ref are embedded in
+  // the URL so no server-side cache is needed between the two calls.
+  app.get("/bridges/:id/series/:seriesId/page-image/:hash/:gidRef", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.resolvePage) return c.json({ error: "not supported" }, 404);
+      const url = await bridge.resolvePage(
+        c.req.param("seriesId"),
+        c.req.param("hash"),
+        c.req.param("gidRef"),
+      );
+      return Response.redirect(url, 302);
+    }),
+  );
+
   // ── Read-sync (capability "read-sync") ────────────────────────────────────────
 
   app.post("/bridges/:id/series/:seriesId/chapters/:chapterId/read", (c) =>

@@ -33,7 +33,7 @@ interface SeriesInfo { id: string; title: string; thumbnailUrl?: string; author?
 interface Chapter { id: string; name: string; number?: number; pageCount?: number; group?: string; languageCode?: string; publishedAt?: number }
 interface Page { index: number; imageUrl: string; thumbnailUrl?: string }
 interface PagedResults { items: SeriesEntry[]; page: number; hasNextPage: boolean }
-interface SeriesList { id: string; name: string; layout?: string; featured?: boolean; searchable?: boolean }
+interface SeriesList { id: string; name: string; layout?: string; featured?: boolean; searchable?: boolean; page?: boolean }
 interface Filter { type: "text" | "toggle" | "number" | "select" | "multiselect" | "tag-multiselect"; key: string; label: string; options?: Choice[]; min?: number; max?: number }
 interface FilterValue { key: string; value: string | string[] | number | boolean }
 interface SortOption { key: string; label: string; directionless?: boolean }
@@ -134,6 +134,17 @@ async function api<T>(path: string, signal?: AbortSignal): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Resolve a page imageUrl that may be a server-relative path (e.g. a lazy-proxy URL from a
+ *  direct bridge) into a fully-absolute URL the browser can load as <img src>. */
+function resolvePageUrl(url: string): string {
+  return url.startsWith("/") ? `${SERVER}${url}` : url;
+}
+
+/** Normalize the imageUrl on every page in a list so callers can use them as-is in <img src>. */
+function resolvePageUrls(pages: Page[]): Page[] {
+  return pages.map((p) => ({ ...p, imageUrl: resolvePageUrl(p.imageUrl) }));
+}
+
 async function send(method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; data: unknown }> {
   const init: RequestInit = { method };
   if (body !== undefined) {
@@ -161,8 +172,8 @@ let currentLists: SeriesList[] = [];
 let activeListId: string | null = null;
 let currentView: "browse" | "library" | "history" | "activity" | "detail" | "reader" | "settings" = "browse";
 let previousView: "browse" | "library" | "history" = "browse";
-/** Which home page the browse view is on. Drill-downs (search/See all) don't change it; back returns here. */
-let activeHomeTab: "home" | "favorites" = "home";
+/** Which home page the browse view is on. "home" | "favorites" | a list id with page:true */
+let activeHomeTab: string = "home";
 /** Set when a favorite is toggled in the detail view, so the favorites grid refetches on the way back. */
 let favoritesDirty = false;
 /** Accumulated favorites pages per bridge, so reopening the tab paints from memory instead of refetching. */
@@ -528,10 +539,9 @@ async function selectBridge(id: string): Promise<void> {
     // Hide the whole `.search-field` (icon + clear), not just the input, or the search icon lingers.
     ($("#query").closest(".search-field") as HTMLElement).style.display = canSearch ? "" : "none";
     $("#searchBtn").style.display = canSearch ? "" : "none";
-    // Favorites is a home page only when the bridge supports it; otherwise fall back to Home.
-    const hasFavorites = detail.info.capabilities.includes("favorites");
-    if (!hasFavorites && activeHomeTab === "favorites") activeHomeTab = "home";
-    $("#page-sel-wrap").style.display = hasFavorites ? "" : "none";
+    // Reset to home on bridge change; renderHome will rebuild the page dropdown.
+    activeHomeTab = "home";
+    $("#page-sel-wrap").style.display = "none";
     updateHomeTabsActive();
 
     // Content needs the bridge configured.
@@ -1288,13 +1298,17 @@ function setResultsHead(show: boolean): void {
 }
 
 function updateHomeTabsActive(): void {
-  $("#page-sel-text").textContent = activeHomeTab;
-  document.querySelectorAll<HTMLElement>("#page-dropdown .tab").forEach((b) =>
-    b.classList.toggle("active", b.dataset.page === activeHomeTab));
+  let label = activeHomeTab;
+  document.querySelectorAll<HTMLElement>("#page-dropdown .tab").forEach((b) => {
+    const active = b.dataset.page === activeHomeTab;
+    b.classList.toggle("active", active);
+    if (active) label = b.textContent?.trim() ?? activeHomeTab;
+  });
+  $("#page-sel-text").textContent = label;
 }
 
-/** Switch home pages. Home shows the list stack; Favorites shows the favorites grid (no back link). */
-async function selectHomeTab(tab: "home" | "favorites"): Promise<void> {
+/** Switch home pages: "home", "favorites", or a list id with page:true. */
+async function selectHomeTab(tab: string): Promise<void> {
   activeHomeTab = tab;
   updateHomeTabsActive();
   setSearchValue($<HTMLInputElement>("#query"), "");
@@ -1302,17 +1316,44 @@ async function selectHomeTab(tab: "home" | "favorites"): Promise<void> {
   if (tab === "home") {
     setResultsHead(true);
     showBrowseMode("home");
-  } else {
+  } else if (tab === "favorites") {
     showBrowseMode("results");
     setResultsHead(false);
     $("#results-label").textContent = "";
     await loadFavorites(1);
+  } else {
+    const list = currentLists.find(l => l.id === tab);
+    if (list) await showListDetail(list);
   }
 }
 
 /** Re-show the active home page (e.g. after clearing a search or backing out of a drill-down). */
 function returnToHomeTab(): void {
   void selectHomeTab(activeHomeTab);
+}
+
+/**
+ * Rebuild the page-selector dropdown for the active bridge. Always includes "home"; appends any
+ * bridge lists with page:true as standalone tabs; appends "favorites" when the bridge supports it.
+ * Hides the whole selector when there's nothing beyond "home" to switch to.
+ */
+function rebuildPageDropdown(lists: SeriesList[], hasFavorites: boolean): void {
+  const dropdown = $("#page-dropdown");
+  dropdown.innerHTML = "";
+  const addTab = (pageId: string, label: string) => {
+    const btn = document.createElement("button");
+    btn.className = "tab";
+    btn.dataset.page = pageId;
+    btn.textContent = label;
+    btn.onclick = (e) => { e.stopPropagation(); void selectHomeTab(pageId); closePageDropdown(); };
+    dropdown.append(btn);
+  };
+  addTab("home", "home");
+  for (const list of lists.filter(l => l.page)) addTab(list.id, list.name.toLowerCase());
+  if (hasFavorites) addTab("favorites", "favorites");
+  const hasExtras = lists.some(l => l.page) || hasFavorites;
+  $("#page-sel-wrap").style.display = hasExtras ? "" : "none";
+  updateHomeTabsActive();
 }
 
 /**
@@ -1323,19 +1364,20 @@ function returnToHomeTab(): void {
 async function renderHome(): Promise<void> {
   clearHome();
   activeHomeTab = "home";
-  updateHomeTabsActive();
   setResultsHead(true);
   showBrowseMode("home");
   const host = $("#home-sections");
   if (activeCaps.includes("lists")) {
     const lists = await api<SeriesList[]>(`/bridges/${activeBridge}/lists`, browseController.signal);
     currentLists = lists;
-    // Render all skeleton sections immediately so headers are visible before any content loads.
-    const sectionEls = lists.map(list => appendSkeletonSection(host, list));
-    // Fill each section in parallel; individual failures are handled inside fillSection.
-    await Promise.allSettled(lists.map((list, i) => fillSection(sectionEls[i]!, list, i === lists.length - 1)));
+    rebuildPageDropdown(lists, activeCaps.includes("favorites"));
+    // Lists with page:true appear in the page selector as standalone pages, not as home sections.
+    const homeLists = lists.filter(l => !l.page);
+    const sectionEls = homeLists.map(list => appendSkeletonSection(host, list));
+    await Promise.allSettled(homeLists.map((list, i) => fillSection(sectionEls[i]!, list, i === homeLists.length - 1)));
   } else {
     currentLists = [];
+    rebuildPageDropdown([], activeCaps.includes("favorites"));
   }
   if (host.children.length === 0) status("Nothing to show for this bridge yet.");
 }
@@ -1801,8 +1843,9 @@ async function loadPageThumbs(bridgeId: string, seriesId: string): Promise<void>
   }
   // Guard against a stale response after the user navigated to a different series.
   if (!currentSeries || currentSeries.bridgeId !== bridgeId || currentSeries.seriesId !== seriesId) return;
-  directPages = { bridgeId, seriesId, pages };
-  renderPageThumbs(seriesId, pages);
+  const resolved = resolvePageUrls(pages);
+  directPages = { bridgeId, seriesId, pages: resolved };
+  renderPageThumbs(seriesId, resolved);
 }
 
 function renderPageThumbs(seriesId: string, pages: Page[], showAll = false): void {
@@ -2728,9 +2771,14 @@ async function openChapter(ch: Chapter, resumePage?: number, replace = false): P
     $<HTMLButtonElement>("#reader-prev").disabled = true;
     $<HTMLButtonElement>("#reader-next").disabled = true;
     $("#reader-page").innerHTML = `<p class="muted" style="text-align:center;padding:2rem">Loading pages…</p>`;
-    pages = await api<Page[]>(
-      `/bridges/${bridgeId}/series/${enc(seriesId)}/chapters/${enc(ch.id)}/pages`,
-    );
+    try {
+      pages = resolvePageUrls(await api<Page[]>(
+        `/bridges/${bridgeId}/series/${enc(seriesId)}/chapters/${enc(ch.id)}/pages`,
+      ));
+    } catch (err) {
+      $("#reader-page").innerHTML = `<p class="error" style="text-align:center;padding:2rem">Failed to load pages: ${err instanceof Error ? err.message : String(err)}</p>`;
+      return;
+    }
   }
   readerState = { ch, pages, currentPage: Math.min(resumePage ?? 0, Math.max(0, pages.length - 1)) };
   renderReaderPage(true);
@@ -2758,7 +2806,12 @@ async function readDirect(seriesId: string, resumePage?: number, replace = false
     $<HTMLButtonElement>("#reader-prev").disabled = true;
     $<HTMLButtonElement>("#reader-next").disabled = true;
     $("#reader-page").innerHTML = `<p class="muted" style="text-align:center;padding:2rem">Loading pages…</p>`;
-    pages = await api<Page[]>(`/bridges/${bridgeId}/series/${enc(seriesId)}/pages`);
+    try {
+      pages = resolvePageUrls(await api<Page[]>(`/bridges/${bridgeId}/series/${enc(seriesId)}/pages`));
+    } catch (err) {
+      $("#reader-page").innerHTML = `<p class="error" style="text-align:center;padding:2rem">Failed to load pages: ${err instanceof Error ? err.message : String(err)}</p>`;
+      return;
+    }
   }
   const syntheticChapter: Chapter = { id: "__direct__", name: info.title };
   readerState = { ch: syntheticChapter, pages, currentPage: Math.min(resumePage ?? 0, Math.max(0, pages.length - 1)) };
@@ -2800,9 +2853,9 @@ async function prefetchNextChapter(): Promise<void> {
       prefetchedChapter.bridgeId === bridgeId &&
       prefetchedChapter.seriesId === seriesId) return;
   try {
-    const pages = await api<Page[]>(
+    const pages = resolvePageUrls(await api<Page[]>(
       `/bridges/${bridgeId}/series/${enc(seriesId)}/chapters/${enc(nextCh.id)}/pages`,
-    );
+    ));
     prefetchedChapter = { bridgeId, seriesId, ch: nextCh, pages };
     preloadImages(pages.slice(0, 3).map(p => p.imageUrl));
   } catch { /* silently discard — openChapter will retry */ }
@@ -3745,9 +3798,7 @@ function switchView(view: "browse" | "library" | "history" | "activity" | "detai
   // Page selector: tap the current tab name to open the home/favorites picker.
   $("#page-sel").onclick = (e) => { e.stopPropagation(); togglePageDropdown(); };
   $("#page-sel-wrap").addEventListener("click", (e) => e.stopPropagation());
-  document.querySelectorAll<HTMLElement>("#page-dropdown .tab").forEach((btn) => {
-    btn.onclick = (e) => { e.stopPropagation(); void selectHomeTab((btn.dataset.page as "home" | "favorites") ?? "home"); closePageDropdown(); };
-  });
+  // Page-dropdown buttons are built dynamically by rebuildPageDropdown on each bridge load.
   document.addEventListener("click", (e: MouseEvent) => {
     const target = e.target as HTMLElement;
     if (!$("#bridge-dropdown").hidden && !target.closest("#app-header")) closeBridgeDropdown();
