@@ -54,13 +54,25 @@ export interface Bridge {
   /** Ordered chapter list for a series. Order is the bridge's responsibility. */
   getChapters?(seriesId: string): Promise<Chapter[]>;
 
-  /** Resolve the readable pages (absolute image URLs) for a chapter. */
+  /** Resolve the readable pages for a chapter. `imageUrl` may be absolute or a server-relative proxy path. */
   getChapterPages?(seriesId: string, chapterId: string): Promise<Page[]>;
 
   // ---- Direct-read (capability "direct") ----
 
   /** Flat page list for a series with no chapter structure. (capability "direct") */
   getSeriesPages?(seriesId: string): Promise<Page[]>;
+
+  /**
+   * Resolve the full image URL for a single page, given its filehash and page reference.
+   * Used by the host-server's page-image proxy endpoint to lazily fetch CDN URLs on demand
+   * rather than resolving all pages upfront in `getSeriesPages`. (capability "direct")
+   *
+   * @param seriesId - The series identifier.
+   * @param hash     - The filehash for the page (e.g. `"a1b2c3d4"`).
+   * @param gidRef   - The `{gid}-{pageNum}` string (e.g. `"3992142-5"`).
+   * @returns The full, directly-loadable image URL for the page.
+   */
+  resolvePage?(seriesId: string, hash: string, gidRef: string): Promise<string>;
 
   // ---- Read-sync (capability "read-sync") ----
   // Bridges that can write reading state back to their source implement these.

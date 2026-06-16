@@ -1,9 +1,15 @@
 /**
- * Development server for the browser demo. Builds app.ts and serves it on localhost:3300.
+ * Dev server for the browser demo. Builds app.ts and serves it on localhost:3300.
  * Watches demo/ for changes, rebuilds, and notifies the browser via SSE to live-reload.
+ *
+ * In production (NODE_ENV=production) the watcher, SSE endpoint, and reload-script injection
+ * are all skipped — the server becomes a plain static file server over pre-built demo/.out/.
+ * Use demo/build.ts to produce those files before starting in production mode.
  */
 import { mkdirSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+const isProd = process.env.NODE_ENV === "production";
 
 const OUT_DIR = join(import.meta.dir, ".out");
 mkdirSync(OUT_DIR, { recursive: true });
@@ -25,33 +31,35 @@ async function rebuild() {
   console.log("✓ app.js bundled");
 }
 
-await rebuild();
-
-// SSE clients waiting for reload events.
+// SSE clients waiting for reload events (dev only).
 const reloadClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
 
-function notifyReload() {
-  const msg = new TextEncoder().encode("data: reload\n\n");
-  for (const ctrl of reloadClients) {
-    try { ctrl.enqueue(msg); } catch { reloadClients.delete(ctrl); }
-  }
-}
+if (!isProd) {
+  await rebuild();
 
-// Watch demo/ directory; debounce rebuilds to avoid thrash on rapid saves.
-let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
-watch(import.meta.dir, { recursive: true }, (_, filename) => {
-  if (!filename) return;
-  if (filename.startsWith(".out") || filename.startsWith("node_modules")) return;
-  if (!filename.endsWith(".ts") && !filename.endsWith(".html")) return;
-  if (rebuildTimer) clearTimeout(rebuildTimer);
-  rebuildTimer = setTimeout(async () => {
-    rebuildTimer = null;
-    try {
-      await rebuild();
-      notifyReload();
-    } catch {}
-  }, 150);
-});
+  function notifyReload() {
+    const msg = new TextEncoder().encode("data: reload\n\n");
+    for (const ctrl of reloadClients) {
+      try { ctrl.enqueue(msg); } catch { reloadClients.delete(ctrl); }
+    }
+  }
+
+  // Watch demo/ directory; debounce rebuilds to avoid thrash on rapid saves.
+  let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  watch(import.meta.dir, { recursive: true }, (_, filename) => {
+    if (!filename) return;
+    if (filename.startsWith(".out") || filename.startsWith("node_modules")) return;
+    if (!filename.endsWith(".ts") && !filename.endsWith(".html")) return;
+    if (rebuildTimer) clearTimeout(rebuildTimer);
+    rebuildTimer = setTimeout(async () => {
+      rebuildTimer = null;
+      try {
+        await rebuild();
+        notifyReload();
+      } catch {}
+    }, 150);
+  });
+}
 
 const RELOAD_SCRIPT = `<script>
   (function(){var es=new EventSource('/sse');es.onmessage=function(){location.reload()};})();
@@ -63,7 +71,7 @@ Bun.serve({
   async fetch(req) {
     const path = new URL(req.url).pathname;
 
-    if (path === "/sse") {
+    if (!isProd && path === "/sse") {
       let ctrl!: ReadableStreamDefaultController<Uint8Array>;
       const stream = new ReadableStream<Uint8Array>({
         start(c) { ctrl = c; reloadClients.add(ctrl); },
@@ -82,7 +90,8 @@ Bun.serve({
     if (!(await file.exists())) return new Response("not found", { status: 404 });
 
     if (path === "/" || path === "/index.html") {
-      const html = (await file.text()).replace("</body>", `${RELOAD_SCRIPT}</body>`);
+      let html = await file.text();
+      if (!isProd) html = html.replace("</body>", `${RELOAD_SCRIPT}</body>`);
       return new Response(html, { headers: { "Content-Type": "text/html" } });
     }
 

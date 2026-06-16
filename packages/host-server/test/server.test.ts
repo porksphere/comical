@@ -102,6 +102,40 @@ describe("content endpoints", () => {
   });
 });
 
+describe("GET /bridges/:id/series/:seriesId/page-image/:hash/:gidRef", () => {
+  test("returns 404 when bridge does not implement resolvePage", async () => {
+    const res = await fetch(`${baseUrl}/bridges/example/series/alice/page-image/abc123/12345-1`);
+    expect(res.status).toBe(404);
+  });
+
+  test("returns 302 redirect to the resolved CDN URL for a bridge that implements resolvePage", async () => {
+    const mockBridge = {
+      info: { id: "mock", name: "Mock", version: "0.0.1", contractVersion: "1.0.0", capabilities: ["direct"] },
+      getSeriesDetails: async () => ({ id: "test", title: "Test" }),
+      resolvePage: async (_s: string, _h: string, _ref: string) => "https://cdn.example.com/image.jpg",
+    };
+    const mockMgr = {
+      list: async () => [],
+      get: async (id: string) => { if (id !== "mock") throw new Error(`not found: ${id}`); return mockBridge; },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+
+    const srv = Bun.serve({ port: 0, fetch: createRouter(mockMgr).fetch });
+    const mockUrl = `http://localhost:${srv.port}`;
+    try {
+      const res = await fetch(
+        `${mockUrl}/bridges/mock/series/test%3A123/page-image/abc123/12345-1`,
+        { redirect: "manual" },
+      );
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("https://cdn.example.com/image.jpg");
+    } finally {
+      srv.stop(true);
+    }
+  });
+});
+
 describe("PUT /bridges/:id/settings", () => {
   test("updates settings and bridges re-use new config", async () => {
     const res = await fetch(`${baseUrl}/bridges/example/settings`, {

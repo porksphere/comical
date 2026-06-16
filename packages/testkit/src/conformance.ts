@@ -312,7 +312,7 @@ export async function evaluateBridge(
             sampledChapterId = chapters[0]!.id;
             const pages = await bridge.getChapterPages!(firstId, sampledChapterId);
             if (pages.length === 0) fail("core", "read.pages", "getChapterPages returned no pages for the first chapter");
-            else pass("core", "read.pages", `got ${pages.length} page(s) with absolute image URLs`);
+            else pass("core", "read.pages", `got ${pages.length} page(s)`);
           }
         }
       }

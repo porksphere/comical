@@ -9,7 +9,7 @@ import { createServer } from "../packages/host-server/src/server.ts";
 import { DirectFixtureBackend, FixtureBackend } from "../packages/testkit/src/index.ts";
 
 const ROOT = join(import.meta.dir, "..");
-const DATA_DIR = join(ROOT, ".comical-demo");
+const DATA_DIR = process.env.COMICAL_DATA_DIR ?? join(ROOT, ".comical-demo");
 const BRIDGES_DIRS = [
   join(ROOT, "bridges"),
   join(ROOT, "..", "bridges-repo", ".build"),

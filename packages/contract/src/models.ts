@@ -136,10 +136,10 @@ export const chapterSchema = z.object({
 });
 export type Chapter = z.infer<typeof chapterSchema>;
 
-/** A single readable page. `imageUrl` must be absolute; `headers` carry any referer/auth. */
+/** A single readable page. `imageUrl` is an absolute URL or a server-relative path (e.g. `/bridges/…/page-image/…`); `headers` carry any referer/auth. */
 export const pageSchema = z.object({
   index: z.number().int().nonnegative(),
-  imageUrl: z.string().url(),
+  imageUrl: z.string().min(1),
   /** Optional cheaper preview variant (e.g. a thumbnail-CDN URL); the reader still uses imageUrl. */
   thumbnailUrl: z.string().url().optional(),
   headers: z.record(z.string(), z.string()).optional(),
@@ -248,6 +248,12 @@ export const seriesListSchema = z.object({
   featured: z.boolean().optional(),
   /** Whether `getListItems` accepts a `query` (and filters/sort) to search within this list. */
   searchable: z.boolean().optional(),
+  /**
+   * When true, this list is a standalone top-level page that appears in the host's page selector
+   * (alongside Home and Favorites) rather than as a section on the Home screen. Hosts that don't
+   * understand this field gracefully degrade by showing it as a normal home section.
+   */
+  page: z.boolean().optional(),
 });
 export type SeriesList = z.infer<typeof seriesListSchema>;
 
