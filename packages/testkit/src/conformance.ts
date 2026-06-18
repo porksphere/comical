@@ -267,8 +267,8 @@ export async function evaluateBridge(
         if (pages.length === 0) fail("direct", "direct.pages.empty", "getSeriesPages returned no pages");
         else {
           pass("direct", "direct.pages", `getSeriesPages returned ${pages.length} page(s)`);
-          if (pages.every((p) => !p.thumbnailUrl)) {
-            warn("direct", "direct.pages.thumbnail", "pages have no thumbnailUrl (no page-preview grid)");
+          if (pages.every((p) => !p.thumbnail)) {
+            warn("direct", "direct.pages.thumbnail", "pages have no thumbnail (no page-preview grid)");
           }
         }
       } catch (e) {

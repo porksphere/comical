@@ -90,6 +90,82 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
 
   app.get("/health", (c) => c.json({ ok: true }));
 
+  // ── Test sprite sheet ────────────────────────────────────────────────────────
+  // A local SVG sprite sheet used by the test-sprites bridge to verify CSS sprite
+  // thumbnail rendering without any external CDN dependency.
+  app.get("/test-sprite.svg", (c) => {
+    const W = 200, H = 289, N = 20;
+    let cells = "";
+    for (let i = 0; i < N; i++) {
+      const hue = Math.round((i * 360) / N);
+      const x = i * W;
+      cells +=
+        `<rect x="${x}" y="0" width="${W}" height="${H}" fill="hsl(${hue},70%,55%)"/>` +
+        `<text x="${x + W / 2}" y="${H / 2 + 22}" font-size="80" text-anchor="middle" fill="white" ` +
+        `font-family="sans-serif" font-weight="bold">${i + 1}</text>`;
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${N * W}" height="${H}">${cells}</svg>`;
+    return new Response(svg, {
+      headers: { "Content-Type": "image/svg+xml", "Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*" },
+    });
+  });
+
+  // Variable-size companion sheet for the test-sprites bridge: a horizontal strip of
+  // differently-proportioned tiles (mixed aspect ratios). Geometry MUST match
+  // bridges-repo/src/test-sprites.ts: tile i width cycles 120/160/200/240/280, height cycles
+  // 300/250/200/150, top-aligned in a strip whose natural height is the tallest tile (300).
+  app.get("/test-sprite-var.svg", (c) => {
+    const N = 20, SHEET_H = 300;
+    let x = 0, cells = "";
+    for (let i = 0; i < N; i++) {
+      const w = 120 + (i % 5) * 40;
+      const h = SHEET_H - (i % 4) * 50;
+      const hue = Math.round((i * 360) / N);
+      cells +=
+        `<rect x="${x}" y="0" width="${w}" height="${h}" fill="hsl(${hue},70%,55%)"/>` +
+        `<text x="${x + w / 2}" y="${h / 2 + 18}" font-size="${Math.round(Math.min(w, h) * 0.42)}" ` +
+        `text-anchor="middle" fill="white" font-family="sans-serif" font-weight="bold">${21 + i}</text>`;
+      x += w;
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${x}" height="${SHEET_H}">${cells}</svg>`;
+    return new Response(svg, {
+      headers: { "Content-Type": "image/svg+xml", "Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*" },
+    });
+  });
+
+  // ── Image proxy ─────────────────────────────────────────────────────────────
+  // Bridges return proxy URLs pointing here so the browser never fetches CDN
+  // assets directly (avoids ad-blocker / content-filter interference).
+
+  const PROXY_ALLOWED_RE = /^https?:\/\/([a-z0-9-]+\.)*examplecdn\.org\/|^https?:\/\/([a-z0-9-]+\.)*example-source\.org\/t\/|^https?:\/\/([a-z0-9-]+\.)*cdn.example.test\//;
+
+  /**
+   * Resolve a proxy/crop `url` param to a fetchable absolute URL, enforcing the allowlist.
+   * Returns null (→ caller responds 403) for anything not on the CDN allowlist or the host's
+   * own `/test-sprite.svg` (the only same-origin source, used by the test-sprites bridge).
+   */
+  const resolveProxyTarget = (url: string, reqUrl: string): string | null => {
+    if (url === "/test-sprite.svg" || url === "/test-sprite-var.svg") return new URL(url, reqUrl).href;
+    return PROXY_ALLOWED_RE.test(url) ? url : null;
+  };
+
+  app.get("/img-proxy", async (c) => {
+    const target = resolveProxyTarget(c.req.query("url") ?? "", c.req.url);
+    if (!target) return c.text("Forbidden", 403);
+    try {
+      const r = await fetch(target, { headers: { "Referer": "https://example-source.test/" } });
+      return new Response(r.body, {
+        status: r.status,
+        headers: {
+          "Content-Type": r.headers.get("Content-Type") ?? "image/webp",
+          "Cache-Control": "max-age=86400",
+        },
+      });
+    } catch {
+      return c.text("upstream error", 502);
+    }
+  });
+
   // ── Bridge registry ──────────────────────────────────────────────────────────
 
   app.get("/bridges", async (c) => {
@@ -396,6 +472,17 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
         c.req.param("gidRef"),
       );
       return Response.redirect(url, 302);
+    }),
+  );
+
+  // Per-page lazy thumbnail resolver: returns the thumbnail descriptor for a single page as JSON.
+  app.get("/bridges/:id/series/:seriesId/page-thumb/:pageIndex", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.getPageThumbnail) return c.json({ error: "not supported" }, 404);
+      const pageIndex = Number(c.req.param("pageIndex"));
+      if (!Number.isFinite(pageIndex) || pageIndex < 0) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
+      const thumbnail = await bridge.getPageThumbnail(c.req.param("seriesId"), Math.floor(pageIndex));
+      return c.json(thumbnail);
     }),
   );
 

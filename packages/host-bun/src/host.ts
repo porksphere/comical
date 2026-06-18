@@ -18,6 +18,8 @@ export interface BunHostOptions {
   dataDir?: string;
   log?: LogCapability;
   userAgent?: string;
+  /** Base URL of the host server. Forwarded to the bridge via HostCapabilities.hostUrl. */
+  hostUrl?: string;
 }
 
 export const consoleLog: LogCapability = {
@@ -41,5 +43,6 @@ export function createBunHost(opts: BunHostOptions): HostCapabilities {
     storage,
     log: opts.log ?? consoleLog,
     settings: opts.settings ?? {},
+    ...(opts.hostUrl !== undefined && { hostUrl: opts.hostUrl }),
   };
 }

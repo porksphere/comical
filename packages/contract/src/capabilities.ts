@@ -67,4 +67,7 @@ export interface HostCapabilities {
   log: LogCapability;
   /** Values the user supplied for the bridge's declared `getSettings()` descriptors. */
   settings: ResolvedSettings;
+  /** Base URL of the host server (e.g. "http://localhost:3100"). Bridges may use this to
+   *  construct server-side proxy URLs so the browser never fetches CDN assets directly. */
+  hostUrl?: string;
 }

@@ -141,12 +141,40 @@ export const chapterSchema = z.object({
 });
 export type Chapter = z.infer<typeof chapterSchema>;
 
+/**
+ * A page-preview thumbnail. A discriminated union so the same contract serves every client:
+ *
+ *  - `image` — a ready-to-display URL (absolute or server-relative). Render with a normal image
+ *    element / native image loader.
+ *  - `sprite` — slice-metadata for a tile inside a shared sprite sheet (some sources, e.g.
+ *    example-source's viewer, pack ~20 thumbnails into one image). The client fetches `sheetUrl` **once**
+ *    (it's shared across the page's tiles, so it caches) and crops the `{x,y,w,h}` rect itself —
+ *    no server-side recompression, so the original pixels are preserved. Web renders an inline SVG
+ *    with a matching `viewBox`; native clients region-decode the rect (`BitmapRegionDecoder` on
+ *    Android, `CGImage(cropping:)` on iOS). `sheetWidth`/`sheetHeight` are the full sheet's pixel
+ *    dimensions, needed to scale the crop correctly.
+ */
+export const pageThumbnailSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("image"), url: z.string().min(1) }),
+  z.object({
+    kind: z.literal("sprite"),
+    sheetUrl: z.string().min(1),
+    x: z.number().int().nonnegative(),
+    y: z.number().int().nonnegative().default(0),
+    w: z.number().int().positive(),
+    h: z.number().int().positive(),
+    sheetWidth: z.number().int().positive(),
+    sheetHeight: z.number().int().positive().optional(),
+  }),
+]);
+export type PageThumbnail = z.infer<typeof pageThumbnailSchema>;
+
 /** A single readable page. `imageUrl` is an absolute URL or a server-relative path (e.g. `/bridges/…/page-image/…`); `headers` carry any referer/auth. */
 export const pageSchema = z.object({
   index: z.number().int().nonnegative(),
   imageUrl: z.string().min(1),
-  /** Optional cheaper preview variant (e.g. a thumbnail-CDN URL); the reader still uses imageUrl. */
-  thumbnailUrl: z.string().url().optional(),
+  /** Optional cheaper preview variant (image URL or sprite-sheet slice metadata). */
+  thumbnail: pageThumbnailSchema.optional(),
   headers: z.record(z.string(), z.string()).optional(),
 });
 export type Page = z.infer<typeof pageSchema>;

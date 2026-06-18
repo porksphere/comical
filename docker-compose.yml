@@ -1,0 +1,23 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "3100:3100"
+    volumes:
+      - comical-data:/data
+    restart: unless-stopped
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    ports:
+      - "3300:3300"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  comical-data:

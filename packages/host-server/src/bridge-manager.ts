@@ -27,6 +27,8 @@ export interface BridgeManagerOptions {
   settings: SettingsStore;
   /** Registry manager, if M4 registry support is enabled. */
   registry?: RegistryManager;
+  /** Base URL of the host server. Forwarded to bridges as HostCapabilities.hostUrl. */
+  hostUrl?: string;
 }
 
 export type BridgeSource = "local" | "registry";
@@ -125,6 +127,7 @@ export class BridgeManager {
       bridgeId: id,
       settings: userSettings,
       dataDir: join(this.opts.dataDir, "bridge-storage"),
+      ...(this.opts.hostUrl !== undefined && { hostUrl: this.opts.hostUrl }),
     });
 
     const bridge = loadBridge({ code, capabilities, expectedId: id });

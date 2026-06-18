@@ -18,6 +18,7 @@ import {
   type HostCapabilities,
   isContractCompatible,
   pageSchema,
+  pageThumbnailSchema,
   pagedResultsSchema,
   seriesEntrySchema,
   seriesInfoSchema,
@@ -281,6 +282,10 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
   if (raw.resolvePage) {
     bridge.resolvePage = (seriesId, hash, gidRef) =>
       call("resolvePage", z.string(), () => raw.resolvePage!(seriesId, hash, gidRef));
+  }
+  if (raw.getPageThumbnail) {
+    bridge.getPageThumbnail = (seriesId, pageIndex) =>
+      call("getPageThumbnail", pageThumbnailSchema, () => raw.getPageThumbnail!(seriesId, pageIndex));
   }
   if (raw.getReadChapters) {
     bridge.getReadChapters = (seriesId) =>

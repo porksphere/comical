@@ -11,6 +11,7 @@ import type {
   FilterValue,
   GenreExclusions,
   Page,
+  PageThumbnail,
   PagedResults,
   SeriesEntry,
   SeriesInfo,
@@ -73,6 +74,14 @@ export interface Bridge {
    * @returns The full, directly-loadable image URL for the page.
    */
   resolvePage?(seriesId: string, hash: string, gidRef: string): Promise<string>;
+
+  /**
+   * Return the thumbnail descriptor for a single page by 0-based index. Called by the host-server's
+   * per-page thumbnail route to lazily resolve thumbnails not populated by `getSeriesPages`.
+   * Bridges that fully populate all thumbnails in `getSeriesPages` need not implement this.
+   * (capability "direct")
+   */
+  getPageThumbnail?(seriesId: string, pageIndex: number): Promise<PageThumbnail>;
 
   // ---- Read-sync (capability "read-sync") ----
   // Bridges that can write reading state back to their source implement these.

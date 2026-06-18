@@ -41,6 +41,7 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
     dataDir: opts.dataDir,
     settings,
     registry,
+    hostUrl: `http://localhost:${opts.port ?? 3100}`,
   });
 
   const port = opts.port ?? 3100;
