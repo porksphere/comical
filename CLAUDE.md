@@ -1,5 +1,29 @@
 # Comical — Claude instructions
 
+## Design principles (read before changing the contract or adding a feature)
+
+Cross-platform portability is a **fundamental, non-negotiable** design goal: the same core
+(`@comical/core` + `@comical/contract`) runs unchanged on desktop, web, iOS, and Android. Treat
+these as hard constraints, not preferences. See the "Design goals" section of `README.md` for the
+full rationale.
+
+- **Core stays platform-agnostic.** `@comical/core` and `@comical/contract` must not import `fs`,
+  `process`, sockets, `fetch`, or the DOM. Platform access is reached only through
+  `HostCapabilities`. If a change needs a platform API in the core, it belongs in a host adapter.
+- **Keep host integration minimal.** A host implements only `HostCapabilities` (network/storage/log)
+  plus a `BundleEvaluator`. Never add a responsibility a host must re-implement per platform — that
+  burden multiplies across every current and future client. Lighter host = more correct.
+- **Presentation is data, never rendered UI.** When a feature would otherwise need bespoke
+  per-client/per-platform rendering logic, express it as a typed, zod-validated value in the contract
+  so each client renders it with native primitives. Example: `Page.thumbnail` is a discriminated
+  union (`image` URL | `sprite` slice-metadata) — web renders inline SVG, Android uses
+  `BitmapRegionDecoder`, iOS uses `CGImage(cropping:)`, and the host does no image work. Do **not**
+  reach for a server-side transform (e.g. cropping/transcoding in `host-server`) when the contract can
+  carry metadata that lets every client do it natively.
+- **Contract changes are additive and validated.** Prefer new optional fields / discriminated-union
+  variants over breaking shapes; validate at the boundary (`pageThumbnailSchema`-style). The contract
+  is the one stable seam every platform depends on.
+
 ## Testing
 
 **Comprehensive tests are required for every change to these packages/areas:**
@@ -50,47 +74,8 @@ const noTrackerSrv = Bun.serve({ port: 0, fetch: createRouter(manager).fetch });
 expect((await fetch(`http://localhost:${noTrackerSrv.port}/trackers`)).status).toBe(404);
 ```
 
-## Demo browser icons
+## Browser UI
 
-The demo uses **[Lucide](https://lucide.dev)** for all icons (`lucide` npm package).
-
-- **Import** the named icon in `demo/app.ts` and register it in `createIcons`:
-  ```ts
-  import { createIcons, SlidersHorizontal /* ... */ } from "lucide";
-  createIcons({ icons: { SlidersHorizontal /* ... */ } });
-  ```
-- **Use in HTML** with a `<i data-lucide="icon-name"></i>` element (kebab-case icon name). `createIcons` replaces it with an inline `<svg>` on load.
-- **Size/stroke** via CSS on the `svg` descendant: `svg { width: 1rem; height: 1rem; stroke-width: 1.75; }`.
-- Find icon names at [lucide.dev/icons](https://lucide.dev/icons).
-
-## Demo browser dev workflow
-
-When the user is iterating on the demo browser app, spin up **two background terminals** — one for each process:
-
-| Terminal | Command | Default port |
-|----------|---------|-------------|
-| Server   | `bun run demo:server` | 3100 |
-| Client   | `bun run demo:dev`   | 3300 |
-
-- **Both processes watch for changes automatically** — no manual restart needed for source edits.
-  - Server restarts automatically when `packages/host-server/**` or `demo/demo-server.ts` change (via `bun --watch`).
-  - Client rebuilds automatically when any `demo/*.ts` or `demo/index.html` changes, and the browser live-reloads.
-  - Bridge/tracker changes: after rebuilding the bridge or tracker (`bun run build` in that package), the server detects the new `.js` and restarts automatically.
-- **Port conflicts**: before starting, check if ports 3100/3300 are already in use. If the occupying process is the comical server or client from a previous session, kill it. If it is an unrelated process, warn the user before killing.
-
-```powershell
-# Kill by port (PowerShell)
-$pid = (Get-NetTCPConnection -LocalPort 3100 -ErrorAction SilentlyContinue).OwningProcess
-if ($pid) { Stop-Process -Id $pid -Force }
-```
-
-## Playwright capture on request (remote sessions)
-
-There is an **on-demand** Playwright lane for the browser demo, separate from `bun test`. It exists so a video + screenshots of the demo can be pushed back during remote/headless sessions.
-
-- **Off by default.** Only run a capture when the user explicitly asks — e.g. *"send me the test recording"*, *"record the test"*, *"screenshot the e2e"*. Never run it automatically or on every test pass.
-- **Run it:** `bun run e2e:capture` (all specs) or `bun run e2e:capture "<title substring>"` (passed to Playwright `-g`). The capture script boots both demo servers itself (reusing them if already running).
-- **Deliver it:** the script prints a `CAPTURE_DIR=<path>` line and the collected artifact paths (`recording.mp4` + `NN-*.png` step screenshots). Push those files to the user with the `SendUserFile` tool, `status: "proactive"` so they ping the user's device. Do not paste local paths as if they were links — the user is remote and can't open them.
-- **Video format:** the script transcodes Playwright's VP8/webm to H.264 mp4 via ffmpeg (the Claude app won't play webm). If ffmpeg isn't on PATH it falls back to delivering the raw `.webm`.
-- Artifacts are collected even when the test **fails** (a failed run's recording is what you want to see), so check the printed pass/fail line and tell the user the outcome.
-- Specs live in `e2e/`. Config: `playwright.config.ts`. Captures are git-ignored under `e2e/.captures/`.
+The browser UI is a **separate deployable app in the `comical-web` repo** — it is not part of this
+monorepo. Its dev workflow and the on-demand Playwright capture lane live there (see
+`comical-web/CLAUDE.md`). Run it with `bash dev.sh` from the workspace root.

@@ -136,6 +136,73 @@ describe("GET /bridges/:id/series/:seriesId/page-image/:hash/:gidRef", () => {
   });
 });
 
+describe("GET /bridges/:id/series/:seriesId/page-thumb/:pageIndex", () => {
+  test("returns 404 when bridge does not implement getPageThumbnail", async () => {
+    const res = await fetch(`${baseUrl}/bridges/example/series/alice/page-thumb/5`);
+    expect(res.status).toBe(404);
+  });
+
+  test("returns the JSON thumbnail descriptor for a bridge that implements getPageThumbnail", async () => {
+    const sprite = { kind: "sprite", sheetUrl: "/test-sprite.svg", x: 0, y: 0, w: 200, h: 289, sheetWidth: 4000, sheetHeight: 289 };
+    const mockBridge = {
+      info: { id: "mock-pt", name: "Mock PT", version: "0.0.1", contractVersion: "1.0.0", capabilities: ["direct"] },
+      getSeriesDetails: async () => ({ id: "test", title: "Test" }),
+      getPageThumbnail: async (_s: string, _idx: number) => sprite,
+    };
+    const mockMgr = {
+      list: async () => [],
+      get: async (id: string) => { if (id !== "mock-pt") throw new Error(`not found: ${id}`); return mockBridge; },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+
+    const srv = Bun.serve({ port: 0, fetch: createRouter(mockMgr).fetch });
+    const mockUrl = `http://localhost:${srv.port}`;
+    try {
+      const res = await fetch(`${mockUrl}/bridges/mock-pt/series/test/page-thumb/5`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual(sprite);
+    } finally {
+      srv.stop(true);
+    }
+  });
+});
+
+describe("GET /img-proxy", () => {
+  test("returns 403 for disallowed URL", async () => {
+    const res = await fetch(`${baseUrl}/img-proxy?url=${encodeURIComponent("https://evil.com/img.jpg")}`);
+    expect(res.status).toBe(403);
+  });
+
+  test("returns 403 when url param is missing", async () => {
+    const res = await fetch(`${baseUrl}/img-proxy`);
+    expect(res.status).toBe(403);
+  });
+
+  test("returns 403 for empty url", async () => {
+    const res = await fetch(`${baseUrl}/img-proxy?url=`);
+    expect(res.status).toBe(403);
+  });
+
+  test("does not require auth token even when token is set", async () => {
+    const authMgr = {
+      list: async () => [],
+      get: async (id: string) => { throw new Error(`not found: ${id}`); },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+    const tokenSrv = Bun.serve({ port: 0, fetch: createRouter(authMgr, { token: "secret" }).fetch });
+    try {
+      // /img-proxy should respond (403 for bad URL, not 401) even without Authorization header
+      const res = await fetch(`http://localhost:${tokenSrv.port}/img-proxy?url=https://evil.com/img.jpg`);
+      expect(res.status).toBe(403);
+    } finally {
+      tokenSrv.stop(true);
+    }
+  });
+});
+
 describe("PUT /bridges/:id/settings", () => {
   test("updates settings and bridges re-use new config", async () => {
     const res = await fetch(`${baseUrl}/bridges/example/settings`, {

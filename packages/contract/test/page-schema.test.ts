@@ -1,28 +1,50 @@
 /**
- * Schema tests for the per-page `thumbnailUrl` (the cheaper preview variant). The field is optional
- * and additive — older bridges that omit it must still parse.
+ * Schema tests for the per-page `thumbnail` descriptor (the cheaper preview variant). The field is
+ * optional and additive — bridges that omit it must still parse — and is a discriminated union of
+ * an `image` URL or `sprite` slice-metadata.
  */
 import { describe, expect, test } from "bun:test";
-import { pageSchema } from "../src/models.ts";
+import { pageSchema, pageThumbnailSchema } from "../src/models.ts";
 
-describe("pageSchema thumbnailUrl", () => {
-  test("accepts a valid absolute thumbnailUrl", () => {
+describe("pageSchema thumbnail", () => {
+  test("accepts an image thumbnail (absolute or server-relative url)", () => {
     const page = pageSchema.parse({
       index: 0,
       imageUrl: "https://i.example.test/galleries/1/1.jpg",
-      thumbnailUrl: "https://t.example.test/galleries/1/1t.jpg",
+      thumbnail: { kind: "image", url: "https://t.example.test/1t.jpg" },
     });
-    expect(page.thumbnailUrl).toBe("https://t.example.test/galleries/1/1t.jpg");
+    expect(page.thumbnail).toEqual({ kind: "image", url: "https://t.example.test/1t.jpg" });
   });
 
-  test("parses when thumbnailUrl is omitted (backward-compatible)", () => {
+  test("accepts a sprite thumbnail (slice metadata) and defaults y to 0", () => {
+    const page = pageSchema.parse({
+      index: 0,
+      imageUrl: "https://i.example.test/0.jpg",
+      thumbnail: {
+        kind: "sprite",
+        sheetUrl: "/img-proxy?url=https%3A%2F%2Fexamplecdn.org%2Ft%2Fsheet.webp",
+        x: 400,
+        w: 200,
+        h: 289,
+        sheetWidth: 4000,
+        sheetHeight: 289,
+      },
+    });
+    expect(page.thumbnail).toMatchObject({ kind: "sprite", x: 400, w: 200, h: 289, sheetWidth: 4000, y: 0 });
+  });
+
+  test("parses when thumbnail is omitted (backward-compatible)", () => {
     const page = pageSchema.parse({ index: 3, imageUrl: "https://i.example.test/3.jpg" });
-    expect(page.thumbnailUrl).toBeUndefined();
+    expect(page.thumbnail).toBeUndefined();
   });
 
-  test("rejects a non-URL thumbnailUrl", () => {
+  test("rejects an unknown thumbnail kind", () => {
+    expect(() => pageThumbnailSchema.parse({ kind: "video", url: "x" })).toThrow();
+  });
+
+  test("rejects a sprite with non-positive tile dimensions", () => {
     expect(() =>
-      pageSchema.parse({ index: 0, imageUrl: "https://i.example.test/0.jpg", thumbnailUrl: "not-a-url" }),
+      pageThumbnailSchema.parse({ kind: "sprite", sheetUrl: "/s.webp", x: 0, w: 0, h: 289, sheetWidth: 4000 }),
     ).toThrow();
   });
 });

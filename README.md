@@ -16,6 +16,7 @@ the user is authorized to use.
 ## Table of contents
 
 - [Vocabulary](#vocabulary)
+- [Design goals](#design-goals)
 - [Architecture](#architecture)
   - [Layered model](#layered-model)
   - [The bridge contract](#the-bridge-contract)
@@ -27,7 +28,6 @@ the user is authorized to use.
 - [Quick start](#quick-start)
   - [Running the server](#running-the-server)
   - [Using the CLI](#using-the-cli)
-  - [Running the browser demo](#running-the-browser-demo)
 - [Writing a bridge](#writing-a-bridge)
 - [Registry](#registry)
   - [Publishing a registry](#publishing-a-registry)
@@ -47,6 +47,48 @@ the user is authorized to use.
 | **Host adapter** | The per-platform layer that provides real capabilities (HTTP, storage, logging) to the core. One adapter per runtime environment. |
 | **Host capability API** | The interface a host adapter implements (`network.request`, `storage`, `log`). The only contact surface between the sandbox and the outside world. |
 | **Registry** | An optional, user-added catalog of bridges (`index.json` + bundle files on any static host). The project operates none. |
+
+---
+
+## Design goals
+
+These are the load-bearing constraints behind every design decision in the core. They are not
+aspirational — they are the rules a change has to satisfy to be correct.
+
+### 1. Cross-platform by construction
+
+The same TypeScript core (`@comical/core` + `@comical/contract`) is meant to run **unchanged** on
+desktop, web, iOS, and Android. This is a *fundamental* goal, not an afterthought, so it constrains
+what may live in the core:
+
+- The core **never** imports a platform API (`fs`, `process`, sockets, `fetch`, the DOM). Platform
+  access is reached only through the [host capability API](#host-capability-api).
+- The **contract** (`@comical/contract`) is the single stable boundary. Everything a client needs to
+  act is expressed there as plain, zod-validated **data** — never as platform-specific code or
+  pre-rendered UI.
+- **Presentation is data, never bridge- or host-rendered UI.** If a feature would otherwise force a
+  client to run bespoke per-platform logic, the necessary information is pushed *into the contract as
+  a typed value* so each client renders it with its own native primitives.
+
+> **Worked example — page thumbnails.** `Page.thumbnail` is a typed descriptor: either
+> `{ kind: "image", url }` or `{ kind: "sprite", sheetUrl, x, y, w, h, sheetWidth }` (slice metadata
+> for a tile inside a shared sprite sheet). The host does **no** image processing. Web renders a
+> sprite as an inline SVG `viewBox`; Android uses `BitmapRegionDecoder`; iOS uses `CGImage(cropping:)`.
+> One contract shape, each platform slices the way it's good at — and the bytes are never recompressed.
+
+### 2. A host should have to do as little as possible
+
+Adopting Comical inside an application should be a *small* integration, not a port. A new host
+implements only:
+
+1. **`HostCapabilities`** — `network.request`, `storage`, `log`. That's the whole surface.
+2. A **`BundleEvaluator`** — run a CJS bundle in your platform's JS engine (JSC, QuickJS, V8, …).
+
+Everything else — loading, sandboxing, rate-limiting, response caching, cookie sessions, contract
+validation, settings enforcement, the registry — is provided by the core and shared across every
+platform. A host must never be asked to re-implement product logic (parsing, slicing, ranking,
+rendering) that the core or contract can carry for it. When in doubt, the lighter the host, the more
+correct the design.
 
 ---
 
@@ -276,7 +318,9 @@ bundles or needs CORS at all.
 | Package | Description |
 |---------|-------------|
 | `@comical/cli` | `comical` command-line host. Commands: `list`, `serve`, `search`, `details`, `chapters`, `pages`, `test`, `record`, `registry ...` |
-| `demo/` | Minimal browser UI — thin REST client for a running `comical serve` instance. |
+
+The browser UI is a separate deployable app in the **`comical-web`** repo (a thin REST client for a
+running `comical serve` instance) — it is not part of this monorepo.
 
 ### Bridges
 
@@ -316,10 +360,7 @@ The recommended way to use Comical — runs on any machine on your network, brow
 clients just call the REST API.
 
 ```sh
-# Start the server wired to the built-in public-domain demo library
-bun run demo:server        # server on :3100, fixture backend pre-configured
-
-# Or start a bare server and configure a bridge's backend yourself
+# Start a server and configure a bridge's backend yourself
 bun run serve              # server on :3100
 
 # Then configure the example bridge's backend URL
@@ -327,6 +368,9 @@ curl -X PUT http://localhost:3100/bridges/example/settings \
   -H "Content-Type: application/json" \
   -d '{"baseUrl": "https://your-komga-instance.example.com"}'
 ```
+
+> A fixture-backed dev server (no real backend needed) plus the browser UI live in the **`comical-web`**
+> repo — run `bash dev.sh` from the workspace root to start both.
 
 Key REST endpoints:
 
@@ -372,18 +416,16 @@ bun run cli evaluate --bridge example --fixture
 bun run cli serve --port 3100 --data-dir ./.comical
 ```
 
-### Running the browser demo
+### Running the browser UI
+
+The browser UI lives in the separate **`comical-web`** repo. From the workspace root:
 
 ```sh
-# Terminal 1 — server + fixture backend
-bun run demo:server
-
-# Terminal 2 — browser UI on :3300
-bun run demo:dev
+bash dev.sh        # builds sibling bridges, starts the fixture-backed server (:3100) + UI (:3300)
 ```
 
-Open `http://localhost:3300`. The demo is a thin REST client — the browser makes no direct
-network requests to backends, has no bridge bundles, and runs no bridge code.
+Open `http://localhost:3300`. The UI is a thin REST client — the browser makes no direct network
+requests to backends, has no bridge bundles, and runs no bridge code.
 
 ---
 
@@ -670,7 +712,6 @@ comical/
 │   └── example-bridge/                  — reference bridge (public-domain demo backend)
 ├── packages/host-ios/                   — Swift Package (JSC evaluator + URLSession)
 ├── packages/host-android/               — Kotlin library (QuickJS + OkHttp)
-├── demo/                                — browser demo UI
 ├── scripts/build.ts                     — bundles bridges to CJS
 ├── package.json                         — Bun workspace root
 ├── tsconfig.base.json                   — shared TS config
@@ -685,8 +726,6 @@ bun run build            # bundle bridges → bridges/<id>/dist/bridge.js
 bun test                 # run all tests
 bun run typecheck        # tsc --noEmit across all packages
 bun run serve            # start comical-server on :3100
-bun run demo:server      # start server wired to fixture backend
-bun run demo:dev         # start browser demo UI on :3300
 bun run cli -- --help    # CLI help
 ```
 

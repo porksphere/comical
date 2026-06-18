@@ -25,20 +25,21 @@ describe("direct-example getSeriesPages", () => {
     for (const p of pages) expect(p.imageUrl).toStartWith("https://picsum.photos/seed/");
   });
 
-  test("parses a cheaper thumbnailUrl distinct from the full imageUrl", async () => {
+  test("parses a cheaper image thumbnail distinct from the full imageUrl", async () => {
     const bridge = load();
     const pages = await bridge.getSeriesPages!("raven");
     for (const p of pages) {
-      expect(p.thumbnailUrl).toBeDefined();
-      expect(p.thumbnailUrl).toStartWith("https://picsum.photos/seed/");
+      expect(p.thumbnail?.kind).toBe("image");
+      const url = p.thumbnail?.kind === "image" ? p.thumbnail.url : "";
+      expect(url).toStartWith("https://picsum.photos/seed/");
       // Thumb is the small variant; the full page image is 700x1000.
-      expect(p.thumbnailUrl).toContain("/160/220");
+      expect(url).toContain("/160/220");
       expect(p.imageUrl).toContain("/700/1000");
-      expect(p.thumbnailUrl).not.toBe(p.imageUrl);
+      expect(url).not.toBe(p.imageUrl);
     }
   });
 
-  test("omits thumbnailUrl when the backend exposes no data-thumb", async () => {
+  test("omits thumbnail when the backend exposes no data-thumb", async () => {
     // A backend whose pages carry no data-thumb attribute (legacy bridges / no thumb CDN).
     const noThumb = new DirectFixtureBackend();
     const orig = noThumb.handle.bind(noThumb);
@@ -52,6 +53,6 @@ describe("direct-example getSeriesPages", () => {
     const bridge = load(noThumb);
     const pages = await bridge.getSeriesPages!("raven");
     expect(pages.length).toBe(6);
-    for (const p of pages) expect(p.thumbnailUrl).toBeUndefined();
+    for (const p of pages) expect(p.thumbnail).toBeUndefined();
   });
 });
