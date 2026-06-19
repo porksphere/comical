@@ -495,6 +495,13 @@ export const bridgeCapabilitySchema = z.enum([
    * client carrying labels. Without it, such ids are displayed as their raw id.
    */
   "resolve-tags",
+  /**
+   * Provides related series separately from the main detail via `getRelatedSeries(seriesId)`.
+   * The host calls this lazily after the detail page renders so the related rail doesn't block the
+   * initial content. Bridges advertising this should NOT include `relatedSeriesGroups` in their
+   * `getSeriesDetails` response.
+   */
+  "related-series",
 ]);
 export type BridgeCapability = z.infer<typeof bridgeCapabilitySchema>;
 
