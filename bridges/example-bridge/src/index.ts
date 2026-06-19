@@ -9,6 +9,8 @@
 import {
   BridgeBase,
   type BridgeInfo,
+  type CardBadge,
+  type CardBadgePosition,
   type Chapter,
   type CheerioRoot,
   type Filter,
@@ -150,9 +152,28 @@ class ExampleBridge extends BridgeBase<Settings> {
         };
         if (cover) entry.thumbnailUrl = this.resolve(base, cover);
         if (author) entry.subtitle = author;
+        const badges = this.cardBadges($, node);
+        if (badges.length) entry.badges = badges;
         return entry;
       })
       .filter((e) => e.id.length > 0);
+  }
+
+  /** Parse the backend's `.card-badge` spans (language tag, "NEW", …) into contract card badges. */
+  private cardBadges($: CheerioRoot, node: ReturnType<CheerioRoot>): CardBadge[] {
+    return node
+      .find(".card-badge")
+      .toArray()
+      .map((el) => {
+        const b = $(el);
+        const badge: CardBadge = { text: b.text().trim() };
+        const pos = b.attr("data-pos");
+        if (pos) badge.position = pos as CardBadgePosition;
+        const tone = b.attr("data-tone");
+        if (tone) badge.tone = tone as CardBadge["tone"];
+        return badge;
+      })
+      .filter((b) => b.text.length > 0);
   }
 
   async getLists(): Promise<SeriesList[]> {

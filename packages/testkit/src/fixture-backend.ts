@@ -141,12 +141,26 @@ const cover = (id: string): string => `https://picsum.photos/seed/${encodeURICom
 const pageImg = (seriesId: string, chapterId: string, n: number): string =>
   `https://picsum.photos/seed/${encodeURIComponent(`${seriesId}-${chapterId}-${n}`)}/700/1000`;
 
+/**
+ * Bridge-defined card badges (see `seriesEntrySchema.badges`): every card carries a language tag,
+ * and still-running series additionally get a "NEW" flag — exercising multiple badges + positions so
+ * clients have something to render in the demo.
+ */
+function cardBadges(s: FixtureSeries): string {
+  const badges = [`<span class="card-badge" data-pos="top-right" data-tone="info">EN</span>`];
+  if (s.status === "ongoing") {
+    badges.push(`<span class="card-badge" data-pos="top-left" data-tone="success">NEW</span>`);
+  }
+  return badges.join("");
+}
+
 function seriesCard(s: FixtureSeries): string {
   return (
     `<div class="series-card" data-id="${esc(s.id)}">` +
     `<a class="title" href="/series/${esc(s.id)}">${esc(s.title)}</a>` +
     `<img class="cover" src="${esc(cover(s.id))}" alt="${esc(s.title)}">` +
     `<span class="author">${esc(s.author)}</span>` +
+    cardBadges(s) +
     `</div>`
   );
 }

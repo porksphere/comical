@@ -55,6 +55,23 @@ describe("example-bridge", () => {
     expect(pages).toMatchSnapshot("sherlock-1-pages");
   });
 
+  test("parses bridge-defined card badges from search/list results", async () => {
+    const bridge = load();
+    const results = await bridge.getSearchResults!("", 1);
+    // Every fixture card carries a language badge anchored top-right.
+    for (const item of results.items) {
+      const en = item.badges?.find((b) => b.text === "EN");
+      expect(en).toEqual({ text: "EN", position: "top-right", tone: "info" });
+    }
+    // Still-running series additionally get a "NEW" badge — proves multiple badges + positions parse.
+    const withNew = results.items.find((i) => i.badges?.some((b) => b.text === "NEW"));
+    expect(withNew?.badges).toContainEqual({ text: "NEW", position: "top-left", tone: "success" });
+
+    // The same parsing path feeds list results.
+    const list = await bridge.getListItems!("latest", 1);
+    expect(list.items[0]!.badges?.some((b) => b.text === "EN")).toBe(true);
+  });
+
   test("parses related-series rails into labeled, kinded groups", async () => {
     const bridge = load();
     const details = await bridge.getSeriesDetails("dracula");
