@@ -153,6 +153,13 @@ export const seriesInfoSchema = z.object({
   authors: z.array(creditSchema).optional(),
   artists: z.array(creditSchema).optional(),
   description: z.string().optional(),
+  /**
+   * The series' overall type / format / category as one short label (e.g. "Manga", "Doujinshi",
+   * "Webtoon", "Artist CG"). Distinct from `genres` — it answers "what kind of thing is this", not
+   * "what is it about". Hosts render it as a single Type metadata cell beside status/author rather
+   * than mixing it into the genre chips. Bridges that only have this one taxonomy still use it here.
+   */
+  type: z.string().min(1).optional(),
   genres: z.array(z.string()).optional(),
   /** Other site taxonomies beyond genres (themes, demographics, format, content warnings, …). */
   tagGroups: z.array(tagGroupSchema).optional(),
