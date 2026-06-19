@@ -34,6 +34,41 @@ describe("seriesEntrySchema excluded flag", () => {
   });
 });
 
+describe("seriesEntrySchema card badges", () => {
+  test("parses badges with text, position and tone", () => {
+    const entry = seriesEntrySchema.parse({
+      id: "1",
+      title: "T",
+      badges: [{ text: "EN", position: "top-right", tone: "info" }],
+    });
+    expect(entry.badges).toEqual([{ text: "EN", position: "top-right", tone: "info" }]);
+  });
+
+  test("position and tone are optional (text alone is valid)", () => {
+    const entry = seriesEntrySchema.parse({ id: "1", title: "T", badges: [{ text: "NEW" }] });
+    expect(entry.badges?.[0]).toEqual({ text: "NEW" });
+  });
+
+  test("parses an entry with no badges (backward-compatible)", () => {
+    expect(seriesEntrySchema.parse({ id: "1", title: "T" }).badges).toBeUndefined();
+  });
+
+  test("rejects an empty badge label", () => {
+    expect(() => seriesEntrySchema.parse({ id: "1", title: "T", badges: [{ text: "" }] })).toThrow();
+  });
+
+  test("rejects an unknown badge position", () => {
+    expect(() =>
+      seriesEntrySchema.parse({ id: "1", title: "T", badges: [{ text: "x", position: "middle" }] }),
+    ).toThrow();
+  });
+
+  test("caps the number of badges at four", () => {
+    const five = Array.from({ length: 5 }, (_, i) => ({ text: `b${i}` }));
+    expect(() => seriesEntrySchema.parse({ id: "1", title: "T", badges: five })).toThrow();
+  });
+});
+
 describe("exclusion plumbing exports", () => {
   test('the reserved settings key is "excludedTags"', () => {
     expect(EXCLUDED_TAGS_KEY).toBe("excludedTags");

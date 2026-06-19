@@ -17,6 +17,28 @@ export const seriesStatusSchema = z.enum([
 ]);
 export type SeriesStatus = z.infer<typeof seriesStatusSchema>;
 
+/** Corner of a card's cover a {@link cardBadge} anchors to (clients default to top-right). */
+export const cardBadgePositionSchema = z.enum(["top-left", "top-right", "bottom-left", "bottom-right"]);
+export type CardBadgePosition = z.infer<typeof cardBadgePositionSchema>;
+
+/**
+ * A small label a bridge can paint onto a series card's cover in search/list/home grids — e.g. a
+ * language tag ("EN"), an age rating, or "NEW". Presentation-as-data: the bridge supplies the text +
+ * placement and each client renders it with native primitives (web absolutely-positions a span,
+ * native clients overlay a label). Purely decorative metadata — hosts that don't render badges
+ * degrade gracefully (the card is unaffected). Per-bridge mapping of native data into badges is the
+ * configurability; the contract just carries the typed value.
+ */
+export const cardBadgeSchema = z.object({
+  /** Short label shown on the card — kept terse (a few characters / one word). */
+  text: z.string().min(1).max(16),
+  /** Which corner of the cover to anchor to; clients default to top-right when omitted. */
+  position: cardBadgePositionSchema.optional(),
+  /** Optional semantic tone so clients can colour the badge consistently (styling is the client's). */
+  tone: z.enum(["neutral", "info", "warn", "success"]).optional(),
+});
+export type CardBadge = z.infer<typeof cardBadgeSchema>;
+
 /** A lightweight series entry as returned by search / home / popular / latest. */
 export const seriesEntrySchema = z.object({
   /** Opaque, bridge-namespaced, stable-across-sessions identifier. */
@@ -24,6 +46,12 @@ export const seriesEntrySchema = z.object({
   title: z.string().min(1),
   thumbnailUrl: z.string().url().optional(),
   subtitle: z.string().optional(),
+  /**
+   * Bridge-defined badges overlaid on the card's cover (language, rating, "NEW", …). Optional and
+   * additive — older bridges omit it and clients that don't render badges ignore it. Capped so a
+   * bridge can't bury a card under labels.
+   */
+  badges: z.array(cardBadgeSchema).max(4).optional(),
   /**
    * Set by a bridge (capability "exclude-tags") when this slot matched the user's persistent tag
    * exclusions. The entry is a redacted placeholder: `title` carries no real name and
@@ -50,6 +78,13 @@ export const tagGroupSchema = z.object({
   tags: z.array(z.string()),
   /** Bridge-internal IDs parallel to `tags` (same index). Hosts use these for filter lookups. */
   tagIds: z.array(z.string()).optional(),
+  /**
+   * Parallel to `tags` (same index): a ready-to-run search query string for each tag. When present,
+   * hosts run a free-text search with this string on tag click (instead of selecting a tag filter) —
+   * for backends whose tags aren't a filterable id set but whose search box accepts tag syntax (e.g.
+   * example-source's `female:"big breasts$"`). Mutually exclusive with `tagIds` per group in practice.
+   */
+  tagQueries: z.array(z.string()).optional(),
 });
 export type TagGroup = z.infer<typeof tagGroupSchema>;
 
@@ -88,15 +123,35 @@ export const relatedSeriesGroupSchema = z.object({
 });
 export type RelatedSeriesGroup = z.infer<typeof relatedSeriesGroupSchema>;
 
+/**
+ * A single named credit (author or artist) with an optional bridge-namespaced id. The id, when
+ * present, lets a host filter precisely (e.g. by an author page) rather than re-searching the name.
+ * Splitting a site's "A, B & C" credit line into individual people is the bridge's job — it knows
+ * its own format — so multi-credit works portably without each client guessing separators.
+ */
+export const creditSchema = z.object({
+  name: z.string().min(1),
+  id: z.string().min(1).optional(),
+});
+export type Credit = z.infer<typeof creditSchema>;
+
 /** Full detail for a single series. */
 export const seriesInfoSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   thumbnailUrl: z.string().url().optional(),
+  /**
+   * Author/artist credit lines. `author`/`artist` (+ `*Id`) are the single-value convenience form
+   * kept for back-compat; `authors`/`artists` are the richer multi-credit form a bridge fills in when
+   * a series has several people, each individually filterable. A client prefers the array when present
+   * and otherwise falls back to the single string. Bridges should set both for the primary credit.
+   */
   author: z.string().optional(),
   authorId: z.string().optional(),
   artist: z.string().optional(),
   artistId: z.string().optional(),
+  authors: z.array(creditSchema).optional(),
+  artists: z.array(creditSchema).optional(),
   description: z.string().optional(),
   genres: z.array(z.string()).optional(),
   /** Other site taxonomies beyond genres (themes, demographics, format, content warnings, …). */
