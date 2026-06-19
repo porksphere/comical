@@ -276,9 +276,11 @@ public final class ComicalBridgeContext {
         ctx.setObject(atobBlock, forKeyedSubscript: "atob" as NSString)
         ctx.setObject(btoaBlock, forKeyedSubscript: "btoa" as NSString)
 
-        // JS-implementable globals + the console wrapper.
-        // TODO(device): URL, URLSearchParams, TextEncoder, TextDecoder are NOT built into JSC —
-        // bundle real polyfills and evaluate them here, or bridges using them throw ReferenceError.
+        // JS-implementable globals + the console wrapper. JSC (like QuickJS) does not provide
+        // URL/URLSearchParams/TextEncoder/TextDecoder, so polyfill them here — the URL and
+        // URLSearchParams shims mirror @comical/host-native's entry-quickjs.ts; keep the two in
+        // lockstep. Zod's z.string().url() calls `new URL(str)`; bridges build query strings with
+        // URLSearchParams and do UTF-8 byte work with Text{En,De}coder.
         ctx.evaluateScript("""
         var console = {
           log:   (...a) => __comical_log("info",  a.join(" ")),
@@ -289,6 +291,96 @@ public final class ComicalBridgeContext {
         };
         var queueMicrotask = (cb) => { Promise.resolve().then(cb); };
         var structuredClone = (v) => JSON.parse(JSON.stringify(v));
+
+        if (typeof URL === "undefined") {
+          globalThis.URL = function URL(url) {
+            if (typeof url !== "string" || !/^https?:\\/\\/./.test(url)) {
+              throw new TypeError("Invalid URL: " + url);
+            }
+            this.href = url;
+          };
+        }
+
+        if (typeof URLSearchParams === "undefined") {
+          globalThis.URLSearchParams = class URLSearchParams {
+            constructor(init) {
+              this._p = [];
+              if (typeof init === "string") {
+                const s = init.startsWith("?") ? init.slice(1) : init;
+                for (const part of s ? s.split("&") : []) {
+                  const eq = part.indexOf("=");
+                  const k = decodeURIComponent((eq >= 0 ? part.slice(0, eq) : part).replace(/\\+/g, " "));
+                  const v = decodeURIComponent((eq >= 0 ? part.slice(eq + 1) : "").replace(/\\+/g, " "));
+                  this._p.push([k, v]);
+                }
+              } else if (Array.isArray(init)) {
+                for (const [k, v] of init) this._p.push([String(k), String(v)]);
+              } else if (init && typeof init === "object") {
+                for (const [k, v] of Object.entries(init)) this._p.push([k, String(v)]);
+              }
+            }
+            append(k, v) { this._p.push([k, v]); }
+            delete(k) { this._p = this._p.filter(([n]) => n !== k); }
+            get(k) { const e = this._p.find(([n]) => n === k); return e ? e[1] : null; }
+            getAll(k) { return this._p.filter(([n]) => n === k).map(([, v]) => v); }
+            has(k) { return this._p.some(([n]) => n === k); }
+            set(k, v) {
+              const i = this._p.findIndex(([n]) => n === k);
+              if (i < 0) { this._p.push([k, v]); return; }
+              this._p[i] = [k, v];
+              this._p = this._p.filter(([n], j) => n !== k || j === i);
+            }
+            toString() { return this._p.map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&"); }
+            forEach(cb) { this._p.forEach(([k, v]) => cb(v, k)); }
+            entries() { return this._p[Symbol.iterator](); }
+            keys() { return this._p.map(([k]) => k)[Symbol.iterator](); }
+            values() { return this._p.map(([, v]) => v)[Symbol.iterator](); }
+            [Symbol.iterator]() { return this._p[Symbol.iterator](); }
+            get size() { return this._p.length; }
+          };
+        }
+
+        if (typeof TextEncoder === "undefined") {
+          globalThis.TextEncoder = class TextEncoder {
+            encode(str) {
+              str = String(str === undefined ? "" : str);
+              const bytes = [];
+              for (let i = 0; i < str.length; i++) {
+                let code = str.charCodeAt(i);
+                if (code < 0x80) { bytes.push(code); }
+                else if (code < 0x800) { bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f)); }
+                else if (code >= 0xd800 && code <= 0xdbff) {
+                  const lo = str.charCodeAt(++i);
+                  code = 0x10000 + ((code - 0xd800) << 10) + (lo - 0xdc00);
+                  bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+                } else { bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f)); }
+              }
+              return new Uint8Array(bytes);
+            }
+          };
+        }
+
+        if (typeof TextDecoder === "undefined") {
+          globalThis.TextDecoder = class TextDecoder {
+            decode(buf) {
+              if (!buf) return "";
+              const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer || buf);
+              let out = "", i = 0;
+              while (i < bytes.length) {
+                const b = bytes[i++];
+                if (b < 0x80) { out += String.fromCharCode(b); }
+                else if (b < 0xe0) { out += String.fromCharCode(((b & 0x1f) << 6) | (bytes[i++] & 0x3f)); }
+                else if (b < 0xf0) { out += String.fromCharCode(((b & 0x0f) << 12) | ((bytes[i++] & 0x3f) << 6) | (bytes[i++] & 0x3f)); }
+                else {
+                  let cp = ((b & 0x07) << 18) | ((bytes[i++] & 0x3f) << 12) | ((bytes[i++] & 0x3f) << 6) | (bytes[i++] & 0x3f);
+                  cp -= 0x10000;
+                  out += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+                }
+              }
+              return out;
+            }
+          };
+        }
         """)
     }
 
