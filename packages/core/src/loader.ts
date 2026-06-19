@@ -20,6 +20,7 @@ import {
   pageSchema,
   pageThumbnailSchema,
   pagedResultsSchema,
+  relatedSeriesGroupSchema,
   seriesEntrySchema,
   seriesInfoSchema,
   seriesListSchema,
@@ -213,6 +214,11 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
     info,
     getSeriesDetails: (id) => call("getSeriesDetails", seriesInfoSchema, () => raw.getSeriesDetails(id)),
   };
+
+  if (raw.getRelatedSeries) {
+    bridge.getRelatedSeries = (id) =>
+      call("getRelatedSeries", z.array(relatedSeriesGroupSchema), () => raw.getRelatedSeries!(id));
+  }
 
   // Chapter methods are omitted for direct-only bridges (capability "direct").
   if (!info.capabilities.includes("direct")) {

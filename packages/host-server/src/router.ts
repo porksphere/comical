@@ -437,6 +437,13 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     }),
   );
 
+  app.get("/bridges/:id/series/:seriesId/related", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.getRelatedSeries) return c.json([]);
+      return c.json(await bridge.getRelatedSeries(c.req.param("seriesId")));
+    }),
+  );
+
   app.get("/bridges/:id/series/:seriesId/chapters", (c) =>
     withContentBridge(c, async (bridge) => {
       if (!bridge.getChapters) return c.json({ error: "not supported" }, 400);

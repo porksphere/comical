@@ -13,6 +13,7 @@ import type {
   Page,
   PageThumbnail,
   PagedResults,
+  RelatedSeriesGroup,
   SeriesEntry,
   SeriesInfo,
   SeriesList,
@@ -51,6 +52,16 @@ export interface Bridge {
 
   /** Full detail for a series id previously emitted by this bridge. */
   getSeriesDetails(seriesId: string): Promise<SeriesInfo>;
+
+  /**
+   * Related series groups for a series, loaded separately from the main detail so the detail page
+   * can render without waiting for the related rail. (capability "related-series")
+   *
+   * Bridges that implement this should NOT include `relatedSeriesGroups` in their `getSeriesDetails`
+   * response — the host will call this lazily and merge the result. Bridges that don't implement it
+   * may still return `relatedSeriesGroups` inline in `SeriesInfo`.
+   */
+  getRelatedSeries?(seriesId: string): Promise<RelatedSeriesGroup[]>;
 
   /** Ordered chapter list for a series. Order is the bridge's responsibility. */
   getChapters?(seriesId: string): Promise<Chapter[]>;
