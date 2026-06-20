@@ -267,9 +267,24 @@ export const filterSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("toggle"), key: z.string(), label: z.string() }),
   z.object({ type: z.literal("number"), key: z.string(), label: z.string(), min: z.number().optional(), max: z.number().optional() }),
   z.object({ type: z.literal("select"), key: z.string(), label: z.string(), options: z.array(optionSchema) }),
-  z.object({ type: z.literal("multiselect"), key: z.string(), label: z.string(), options: z.array(optionSchema) }),
-  /** Options fetched live via GET /bridges/:id/tags?q=:query. Value is string[] of tag IDs. */
-  z.object({ type: z.literal("tag-multiselect"), key: z.string(), label: z.string() }),
+  z.object({
+    type: z.literal("multiselect"),
+    key: z.string(),
+    label: z.string(),
+    options: z.array(optionSchema),
+    /** When true, each option cycles through inactive → include → exclude. Value shape becomes { include, exclude }. */
+    excludable: z.boolean().optional(),
+    /** When true, all options start selected (UI semantics: uncheck to exclude). Value is still string[] of selected. */
+    defaultAll: z.boolean().optional(),
+  }),
+  /** Options fetched live via GET /bridges/:id/tags?q=:query. */
+  z.object({
+    type: z.literal("tag-multiselect"),
+    key: z.string(),
+    label: z.string(),
+    /** When true, each tag chip has a mode toggle (include/exclude). Value shape becomes { include, exclude }. */
+    excludable: z.boolean().optional(),
+  }),
 ]);
 export type Filter = z.infer<typeof filterSchema>;
 
@@ -278,9 +293,30 @@ export type Filter = z.infer<typeof filterSchema>;
  * text → string, toggle → boolean, number → number, select → string, multiselect → string[].
  * Sorting is a SEPARATE concern (filters narrow a set; sort orders it) — see SortOption/SortSelection.
  */
+/** Value shape for excludable multiselect and tag-multiselect filters. */
+export const filterIncludeExcludeSchema = z.object({
+  include: z.array(z.string()),
+  exclude: z.array(z.string()),
+});
+export type FilterIncludeExclude = z.infer<typeof filterIncludeExcludeSchema>;
+
+/**
+ * Normalise a filter value into { include, exclude } regardless of whether the bridge received the
+ * new object shape or the legacy string[]. Bridges that declare `excludable: true` should call this
+ * instead of casting to string[] directly.
+ */
+export function parseFilterIncludeExclude(value: unknown): FilterIncludeExclude {
+  if (value !== null && typeof value === "object" && !Array.isArray(value) && "include" in value) {
+    const v = value as Partial<FilterIncludeExclude>;
+    return { include: v.include ?? [], exclude: v.exclude ?? [] };
+  }
+  if (Array.isArray(value)) return { include: value as string[], exclude: [] };
+  return { include: [], exclude: [] };
+}
+
 export const filterValueSchema = z.object({
   key: z.string(),
-  value: z.union([z.string(), z.array(z.string()), z.number(), z.boolean()]),
+  value: z.union([z.string(), z.array(z.string()), z.number(), z.boolean(), filterIncludeExcludeSchema]),
 });
 export type FilterValue = z.infer<typeof filterValueSchema>;
 
