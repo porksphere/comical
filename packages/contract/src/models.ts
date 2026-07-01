@@ -578,6 +578,8 @@ export const bridgeInfoSchema = z.object({
   languages: z.array(z.string()).min(1),
   nsfw: z.boolean(),
   capabilities: z.array(bridgeCapabilitySchema),
+  /** Absolute URL (or data URI) to a small square icon representing the bridge/source. Optional. */
+  iconUrl: z.string().url().optional(),
   /**
    * Politeness budget for this bridge's backend. The runtime applies it to the gated network as
    * the default (a host may still override per key). Omit to accept the runtime default. The

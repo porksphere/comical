@@ -53,9 +53,14 @@ describe("GET /bridges", () => {
 
 describe("GET /bridges/:id", () => {
   test("returns info and settings descriptors", async () => {
-    const data = await fetch(`${baseUrl}/bridges/example`).then(r => r.json()) as { info: { id: string }; settings: unknown[] };
+    const data = await fetch(`${baseUrl}/bridges/example`).then(r => r.json()) as { info: { id: string; iconUrl?: string }; settings: unknown[] };
     expect(data.info.id).toBe("example");
     expect(Array.isArray(data.settings)).toBe(true);
+  });
+
+  test("passes through the bridge's declared iconUrl", async () => {
+    const data = await fetch(`${baseUrl}/bridges/example`).then(r => r.json()) as { info: { iconUrl?: string } };
+    expect(data.info.iconUrl).toBe("https://example.com/favicon.ico");
   });
 
   test("404 for unknown bridge", async () => {

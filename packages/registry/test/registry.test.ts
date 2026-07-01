@@ -8,6 +8,7 @@ import {
   VerificationError,
   generateKeyPair,
   publicKeyFingerprint,
+  registryBridgeEntrySchema,
   registryDisplayName,
   resolveRegistryUrl,
   sha256Hex,
@@ -55,6 +56,29 @@ describe("registryDisplayName", () => {
 
   test("returns hostname for other URLs", () => {
     expect(registryDisplayName("https://cdn.example.com/index.json")).toBe("cdn.example.com");
+  });
+});
+
+const BASE_ENTRY = {
+  id: "example",
+  name: "Example",
+  version: "0.1.0",
+  contractVersion: "1.0.0",
+  languages: ["en"],
+  nsfw: false,
+  capabilities: [],
+  url: "https://cdn.example.com/bridges/example/0.1.0/bridge.js",
+  sha256: "a".repeat(64),
+};
+
+describe("registryBridgeEntrySchema iconUrl", () => {
+  test("accepts an absolute icon URL", () => {
+    const entry = registryBridgeEntrySchema.parse({ ...BASE_ENTRY, iconUrl: "https://example.com/favicon.ico" });
+    expect(entry.iconUrl).toBe("https://example.com/favicon.ico");
+  });
+
+  test("parses when omitted (backward-compatible with existing registry entries)", () => {
+    expect(registryBridgeEntrySchema.parse({ ...BASE_ENTRY }).iconUrl).toBeUndefined();
   });
 });
 
