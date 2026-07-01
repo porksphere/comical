@@ -370,7 +370,7 @@ curl -X PUT http://localhost:3100/bridges/example/settings \
 ```
 
 > A fixture-backed dev server (no real backend needed) plus the browser UI live in the **`comical-web`**
-> repo — run `bash dev.sh` from the workspace root to start both.
+> repo — run `bun run dev` from the workspace root to start both.
 
 Key REST endpoints:
 
@@ -421,7 +421,7 @@ bun run cli serve --port 3100 --data-dir ./.comical
 The browser UI lives in the separate **`comical-web`** repo. From the workspace root:
 
 ```sh
-bash dev.sh        # builds sibling bridges, starts the fixture-backed server (:3100) + UI (:3300)
+bun run dev        # builds sibling bridges, starts the fixture-backed server (:3100) + UI (:3300)
 ```
 
 Open `http://localhost:3300`. The UI is a thin REST client — the browser makes no direct network
