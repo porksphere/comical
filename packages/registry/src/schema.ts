@@ -20,6 +20,8 @@ export const registryBridgeEntrySchema = z.object({
   nsfw: z.boolean(),
   capabilities: z.array(z.string()),
   description: z.string().optional(),
+  /** Absolute URL (or data URI) to a small square icon representing the bridge/source. */
+  iconUrl: z.string().url().optional(),
   /** Absolute URL to the CJS bridge bundle. */
   url: z.string().url(),
   /** Lowercase hex SHA-256 of the bundle content. Always required. */

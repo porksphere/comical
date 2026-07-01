@@ -83,6 +83,7 @@ class ExampleBridge extends BridgeBase<Settings> {
     languages: ["en"],
     nsfw: false,
     capabilities: ["lists", "search", "filters", "sort", "settings", "favorites", "exclude-tags", "exclude-genres", "resolve-tags"],
+    iconUrl: "https://example.com/favicon.ico",
   };
 
   /** The pickable genre universe for the "exclude-genres" control (mirrors the genre filter axis). */
