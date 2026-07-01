@@ -78,4 +78,4 @@ expect((await fetch(`http://localhost:${noTrackerSrv.port}/trackers`)).status).t
 
 The browser UI is a **separate deployable app in the `comical-web` repo** — it is not part of this
 monorepo. Its dev workflow and the on-demand Playwright capture lane live there (see
-`comical-web/CLAUDE.md`). Run it with `bash dev.sh` from the workspace root.
+`comical-web/CLAUDE.md`). Run it with `bun run dev` from the workspace root.
