@@ -312,6 +312,7 @@ bundles or needs CORS at all.
 | `@comical/proxy` | CORS relay | Hono, SSRF guard, optional Ed25519 bearer auth, 10 MB cap. Deployed independently. |
 | `host-ios` (Swift Package) | iOS / macOS | `JSContext` evaluator, `URLSession`, `FileManager`, on-device `ComicalServer` |
 | `host-android` (Kotlin library) | Android | QuickJS (~1 MB), OkHttp, DataStore, on-device `ComicalServer` |
+| `@comical/host-rn` | React Native / Expo | Reusable in-process embedding layer: proxy `BridgeProvider`, reused-router transport, registry-download `BundleSource`, Hermes WebCrypto shim. See below. |
 
 ### Applications
 
@@ -327,6 +328,27 @@ running `comical serve` instance) — it is not part of this monorepo.
 | Directory | Description |
 |-----------|-------------|
 | `bridges/example-bridge/` | Reference HTML bridge. Targets a user-supplied backend (URL via settings). Tested against the `FixtureBackend` public-domain library. |
+
+### Embedding the runtime in React Native
+
+A React Native / Expo app can run bridges **on-device** — no external server — by reusing this repo's
+router in-process. `@comical/host-rn` is the reusable glue; the app supplies only three things it
+owns.
+
+- **How it works.** The app routes all data through a swappable transport. The embedded transport
+  drives `@comical/host-server`'s `createRouter` in-process (`router.fetch(new Request(...))`, no
+  socket) against an `EmbeddedBridgeProvider` whose proxy bridges marshal each method call to a native
+  JS engine (JSC on iOS, QuickJS on Android) via a native module implementing the `NativeBridgeRuntime`
+  JSON contract (`initBridge`/`callBridge`/`disposeBridge`). Bundles are downloaded, verified, and
+  cached from a registry (`RegistryBundleSource`, reusing `@comical/registry`).
+- **What the app provides:** its native module (resolved and passed to `setNativeBridgeRuntime`), its
+  transport setter, and a `SettingsStore`. Then it calls `configureEmbeddedRuntime` +
+  `applyEmbeddedMode`. Everything else lives in `@comical/host-rn`.
+- **Node-free by construction.** `host-rn` and every comical package it imports use the Node-free
+  subpaths (`@comical/core/loader`, `@comical/host-server/router`, `@comical/host-server/bridge-provider`,
+  `@comical/registry/{schema,fetcher,available}`) — never the Node-bound barrels — so the whole graph
+  type-checks and bundles under Hermes. `comical-app` (the cross-platform app) is the reference
+  consumer; see its `apps/mobile/src/data/embedded/`.
 
 ---
 
