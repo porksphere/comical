@@ -17,7 +17,7 @@ import { validateSettingsInput } from "@comical/core/settings";
 import { entryKey, type Library } from "@comical/library";
 import type { RegistryManager } from "@comical/registry";
 import type { ComicalRuntime } from "@comical/runtime";
-import type { BridgeManager } from "./bridge-manager.ts";
+import type { BridgeProvider } from "./bridge-provider.ts";
 import { TagLabelCache } from "./tag-label-cache.ts";
 import type { TrackerManager } from "./tracker-manager.ts";
 
@@ -53,10 +53,10 @@ interface PendingOAuth {
 const pendingOAuth = new Map<string, PendingOAuth>();
 
 type Bindings = Record<string, never>;
-type Vars = { manager: BridgeManager };
+type Vars = { manager: BridgeProvider };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): Hono<any> {
+export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}): Hono<any> {
   const app = new Hono<{ Bindings: Bindings; Variables: Vars }>();
 
   // Shared id→label memory so the host can fold tag names back into id-only responses (e.g.
@@ -179,7 +179,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
 
   app.get("/bridges/:id", async (c) => {
     return withBridge(c, async (bridge) => {
-      const manager = c.get("manager") as BridgeManager;
+      const manager = c.get("manager") as BridgeProvider;
       const settings = bridge.getSettings?.() ?? [];
       const missingRequired = await manager.missingRequired(bridge.info.id);
 
@@ -222,7 +222,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
     } catch {
       return c.json({ error: "invalid JSON" }, 400);
     }
-    const manager = c.get("manager") as BridgeManager;
+    const manager = c.get("manager") as BridgeProvider;
     try {
       const bridge = await manager.get(id);
       const descriptors = bridge.getSettings?.() ?? [];
@@ -262,7 +262,7 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
           .map(([k, v]) => ({ id: k, label: v as string })),
       );
     }
-    const manager = c.get("manager") as BridgeManager;
+    const manager = c.get("manager") as BridgeProvider;
     try {
       await manager.get(id); // surface 404 for an unknown bridge before persisting
       const updated = await manager.updateSettings(id, { [EXCLUDED_TAGS_KEY]: tags });
@@ -1119,11 +1119,11 @@ export function createRouter(manager: BridgeManager, opts: RouterOptions = {}): 
 async function withBridge(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   c: any,
-  fn: (bridge: Awaited<ReturnType<BridgeManager["get"]>>) => Promise<Response>,
+  fn: (bridge: Awaited<ReturnType<BridgeProvider["get"]>>) => Promise<Response>,
 ): Promise<Response> {
   const id = c.req.param("id") as string;
   try {
-    const bridge = await (c.get("manager") as BridgeManager).get(id);
+    const bridge = await (c.get("manager") as BridgeProvider).get(id);
     // `await` so a handler's async rejection (e.g. a bridge throwing "auth required") is caught
     // here and returned as a clean JSON error rather than a bare 500.
     return await fn(bridge);
@@ -1163,10 +1163,10 @@ function readExcludedTags(stored: Record<string, SettingValue>): string[] {
 async function excludedTagsFor(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   c: any,
-  bridge: Awaited<ReturnType<BridgeManager["get"]>>,
+  bridge: Awaited<ReturnType<BridgeProvider["get"]>>,
 ): Promise<string[]> {
   if (!bridge.info.capabilities?.includes("exclude-tags")) return [];
-  const stored = await (c.get("manager") as BridgeManager).storedSettings(bridge.info.id);
+  const stored = await (c.get("manager") as BridgeProvider).storedSettings(bridge.info.id);
   return readExcludedTags(stored);
 }
 
@@ -1174,10 +1174,10 @@ async function excludedTagsFor(
 async function withContentBridge(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   c: any,
-  fn: (bridge: Awaited<ReturnType<BridgeManager["get"]>>) => Promise<Response>,
+  fn: (bridge: Awaited<ReturnType<BridgeProvider["get"]>>) => Promise<Response>,
 ): Promise<Response> {
   const id = c.req.param("id") as string;
-  const manager = c.get("manager") as BridgeManager;
+  const manager = c.get("manager") as BridgeProvider;
   try {
     await manager.get(id); // surface load/orphan/404 errors via withBridge's handling below
     const missing = await manager.missingRequired(id);
