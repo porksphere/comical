@@ -24,6 +24,13 @@ import type { TrackerManager } from "./tracker-manager.ts";
 export interface RouterOptions {
   /** CORS origin(s) allowed. Defaults to '*' for LAN use. */
   origin?: string;
+  /**
+   * Apply the CORS middleware (default true). Set false for in-process use (e.g. comical-app's
+   * embedded runtime drives `router.fetch` directly): CORS is meaningless without a network origin,
+   * and Hono's post-response header tweak re-wraps the Response via `new Response(res.body, …)` —
+   * where `res.body` (a ReadableStream) is `null` under React Native, silently emptying the body.
+   */
+  cors?: boolean;
   /** Optional bearer token for simple auth. */
   token?: string;
   /** Registry manager — enables M4 registry endpoints. */
@@ -63,7 +70,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   // `excludedTags`). Warms once for every client of this server. See TagLabelCache.
   const tagLabels = new TagLabelCache();
 
-  app.use("*", cors({
+  if (opts.cors !== false) app.use("*", cors({
     origin: opts.origin ?? "*",
     allowMethods: ["GET", "PUT", "POST", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],

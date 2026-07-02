@@ -189,4 +189,20 @@ describe("embedded in-process router", () => {
     const res = await call("/library");
     expect(res.status).toBe(404);
   });
+
+  test("cors:false skips the CORS middleware (embedded in-process use)", async () => {
+    // With CORS on (default), Hono adds the allow-origin header. In-process embedded hosts pass
+    // cors:false — its post-response header tweak re-wraps the Response and, on React Native (where
+    // Response.body is null), empties the body. So embedded must be able to skip it entirely.
+    const specs = { demo: { capabilities: ["lists"], methods: CONTENT_METHODS } };
+    const withCors = embeddedFetch(createRouter(makeManager(specs)));
+    const noCors = embeddedFetch(createRouter(makeManager(specs), { cors: false }));
+
+    const on = await withCors("/bridges");
+    const off = await noCors("/bridges");
+    expect(on.headers.get("access-control-allow-origin")).toBe("*");
+    expect(off.headers.get("access-control-allow-origin")).toBeNull();
+    // The body still resolves either way.
+    expect(((await off.json()) as unknown[]).length).toBe(1);
+  });
 });
