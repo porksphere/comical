@@ -4,7 +4,10 @@
   "type": "module",
   "description": "Registry index format, fetcher, verifier, publisher, and manager",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./fetcher": "./src/fetcher.ts",
+    "./verify": "./src/verify.ts",
+    "./schema": "./src/schema.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {

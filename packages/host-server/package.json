@@ -4,7 +4,8 @@
   "type": "module",
   "description": "HTTP server host: exposes the bridge runtime as a REST API for browser and app clients",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./router": "./src/router.ts"
   },
   "types": "./src/index.ts",
   "scripts": {
