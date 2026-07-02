@@ -10,7 +10,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BridgeInfo, SettingDescriptor, SettingValue } from "@comical/contract";
+import type { SettingValue } from "@comical/contract";
 import { type LoadedBridge, loadBridge, resolveSettings } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
 import type { RegistryManager } from "@comical/registry";
@@ -20,6 +20,12 @@ import {
   resolveBridge,
 } from "../../cli/src/discover.ts";
 import type { SettingsStore } from "./settings-store.ts";
+import type { BridgeProvider, BridgeSource, BridgeSummary } from "./bridge-provider.ts";
+
+// The `BridgeSummary`/`BridgeSource` shapes moved to the Node-free `bridge-provider.ts` (so the
+// router can be consumed without pulling this file's node:fs imports); re-exported here for the
+// many existing consumers that import them from `bridge-manager`.
+export type { BridgeSource, BridgeSummary };
 
 export interface BridgeManagerOptions {
   bridgesDir: string | string[];
@@ -31,20 +37,7 @@ export interface BridgeManagerOptions {
   hostUrl?: string;
 }
 
-export type BridgeSource = "local" | "registry";
-
-export interface BridgeSummary {
-  info: BridgeInfo;
-  settings: SettingDescriptor[];
-  configured: boolean;
-  /** Required setting keys with neither a value nor a default — the bridge can't serve content yet. */
-  missingRequired: string[];
-  source: BridgeSource;
-  /** Version available in the registry, if newer than installed. */
-  availableVersion?: string;
-}
-
-export class BridgeManager {
+export class BridgeManager implements BridgeProvider {
   private readonly loaded = new Map<string, LoadedBridge>();
   private discovered: DiscoveredBridge[] | undefined;
 

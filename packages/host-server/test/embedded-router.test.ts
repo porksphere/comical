@@ -27,7 +27,7 @@ import type {
   SeriesList,
   SettingValue,
 } from "@comical/contract";
-import type { BridgeManager } from "../src/bridge-manager.ts";
+import type { BridgeProvider } from "../src/bridge-provider.ts";
 import { createRouter } from "../src/router.ts";
 
 // ── A proxy bridge — the shape comical-app's native-module-backed bridge presents ────────────
@@ -43,7 +43,7 @@ function makeBridge(id: string, capabilities: string[], methods: string[]): Reco
     contractVersion: "1.0.0",
     languages: ["en"],
     nsfw: false,
-    capabilities,
+    capabilities: capabilities as BridgeInfo["capabilities"],
   };
   const entry = (n: number): SeriesEntry => ({ id: `s${n}`, title: `Series ${n}` });
   const page = (items: SeriesEntry[]): PagedResults<SeriesEntry> => ({ items, page: 1, hasNextPage: false });
@@ -56,7 +56,6 @@ function makeBridge(id: string, capabilities: string[], methods: string[]): Reco
     getSeriesDetails: async (seriesId: string): Promise<SeriesInfo> => ({
       id: seriesId,
       title: `Series ${seriesId}`,
-      chaptersSupported: true,
     }),
     getChapters: async (_seriesId: string): Promise<Chapter[]> => [{ id: "c1", name: "Chapter 1", number: 1 }],
     getChapterPages: async (_seriesId: string, _chapterId: string): Promise<Page[]> => [
@@ -87,27 +86,33 @@ interface FakeBridgeSpec {
   storedSettings?: Record<string, SettingValue>;
 }
 
-function makeManager(specs: Record<string, FakeBridgeSpec>): BridgeManager {
+function makeManager(specs: Record<string, FakeBridgeSpec>): BridgeProvider {
   const bridges = new Map(
     Object.entries(specs).map(([id, spec]) => [id, makeBridge(id, spec.capabilities, spec.methods)]),
   );
-  const manager = {
+  // Typed against the real BridgeProvider interface — no `as unknown as` cast — proving comical-app
+  // can supply a proxy provider (get() → native-engine-backed bridge) that the router accepts.
+  return {
     list: async () =>
       Object.entries(specs).map(([id, spec]) => ({
-        info: bridges.get(id)!.info,
+        info: bridges.get(id)!.info as BridgeInfo,
+        settings: [],
         configured: (spec.missingRequired ?? []).length === 0,
         missingRequired: spec.missingRequired ?? [],
         source: "registry" as const,
       })),
-    get: async (id: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    get: async (id: string): Promise<any> => {
       const b = bridges.get(id);
       if (!b) throw new Error(`bridge not found: ${id}`);
       return b;
     },
     missingRequired: async (id: string) => specs[id]?.missingRequired ?? [],
     storedSettings: async (id: string) => specs[id]?.storedSettings ?? {},
+    updateSettings: async (id: string, values) => ({ ...(specs[id]?.storedSettings ?? {}), ...values }),
+    invalidate: () => {},
+    refresh: () => {},
   };
-  return manager as unknown as BridgeManager;
 }
 
 // Drive the router with plain in-process Requests — no socket, no Bun.serve.
