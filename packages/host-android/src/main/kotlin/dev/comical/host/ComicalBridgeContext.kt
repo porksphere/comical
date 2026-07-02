@@ -159,6 +159,26 @@ class ComicalBridgeContext private constructor(
         return parseJson(resultJson)
     }
 
+    /**
+     * Like [call] but returns the raw JSON string `comical_call` produced (not a parsed
+     * JSONObject/Array/String). For JSON-boundary consumers such as the Expo native module, whose
+     * React Native side re-parses it — avoids a parse-then-reserialize round-trip that would mangle
+     * primitive results (e.g. `resolvePage`'s bare-string URL). `argsJson` is a JSON array string.
+     */
+    suspend fun callJson(method: String, argsJson: String): String =
+        js.evaluate<String>("await comical_call(${jsString(method)}, ${jsString(argsJson)})")
+
+    /**
+     * `{ info, methods }` as JSON: the loaded bridge's self-description plus the names of the methods
+     * it actually implements (so a host can expose exactly those). `comical_bridge` is set by
+     * `comical_init`; call after a successful load.
+     */
+    suspend fun describeJson(): String =
+        js.evaluate<String>(
+            "JSON.stringify({ info: comical_bridge.info, methods: Object.keys(comical_bridge)" +
+                ".filter(function (k) { return typeof comical_bridge[k] === 'function'; }) })",
+        )
+
     fun close() = js.close()
 
     // ── Native capability bindings (read by the runtime's async adapter as _native_*) ─────────

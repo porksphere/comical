@@ -127,6 +127,41 @@ public final class ComicalBridgeContext {
         }
     }
 
+    /// Like `call` but returns the raw JSON string `comical_call` produced, without parsing it into
+    /// a Foundation object. For JSON-boundary consumers such as the Expo native module, whose React
+    /// Native side re-parses it — avoids a parse-then-reserialize round-trip that would mangle
+    /// primitive results (e.g. `resolvePage`'s bare-string URL). `argsJSON` is a JSON array string.
+    public func callJson(_ method: String, argsJSON: String) async throws -> String {
+        return try await withCheckedThrowingContinuation { continuation in
+            let script = "comical_call(\(jsString(method)), \(jsString(argsJSON)))"
+            guard let promise = js.evaluateScript(script) else {
+                continuation.resume(throwing: ComicalError(message: "evaluation returned nil for \(method)"))
+                return
+            }
+            let thenFn: @convention(block) (JSValue) -> Void = { result in
+                guard let str = result.toString() else {
+                    continuation.resume(throwing: ComicalError(message: "non-string result for \(method)"))
+                    return
+                }
+                continuation.resume(returning: str)
+            }
+            let catchFn: @convention(block) (JSValue) -> Void = { err in
+                continuation.resume(throwing: ComicalError(message: err.toString() ?? "bridge error in \(method)"))
+            }
+            promise.invokeMethod("then", withArguments: [JSValue(object: thenFn, in: self.js)!])
+                   .invokeMethod("catch", withArguments: [JSValue(object: catchFn, in: self.js)!])
+        }
+    }
+
+    /// `{ info, methods }` as JSON: the loaded bridge's self-description plus the names of the
+    /// methods it implements (so a host can expose exactly those). Call after a successful `init`.
+    public func describeJson() -> String {
+        return js.evaluateScript(
+            "JSON.stringify({ info: comical_bridge.info, methods: Object.keys(comical_bridge)"
+                + ".filter(function (k) { return typeof comical_bridge[k] === 'function'; }) })",
+        )?.toString() ?? "{}"
+    }
+
     // MARK: - Native callback injection
 
     private func injectNativeCallbacks() throws {
