@@ -55,8 +55,15 @@ public final class ComicalBridgeContext {
         // @comical/core's NativeContextEvaluator calls. Must exist before `comical_init`.
         injectBundleEvaluator()
 
-        // Evaluate the harness shim (bundled resource).
-        guard let harnessURL = Bundle.module.url(forResource: "harness", withExtension: "js"),
+        // Evaluate the harness shim (bundled resource). `Bundle.module` is a SwiftPM-only accessor;
+        // when built as a CocoaPods pod (Expo module) it doesn't exist, and the pod's `resources`
+        // land in the main app bundle — so look there instead. CocoaPods defines the COCOAPODS flag.
+        #if COCOAPODS
+        let harnessBundle = Bundle.main
+        #else
+        let harnessBundle = Bundle.module
+        #endif
+        guard let harnessURL = harnessBundle.url(forResource: "harness", withExtension: "js"),
               let harnessCode = try? String(contentsOf: harnessURL, encoding: .utf8)
         else { throw ComicalError(message: "harness.js resource not found") }
         js.evaluateScript(harnessCode)
