@@ -261,6 +261,10 @@ class ComicalBridgeContext private constructor(
         js.evaluate<Any?>(
             """
             (function () {
+              // quickjs-kt won't return from `evaluate` until every scheduled timer coroutine drains,
+              // so core's per-method call-timeout (an uncancelled setTimeout) makes each method stall
+              // for the full timeout. Tell the harness to disable it here; OkHttp still bounds requests.
+              globalThis.__comical_disable_call_timeout = true;
               var timers = Object.create(null); var seq = 0;
               globalThis.setTimeout = function (cb, ms) {
                 var id = ++seq; timers[id] = true;
