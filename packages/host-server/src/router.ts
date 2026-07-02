@@ -122,8 +122,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   });
 
   // Variable-size companion sheet for the test-sprites bridge: a horizontal strip of
-  // differently-proportioned tiles (mixed aspect ratios). Geometry MUST match
-  // bridges-repo/src/test-sprites.ts: tile i width cycles 120/160/200/240/280, height cycles
+  // differently-proportioned tiles (mixed aspect ratios). Geometry MUST match the test-sprites
+  // bridge's sheet: tile i width cycles 120/160/200/240/280, height cycles
   // 300/250/200/150, top-aligned in a strip whose natural height is the tallest tile (300).
   app.get("/test-sprite-var.svg", (c) => {
     const N = 20, SHEET_H = 300;
