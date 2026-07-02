@@ -5,7 +5,8 @@
   "description": "HTTP server host: exposes the bridge runtime as a REST API for browser and app clients",
   "exports": {
     ".": "./src/index.ts",
-    "./router": "./src/router.ts"
+    "./router": "./src/router.ts",
+    "./bridge-provider": "./src/bridge-provider.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

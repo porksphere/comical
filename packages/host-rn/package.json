@@ -1,0 +1,19 @@
+{
+  "name": "@comical/host-rn",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Reusable glue for embedding the Comical bridge runtime in a React Native / Expo app: an in-process BridgeProvider backed by a native JS engine, the router transport, a registry-download BundleSource, and a Hermes WebCrypto shim. Node-free.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./types": "./src/types.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@comical/contract": "workspace:*",
+    "@comical/core": "workspace:*",
+    "@comical/host-server": "workspace:*",
+    "@comical/registry": "workspace:*",
+    "@noble/ed25519": "^3.1.0",
+    "@noble/hashes": "^2.2.0"
+  }
+}
