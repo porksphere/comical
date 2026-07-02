@@ -15,11 +15,11 @@ import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } f
 import { BridgeSettingsError } from "@comical/core/errors";
 import { validateSettingsInput } from "@comical/core/settings";
 import { entryKey, type Library } from "@comical/library";
-import type { RegistryManager } from "@comical/registry";
 import type { ComicalRuntime } from "@comical/runtime";
 import type { BridgeProvider } from "./bridge-provider.ts";
+import type { RegistryProvider } from "./registry-provider.ts";
 import { TagLabelCache } from "./tag-label-cache.ts";
-import type { TrackerManager } from "./tracker-manager.ts";
+import type { TrackerProvider } from "./tracker-provider.ts";
 
 export interface RouterOptions {
   /** CORS origin(s) allowed. Defaults to '*' for LAN use. */
@@ -33,14 +33,14 @@ export interface RouterOptions {
   cors?: boolean;
   /** Optional bearer token for simple auth. */
   token?: string;
-  /** Registry manager — enables M4 registry endpoints. */
-  registry?: RegistryManager;
+  /** Registry manager — enables M4 registry endpoints. `RegistryManager` satisfies `RegistryProvider`. */
+  registry?: RegistryProvider;
   /** Local library service — enables the optional `/library` tracking endpoints when provided. */
   library?: Library;
   /** Runtime orchestration layer — required alongside `library` for read-sync and richer addToLibrary. */
   runtime?: ComicalRuntime;
-  /** Tracker manager — enables `/trackers` endpoints when provided. */
-  trackers?: TrackerManager;
+  /** Tracker manager — enables `/trackers` endpoints when provided. `TrackerManager` satisfies `TrackerProvider`. */
+  trackers?: TrackerProvider;
   /** Base URL of this server, used as the OAuth callback redirect URI (e.g. "http://localhost:3100"). */
   callbackBaseUrl?: string;
 }

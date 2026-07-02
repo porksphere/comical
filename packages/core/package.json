@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./loader": "./src/loader.ts",
+    "./tracker-loader": "./src/tracker-loader.ts",
     "./globals": "./src/globals.ts",
     "./evaluator": "./src/evaluator.ts",
     "./errors": "./src/errors.ts",

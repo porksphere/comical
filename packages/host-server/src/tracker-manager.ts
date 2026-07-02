@@ -9,26 +9,21 @@
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { HostCapabilities, HttpRequest, HttpResponse, NetworkCapability, SettingDescriptor, SettingValue, TrackerInfo } from "@comical/contract";
+import type { HostCapabilities, HttpRequest, HttpResponse, NetworkCapability, SettingValue } from "@comical/contract";
 import { type LoadedTracker, loadTracker, resolveSettings } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
 import type { RegistryManager } from "@comical/registry";
 import type { SettingsStore } from "./settings-store.ts";
+// TrackerSummary lives in the Node-free provider module (so the router can name it); import for
+// local use and re-export to preserve this module's public surface.
+import type { TrackerSummary } from "./tracker-provider.ts";
+export type { TrackerSummary } from "./tracker-provider.ts";
 
 export interface TrackerManagerOptions {
   trackersDir?: string | string[];
   dataDir: string;
   settings: SettingsStore;
   registry?: RegistryManager;
-}
-
-export interface TrackerSummary {
-  info: TrackerInfo;
-  settings: SettingDescriptor[];
-  values: Record<string, SettingValue>;
-  secretsSet: string[];
-  configured: boolean;
-  missingRequired: string[];
 }
 
 interface DiscoveredTracker {
