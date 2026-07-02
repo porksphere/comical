@@ -158,6 +158,22 @@ describe("loadBridge", () => {
     const b = loadBridge({ code, capabilities: mockHost(), limits: { callTimeoutMs: 50 } });
     await expect(b.getSeriesDetails("x")).rejects.toBeInstanceOf(BridgeTimeoutError);
   });
+
+  test("callTimeoutMs: 0 disables the per-call timeout (no lingering timer)", async () => {
+    // Native hosts on quickjs-kt disable the timeout: its event loop won't return from `evaluate`
+    // until every scheduled timer coroutine drains, so a per-call setTimeout stalls each method for
+    // the full timeout. With callTimeoutMs 0, withTimeout returns the promise directly — no timer.
+    const code = bundle(`{
+      info: ${GOOD_INFO},
+      getSeriesDetails: async (id) => { await new Promise((r) => setTimeout(r, 80)); return { id, title: id }; },
+      getChapters: async () => [],
+      getChapterPages: async () => [],
+      getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
+    }`);
+    const b = loadBridge({ code, capabilities: mockHost(), limits: { callTimeoutMs: 0 } });
+    // A method slower than the tiny timeout above would have rejected; with 0 it resolves.
+    expect((await b.getSeriesDetails("x")).id).toBe("x");
+  });
 });
 
 describe("sandbox isolation", () => {

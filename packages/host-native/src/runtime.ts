@@ -29,7 +29,19 @@ export function installComicalHarness(makeHost: MakeHost): void {
   g.comical_init = (code, settingsJSON, networkJSON) => {
     const settings = (settingsJSON ? JSON.parse(settingsJSON) : {}) as Record<string, SettingValue>;
     const network = networkJSON ? JSON.parse(networkJSON) : undefined;
-    bridge = loadBridge({ code, capabilities: makeHost(settings), evaluator, network });
+    // The per-method call timeout schedules a setTimeout; on Android's quickjs-kt the JS event loop
+    // won't return from `evaluate` until that (uncancelled) timer coroutine drains, so EVERY method
+    // stalls for the full timeout. Hosts on such engines set `__comical_disable_call_timeout` — the
+    // network layer (OkHttp/URLSession) still bounds request duration. JSC (iOS) keeps the timeout.
+    const disableCallTimeout =
+      (globalThis as unknown as { __comical_disable_call_timeout?: boolean }).__comical_disable_call_timeout === true;
+    bridge = loadBridge({
+      code,
+      capabilities: makeHost(settings),
+      evaluator,
+      network,
+      ...(disableCallTimeout ? { limits: { callTimeoutMs: 0 } } : {}),
+    });
     g.comical_bridge = bridge;
     return JSON.stringify(bridge.info);
   };
