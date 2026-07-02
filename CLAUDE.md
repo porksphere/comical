@@ -34,6 +34,7 @@ full rationale.
 | `packages/runtime` | `packages/runtime/test/` |
 | `packages/library` | `packages/library/test/` |
 | `packages/host-server` — router, bridge-manager, tracker-manager, library-store | `packages/host-server/test/` |
+| `packages/host-rn` — RN embedding layer (provider, transport, capability map, bundle source) | `packages/host-rn/test/` |
 | `bridges/*` | `bridges/*/test/` |
 
 - Write or update tests **before** marking a task done.
