@@ -9,7 +9,11 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { bridgeSeriesStatusSchema, EXCLUDED_TAGS_KEY } from "@comical/contract";
 import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } from "@comical/contract";
-import { BridgeSettingsError, validateSettingsInput } from "@comical/core";
+// Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
+// node:vm-backed default evaluator) so this router can also be bundled into non-Node hosts
+// (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
+import { BridgeSettingsError } from "@comical/core/errors";
+import { validateSettingsInput } from "@comical/core/settings";
 import { entryKey, type Library } from "@comical/library";
 import type { RegistryManager } from "@comical/registry";
 import type { ComicalRuntime } from "@comical/runtime";
