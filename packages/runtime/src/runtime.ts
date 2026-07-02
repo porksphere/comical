@@ -13,7 +13,11 @@
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
 import type { Chapter, PagedResults, TrackerSearchResult } from "@comical/contract";
-import type { LoadedBridge, LoadedTracker } from "@comical/core";
+// Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
+// node:vm-backed default evaluator) so `@comical/runtime`'s types stay consumable by non-Node
+// hosts — e.g. comical-app's embedded runtime typing `RouterOptions.runtime`. See @comical/core.
+import type { LoadedBridge } from "@comical/core/loader";
+import type { LoadedTracker } from "@comical/core/tracker-loader";
 import { entryKey, type AddSeriesResult, type Library, type SeriesSnapshot, type TrackerLink } from "@comical/library";
 
 /** Extends AddSeriesResult with tracker suggestions when no externalId match was found. */

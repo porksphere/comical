@@ -16,36 +16,18 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { downloadBundle, fetchIndex } from "./fetcher.ts";
 import { ManifestStore } from "./manifest.ts";
-import type { InstalledBridge, InstalledTracker, RegistryBridgeEntry, RegistryTrackerEntry, RegistryIndex, SavedRegistry } from "./schema.ts";
+import type { InstalledBridge, InstalledTracker, RegistryIndex, SavedRegistry } from "./schema.ts";
 import { resolveRegistryUrl, registryDisplayName } from "./url.ts";
 import { publicKeyFingerprint } from "./verify.ts";
+// Install-status view types live in a Node-free module so the host-server router can name them
+// without importing this Node-bound manager. Re-exported here to preserve the barrel surface.
+import type { AvailableBridge, AvailableTracker, InstallResult } from "./available.ts";
+export type { AvailableBridge, AvailableTracker, InstallResult } from "./available.ts";
 
 export interface RegistryManagerOptions {
   /** Directory where bridge bundles are cached (separate from local dev bridges/). */
   cacheDir: string;
   manifest: ManifestStore;
-}
-
-export interface AvailableBridge {
-  entry: RegistryBridgeEntry;
-  registryUrl: string;
-  /** Installed version, if any. null = not installed. */
-  installedVersion: string | null;
-  /** True when a newer version is available in the registry. */
-  updateAvailable: boolean;
-}
-
-export interface AvailableTracker {
-  entry: RegistryTrackerEntry;
-  registryUrl: string;
-  installedVersion: string | null;
-  updateAvailable: boolean;
-}
-
-export interface InstallResult {
-  id: string;
-  version: string;
-  bundlePath: string;
 }
 
 export class RegistryManager {
