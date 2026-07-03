@@ -27,8 +27,11 @@ import os
 
 // MARK: - Public types
 
-public struct ComicalError: Error {
+public struct ComicalError: Error, LocalizedError {
     public let message: String
+    // Without LocalizedError, a thrown ComicalError surfaces to JS/Expo as the useless
+    // "(ComicalRuntime.ComicalError 1.)" — errorDescription makes the real message show instead.
+    public var errorDescription: String? { message }
 }
 
 // MARK: - Context
