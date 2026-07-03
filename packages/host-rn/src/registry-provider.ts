@@ -151,6 +151,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
   async checkUpdates(): Promise<RegistryUpdate[]> {
     const installed = await this.deps.installed.all();
     const updates: RegistryUpdate[] = [];
+    let persisted = false;
     for (const rec of installed) {
       let index: RegistryIndex;
       try {
@@ -171,11 +172,17 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
           ...(availableVersion !== undefined ? { availableVersion } : {}),
           ...(discontinued ? { discontinued: true } : {}),
         });
+        persisted = true;
       }
       if (availableVersion) {
         updates.push({ id: rec.id, installedVersion: rec.version, availableVersion });
       }
     }
+    // Only when an annotation actually changed: let the embedder drop cached bridge state and refetch
+    // its screens (same path as install/uninstall). This is what makes a background update check —
+    // run off the bridge-list critical path (see EmbeddedBridgeProvider.list) — surface a newly
+    // detected update/discontinuation badge without the user re-navigating.
+    if (persisted) this.onChange?.();
     return updates;
   }
 

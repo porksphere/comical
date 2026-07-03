@@ -118,6 +118,52 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
     expect(body[0]?.configured).toBe(true);
   });
 
+  test("GET /bridges summarizes a settings-less bridge without loading it into the engine", async () => {
+    // Instrument initBridge so we can prove which bridges the summary actually loads.
+    const inited: string[] = [];
+    const base = makeFakeNative();
+    const native: NativeBridgeRuntime = {
+      ...base,
+      initBridge: (id, code, settingsJson, networkJson) => {
+        inited.push(id);
+        return base.initBridge(id, code, settingsJson, networkJson);
+      },
+    };
+    const provider = new EmbeddedBridgeProvider({ native, bundles, settings: memorySettings() });
+    const body = (await (await createEmbeddedTransport(provider, router)("/bridges")).json()) as {
+      info: { id: string };
+      configured: boolean;
+    }[];
+
+    // "demo" declares no "settings" capability → configured straight from the manifest, never loaded.
+    expect(body.find((b) => b.info.id === "demo")?.configured).toBe(true);
+    expect(inited).not.toContain("demo");
+    // "cfg" advertises "settings", so it IS loaded to read its descriptors.
+    expect(inited).toContain("cfg");
+  });
+
+  test("list() returns without awaiting the (networked) update check, running it in the background", async () => {
+    let refreshCalls = 0;
+    let releaseRefresh!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const provider = new EmbeddedBridgeProvider({
+      native: makeFakeNative(),
+      bundles,
+      settings: memorySettings(),
+      // A refresh that never settles until we release the gate — list() must not wait on it.
+      refreshUpdates: async () => {
+        refreshCalls += 1;
+        await gate;
+      },
+    });
+    const res = await createEmbeddedTransport(provider, router)("/bridges");
+    expect(res.status).toBe(200); // resolved even though refreshUpdates is still pending
+    expect(refreshCalls).toBe(1); // …but the check was kicked off
+    releaseRefresh();
+  });
+
   test("search runs the bundle on-device and returns contract-shaped results", async () => {
     const transport = createEmbeddedTransport(makeProvider(), router);
     const res = await transport("/bridges/demo/search?q=naruto&page=1");
