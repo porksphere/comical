@@ -58,6 +58,13 @@ public final class ComicalBridgeContext {
         // @comical/core's NativeContextEvaluator calls. Must exist before `comical_init`.
         injectBundleEvaluator()
 
+        // The harness (@comical/core) runs in THIS context and needs the same JS globals JSCore
+        // doesn't provide — `setTimeout` (core's per-method `withTimeout` + the rate limiter), `URL`
+        // (zod `.url()` validation), `console`, `TextEncoder`, etc. Bridge child contexts get their
+        // own copy in `nativeEval`; without this on the main context, any timeout-wrapped method
+        // (e.g. getLists) throws "Can't find variable: setTimeout".
+        bootstrapCuratedGlobals(in: js)
+
         // Evaluate the harness shim (bundled resource). `Bundle.module` is a SwiftPM-only accessor;
         // when built as a CocoaPods pod (Expo module) it doesn't exist, and the pod's `resources`
         // land in the main app bundle — so look there instead. CocoaPods defines the COCOAPODS flag.
