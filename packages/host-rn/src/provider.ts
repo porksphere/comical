@@ -64,6 +64,8 @@ interface LoadedEntry {
 export class EmbeddedBridgeProvider implements BridgeProvider {
   private readonly loaded = new Map<string, LoadedEntry>();
   private readonly installedCache = new Map<string, InstalledBridge>();
+  /** In-flight background update check, so overlapping `list()` calls don't stack duplicate checks. */
+  private updateCheckInFlight: Promise<void> | undefined;
 
   constructor(private readonly deps: EmbeddedProviderDeps) {}
 
@@ -108,30 +110,59 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
   }
 
   async list(): Promise<BridgeSummary[]> {
-    if (this.deps.refreshUpdates) {
-      try {
-        await this.deps.refreshUpdates();
-      } catch {
-        // Update-check is a nicety; never let it break the installed-bridge list.
-      }
-    }
+    // The update/discontinuation check hits the registry over the network. Keep it OFF the list's
+    // critical path: render from the annotations already persisted on each installed record and run
+    // the check in the background (see runUpdateCheck) — so the first cold-start list needs no
+    // network at all, and the on-device bridge list paints straight from local storage.
+    this.runUpdateCheck();
+
     const installed = await this.deps.bundles.installed();
     for (const b of installed) this.installedCache.set(b.info.id, b);
-    return Promise.all(
-      installed.map(async (b): Promise<BridgeSummary> => {
-        const { descriptors } = await this.load(b.info.id);
-        const missingRequired = missingRequiredFor(descriptors, await this.deps.settings.get(b.info.id));
-        return {
-          info: b.info,
-          settings: descriptors,
-          configured: missingRequired.length === 0,
-          missingRequired,
-          source: b.source,
-          ...(b.availableVersion !== undefined ? { availableVersion: b.availableVersion } : {}),
-          ...(b.discontinued ? { discontinued: true } : {}),
-        };
-      }),
-    );
+    return Promise.all(installed.map((b) => this.summaryFor(b)));
+  }
+
+  /**
+   * Build a bridge's summary. A bridge that doesn't advertise the `"settings"` capability has no
+   * settings descriptors and is therefore always configured, so its summary is derived straight from
+   * the manifest `info` (+ persisted annotations) with NO native load — the common case, and what
+   * lets the Browse selector and Settings list render without evaluating every bundle in the engine.
+   * Only a settings-bearing bridge is loaded (to read its descriptors and report `configured`
+   * faithfully), mirroring how the server's BridgeManager derives the same field.
+   */
+  private async summaryFor(b: InstalledBridge): Promise<BridgeSummary> {
+    const hasSettings = (b.info.capabilities ?? []).includes("settings");
+    let descriptors: SettingDescriptor[] = [];
+    let missingRequired: string[] = [];
+    if (hasSettings) {
+      descriptors = (await this.load(b.info.id)).descriptors;
+      missingRequired = missingRequiredFor(descriptors, await this.deps.settings.get(b.info.id));
+    }
+    return {
+      info: b.info,
+      settings: descriptors,
+      configured: missingRequired.length === 0,
+      missingRequired,
+      source: b.source,
+      ...(b.availableVersion !== undefined ? { availableVersion: b.availableVersion } : {}),
+      ...(b.discontinued ? { discontinued: true } : {}),
+    };
+  }
+
+  /**
+   * Run the (networked) update check off the list's critical path, at most one at a time. Any newer
+   * version / discontinuation it finds is persisted onto the installed records; its wiring then
+   * refetches the data screens if something changed (see install.ts), so a freshly-detected update
+   * badge still appears without the user re-navigating. Errors never surface — an offline or slow
+   * registry is simply a no-op for the list.
+   */
+  private runUpdateCheck(): void {
+    if (!this.deps.refreshUpdates || this.updateCheckInFlight) return;
+    this.updateCheckInFlight = this.deps
+      .refreshUpdates()
+      .catch(() => {})
+      .finally(() => {
+        this.updateCheckInFlight = undefined;
+      });
   }
 
   async get(id: string): Promise<LoadedBridge> {

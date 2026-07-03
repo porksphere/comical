@@ -261,6 +261,36 @@ describe("EmbeddedRegistryProvider", () => {
     expect(rec?.discontinued).toBe(true);
   });
 
+  test("checkUpdates() fires onChange only when it persists an annotation change", async () => {
+    const installed = new MemInstalledStore();
+    await installed.add(recordFor({ version: "1.0.0" }));
+
+    // A newer version is available → annotation persisted → onChange fires once (the background
+    // list check relies on this to surface a fresh update badge without a re-navigation).
+    const p1 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed,
+      fetcher: fakeFetcher({ [REG_A]: index([entry({ version: "2.0.0" })]) }),
+    });
+    let changed1 = 0;
+    p1.onChange = () => (changed1 += 1);
+    await p1.checkUpdates();
+    expect(changed1).toBe(1);
+    expect((await installed.get("demo"))?.availableVersion).toBe("2.0.0");
+
+    // A second check over the already-recorded state changes nothing → onChange must NOT fire (else
+    // the background check would loop, refetching screens on every list()).
+    const p2 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed,
+      fetcher: fakeFetcher({ [REG_A]: index([entry({ version: "2.0.0" })]) }),
+    });
+    let changed2 = 0;
+    p2.onChange = () => (changed2 += 1);
+    await p2.checkUpdates();
+    expect(changed2).toBe(0);
+  });
+
   test("remove() keeps installed bridges (they stay pinned)", async () => {
     const { provider, installed } = setup({ [REG_A]: index([entry()]) });
     await provider.add(REG_A);
