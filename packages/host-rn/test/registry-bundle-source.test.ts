@@ -6,7 +6,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { downloadBundle, fetchIndex } from "@comical/registry/fetcher";
 import { sha256Hex } from "@comical/registry/verify";
-import { MemoryBundleCache, RegistryBundleSource, type RegistryFetcher } from "../src/registry-bundle-source.ts";
+import {
+  MemoryBundleCache,
+  MultiRegistryBundleSource,
+  RegistryBundleSource,
+  type RegistryFetcher,
+} from "../src/registry-bundle-source.ts";
 
 const INDEX_URL = "https://registry.example/index.json";
 const BUNDLE_URL = "https://registry.example/bridges/demo.js";
@@ -102,5 +107,25 @@ describe("RegistryBundleSource", () => {
     expect(await src.installed()).toEqual([]);
     expect(fetchCalls).toHaveLength(0); // never hit the network
     await expect(src.resolveBundle("demo")).rejects.toThrow(/not found/);
+  });
+});
+
+describe("MultiRegistryBundleSource", () => {
+  const INDEX_B = "https://registry-b.example/index.json"; // deliberately unserved → broken registry
+
+  test("merges bridges across registries, skips a broken one, ignores blanks", async () => {
+    mockFetch(await makeIndex()); // serves INDEX_URL (registry A) + its bundle; INDEX_B → 404
+    const src = new MultiRegistryBundleSource({ indexUrls: [INDEX_URL, INDEX_B, "   "], fetcher });
+
+    const installed = await src.installed();
+    expect(installed.map((b) => b.info.id)).toEqual(["demo"]); // A loaded, B skipped, blank ignored
+
+    expect(await src.resolveBundle("demo")).toBe(BUNDLE); // resolves from registry A despite B being broken
+  });
+
+  test("resolveBundle → not found when every (healthy) registry lacks the bridge", async () => {
+    mockFetch(await makeIndex());
+    const src = new MultiRegistryBundleSource({ indexUrls: [INDEX_URL], fetcher });
+    await expect(src.resolveBundle("missing")).rejects.toThrow(/not found/);
   });
 });
