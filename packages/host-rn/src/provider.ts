@@ -47,6 +47,13 @@ export interface EmbeddedProviderDeps {
   settings: SettingsStore;
   /** Optional GatedNetworkOptions overrides forwarded to loadBridge (rate limits, etc.). */
   networkJson?: string;
+  /**
+   * Best-effort refresh of the installed bridges' update/discontinuation annotations, run at the
+   * start of `list()` — mirrors how the server's `BridgeManager.list()` consults
+   * `registry.checkUpdates()`. Wired to `EmbeddedRegistryProvider.checkUpdates`; errors are swallowed
+   * so an offline registry never breaks the bridge list.
+   */
+  refreshUpdates?: () => Promise<void>;
 }
 
 interface LoadedEntry {
@@ -82,6 +89,12 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
     const init = JSON.parse(
       await this.deps.native.initBridge(id, code, JSON.stringify(stored), this.deps.networkJson),
     ) as InitResult;
+    // The native engine returns the bridge's *self-reported* info verbatim — unlike the remote path
+    // it's never re-validated against the contract schema, so a bridge that omits these arrays would
+    // otherwise flow all the way to the settings UI and throw "undefined is not a function" on the
+    // first `.join`/`.includes`. Normalize at the boundary so every consumer sees real arrays.
+    if (!Array.isArray(init.info.capabilities)) init.info.capabilities = [];
+    if (!Array.isArray(init.info.languages)) init.info.languages = [];
     const methods = init.methods ?? methodsForBridge(init.info);
 
     let descriptors: SettingDescriptor[] = [];
@@ -95,6 +108,13 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
   }
 
   async list(): Promise<BridgeSummary[]> {
+    if (this.deps.refreshUpdates) {
+      try {
+        await this.deps.refreshUpdates();
+      } catch {
+        // Update-check is a nicety; never let it break the installed-bridge list.
+      }
+    }
     const installed = await this.deps.bundles.installed();
     for (const b of installed) this.installedCache.set(b.info.id, b);
     return Promise.all(
@@ -108,6 +128,7 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
           missingRequired,
           source: b.source,
           ...(b.availableVersion !== undefined ? { availableVersion: b.availableVersion } : {}),
+          ...(b.discontinued ? { discontinued: true } : {}),
         };
       }),
     );

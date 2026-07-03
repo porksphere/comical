@@ -21,6 +21,9 @@ export interface BridgeSummary {
   source: BridgeSource;
   /** Version available in the registry, if newer than installed. */
   availableVersion?: string;
+  /** True when the bridge is installed but no longer offered by its registry (dropped from the
+   *  index). It keeps working from its pinned bundle; clients surface a "no longer offered" badge. */
+  discontinued?: boolean;
 }
 
 /** The manager methods `createRouter` calls. `BridgeManager` satisfies this structurally. */

@@ -16,17 +16,22 @@ export type { EmbeddedRuntimeConfig } from "./install.ts";
 export { getNativeBridgeRuntime, setNativeBridgeRuntime, isEmbeddedRuntimeAvailable } from "./native-runtime.ts";
 export { EmbeddedBridgeProvider, missingRequiredFor } from "./provider.ts";
 export type { EmbeddedProviderDeps } from "./provider.ts";
+export { EmbeddedRegistryProvider } from "./registry-provider.ts";
+export type { EmbeddedRegistryProviderDeps } from "./registry-provider.ts";
 export { buildProxyBridge } from "./proxy-bridge.ts";
 export { CAPABILITY_METHODS, methodsForBridge } from "./capabilities.ts";
 export { createEmbeddedTransport } from "./transport.ts";
 export {
   RegistryBundleSource,
   MultiRegistryBundleSource,
+  ManifestBundleSource,
   MemoryBundleCache,
+  entryToInfo,
   type BundleCache,
   type BundleEntryLike,
   type RegistryBundleSourceOptions,
   type MultiRegistryBundleSourceOptions,
+  type ManifestBundleSourceOptions,
   type RegistryFetcher,
 } from "./registry-bundle-source.ts";
 export type {
@@ -39,6 +44,10 @@ export type {
   EmbeddedTransport,
   InitResult,
   InstalledBridge,
+  InstalledBridgeRecord,
+  InstalledStore,
   NativeBridgeRuntime,
+  RegistryProvider,
+  SavedRegistryStore,
   SettingsStore,
 } from "./types.ts";

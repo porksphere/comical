@@ -8,8 +8,11 @@
  * here because they don't exist elsewhere in comical: this package is their canonical home.
  */
 import type { BridgeInfo } from "@comical/contract";
+import type { RegistryProvider } from "@comical/host-server/registry-provider";
+import type { SavedRegistry } from "@comical/registry/schema";
 
 export type { BridgeProvider, BridgeSummary, BridgeSource } from "@comical/host-server/bridge-provider";
+export type { RegistryProvider } from "@comical/host-server/registry-provider";
 
 /**
  * A `Hono`-like app as returned by `@comical/host-server`'s `createRouter` — only `.fetch` is used
@@ -23,7 +26,7 @@ export interface EmbeddedRouter {
 /** The subset of `@comical/host-server`'s `createRouter` signature the embedded runtime uses. */
 export type CreateRouter = (
   manager: import("@comical/host-server/bridge-provider").BridgeProvider,
-  opts?: { origin?: string; cors?: boolean },
+  opts?: { origin?: string; cors?: boolean; registry?: RegistryProvider },
 ) => EmbeddedRouter;
 
 /** A fetch-shaped transport: resolves a server-relative path to a `Response`, same contract as `fetch`. */
@@ -60,6 +63,53 @@ export interface InstalledBridge {
   info: BridgeInfo;
   source: "local" | "registry";
   availableVersion?: string;
+  /** True when the bridge's registry no longer lists it (dropped from the index). Surfaced as a
+   *  "no longer offered" badge; the bridge keeps working from its pinned bundle. */
+  discontinued?: boolean;
+}
+
+/**
+ * A *pinned* installed-bridge record — the on-device equivalent of the server's manifest
+ * `InstalledBridge` (`@comical/registry/schema`). Unlike the registry index (which only ever carries
+ * each bridge's latest version), a record freezes the exact version the user installed: its `info`
+ * snapshot lets `installed()` list it with no index fetch (offline-friendly), and its `url`/`sha256`/
+ * `signature`/`publicKey` let the bundle be re-downloaded + verified even after the index moves on.
+ * `availableVersion`/`discontinued` are annotations refreshed by `EmbeddedRegistryProvider.checkUpdates`.
+ */
+export interface InstalledBridgeRecord {
+  id: string;
+  /** The resolved `index.json` URL this bridge was installed from. */
+  registryUrl: string;
+  version: string;
+  contractVersion: string;
+  info: BridgeInfo;
+  /** Absolute URL of the pinned CJS bundle. */
+  url: string;
+  sha256: string;
+  signature?: string;
+  /** The registry's Ed25519 public key at install time (for re-verifying a signed bundle). */
+  publicKey?: string;
+  availableVersion?: string;
+  discontinued?: boolean;
+}
+
+/**
+ * Persistence for the on-device installed-bridge manifest (AsyncStorage-backed in an app). `add`
+ * is an upsert — it replaces any existing record with the same `id`.
+ */
+export interface InstalledStore {
+  all(): Promise<InstalledBridgeRecord[]>;
+  get(id: string): Promise<InstalledBridgeRecord | null>;
+  add(record: InstalledBridgeRecord): Promise<void>;
+  remove(id: string): Promise<void>;
+}
+
+/** Persistence for the on-device saved-registry list. `add` upserts by `url`. */
+export interface SavedRegistryStore {
+  all(): Promise<SavedRegistry[]>;
+  get(url: string): Promise<SavedRegistry | null>;
+  add(registry: SavedRegistry): Promise<void>;
+  remove(url: string): Promise<void>;
 }
 
 /**

@@ -12,13 +12,17 @@
  * Body read-back: read the response to text and return a minimal response whose `json()`/`text()`
  * return that string (the only members a fetch client uses), avoiding RN `Response` body quirks.
  */
-import type { BridgeProvider, CreateRouter, EmbeddedTransport } from "./types.ts";
+import type { BridgeProvider, CreateRouter, EmbeddedTransport, RegistryProvider } from "./types.ts";
 
 /** Base is arbitrary — the router matches on path only; nothing leaves the device. */
 const EMBEDDED_ORIGIN = "http://embedded.comical.local";
 
-export function createEmbeddedTransport(provider: BridgeProvider, createRouter: CreateRouter): EmbeddedTransport {
-  const router = createRouter(provider, { cors: false });
+export function createEmbeddedTransport(
+  provider: BridgeProvider,
+  createRouter: CreateRouter,
+  registry?: RegistryProvider,
+): EmbeddedTransport {
+  const router = createRouter(provider, { cors: false, ...(registry ? { registry } : {}) });
   return async (path, init) => {
     const routed = await router.fetch(new Request(`${EMBEDDED_ORIGIN}${path}`, init));
     const body = await routed.text();

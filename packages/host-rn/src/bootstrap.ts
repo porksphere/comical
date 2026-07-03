@@ -3,8 +3,9 @@
  *
  * `configureEmbeddedRuntime` is called once at app launch with the pieces that come from the built
  * comical packages — `@comical/host-server`'s `createRouter` and `@comical/registry`'s fetcher — plus
- * the registry index URL, the embedder's `setTransport`, and its `SettingsStore`. Keeping these
- * injected is what lets this package stay free of the app and of `expo`/RN imports.
+ * the app's persistence (the saved-registry list, the installed-bridge manifest, per-bridge
+ * settings), the embedder's `setTransport`, and a change callback. Keeping these injected is what
+ * lets this package stay free of the app and of `expo`/RN imports.
  *
  * `applyEmbeddedMode(enabled)` installs or removes the embedded transport accordingly. It's safe to
  * call before `configureEmbeddedRuntime` or when the native runtime is absent (web) — it simply
@@ -12,17 +13,24 @@
  */
 import { installEmbeddedTransport, uninstallEmbeddedTransport } from "./install.ts";
 import { isEmbeddedRuntimeAvailable } from "./native-runtime.ts";
-import { MultiRegistryBundleSource } from "./registry-bundle-source.ts";
 import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
-import type { CreateRouter, EmbeddedTransport, SettingsStore } from "./types.ts";
+import type {
+  CreateRouter,
+  EmbeddedTransport,
+  InstalledStore,
+  SavedRegistryStore,
+  SettingsStore,
+} from "./types.ts";
 
 export interface EmbeddedBootstrapConfig {
   /** `@comical/host-server`'s `createRouter` (from the built package), cast to `CreateRouter`. */
   createRouter: CreateRouter;
   /** `@comical/registry`'s `{ fetchIndex, downloadBundle }` (from the built package). */
   fetcher: RegistryFetcher;
-  /** Absolute URLs of the registry `index.json`s bridges are downloaded from (user-managed). */
-  indexUrls: string[];
+  /** The installed-bridge manifest (AsyncStorage-backed) — only installed bridges load. */
+  installed: InstalledStore;
+  /** The saved-registry list (AsyncStorage-backed). */
+  registries: SavedRegistryStore;
   /** The embedder's transport setter (its `api.ts`'s `setTransport`). */
   setTransport: (transport: EmbeddedTransport | null) => void;
   /** Per-bridge settings persistence (AsyncStorage-backed in an app). */
@@ -32,6 +40,8 @@ export interface EmbeddedBootstrapConfig {
   /** Persistent bundle cache (defaults to in-memory; an expo-file-system adapter is a follow-up). */
   cache?: BundleCache;
   networkJson?: string;
+  /** Fired after an install/update/uninstall so the embedder can refetch data screens. */
+  onRegistryChange?: () => void;
 }
 
 let config: EmbeddedBootstrapConfig | null = null;
@@ -50,17 +60,16 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     uninstallEmbeddedTransport();
     return false;
   }
-  const bundles = new MultiRegistryBundleSource({
-    indexUrls: config.indexUrls,
-    fetcher: config.fetcher,
-    ...(config.cache ? { cache: config.cache } : {}),
-    ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
-  });
   return installEmbeddedTransport({
     createRouter: config.createRouter,
-    bundles,
+    fetcher: config.fetcher,
+    installed: config.installed,
+    registries: config.registries,
     settings: config.settings,
     setTransport: config.setTransport,
+    ...(config.cache ? { cache: config.cache } : {}),
+    ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
+    ...(config.onRegistryChange ? { onRegistryChange: config.onRegistryChange } : {}),
   });
 }
