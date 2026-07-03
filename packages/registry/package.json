@@ -8,7 +8,8 @@
     "./fetcher": "./src/fetcher.ts",
     "./verify": "./src/verify.ts",
     "./schema": "./src/schema.ts",
-    "./available": "./src/available.ts"
+    "./available": "./src/available.ts",
+    "./url": "./src/url.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {

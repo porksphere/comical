@@ -14,7 +14,7 @@
 import type { BridgeInfo } from "@comical/contract";
 import type { BundleEntryLike, DownloadResult } from "@comical/registry/fetcher";
 import type { RegistryBridgeEntry, RegistryIndex } from "@comical/registry/schema";
-import type { BundleSource, InstalledBridge } from "./types.ts";
+import type { BundleSource, InstalledBridge, InstalledStore } from "./types.ts";
 
 export type { BundleEntryLike } from "@comical/registry/fetcher";
 
@@ -56,7 +56,7 @@ export interface RegistryBundleSourceOptions {
   requireSignature?: boolean;
 }
 
-function entryToInfo(e: RegistryBridgeEntry): BridgeInfo {
+export function entryToInfo(e: RegistryBridgeEntry): BridgeInfo {
   return {
     id: e.id,
     name: e.name,
@@ -173,5 +173,61 @@ export class MultiRegistryBundleSource implements BundleSource {
     }
     if (lastError) throw lastError;
     throw new Error(`bridge not found: ${id}`);
+  }
+}
+
+export interface ManifestBundleSourceOptions {
+  /** The persisted installed-bridge manifest (the app's AsyncStorage store). */
+  installed: InstalledStore;
+  /** Only the download half of the fetcher is needed — `installed()` never fetches an index. */
+  fetcher: Pick<RegistryFetcher, "downloadBundle">;
+  cache?: BundleCache;
+  /** Refuse unsigned bundles (defaults to false — SHA-256 integrity is always enforced). */
+  requireSignature?: boolean;
+}
+
+/**
+ * A `BundleSource` backed by the on-device *installed* manifest rather than a live registry index:
+ * `installed()` returns exactly the bridges the user chose to install (not everything a registry
+ * offers), reading pinned `InstalledBridgeRecord`s with no network — so it works offline and only
+ * loads what's installed. `resolveBundle` re-downloads + verifies the record's pinned bundle
+ * (`url`/`sha256`/`signature`) and caches it by `sha256`. This is the embedded counterpart to the
+ * server's registry-cache-backed bridge loading; per-bridge install/update/uninstall is driven
+ * separately by `EmbeddedRegistryProvider`, which writes the manifest this reads.
+ */
+export class ManifestBundleSource implements BundleSource {
+  private readonly cache: BundleCache;
+
+  constructor(private readonly opts: ManifestBundleSourceOptions) {
+    this.cache = opts.cache ?? new MemoryBundleCache();
+  }
+
+  async installed(): Promise<InstalledBridge[]> {
+    const records = await this.opts.installed.all();
+    return records.map((r) => ({
+      info: r.info,
+      source: "registry" as const,
+      ...(r.availableVersion !== undefined ? { availableVersion: r.availableVersion } : {}),
+      ...(r.discontinued ? { discontinued: true } : {}),
+    }));
+  }
+
+  async resolveBundle(id: string): Promise<string> {
+    const rec = await this.opts.installed.get(id);
+    if (!rec) throw new Error(`bridge not found: ${id}`);
+
+    const cached = await this.cache.read(id, rec.sha256);
+    if (cached !== null) return cached;
+
+    const opts: { publicKey?: string; requireSignature?: boolean } = {};
+    if (rec.publicKey !== undefined) opts.publicKey = rec.publicKey;
+    if (this.opts.requireSignature !== undefined) opts.requireSignature = this.opts.requireSignature;
+
+    const { text } = await this.opts.fetcher.downloadBundle(
+      { id: rec.id, url: rec.url, sha256: rec.sha256, signature: rec.signature },
+      opts,
+    );
+    await this.cache.write(id, rec.sha256, text);
+    return text;
   }
 }
