@@ -327,7 +327,9 @@ running `comical serve` instance) — it is not part of this monorepo.
 
 | Directory | Description |
 |-----------|-------------|
-| `bridges/example-bridge/` | Reference HTML bridge. Targets a user-supplied backend (URL via settings). Tested against the `FixtureBackend` public-domain library. |
+| `bridges/example-bridge/` | Reference HTML bridge (chaptered "library"). Targets a user-supplied backend (URL via settings). Tested against the `FixtureBackend` public-domain library. |
+| `bridges/direct-example/` | Reference **direct-read** (chapterless "gallery") bridge. Tested against the `DirectFixtureBackend`. |
+| `bridges/test-sprites/` | Test bridge for sprite-thumbnail rendering — no network/auth; drives host-server's `/test-sprite*.svg` sheets (uniform + variable-size). |
 
 ### Embedding the runtime in React Native
 

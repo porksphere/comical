@@ -1,0 +1,13 @@
+{
+  "name": "test-sprites",
+  "version": "0.2.0",
+  "type": "module",
+  "private": true,
+  "description": "Test bridge for sprite-thumbnail rendering — no network/auth/external deps. Uniform + variable-size sprite sheets served by host-server's /test-sprite*.svg routes.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@comical/sdk": "workspace:*"
+  }
+}
