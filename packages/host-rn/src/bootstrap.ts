@@ -12,7 +12,7 @@
  */
 import { installEmbeddedTransport, uninstallEmbeddedTransport } from "./install.ts";
 import { isEmbeddedRuntimeAvailable } from "./native-runtime.ts";
-import { RegistryBundleSource } from "./registry-bundle-source.ts";
+import { MultiRegistryBundleSource } from "./registry-bundle-source.ts";
 import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
 import type { CreateRouter, EmbeddedTransport, SettingsStore } from "./types.ts";
 
@@ -21,8 +21,8 @@ export interface EmbeddedBootstrapConfig {
   createRouter: CreateRouter;
   /** `@comical/registry`'s `{ fetchIndex, downloadBundle }` (from the built package). */
   fetcher: RegistryFetcher;
-  /** Absolute URL of the registry `index.json` bridges are downloaded from. */
-  indexUrl: string;
+  /** Absolute URLs of the registry `index.json`s bridges are downloaded from (user-managed). */
+  indexUrls: string[];
   /** The embedder's transport setter (its `api.ts`'s `setTransport`). */
   setTransport: (transport: EmbeddedTransport | null) => void;
   /** Per-bridge settings persistence (AsyncStorage-backed in an app). */
@@ -50,8 +50,8 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     uninstallEmbeddedTransport();
     return false;
   }
-  const bundles = new RegistryBundleSource({
-    indexUrl: config.indexUrl,
+  const bundles = new MultiRegistryBundleSource({
+    indexUrls: config.indexUrls,
     fetcher: config.fetcher,
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),

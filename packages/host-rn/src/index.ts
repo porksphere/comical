@@ -21,10 +21,12 @@ export { CAPABILITY_METHODS, methodsForBridge } from "./capabilities.ts";
 export { createEmbeddedTransport } from "./transport.ts";
 export {
   RegistryBundleSource,
+  MultiRegistryBundleSource,
   MemoryBundleCache,
   type BundleCache,
   type BundleEntryLike,
   type RegistryBundleSourceOptions,
+  type MultiRegistryBundleSourceOptions,
   type RegistryFetcher,
 } from "./registry-bundle-source.ts";
 export type {

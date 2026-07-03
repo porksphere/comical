@@ -115,3 +115,63 @@ export class RegistryBundleSource implements BundleSource {
     return text;
   }
 }
+
+export interface MultiRegistryBundleSourceOptions {
+  /** Absolute URLs of the registry `index.json`s. Blank entries are ignored. */
+  indexUrls: string[];
+  fetcher: RegistryFetcher;
+  cache?: BundleCache;
+  requireSignature?: boolean;
+}
+
+/**
+ * A `BundleSource` over several registries — the user can add/remove registry URLs. `installed()`
+ * merges every registry's bridges (first registry wins on an id collision) and tolerates a failing
+ * registry (that one is skipped, the rest still load). `resolveBundle` tries each registry in order.
+ */
+export class MultiRegistryBundleSource implements BundleSource {
+  private readonly sources: RegistryBundleSource[];
+
+  constructor(opts: MultiRegistryBundleSourceOptions) {
+    const base = { fetcher: opts.fetcher, ...(opts.cache ? { cache: opts.cache } : {}), ...(opts.requireSignature !== undefined ? { requireSignature: opts.requireSignature } : {}) };
+    this.sources = opts.indexUrls
+      .map((u) => u.trim())
+      .filter((u) => u.length > 0)
+      .map((indexUrl) => new RegistryBundleSource({ indexUrl, ...base }));
+  }
+
+  reload(): void {
+    for (const s of this.sources) s.reload();
+  }
+
+  async installed(): Promise<InstalledBridge[]> {
+    const results = await Promise.allSettled(this.sources.map((s) => s.installed()));
+    const seen = new Set<string>();
+    const out: InstalledBridge[] = [];
+    for (const r of results) {
+      if (r.status !== "fulfilled") continue; // a broken registry is skipped, not fatal
+      for (const b of r.value) {
+        if (seen.has(b.info.id)) continue;
+        seen.add(b.info.id);
+        out.push(b);
+      }
+    }
+    return out;
+  }
+
+  async resolveBundle(id: string): Promise<string> {
+    let lastError: unknown;
+    for (const s of this.sources) {
+      try {
+        return await s.resolveBundle(id);
+      } catch (e) {
+        // "not found" just means this registry doesn't carry the bridge — keep looking. Any other
+        // error (a broken/unreachable registry, a failed download/verify) is remembered but not fatal
+        // yet, so a healthy registry later in the list can still satisfy the request.
+        if (!(e instanceof Error && e.message.includes("not found"))) lastError = e;
+      }
+    }
+    if (lastError) throw lastError;
+    throw new Error(`bridge not found: ${id}`);
+  }
+}
