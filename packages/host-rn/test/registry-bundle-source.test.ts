@@ -95,4 +95,12 @@ describe("RegistryBundleSource", () => {
     const src = new RegistryBundleSource({ indexUrl: INDEX_URL, fetcher });
     await expect(src.resolveBundle("nope")).rejects.toThrow(/not found/);
   });
+
+  test('empty/blank indexUrl → no bridges, no fetch (e.g. before the user sets a registry)', async () => {
+    mockFetch(await makeIndex());
+    const src = new RegistryBundleSource({ indexUrl: "   ", fetcher });
+    expect(await src.installed()).toEqual([]);
+    expect(fetchCalls).toHaveLength(0); // never hit the network
+    await expect(src.resolveBundle("demo")).rejects.toThrow(/not found/);
+  });
 });

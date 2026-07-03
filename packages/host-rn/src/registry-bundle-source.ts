@@ -78,7 +78,9 @@ export class RegistryBundleSource implements BundleSource {
   }
 
   /** Fetch + memoize the registry index. Call `reload()` to force a refetch. */
-  private async loadIndex(): Promise<RegistryIndex> {
+  private async loadIndex(): Promise<RegistryIndex | null> {
+    // No registry configured yet (e.g. the user hasn't entered a URL) — no bridges, no error.
+    if (!this.opts.indexUrl.trim()) return null;
     if (this.index === undefined) {
       this.index = await this.opts.fetcher.fetchIndex(this.opts.indexUrl);
     }
@@ -92,13 +94,14 @@ export class RegistryBundleSource implements BundleSource {
 
   async installed(): Promise<InstalledBridge[]> {
     const idx = await this.loadIndex();
+    if (!idx) return [];
     return idx.bridges.map((e) => ({ info: entryToInfo(e), source: "registry" as const }));
   }
 
   async resolveBundle(id: string): Promise<string> {
     const idx = await this.loadIndex();
-    const entry = idx.bridges.find((b) => b.id === id);
-    if (!entry) throw new Error(`bridge not found: ${id}`);
+    const entry = idx?.bridges.find((b) => b.id === id);
+    if (!idx || !entry) throw new Error(`bridge not found: ${id}`);
 
     const cached = await this.cache.read(id, entry.sha256);
     if (cached !== null) return cached;
