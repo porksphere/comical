@@ -18,6 +18,7 @@ import type {
   CreateRouter,
   EmbeddedTransport,
   InstalledStore,
+  LibraryStore,
   SavedRegistryStore,
   SettingsStore,
 } from "./types.ts";
@@ -35,6 +36,9 @@ export interface EmbeddedBootstrapConfig {
   setTransport: (transport: EmbeddedTransport | null) => void;
   /** Per-bridge settings persistence (AsyncStorage-backed in an app). */
   settings: SettingsStore;
+  /** Optional on-device library persistence (AsyncStorage-backed in an app). Supplying it mounts the
+   *  `/library*` endpoints on the embedded router; omitting it leaves them unmounted (they 404). */
+  libraryStore?: LibraryStore;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
   requireSignature?: boolean;
   /** Persistent bundle cache (defaults to in-memory; an expo-file-system adapter is a follow-up). */
@@ -67,6 +71,7 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     registries: config.registries,
     settings: config.settings,
     setTransport: config.setTransport,
+    ...(config.libraryStore ? { libraryStore: config.libraryStore } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),

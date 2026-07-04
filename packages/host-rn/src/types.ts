@@ -9,7 +9,12 @@
  */
 import type { BridgeInfo } from "@comical/contract";
 import type { RegistryProvider } from "@comical/host-server/registry-provider";
+import type { Library, LibraryStore } from "@comical/library";
 import type { SavedRegistry } from "@comical/registry/schema";
+import type { ComicalRuntime } from "@comical/runtime";
+
+export type { Library, LibraryStore } from "@comical/library";
+export type { ComicalRuntime } from "@comical/runtime";
 
 export type { BridgeProvider, BridgeSummary, BridgeSource } from "@comical/host-server/bridge-provider";
 export type { RegistryProvider } from "@comical/host-server/registry-provider";
@@ -26,7 +31,15 @@ export interface EmbeddedRouter {
 /** The subset of `@comical/host-server`'s `createRouter` signature the embedded runtime uses. */
 export type CreateRouter = (
   manager: import("@comical/host-server/bridge-provider").BridgeProvider,
-  opts?: { origin?: string; cors?: boolean; registry?: RegistryProvider },
+  opts?: {
+    origin?: string;
+    cors?: boolean;
+    registry?: RegistryProvider;
+    /** Local library service — enables the `/library*` endpoints when provided. */
+    library?: Library;
+    /** Runtime orchestration layer — paired with `library` for addToLibrary / read-sync / sync. */
+    runtime?: ComicalRuntime;
+  },
 ) => EmbeddedRouter;
 
 /** A fetch-shaped transport: resolves a server-relative path to a `Response`, same contract as `fetch`. */
