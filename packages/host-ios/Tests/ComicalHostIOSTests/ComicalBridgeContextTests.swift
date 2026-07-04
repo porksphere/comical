@@ -93,6 +93,29 @@ final class ComicalBridgeContextTests: XCTestCase {
         XCTAssertEqual(pages?.first?["imageUrl"] as? String, "https://img.example.test/0.png")
     }
 
+    func testUrlPolyfillParsesComponents() async throws {
+        // core's CookieJar keys session cookies on `new URL(url).host`; the injected URL polyfill
+        // must expose real components, not just .href. An href-only stub silently broke authenticated
+        // calls (favorites → 401) because cookies could neither be stored nor replayed.
+        let bundle = """
+        module.exports = { default: function(host) { return {
+          info: { id: "t", name: "T", version: "0", contractVersion: "1.0.0",
+                  languages: ["en"], nsfw: false, capabilities: ["search"] },
+          getSeriesDetails: async function(id) {
+            var u = new URL("https://user@atsu.moe:8443/api/favorites?page=1#frag");
+            return { id: id, title: [u.host, u.hostname, u.pathname, u.origin].join("|") };
+          },
+          getChapters: async function() { return []; },
+          getChapterPages: async function() { return []; },
+          getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
+        }; } };
+        """
+        let ctx = try ComicalBridgeContext(bridgeBundle: bundle)
+        let result = try await ctx.call("getSeriesDetails", args: ["x"])
+        let dict = result as? [String: Any]
+        XCTAssertEqual(dict?["title"] as? String, "atsu.moe:8443|atsu.moe|/api/favorites|https://atsu.moe:8443")
+    }
+
     func testFetchIsUnavailableToBridgeCode() async throws {
         // A bridge that tries to use fetch() directly must get undefined.
         let bundle = """
