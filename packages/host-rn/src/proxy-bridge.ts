@@ -24,6 +24,13 @@ export function buildProxyBridge(
     getSettings: () => settings,
   };
   for (const method of methods) {
+    // `info` and `getSettings` are served synchronously from cached install metadata (the info object
+    // and the descriptor array captured at load). A settings-bearing bridge implements `getSettings`,
+    // so it appears in `methods` — without this guard the marshaller below would overwrite the sync
+    // accessor with an async one that resolves to a Promise. The router reads `bridge.getSettings?.()`
+    // synchronously and immediately `.filter()`s it, so a Promise there throws "undefined is not a
+    // function". Never marshal these two.
+    if (method === "getSettings" || method === "info") continue;
     bridge[method] = async (...args: unknown[]): Promise<unknown> => {
       const raw = await native.callBridge(id, method, JSON.stringify(args));
       return raw === undefined || raw === "" ? undefined : (JSON.parse(raw) as unknown);

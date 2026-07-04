@@ -208,4 +208,18 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
     provider.invalidate("cfg");
     expect((await transport("/bridges/cfg/search?q=x")).status).toBe(200);
   });
+
+  test("GET /bridges/:id returns a settings-bearing bridge's descriptors (getSettings stays sync)", async () => {
+    // The bridge-settings screen hits GET /bridges/:id, where the router reads `bridge.getSettings()`
+    // synchronously and immediately `.filter()`s the result. A settings-bearing bridge implements
+    // getSettings, so it lands in the proxy's `methods` — if the marshaller loop overwrites the sync
+    // descriptor accessor with an async one, getSettings() returns a Promise and `.filter` throws
+    // "undefined is not a function". Guard that the descriptors come back intact.
+    const transport = createEmbeddedTransport(makeProvider(), router);
+    const res = await transport("/bridges/cfg");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { settings: { key: string }[]; missingRequired: string[] };
+    expect(body.settings.map((d) => d.key)).toEqual(["baseUrl"]);
+    expect(body.missingRequired).toEqual(["baseUrl"]);
+  });
 });
