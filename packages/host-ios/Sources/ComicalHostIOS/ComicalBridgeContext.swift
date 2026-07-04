@@ -345,11 +345,32 @@ public final class ComicalBridgeContext {
         var structuredClone = (v) => JSON.parse(JSON.stringify(v));
 
         if (typeof URL === "undefined") {
+          // Parse the standard components, not just .href: core's CookieJar keys session cookies on
+          // `new URL(url).host`, so an href-only stub silently broke authenticated calls (favorites
+          // → 401). Mirrors @comical/host-native's ComicalURL (url-polyfill.ts) — keep in lockstep.
           globalThis.URL = function URL(url) {
             if (typeof url !== "string" || !/^https?:\\/\\/./.test(url)) {
               throw new TypeError("Invalid URL: " + url);
             }
             this.href = url;
+            var schemeEnd = url.indexOf("://");
+            this.protocol = url.slice(0, schemeEnd) + ":";
+            var rest = url.slice(schemeEnd + 3);
+            var hashIdx = rest.indexOf("#");
+            if (hashIdx >= 0) { this.hash = rest.slice(hashIdx); rest = rest.slice(0, hashIdx); } else { this.hash = ""; }
+            var qIdx = rest.indexOf("?");
+            if (qIdx >= 0) { this.search = rest.slice(qIdx); rest = rest.slice(0, qIdx); } else { this.search = ""; }
+            var slashIdx = rest.indexOf("/");
+            var authority = slashIdx >= 0 ? rest.slice(0, slashIdx) : rest;
+            this.pathname = slashIdx >= 0 ? rest.slice(slashIdx) : "/";
+            var at = authority.indexOf("@");
+            var hostPort = at >= 0 ? authority.slice(at + 1) : authority;
+            this.host = hostPort;
+            var colon = hostPort.lastIndexOf(":");
+            this.hostname = colon >= 0 ? hostPort.slice(0, colon) : hostPort;
+            this.port = colon >= 0 ? hostPort.slice(colon + 1) : "";
+            this.origin = this.protocol + "//" + this.host;
+            this.searchParams = new URLSearchParams(this.search);
           };
         }
 

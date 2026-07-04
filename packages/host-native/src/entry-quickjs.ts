@@ -5,21 +5,10 @@
  */
 import { makeAsyncHost } from "./adapter-async.ts";
 import { installComicalHarness } from "./runtime.ts";
+import { ComicalURL } from "./url-polyfill.ts";
 
 // QuickJS lacks several Web APIs that bridge code and Zod rely on. Install minimal polyfills.
-
-// URL — Zod's z.string().url() calls `new URL(str)` to validate.
-if (typeof URL === "undefined") {
-  (globalThis as unknown as Record<string, unknown>).URL = function URL(
-    this: { href: string },
-    url: string,
-  ) {
-    if (typeof url !== "string" || !/^https?:\/\/./.test(url)) {
-      throw new TypeError("Invalid URL: " + url);
-    }
-    this.href = url;
-  };
-}
+// URLSearchParams goes first: ComicalURL builds `.searchParams` from it.
 
 // URLSearchParams — used by bridges to build query strings.
 if (typeof URLSearchParams === "undefined") {
@@ -63,6 +52,12 @@ if (typeof URLSearchParams === "undefined") {
     [Symbol.iterator]() { return this._p[Symbol.iterator](); }
     get size() { return this._p.length; }
   };
+}
+
+// URL — Zod's z.string().url() validates with `new URL(str)`, and core's CookieJar keys session
+// cookies on `new URL(url).host`, so this must expose real components (not just `.href`).
+if (typeof URL === "undefined") {
+  (globalThis as unknown as Record<string, unknown>).URL = ComicalURL;
 }
 
 installComicalHarness(makeAsyncHost);
