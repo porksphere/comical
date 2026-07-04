@@ -12,17 +12,36 @@
  * Body read-back: read the response to text and return a minimal response whose `json()`/`text()`
  * return that string (the only members a fetch client uses), avoiding RN `Response` body quirks.
  */
-import type { BridgeProvider, CreateRouter, EmbeddedTransport, RegistryProvider } from "./types.ts";
+import type {
+  BridgeProvider,
+  ComicalRuntime,
+  CreateRouter,
+  EmbeddedTransport,
+  Library,
+  RegistryProvider,
+} from "./types.ts";
 
 /** Base is arbitrary — the router matches on path only; nothing leaves the device. */
 const EMBEDDED_ORIGIN = "http://embedded.comical.local";
+
+/** Optional on-device library service + runtime — when supplied, the reused router also mounts the
+ *  `/library*` endpoints (collection, history, activity, progress) resolving against on-device storage. */
+export interface EmbeddedLibrary {
+  library: Library;
+  runtime: ComicalRuntime;
+}
 
 export function createEmbeddedTransport(
   provider: BridgeProvider,
   createRouter: CreateRouter,
   registry?: RegistryProvider,
+  lib?: EmbeddedLibrary,
 ): EmbeddedTransport {
-  const router = createRouter(provider, { cors: false, ...(registry ? { registry } : {}) });
+  const router = createRouter(provider, {
+    cors: false,
+    ...(registry ? { registry } : {}),
+    ...(lib ? { library: lib.library, runtime: lib.runtime } : {}),
+  });
   return async (path, init) => {
     const routed = await router.fetch(new Request(`${EMBEDDED_ORIGIN}${path}`, init));
     const body = await routed.text();

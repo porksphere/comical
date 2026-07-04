@@ -10,16 +10,19 @@
  * a no-op when the native engine is unavailable (web, or before the native module ships), so calling
  * it unconditionally at startup is safe — the app simply stays remote.
  */
+import { Library } from "@comical/library";
+import { ComicalRuntime } from "@comical/runtime";
 import { getNativeBridgeRuntime } from "./native-runtime.ts";
 import { EmbeddedBridgeProvider } from "./provider.ts";
 import { EmbeddedRegistryProvider } from "./registry-provider.ts";
 import { ManifestBundleSource } from "./registry-bundle-source.ts";
 import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
-import { createEmbeddedTransport } from "./transport.ts";
+import { createEmbeddedTransport, type EmbeddedLibrary } from "./transport.ts";
 import type {
   CreateRouter,
   EmbeddedTransport,
   InstalledStore,
+  LibraryStore,
   SavedRegistryStore,
   SettingsStore,
 } from "./types.ts";
@@ -35,6 +38,10 @@ export interface EmbeddedRuntimeConfig {
   registries: SavedRegistryStore;
   /** Per-bridge settings persistence (AsyncStorage-backed in an app). */
   settings: SettingsStore;
+  /** Optional on-device library persistence (AsyncStorage-backed in an app). When supplied, the
+   *  reused router also mounts the `/library*` endpoints so the app's Library/History/Activity work
+   *  on-device — omit it and those endpoints simply 404 (the app shows a "needs a library" state). */
+  libraryStore?: LibraryStore;
   /** The embedder's transport setter — passed the embedded transport (or `null` to restore remote). */
   setTransport: (transport: EmbeddedTransport | null) => void;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
@@ -85,9 +92,20 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
     config.onRegistryChange?.();
   };
 
+  // When a library store is supplied, build the same Library + ComicalRuntime the standalone server
+  // wires (host-server/server.ts) — but over the app's on-device store — so the reused router mounts
+  // the `/library*` endpoints in-process. `ComicalRuntime`'s bridge provider is just `{ get(id) }`,
+  // which `EmbeddedBridgeProvider` already satisfies (it's the same object driving the router).
+  let embeddedLibrary: EmbeddedLibrary | undefined;
+  if (config.libraryStore) {
+    const library = new Library(config.libraryStore);
+    const runtime = new ComicalRuntime({ bridges: bridgeProvider, library });
+    embeddedLibrary = { library, runtime };
+  }
+
   provider = bridgeProvider;
   activeSetTransport = config.setTransport;
-  config.setTransport(createEmbeddedTransport(bridgeProvider, config.createRouter, registry));
+  config.setTransport(createEmbeddedTransport(bridgeProvider, config.createRouter, registry, embeddedLibrary));
   return true;
 }
 
