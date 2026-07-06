@@ -22,6 +22,18 @@ export const registryBridgeEntrySchema = z.object({
   description: z.string().optional(),
   /** Absolute URL (or data URI) to a small square icon representing the bridge/source. */
   iconUrl: z.string().url().optional(),
+  /**
+   * Mirror of `BridgeInfo.assetProxy` — the hosts this bridge proxies assets from (+ optional
+   * Referer). Carried in the index so a client that installs from the registry knows the proxy
+   * allowlist without loading the bundle first (the on-device runtime derives its allowlist from
+   * these). Omitted for bridges that emit no `/img-proxy` URLs.
+   */
+  assetProxy: z
+    .object({
+      hosts: z.array(z.string().min(1)).min(1),
+      referer: z.string().url().optional(),
+    })
+    .optional(),
   /** Absolute URL to the CJS bridge bundle. */
   url: z.string().url(),
   /** Lowercase hex SHA-256 of the bundle content. Always required. */

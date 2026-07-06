@@ -190,6 +190,63 @@ describe("GET /img-proxy", () => {
     expect(res.status).toBe(403);
   });
 
+  test("proxies the same-origin test sprite and returns its bytes", async () => {
+    // `/test-sprite.svg` is the one same-origin target (no allowlist needed), so this exercises the
+    // full fetch→buffer→respond path without a real CDN. Buffering (not streaming `r.body`) is what
+    // lets the on-device runtime, whose RN fetch exposes no streaming body, get real bytes back.
+    const res = await fetch(`${baseUrl}/img-proxy?url=${encodeURIComponent("/test-sprite.svg")}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("image/svg+xml");
+    const body = await res.text();
+    expect(body).toContain("<svg");
+    expect(body.length).toBeGreaterThan(0);
+  });
+
+  test("allowlist is derived from a loaded bridge's assetProxy (declared host proxied + Referer forwarded, others 403)", async () => {
+    // A stand-in CDN that echoes the Referer it received, so we can assert the bridge-declared
+    // Referer is forwarded upstream — the router itself names no host.
+    const cdn = Bun.serve({
+      port: 0,
+      fetch: (req) =>
+        new Response(`bytes:${req.headers.get("Referer") ?? "none"}`, { headers: { "Content-Type": "image/png" } }),
+    });
+    const cdnHost = "127.0.0.1"; // hostname the router will match the target URL against
+
+    // Manager whose one installed bridge declares it proxies assets from `cdnHost` with a Referer.
+    const proxyMgr = {
+      list: async () => [
+        {
+          info: {
+            id: "prox", name: "Prox", version: "1.0.0", contractVersion: "1.0.0",
+            languages: ["en"], nsfw: false, capabilities: [],
+            assetProxy: { hosts: [cdnHost], referer: "https://ref.example/" },
+          },
+          settings: [], configured: true, missingRequired: [], source: "registry" as const,
+        },
+      ],
+      get: async (id: string) => { throw new Error(`not found: ${id}`); },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+
+    const srv = Bun.serve({ port: 0, fetch: createRouter(proxyMgr).fetch });
+    try {
+      const declared = `http://${cdnHost}:${cdn.port}/asset.png`;
+      const ok = await fetch(`http://localhost:${srv.port}/img-proxy?url=${encodeURIComponent(declared)}`);
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get("Content-Type")).toBe("image/png");
+      // Proves the bridge-declared Referer reached the upstream fetch.
+      expect(await ok.text()).toBe("bytes:https://ref.example/");
+
+      // A host no loaded bridge declares is refused — the SSRF boundary still holds with no hardcoding.
+      const denied = await fetch(`http://localhost:${srv.port}/img-proxy?url=${encodeURIComponent("https://evil.example/x.png")}`);
+      expect(denied.status).toBe(403);
+    } finally {
+      srv.stop(true);
+      cdn.stop(true);
+    }
+  });
+
   test("does not require auth token even when token is set", async () => {
     const authMgr = {
       list: async () => [],

@@ -145,27 +145,62 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   });
 
   // ── Image proxy ─────────────────────────────────────────────────────────────
-  // Bridges return proxy URLs pointing here so the browser never fetches CDN
-  // assets directly (avoids ad-blocker / content-filter interference).
+  // Bridges emit server-relative `/img-proxy?url=…` URLs so a client never fetches a source's CDN
+  // asset directly (avoids ad-blocker / content-filter interference, and lets an upstream-required
+  // Referer be attached). This host hardcodes no source's hostnames: the allowlist is derived
+  // entirely from the loaded bridges' `info.assetProxy` declarations, so which hosts may be proxied
+  // (and with what Referer) is the bridges' data, not this router's.
 
-  const PROXY_ALLOWED_RE = /^https?:\/\/([a-z0-9-]+\.)*examplecdn\.org\/|^https?:\/\/([a-z0-9-]+\.)*example-source\.org\/t\/|^https?:\/\/([a-z0-9-]+\.)*cdn.example.test\//;
-
-  /**
-   * Resolve a proxy/crop `url` param to a fetchable absolute URL, enforcing the allowlist.
-   * Returns null (→ caller responds 403) for anything not on the CDN allowlist or the host's
-   * own `/test-sprite.svg` (the only same-origin source, used by the test-sprites bridge).
-   */
-  const resolveProxyTarget = (url: string, reqUrl: string): string | null => {
-    if (url === "/test-sprite.svg" || url === "/test-sprite-var.svg") return new URL(url, reqUrl).href;
-    return PROXY_ALLOWED_RE.test(url) ? url : null;
+  /** A matched allowlist host → the Referer to send upstream for it (undefined = send none). */
+  interface ProxyRule {
+    host: string;
+    referer: string | undefined;
+  }
+  // Derived allowlist, memoized briefly: a series page can resolve dozens of thumbnails at once, and
+  // the installed-bridge set changes rarely. A stale window only delays a just-installed bridge's
+  // images by a few seconds (they retry); never a correctness issue.
+  const PROXY_RULES_TTL_MS = 5000;
+  let proxyRulesCache: { at: number; rules: ProxyRule[] } | null = null;
+  const proxyRules = async (): Promise<ProxyRule[]> => {
+    const now = Date.now();
+    if (proxyRulesCache && now - proxyRulesCache.at < PROXY_RULES_TTL_MS) return proxyRulesCache.rules;
+    const rules: ProxyRule[] = [];
+    try {
+      for (const b of await manager.list()) {
+        const ap = b.info.assetProxy;
+        if (!ap) continue;
+        for (const host of ap.hosts) rules.push({ host: host.toLowerCase(), referer: ap.referer });
+      }
+    } catch {
+      // A listing failure must not 500 image loads — fall back to an empty (deny-all) allowlist.
+    }
+    proxyRulesCache = { at: now, rules };
+    return rules;
   };
 
-  app.get("/img-proxy", async (c) => {
-    const target = resolveProxyTarget(c.req.query("url") ?? "", c.req.url);
-    if (!target) return c.text("Forbidden", 403);
+  /** Match an absolute target URL against the derived allowlist. Returns the rule (for its Referer)
+   *  or null → 403. Enforces http(s) and matches a host exactly or as a parent domain. */
+  const matchProxyRule = (target: string, rules: ProxyRule[]): ProxyRule | null => {
+    let host: string;
     try {
-      const r = await fetch(target, { headers: { "Referer": "https://example-source.test/" } });
-      return new Response(r.body, {
+      const u = new URL(target);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+      host = u.hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+    return rules.find((r) => host === r.host || host.endsWith(`.${r.host}`)) ?? null;
+  };
+
+  /** Fetch `target` (optionally with a Referer) and return its bytes. Buffers the body rather than
+   *  piping `r.body`: this router is also reused in-process by the on-device runtime
+   *  (`@comical/host-rn`), where the RN fetch exposes no streaming `body` and `new Response(r.body,…)`
+   *  would be silently empty. Reading bytes works on every host. */
+  const proxyFetch = async (target: string, referer: string | undefined): Promise<Response> => {
+    try {
+      const r = await fetch(target, referer ? { headers: { Referer: referer } } : undefined);
+      const bytes = await r.arrayBuffer();
+      return new Response(bytes, {
         status: r.status,
         headers: {
           "Content-Type": r.headers.get("Content-Type") ?? "image/webp",
@@ -173,8 +208,19 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         },
       });
     } catch {
-      return c.text("upstream error", 502);
+      return new Response("upstream error", { status: 502 });
     }
+  };
+
+  app.get("/img-proxy", async (c) => {
+    const url = c.req.query("url") ?? "";
+    // The host's own test-sprite sheet is same-origin (no external host, no allowlist needed).
+    if (url === "/test-sprite.svg" || url === "/test-sprite-var.svg") {
+      return proxyFetch(new URL(url, c.req.url).href, undefined);
+    }
+    const rule = matchProxyRule(url, await proxyRules());
+    if (!rule) return c.text("Forbidden", 403);
+    return proxyFetch(url, rule.referer);
   });
 
   // ── Bridge registry ──────────────────────────────────────────────────────────

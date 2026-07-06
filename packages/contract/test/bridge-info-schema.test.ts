@@ -31,3 +31,33 @@ describe("bridgeInfoSchema iconUrl", () => {
     expect(() => bridgeInfoSchema.parse({ ...BASE, iconUrl: "not-a-url" })).toThrow();
   });
 });
+
+describe("bridgeInfoSchema assetProxy", () => {
+  test("accepts declared hosts with a Referer", () => {
+    const info = bridgeInfoSchema.parse({
+      ...BASE,
+      assetProxy: { hosts: ["cdn.example.net", "example.org"], referer: "https://example.org/" },
+    });
+    expect(info.assetProxy?.hosts).toEqual(["cdn.example.net", "example.org"]);
+    expect(info.assetProxy?.referer).toBe("https://example.org/");
+  });
+
+  test("accepts hosts without a Referer", () => {
+    const info = bridgeInfoSchema.parse({ ...BASE, assetProxy: { hosts: ["cdn.example.net"] } });
+    expect(info.assetProxy?.referer).toBeUndefined();
+  });
+
+  test("parses when omitted (backward-compatible with bridges that proxy nothing)", () => {
+    expect(bridgeInfoSchema.parse({ ...BASE }).assetProxy).toBeUndefined();
+  });
+
+  test("rejects an empty hosts list", () => {
+    expect(() => bridgeInfoSchema.parse({ ...BASE, assetProxy: { hosts: [] } })).toThrow();
+  });
+
+  test("rejects a non-URL Referer", () => {
+    expect(() =>
+      bridgeInfoSchema.parse({ ...BASE, assetProxy: { hosts: ["x.example"], referer: "not-a-url" } }),
+    ).toThrow();
+  });
+});

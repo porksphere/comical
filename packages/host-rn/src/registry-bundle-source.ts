@@ -66,6 +66,7 @@ export function entryToInfo(e: RegistryBridgeEntry): BridgeInfo {
     nsfw: e.nsfw,
     capabilities: e.capabilities as BridgeInfo["capabilities"],
     ...(e.iconUrl !== undefined ? { iconUrl: e.iconUrl } : {}),
+    ...(e.assetProxy !== undefined ? { assetProxy: e.assetProxy } : {}),
   };
 }
 
