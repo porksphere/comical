@@ -33,6 +33,7 @@ async function makeIndex(sha256?: string) {
         languages: ["en"],
         nsfw: false,
         capabilities: ["search"],
+        assetProxy: { hosts: ["cdn.demo.example"], referer: "https://demo.example/" },
         url: BUNDLE_URL,
         sha256: digest,
       },
@@ -70,6 +71,8 @@ describe("RegistryBundleSource", () => {
     expect(installed).toHaveLength(1);
     expect(installed[0]?.info.id).toBe("demo");
     expect(installed[0]?.info.capabilities).toEqual(["search"]);
+    // assetProxy round-trips through entryToInfo so the on-device router can derive its allowlist.
+    expect(installed[0]?.info.assetProxy).toEqual({ hosts: ["cdn.demo.example"], referer: "https://demo.example/" });
     expect(installed[0]?.source).toBe("registry");
   });
 

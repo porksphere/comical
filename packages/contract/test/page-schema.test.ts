@@ -22,7 +22,7 @@ describe("pageSchema thumbnail", () => {
       imageUrl: "https://i.example.test/0.jpg",
       thumbnail: {
         kind: "sprite",
-        sheetUrl: "/img-proxy?url=https%3A%2F%2Fexamplecdn.org%2Ft%2Fsheet.webp",
+        sheetUrl: "/img-proxy?url=https%3A%2F%2Fcdn.example.net%2Ft%2Fsheet.webp",
         x: 400,
         w: 200,
         h: 289,

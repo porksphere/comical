@@ -82,7 +82,8 @@ export const tagGroupSchema = z.object({
    * Parallel to `tags` (same index): a ready-to-run search query string for each tag. When present,
    * hosts run a free-text search with this string on tag click (instead of selecting a tag filter) —
    * for backends whose tags aren't a filterable id set but whose search box accepts tag syntax (e.g.
-   * example-source's `female:"big breasts$"`). Mutually exclusive with `tagIds` per group in practice.
+   * a source whose query language supports `female:"big breasts$"`). Mutually exclusive with `tagIds`
+   * per group in practice.
    */
   tagQueries: z.array(z.string()).optional(),
 });
@@ -209,7 +210,7 @@ export type Chapter = z.infer<typeof chapterSchema>;
  *  - `image` — a ready-to-display URL (absolute or server-relative). Render with a normal image
  *    element / native image loader.
  *  - `sprite` — slice-metadata for a tile inside a shared sprite sheet (some sources, e.g.
- *    example-source's viewer, pack ~20 thumbnails into one image). The client fetches `sheetUrl` **once**
+ *    a source's viewer, pack ~20 thumbnails into one image). The client fetches `sheetUrl` **once**
  *    (it's shared across the page's tiles, so it caches) and crops the `{x,y,w,h}` rect itself —
  *    no server-side recompression, so the original pixels are preserved. Web renders an inline SVG
  *    with a matching `viewBox`; native clients region-decode the rect (`BitmapRegionDecoder` on
@@ -592,6 +593,21 @@ export const bridgeInfoSchema = z.object({
       maxConcurrent: z.number().int().positive().optional(),
       /** Minimum milliseconds between successive request starts. */
       minIntervalMs: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
+  /**
+   * Declares the hosts this bridge serves assets from through the host's image proxy (the routes
+   * behind the server-relative `/img-proxy?url=…` URLs this bridge emits), plus an optional Referer
+   * some backends require to serve them. The host derives its proxy allowlist *entirely* from the
+   * loaded bridges' declarations — the core hardcodes no source's hostnames — so a bridge that never
+   * emits proxy URLs omits this. `hosts` entries match a target host exactly or as a parent domain
+   * (e.g. `"example.net"` also allows `cdn.example.net`); the allowlist is an SSRF boundary, so keep
+   * it to the hosts genuinely needed.
+   */
+  assetProxy: z
+    .object({
+      hosts: z.array(z.string().min(1)).min(1),
+      referer: z.string().url().optional(),
     })
     .optional(),
 });

@@ -82,6 +82,20 @@ describe("registryBridgeEntrySchema iconUrl", () => {
   });
 });
 
+describe("registryBridgeEntrySchema assetProxy", () => {
+  test("round-trips declared proxy hosts + Referer from the index", () => {
+    const entry = registryBridgeEntrySchema.parse({
+      ...BASE_ENTRY,
+      assetProxy: { hosts: ["cdn.example.net", "example.org"], referer: "https://example.org/" },
+    });
+    expect(entry.assetProxy).toEqual({ hosts: ["cdn.example.net", "example.org"], referer: "https://example.org/" });
+  });
+
+  test("parses when omitted (bridges that proxy nothing)", () => {
+    expect(registryBridgeEntrySchema.parse({ ...BASE_ENTRY }).assetProxy).toBeUndefined();
+  });
+});
+
 // ── Checksum verification ─────────────────────────────────────────────────────
 
 describe("verifyChecksum", () => {
