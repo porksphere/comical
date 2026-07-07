@@ -8,11 +8,12 @@ FROM oven/bun:1
 
 WORKDIR /app
 
-# Dependencies first (cached until package files change).
-COPY package.json bun.lock ./
+# Dependencies first (cached until package files change). bun.lock is gitignored in this repo, so
+# install non-frozen (same as .github/workflows/ci.yml) — there's no committed lock to honor.
+COPY package.json ./
 COPY packages/ packages/
 COPY bridges/ bridges/
-RUN bun install --frozen-lockfile
+RUN bun install
 
 # Build sample bridges → bridges/*/dist/bridge.js
 COPY scripts/ scripts/
