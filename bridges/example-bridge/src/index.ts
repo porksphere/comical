@@ -136,11 +136,13 @@ class ExampleBridge extends BridgeBase<Settings> {
     return fallback ? { key: fallback, ascending: true } : undefined;
   }
 
-  /** Collect every `.series-card` under `scope` into SeriesEntry list. */
-  private cards($: CheerioRoot, scope: string): SeriesEntry[] {
+  /** Collect every `.series-card` under `scope` into SeriesEntry list, optionally narrowed to
+   *  `data-status="ongoing"` (the "ongoing" toggle filter). */
+  private cards($: CheerioRoot, scope: string, ongoingOnly = false): SeriesEntry[] {
     const base = this.base();
     return $(`${scope} .series-card`)
       .toArray()
+      .filter((el) => !ongoingOnly || $(el).attr("data-status") === "ongoing")
       .map((el) => {
         const node = $(el);
         const href = node.find("a.title").attr("href");
@@ -212,9 +214,10 @@ class ExampleBridge extends BridgeBase<Settings> {
     }
     // Excluded tags map onto this demo backend's genre axis, pushed down as a backend negation.
     if (options?.excludedTags?.length) params.set("excludeGenre", options.excludedTags.join(","));
+    const ongoingOnly = options?.filters?.find((f) => f.key === "ongoing")?.value === true;
     const $ = await this.fetchHtml(`${this.base()}/list/${encodeURIComponent(listId)}?${params.toString()}`);
     const hasNextPage = $("section.list-items").attr("data-has-next") === "true";
-    return { items: this.cards($, "section.list-items"), page, hasNextPage };
+    return { items: this.cards($, "section.list-items", ongoingOnly), page, hasNextPage };
   }
 
   async getFilters(): Promise<Filter[]> {
@@ -229,6 +232,7 @@ class ExampleBridge extends BridgeBase<Settings> {
         })),
       },
       { type: "text", key: "author", label: "Author" },
+      { type: "toggle", key: "ongoing", label: "Ongoing only" },
     ];
   }
 
@@ -245,9 +249,11 @@ class ExampleBridge extends BridgeBase<Settings> {
     options?: SearchOptions,
   ): Promise<PagedResults<SeriesEntry>> {
     const params = new URLSearchParams({ q: query, page: String(page) });
+    let ongoingOnly = false;
     for (const f of options?.filters ?? []) {
       if (f.key === "genre" && Array.isArray(f.value)) params.set("genre", f.value.join(","));
       if (f.key === "author" && typeof f.value === "string") params.set("author", f.value);
+      if (f.key === "ongoing" && f.value === true) ongoingOnly = true;
     }
     // Excluded tags map onto this demo backend's genre axis, pushed down as a backend negation.
     if (options?.excludedTags?.length) params.set("excludeGenre", options.excludedTags.join(","));
@@ -257,7 +263,7 @@ class ExampleBridge extends BridgeBase<Settings> {
       params.set("dir", sort.ascending ? "asc" : "desc");
     }
     const $ = await this.fetchHtml(`${this.base()}/search?${params.toString()}`);
-    return { items: this.cards($, "section.results"), page, hasNextPage: false };
+    return { items: this.cards($, "section.results", ongoingOnly), page, hasNextPage: false };
   }
 
   override async getSeriesDetails(seriesId: string): Promise<SeriesInfo> {

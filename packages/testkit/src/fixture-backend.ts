@@ -156,7 +156,7 @@ function cardBadges(s: FixtureSeries): string {
 
 function seriesCard(s: FixtureSeries): string {
   return (
-    `<div class="series-card" data-id="${esc(s.id)}">` +
+    `<div class="series-card" data-id="${esc(s.id)}" data-status="${esc(s.status)}">` +
     `<a class="title" href="/series/${esc(s.id)}">${esc(s.title)}</a>` +
     `<img class="cover" src="${esc(cover(s.id))}" alt="${esc(s.title)}">` +
     `<span class="author">${esc(s.author)}</span>` +

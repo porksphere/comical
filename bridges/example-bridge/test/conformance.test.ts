@@ -193,6 +193,30 @@ describe("example-bridge", () => {
     expect(results.items.length).toBe(0);
   });
 
+  test("ongoing filter narrows both search and list results to running series", async () => {
+    const bridge = load();
+    const filters = await bridge.getFilters!();
+    expect(filters.find((f) => f.key === "ongoing")).toEqual({
+      type: "toggle",
+      key: "ongoing",
+      label: "Ongoing only",
+    });
+
+    const all = await bridge.getSearchResults!("", 1);
+    const ongoing = await bridge.getSearchResults!("", 1, { filters: [{ key: "ongoing", value: true }] });
+    expect(ongoing.items.length).toBeGreaterThan(0);
+    expect(ongoing.items.length).toBeLessThan(all.items.length);
+
+    const allList = await bridge.getListItems!("latest", 1);
+    const ongoingList = await bridge.getListItems!("latest", 1, { filters: [{ key: "ongoing", value: true }] });
+    expect(ongoingList.items.length).toBeGreaterThan(0);
+    expect(ongoingList.items.length).toBeLessThan(allList.items.length);
+
+    // Explicitly false behaves the same as unset — no narrowing.
+    const explicitFalse = await bridge.getSearchResults!("", 1, { filters: [{ key: "ongoing", value: false }] });
+    expect(explicitFalse.items.length).toBe(all.items.length);
+  });
+
   test("favorites: round-trip add → list → remove (authenticated)", async () => {
     const backend = new FixtureBackend();
     const bridge = loadBridge({
