@@ -31,6 +31,7 @@ the user is authorized to use.
 - [Platform support](#platform-support)
 - [Quick start](#quick-start)
   - [Running the server](#running-the-server)
+  - [Run with Docker](#run-with-docker)
   - [Using the CLI](#using-the-cli)
 - [Writing a bridge](#writing-a-bridge)
 - [Registry](#registry)
@@ -399,6 +400,41 @@ curl -X PUT http://localhost:3100/bridges/example/settings \
 
 > A fixture-backed dev server (no real backend needed) plus the browser UI live in the **`comical-web`**
 > repo — run `bun run dev` from the workspace root to start both.
+
+### Run with Docker
+
+The host-server is published as a container image at **`ghcr.io/porksphere/comical-host`**.
+
+```yaml
+# docker-compose.yml
+services:
+  host:
+    image: ghcr.io/porksphere/comical-host:latest
+    ports:
+      - "3100:3100"
+    environment:
+      COMICAL_ORIGIN: "*"
+      # COMICAL_TOKEN: "change-me"   # optional bearer auth
+    volumes:
+      - comical-data:/data
+    restart: unless-stopped
+volumes:
+  comical-data:
+```
+
+```sh
+docker compose up -d
+curl http://localhost:3100/health
+```
+
+The image ships this repo's first-party sample bridges as a working default; **you add real
+sources (a registry, then bridges) at runtime** — via the REST API (`POST /registries`,
+`POST /registries/:url/bridges/:id/install`) or a client's Settings — never baked into the image.
+The `/data` volume persists your library, settings, and installed bridges. Tags: `latest` and
+`sha-<commit>` follow `master`; `X.Y.Z` / `X.Y` are cut from `v*` git tags.
+
+To pair it with the web UI in one command, see the full-stack compose in the
+[`comical-app`](https://github.com/porksphere/comical-app#-web) README.
 
 Key REST endpoints:
 

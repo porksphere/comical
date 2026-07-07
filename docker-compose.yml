@@ -1,22 +1,23 @@
+# Run the comical host-server (REST API) on its own.
+#
+#   docker compose up -d
+#
+# The published image is at ghcr.io/porksphere/comical-host. To build locally instead of pulling,
+# uncomment `build: .`. Add sources (a registry, then bridges) at runtime via the API or a client's
+# Settings — none are baked into the image. All state (library, settings, installed bridges) persists
+# in the `comical-data` volume.
 services:
-  server:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
+  host:
+    image: ghcr.io/porksphere/comical-host:latest
+    # build: .
     ports:
       - "3100:3100"
+    environment:
+      COMICAL_ORIGIN: "*"
+      # Optional bearer token — if set, enter it once in the client's settings.
+      # COMICAL_TOKEN: "change-me"
     volumes:
       - comical-data:/data
-    restart: unless-stopped
-
-  client:
-    build:
-      context: .
-      dockerfile: Dockerfile.client
-    ports:
-      - "3300:3300"
-    depends_on:
-      - server
     restart: unless-stopped
 
 volumes:
