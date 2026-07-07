@@ -408,33 +408,28 @@ The host-server is published as a container image at **`ghcr.io/porksphere/comic
 ```yaml
 # docker-compose.yml
 services:
-  host:
+  comical-host:
     image: ghcr.io/porksphere/comical-host:latest
-    ports:
-      - "3100:3100"
+    container_name: comical-host
     environment:
-      COMICAL_ORIGIN: "*"
-      # COMICAL_TOKEN: "change-me"   # optional bearer auth
+      - COMICAL_ORIGIN=*
+      # - COMICAL_TOKEN=change-me   # optional bearer auth
     volumes:
-      - comical-data:/data
+      - ./comical-host:/data
+    ports:
+      - 3100:3100
     restart: unless-stopped
-volumes:
-  comical-data:
 ```
 
-```sh
-docker compose up -d
-curl http://localhost:3100/health
-```
+The published image bundles **no bridges** — **you add sources (a registry, then bridges) at
+runtime**, via the REST API (`POST /registries`, `POST /registries/:url/bridges/:id/install`) or a
+client's Settings. The mounted `/data` dir persists your library, settings, and installed bridges.
+Tags: `latest` and `sha-<commit>` follow `master`; `X.Y.Z` / `X.Y` are cut from `v*` git tags.
 
-The image ships this repo's first-party sample bridges as a working default; **you add real
-sources (a registry, then bridges) at runtime** — via the REST API (`POST /registries`,
-`POST /registries/:url/bridges/:id/install`) or a client's Settings — never baked into the image.
-The `/data` volume persists your library, settings, and installed bridges. Tags: `latest` and
-`sha-<commit>` follow `master`; `X.Y.Z` / `X.Y` are cut from `v*` git tags.
-
-To pair it with the web UI in one command, see the full-stack compose in the
-[`comical-app`](https://github.com/porksphere/comical-app#-web) README.
+To pair it with the web UI, see the full-stack compose in the
+[`comical-app`](https://github.com/porksphere/comical-app#-web) README. For a self-contained local
+image that bundles this repo's example bridges, build the `dev` target:
+`docker build --target dev -t comical-host:dev .`
 
 Key REST endpoints:
 
