@@ -1,4 +1,8 @@
-# Comical
+<p align="center">
+  <img src="https://raw.githubusercontent.com/porksphere/comical-app/main/apps/mobile/assets/images/logo.svg" alt="Comical logo" width="128" height="128" />
+</p>
+
+<h1 align="center">Comical</h1>
 
 A configurable, **content-neutral bridge runtime** for serialized content (comics, manga,
 books, and the like). The same TypeScript core runs on desktop, web, iOS, and Android.
