@@ -8,7 +8,9 @@
 import {
   BridgeBase,
   type BridgeInfo,
+  type Filter,
   type InferSettings,
+  type ListOptions,
   type Page,
   type PagedResults,
   type SeriesEntry,
@@ -43,7 +45,7 @@ class DirectExampleBridge extends BridgeBase<Settings> {
     contractVersion: "1.0.0",
     languages: ["en"],
     nsfw: false,
-    capabilities: ["direct", "lists", "settings"],
+    capabilities: ["direct", "lists", "filters", "settings"],
   };
 
   getSettings(): SettingDescriptor[] {
@@ -58,11 +60,17 @@ class DirectExampleBridge extends BridgeBase<Settings> {
     return [{ id: "all", name: "All Works", layout: "grid", featured: true }];
   }
 
-  async getListItems(_listId: string, page: number): Promise<PagedResults<SeriesEntry>> {
+  async getFilters(): Promise<Filter[]> {
+    return [{ type: "toggle", key: "ongoing", label: "Ongoing only" }];
+  }
+
+  async getListItems(_listId: string, page: number, options?: ListOptions): Promise<PagedResults<SeriesEntry>> {
     const $ = await this.fetchHtml(`${this.base()}/`);
     const base = this.base();
+    const ongoingOnly = options?.filters?.find((f) => f.key === "ongoing")?.value === true;
     const items = $(".gallery-catalog .gallery-card")
       .toArray()
+      .filter((el) => !ongoingOnly || $(el).attr("data-status") === "ongoing")
       .map((el) => {
         const node = $(el);
         const id = node.attr("data-id") ?? "";

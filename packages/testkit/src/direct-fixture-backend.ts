@@ -76,6 +76,15 @@ export const DIRECT_CATALOG: DirectFixtureSeries[] = [
     status: "completed",
     pages: 7,
   },
+  {
+    id: "serialized-oddities",
+    title: "Serialized Oddities",
+    artist: "Anonymous",
+    description: "An ongoing anthology of illustrated curiosities, updated as new plates surface.",
+    genres: ["Horror", "Anthology"],
+    status: "ongoing",
+    pages: 4,
+  },
 ];
 
 const esc = (s: string): string =>
@@ -98,7 +107,7 @@ function layout(title: string, body: string): string {
 
 function galleryCard(s: DirectFixtureSeries): string {
   return (
-    `<div class="gallery-card" data-id="${esc(s.id)}">` +
+    `<div class="gallery-card" data-id="${esc(s.id)}" data-status="${esc(s.status)}">` +
     `<a class="title" href="/gallery/${esc(s.id)}">${esc(s.title)}</a>` +
     `<img class="cover" src="${esc(cover(s.id))}" alt="${esc(s.title)}">` +
     `<span class="artist">${esc(s.artist)}</span>` +
