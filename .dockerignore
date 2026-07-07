@@ -1,8 +1,9 @@
 node_modules/
 **/node_modules/
-demo/.out/
 **/dist/
 **/.build/
+.comical/
 .comical-demo/
+sandbox/.out/
 e2e/.captures/
 .git/
