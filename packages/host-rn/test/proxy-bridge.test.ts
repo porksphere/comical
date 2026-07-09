@@ -27,7 +27,7 @@ function nativeReturning(raw: string): NativeBridgeRuntime {
 
 function call(raw: string, method = "addFavorite"): Promise<unknown> {
   const bridge = buildProxyBridge("t", INFO, [], [method], nativeReturning(raw));
-  return (bridge as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[method]("series-1");
+  return (bridge as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[method]!("series-1");
 }
 
 describe("buildProxyBridge result marshalling", () => {

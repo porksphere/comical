@@ -26,13 +26,13 @@ describe("direct-example getFilters", () => {
 describe("direct-example getListItems with the ongoing filter", () => {
   test("returns every fixture entry with no filter applied", async () => {
     const bridge = load();
-    const { items } = await bridge.getListItems("all", 1);
+    const { items } = await bridge.getListItems!("all", 1);
     expect(items.length).toBe(7);
   });
 
   test("narrows to only ongoing works when the toggle is true", async () => {
     const bridge = load();
-    const { items } = await bridge.getListItems("all", 1, {
+    const { items } = await bridge.getListItems!("all", 1, {
       filters: [{ key: "ongoing", value: true }],
     });
     expect(items).toEqual([expect.objectContaining({ id: "serialized-oddities" })]);
@@ -40,7 +40,7 @@ describe("direct-example getListItems with the ongoing filter", () => {
 
   test("returns every entry when the toggle is explicitly false", async () => {
     const bridge = load();
-    const { items } = await bridge.getListItems("all", 1, {
+    const { items } = await bridge.getListItems!("all", 1, {
       filters: [{ key: "ongoing", value: false }],
     });
     expect(items.length).toBe(7);
