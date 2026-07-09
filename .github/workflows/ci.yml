@@ -21,11 +21,13 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Test
-        run: bun test
-
+      # Bridges must be built before the test step: host-server integration and bridge conformance
+      # tests load each bridge's compiled dist/bridge.js (gitignored), so an unbuilt tree fails them.
       - name: Build bridges
         run: bun run build
+
+      - name: Test
+        run: bun test
 
       # Generated runtime assets (gitignored): produced here, not committed. This is the build
       # step native (iOS/Android) packaging would run before bundling the asset into the app.
