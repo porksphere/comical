@@ -33,7 +33,14 @@ export function buildProxyBridge(
     if (method === "getSettings" || method === "info") continue;
     bridge[method] = async (...args: unknown[]): Promise<unknown> => {
       const raw = await native.callBridge(id, method, JSON.stringify(args));
-      return raw === undefined || raw === "" ? undefined : (JSON.parse(raw) as unknown);
+      // `callBridge` honors a `Promise<string>` contract of valid JSON — a void method serializes to
+      // "null" (see host-native `comical_call`). An empty/absent result is void. The literal string
+      // "undefined" is ONLY defensively tolerated for an older native harness that mis-serialized a
+      // void return (pre-fix) — never produced now. Everything else is parsed, INCLUDING "null",
+      // which must round-trip to a real `null` (e.g. getLibrary's "no library store") — so it is not
+      // special-cased here.
+      if (raw == null || raw === "" || raw === "undefined") return undefined;
+      return JSON.parse(raw) as unknown;
     };
   }
   return bridge as unknown as LoadedBridge;
