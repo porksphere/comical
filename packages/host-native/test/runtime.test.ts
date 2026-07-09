@@ -102,6 +102,27 @@ describe("host-native runtime (Android / async adapter)", () => {
     expect(res.items.length).toBe(3);
   });
 
+  test("serializes a void method result as valid JSON null (honors the Promise<string> contract)", async () => {
+    installNativeEval();
+    installAsyncNatives();
+    installComicalHarness(makeAsyncHost);
+
+    // A bridge whose favorite write returns void. Pre-fix, `JSON.stringify(undefined)` was the VALUE
+    // undefined and the native layer coerced it to the invalid string "undefined"; now it must be the
+    // valid JSON "null".
+    const code = `module.exports = { default: (host) => ({
+      info: { id: "f", name: "F", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["favorites"] },
+      getFavorites: async () => ({ items: [], page: 1, hasNextPage: false }),
+      addFavorite: async () => {},
+      removeFavorite: async () => {},
+    }) };`;
+    g.comical_init(code, "{}");
+
+    const raw = await g.comical_call("addFavorite", JSON.stringify(["series-1"]));
+    expect(raw).toBe("null");
+    expect(JSON.parse(raw)).toBeNull();
+  });
+
   test("honors info.rateLimit through core", async () => {
     installNativeEval();
     installAsyncNatives();

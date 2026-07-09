@@ -70,7 +70,8 @@ function makeFakeNative(): NativeBridgeRuntime {
       const args = JSON.parse(argsJson) as unknown[];
       const fn = (bridge as unknown as Record<string, ((...a: unknown[]) => Promise<unknown>) | undefined>)[method];
       if (!fn) throw new Error(`method not implemented: ${method}`);
-      return JSON.stringify(await fn(...args));
+      // Mirror host-native `comical_call`: serialize void → valid JSON "null", never a bare undefined.
+      return JSON.stringify((await fn(...args)) ?? null);
     },
     disposeBridge(id) {
       contexts.delete(id);
