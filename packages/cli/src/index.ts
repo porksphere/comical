@@ -28,7 +28,7 @@ import {
   signSha256,
 } from "@comical/registry";
 import { readdir, writeFile } from "node:fs/promises";
-import { discoverBridges, discoverTrackers, readBundle, resolveBridge } from "./discover.ts";
+import { discoverBridges, discoverTrackers, filterBridgesByNsfw, readBundle, resolveBridge } from "./discover.ts";
 
 const BRIDGES_DIR = join(import.meta.dir, "..", "..", "..", "bridges");
 
@@ -59,7 +59,7 @@ Usage:
   comical registry update <bridgeId>             update an installed bridge
   comical registry uninstall <bridgeId>          uninstall a registry bridge
   comical registry updates                       check for available updates
-  comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR] [--trackers-dir DIR]   generate index.json
+  comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR] [--trackers-dir DIR] [--nsfw true|false]   generate index.json
   comical registry keygen --out FILE             generate an Ed25519 keypair
 
 Options:
@@ -76,6 +76,7 @@ Options:
   --out DIR           Output directory for \`registry publish\`
   --bridges-dir DIR   Bridges dir to publish from (external bridge repos); defaults to this repo's
   --trackers-dir DIR  Trackers dir to publish from (tracker repos)
+  --nsfw true|false   \`registry publish\`: only publish bridges with this \`nsfw\` rating (default: all)
   --key FILE          Path to private key file for \`registry publish\`
   --query Q           Search query for the \`evaluate\` probe
   --strict            \`evaluate\`: treat warnings as failures (non-zero exit)
@@ -129,6 +130,7 @@ async function main(): Promise<number> {
       "base-url": { type: "string" },
       "bridges-dir": { type: "string" },
       "trackers-dir": { type: "string" },
+      nsfw: { type: "string" },
       out: { type: "string" },
       key: { type: "string" },
       fixture: { type: "boolean" },
@@ -267,6 +269,12 @@ async function main(): Promise<number> {
       if (values.key) pubOpts.keyFile = values.key;
       if (values["bridges-dir"]) pubOpts.bridgesDir = values["bridges-dir"];
       if (values["trackers-dir"]) pubOpts.trackersDir = values["trackers-dir"];
+      if (values.nsfw !== undefined) {
+        if (values.nsfw !== "true" && values.nsfw !== "false") {
+          throw new Error(`--nsfw must be "true" or "false" (got "${values.nsfw}")`);
+        }
+        pubOpts.nsfwFilter = values.nsfw === "true";
+      }
       await publishRegistry(pubOpts);
       return 0;
     }
@@ -472,9 +480,15 @@ interface PublishOpts {
   bridgesDir?: string;
   /** Where built trackers live (.build/ in a tracker repo). */
   trackersDir?: string;
+  /**
+   * When set, only publish bridges whose `info.nsfw` matches this value — `true` for an
+   * NSFW-only registry, `false` for an SFW-only one. Omit to publish every bridge (default).
+   * Trackers are unaffected (they carry no content rating).
+   */
+  nsfwFilter?: boolean;
 }
 
-async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersDir }: PublishOpts): Promise<void> {
+async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersDir, nsfwFilter }: PublishOpts): Promise<void> {
   const { mkdirSync, readFileSync, copyFileSync } = await import("node:fs");
   const { join: pjoin } = await import("node:path");
 
@@ -493,8 +507,9 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
   // Only use the monorepo default when --bridges-dir is not given AND no --trackers-dir was
   // provided either (tracker-only repos must not accidentally include the monorepo's bridges).
   const effectiveBridgesDir = bridgesDir ?? (trackersDir ? undefined : BRIDGES_DIR);
-  const bridges = effectiveBridgesDir ? discoverBridges(effectiveBridgesDir) : [];
-  if (bridges.length === 0 && !trackersDir) throw new Error("no built bridges found — run the build first");
+  const discovered = effectiveBridgesDir ? discoverBridges(effectiveBridgesDir) : [];
+  if (discovered.length === 0 && !trackersDir) throw new Error("no built bridges found — run the build first");
+  const bridges = filterBridgesByNsfw(discovered, nsfwFilter);
 
   const bridgeEntries = [];
   for (const b of bridges) {

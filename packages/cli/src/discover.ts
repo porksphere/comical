@@ -65,6 +65,18 @@ export function discoverBridges(bridgesDir: string | string[]): DiscoveredBridge
   return found;
 }
 
+/**
+ * Filter discovered bridges by their declared `nsfw` rating. Used by `registry publish --nsfw`
+ * to emit a rating-specific registry (an SFW-only or NSFW-only `index.json`). A `nsfwFilter` of
+ * `undefined` means "no filter" — every bridge is kept (the default publish behavior).
+ */
+export function filterBridgesByNsfw<T extends { info: Pick<BridgeInfo, "nsfw"> }>(
+  bridges: T[],
+  nsfwFilter: boolean | undefined,
+): T[] {
+  return nsfwFilter === undefined ? bridges : bridges.filter((b) => b.info.nsfw === nsfwFilter);
+}
+
 export function resolveBridge(bridgesDir: string | string[], id: string): DiscoveredBridge {
   const match = discoverBridges(bridgesDir).find((b) => b.id === id);
   if (!match) {
