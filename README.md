@@ -303,7 +303,7 @@ bundles or needs CORS at all.
 | `@comical/contract` | Versioned `Bridge` interface, `HostCapabilities`, zod data models, `contractVersion`. The stable boundary — everything else builds on this. |
 | `@comical/core` | Sandboxed bridge loader, `BundleEvaluator` interface, `NodeVmEvaluator`, gated network (rate-limit + cache), zod boundary validation, typed errors, call timeouts. Pure TS — no platform APIs. |
 | `@comical/sdk` | `BridgeBase` class, cheerio-backed HTML helpers (`fetchHtml`, `parse`), URL resolver, re-exports contract types. What bridge authors import. |
-| `@comical/testkit` | `FixtureBackend` (public-domain demo library), `MockHost`, network record/replay cassettes, the `evaluateBridge` coverage report + `runConformance` strict gate. |
+| `@comical/testkit` | `FixtureBackend` (public-domain demo library), `MockHost`, network record/replay cassettes, the `evaluateBridge` coverage report + `runConformance` strict gate, plus live cover-size metrics (`measureThumbnails`) and transient/blocked-network tolerance (`isTransientError`). See [`packages/testkit/README.md`](packages/testkit/README.md). |
 | `@comical/registry` | Registry index schema + zod validation, GitHub URL auto-resolution, SHA-256 integrity + Ed25519 signature verification, `ManifestStore`, `RegistryManager` (add/remove/browse/install/update/uninstall). |
 | `@comical/library` | **Optional** local, cross-bridge reading library + tracking: collection, read/unread state, per-page resume, history, lists, new-chapter detection. Platform-agnostic `Library` service over a `LibraryStore` seam (in-memory store included). `host-server` mounts `/library` only when enabled. |
 
