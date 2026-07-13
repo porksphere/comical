@@ -323,7 +323,25 @@ export class RegistryManager {
     if (cached) return cached;
     const index = await fetchIndex(url);
     this.cache.set(url, index);
+    await this.reconcileDisplayName(url, index);
     return index;
+  }
+
+  /**
+   * Keep a saved registry's `displayName` in sync with its index. Called on every index fetch (the
+   * single choke point every browse/install/update/checkUpdates flows through), so an operator's
+   * label change propagates without the user re-adding the registry — and it costs nothing extra,
+   * riding a fetch that was already happening. A no-op unless the value actually changed, and skipped
+   * for a url not yet in the manifest (e.g. the fetch inside `add()`, which saves the label itself).
+   */
+  private async reconcileDisplayName(url: string, index: RegistryIndex): Promise<void> {
+    const saved = await this.opts.manifest.getRegistry(url);
+    if (!saved) return;
+    if ((saved.displayName ?? undefined) === (index.displayName ?? undefined)) return;
+    const next = { ...saved };
+    if (index.displayName) next.displayName = index.displayName;
+    else delete next.displayName; // exactOptionalPropertyTypes: clear, don't write undefined
+    await this.opts.manifest.addRegistry(next); // addRegistry upserts by url
   }
 }
 

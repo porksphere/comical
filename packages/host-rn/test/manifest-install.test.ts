@@ -178,6 +178,18 @@ describe("EmbeddedRegistryProvider", () => {
     expect(saved.displayName).toBe("Curated");
   });
 
+  test("reconciles a changed displayName onto the saved registry on fetch", async () => {
+    const registries = new MemRegistryStore();
+    await registries.add({ url: REG_A, name: "reg-a", requireSignature: false, displayName: "Stale" });
+    const provider = new EmbeddedRegistryProvider({
+      registries,
+      installed: new MemInstalledStore(),
+      fetcher: fakeFetcher({ [REG_A]: { ...index([entry()]), displayName: "Fresh" } }),
+    });
+    await provider.browse(REG_A); // fetch → reconcile side-effect
+    expect((await registries.get(REG_A))?.displayName).toBe("Fresh");
+  });
+
   test("browse() annotates installed + updateAvailable", async () => {
     const { provider, installed } = setup({ [REG_A]: index([entry({ version: "2.0.0" })]) });
     // Not installed yet.

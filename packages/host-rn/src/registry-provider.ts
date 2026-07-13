@@ -46,7 +46,24 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     if (cached) return cached;
     const index = await this.deps.fetcher.fetchIndex(url);
     this.indexCache.set(url, index);
+    await this.reconcileDisplayName(url, index);
     return index;
+  }
+
+  /**
+   * Keep a saved registry's `displayName` in sync with its index, on every index fetch (the choke
+   * point every browse/install/update/checkUpdates flows through) — so an operator's label change
+   * propagates without re-adding, riding a fetch that was already happening. No-op unless it changed;
+   * skipped for a url not yet saved (the fetch inside `add()`, which stores the label itself).
+   */
+  private async reconcileDisplayName(url: string, index: RegistryIndex): Promise<void> {
+    const saved = await this.deps.registries.get(url);
+    if (!saved) return;
+    if ((saved.displayName ?? undefined) === (index.displayName ?? undefined)) return;
+    const next = { ...saved };
+    if (index.displayName) next.displayName = index.displayName;
+    else delete next.displayName; // exactOptionalPropertyTypes: clear, don't write undefined
+    await this.deps.registries.add(next); // upsert by url
   }
 
   // ── Registries ────────────────────────────────────────────────────────────────

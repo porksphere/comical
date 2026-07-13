@@ -209,6 +209,15 @@ describe("fetchIndex + RegistryManager", () => {
     expect(available[0]!.updateAvailable).toBe(false);
   });
 
+  test("reconciles a changed displayName onto the saved registry on next fetch", async () => {
+    const manifest = new ManifestStore(join(DATA_DIR, "test-reconcile"));
+    // Seed as if it were added when the operator's label was different (here: stale/older).
+    await manifest.addRegistry({ url: registryUrl, name: "example", requireSignature: false, displayName: "Stale" });
+    const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-reconcile"), manifest });
+    await mgr.browse(registryUrl); // fetches the index (displayName "Curated") → reconcile side-effect
+    expect((await manifest.getRegistry(registryUrl))?.displayName).toBe("Curated");
+  });
+
   test("installs a bridge: downloads, verifies checksum, caches to disk", async () => {
     const manifest = new ManifestStore(join(DATA_DIR, "test-install"));
     const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-install"), manifest });
