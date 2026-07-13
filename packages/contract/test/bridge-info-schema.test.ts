@@ -4,7 +4,7 @@
  * and additive so bridges that predate the field still validate.
  */
 import { describe, expect, test } from "bun:test";
-import { bridgeInfoSchema } from "../src/models.ts";
+import { bridgeInfoSchema, parseBridgeId } from "../src/models.ts";
 
 const BASE = {
   id: "example",
@@ -29,6 +29,32 @@ describe("bridgeInfoSchema iconUrl", () => {
 
   test("rejects a non-URL string", () => {
     expect(() => bridgeInfoSchema.parse({ ...BASE, iconUrl: "not-a-url" })).toThrow();
+  });
+});
+
+describe("bridgeInfoSchema id scoping", () => {
+  test("accepts a bare (unscoped) id — backward compatible", () => {
+    expect(bridgeInfoSchema.parse({ ...BASE, id: "example" }).id).toBe("example");
+  });
+
+  test("accepts a publisher-scoped id (scope.name)", () => {
+    expect(bridgeInfoSchema.parse({ ...BASE, id: "acme.example" }).id).toBe("acme.example");
+  });
+
+  test("accepts a multi-level scope (reverse-DNS)", () => {
+    expect(bridgeInfoSchema.parse({ ...BASE, id: "com.acme.example" }).id).toBe("com.acme.example");
+  });
+
+  test("rejects url-unsafe separators and path traversal", () => {
+    for (const bad of ["acme/example", "..", "acme..example", ".example", "example.", "Acme.Example"]) {
+      expect(() => bridgeInfoSchema.parse({ ...BASE, id: bad })).toThrow();
+    }
+  });
+
+  test("parseBridgeId splits scope from name", () => {
+    expect(parseBridgeId("acme.example")).toEqual({ scope: "acme", name: "example" });
+    expect(parseBridgeId("com.acme.example")).toEqual({ scope: "com.acme", name: "example" });
+    expect(parseBridgeId("example")).toEqual({ name: "example" });
   });
 });
 

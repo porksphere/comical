@@ -565,12 +565,39 @@ export const bridgeSeriesStatusSchema = z.enum([
 export type BridgeSeriesStatus = z.infer<typeof bridgeSeriesStatusSchema>;
 
 /**
+ * Canonical bridge/tracker id pattern: one or more `.`-separated lowercase kebab segments, e.g.
+ * `example` (unscoped) or `acme.example` (publisher-scoped). The optional leading segments are a
+ * **publisher scope** (reverse-DNS / Java-package style) that makes the id globally unique across
+ * registries and independent of the registry URL — two operators publishing an `example` don't
+ * clash, and moving a registry's URL never changes a bridge's identity. `.` is deliberately chosen
+ * over `/` so the id stays a single url-safe path segment (it flows through `/bridges/:id/…` routes
+ * and `cacheDir/<id>/…` paths unencoded); each segment must start alphanumeric, so `..`, leading/
+ * trailing dots, and path-traversal are all rejected.
+ */
+export const BRIDGE_ID_PATTERN = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*$/;
+
+/**
+ * Split a bridge id into its publisher `scope` (everything before the last `.`, if any) and bare
+ * `name` (the final segment). `parseBridgeId("acme.example")` → `{ scope: "acme", name: "example" }`;
+ * `parseBridgeId("example")` → `{ name: "example" }` (unscoped). Useful for display (show `name`,
+ * badge `scope`) and for the future trust layer (bind a scope to a registry's key).
+ */
+export function parseBridgeId(id: string): { scope?: string; name: string } {
+  const i = id.lastIndexOf(".");
+  if (i === -1) return { name: id };
+  return { scope: id.slice(0, i), name: id.slice(i + 1) };
+}
+
+/**
  * Self-description of a bridge. Note there is deliberately NO backend URL here — the address
  * and credentials of the user's backend arrive at runtime through settings.
  */
 export const bridgeInfoSchema = z.object({
-  /** Stable, url-safe, lowercase id. Namespaces every entity id this bridge emits. */
-  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "id must be lowercase kebab-case"),
+  /**
+   * Stable, url-safe, lowercase id — optionally publisher-scoped (`scope.name`). Namespaces every
+   * entity id this bridge emits. See {@link BRIDGE_ID_PATTERN}.
+   */
+  id: z.string().regex(BRIDGE_ID_PATTERN, "id must be lowercase kebab-case, optionally scoped as scope.name"),
   name: z.string().min(1),
   /** Semver of the bridge implementation itself. */
   version: z.string(),

@@ -9,10 +9,11 @@
  * GitHub repo URLs are auto-resolved to their raw content (see url.ts).
  */
 import { z } from "zod";
+import { BRIDGE_ID_PATTERN } from "@comical/contract";
 
 /** A single bridge entry in the registry index. */
 export const registryBridgeEntrySchema = z.object({
-  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  id: z.string().regex(BRIDGE_ID_PATTERN),
   name: z.string().min(1),
   version: z.string(),
   contractVersion: z.string(),
@@ -48,7 +49,7 @@ export type RegistryBridgeEntry = z.infer<typeof registryBridgeEntrySchema>;
 
 /** A single tracker entry in the registry index. */
 export const registryTrackerEntrySchema = z.object({
-  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  id: z.string().regex(BRIDGE_ID_PATTERN),
   name: z.string().min(1),
   version: z.string(),
   contractVersion: z.string(),
