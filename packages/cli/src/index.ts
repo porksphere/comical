@@ -59,7 +59,7 @@ Usage:
   comical registry update <bridgeId>             update an installed bridge
   comical registry uninstall <bridgeId>          uninstall a registry bridge
   comical registry updates                       check for available updates
-  comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR] [--trackers-dir DIR] [--nsfw true|false]   generate index.json
+  comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR] [--trackers-dir DIR] [--nsfw true|false] [--display-name NAME]   generate index.json
   comical registry keygen --out FILE             generate an Ed25519 keypair
 
 Options:
@@ -77,6 +77,7 @@ Options:
   --bridges-dir DIR   Bridges dir to publish from (external bridge repos); defaults to this repo's
   --trackers-dir DIR  Trackers dir to publish from (tracker repos)
   --nsfw true|false   \`registry publish\`: only publish bridges with this \`nsfw\` rating (default: all)
+  --display-name NAME \`registry publish\`: operator label for the registry (e.g. "SFW"), shown next to its name
   --key FILE          Path to private key file for \`registry publish\`
   --query Q           Search query for the \`evaluate\` probe
   --strict            \`evaluate\`: treat warnings as failures (non-zero exit)
@@ -130,6 +131,7 @@ async function main(): Promise<number> {
       "base-url": { type: "string" },
       "bridges-dir": { type: "string" },
       "trackers-dir": { type: "string" },
+      "display-name": { type: "string" },
       nsfw: { type: "string" },
       out: { type: "string" },
       key: { type: "string" },
@@ -269,6 +271,7 @@ async function main(): Promise<number> {
       if (values.key) pubOpts.keyFile = values.key;
       if (values["bridges-dir"]) pubOpts.bridgesDir = values["bridges-dir"];
       if (values["trackers-dir"]) pubOpts.trackersDir = values["trackers-dir"];
+      if (values["display-name"]) pubOpts.displayName = values["display-name"];
       if (values.nsfw !== undefined) {
         if (values.nsfw !== "true" && values.nsfw !== "false") {
           throw new Error(`--nsfw must be "true" or "false" (got "${values.nsfw}")`);
@@ -480,6 +483,9 @@ interface PublishOpts {
   bridgesDir?: string;
   /** Where built trackers live (.build/ in a tracker repo). */
   trackersDir?: string;
+  /** Optional operator label written to the index's `displayName` (e.g. "SFW"), shown by clients
+   *  next to the registry's derived name. Omit to leave it unset. */
+  displayName?: string;
   /**
    * When set, only publish bridges whose `info.nsfw` matches this value — `true` for an
    * NSFW-only registry, `false` for an SFW-only one. Omit to publish every bridge (default).
@@ -488,7 +494,7 @@ interface PublishOpts {
   nsfwFilter?: boolean;
 }
 
-async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersDir, nsfwFilter }: PublishOpts): Promise<void> {
+async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersDir, displayName, nsfwFilter }: PublishOpts): Promise<void> {
   const { mkdirSync, readFileSync, copyFileSync } = await import("node:fs");
   const { join: pjoin } = await import("node:path");
 
@@ -573,6 +579,7 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
   const index: Record<string, unknown> = {
     registryVersion: "1",
     updated: new Date().toISOString(),
+    ...(displayName ? { displayName } : {}),
     bridges: bridgeEntries,
   };
   if (trackerEntries.length > 0) index.trackers = trackerEntries;

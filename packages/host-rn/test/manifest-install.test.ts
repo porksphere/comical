@@ -172,6 +172,12 @@ describe("EmbeddedRegistryProvider", () => {
     expect(await provider.list()).toHaveLength(1);
   });
 
+  test("add() captures the index's operator displayName", async () => {
+    const { provider } = setup({ [REG_A]: { ...index([entry()]), displayName: "Curated" } });
+    const saved = await provider.add(REG_A);
+    expect(saved.displayName).toBe("Curated");
+  });
+
   test("browse() annotates installed + updateAvailable", async () => {
     const { provider, installed } = setup({ [REG_A]: index([entry({ version: "2.0.0" })]) });
     // Not installed yet.

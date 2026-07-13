@@ -70,6 +70,12 @@ export const registryIndexSchema = z.object({
   /** ISO-8601 timestamp of when this index was last generated. */
   updated: z.string(),
   /**
+   * Optional short label the operator sets for this registry (e.g. "SFW", "NSFW"). Clients show it
+   * next to the derived owner/repo name, so one publisher can serve several distinguishable
+   * registries from the same repo. Absent for registries that don't set one.
+   */
+  displayName: z.string().optional(),
+  /**
    * Base64url-encoded Ed25519 public key for this registry.
    * Present when the operator signs bridge entries; absent for checksum-only registries.
    */
@@ -83,8 +89,10 @@ export type RegistryIndex = z.infer<typeof registryIndexSchema>;
 export const savedRegistrySchema = z.object({
   /** The canonical URL the user added (already resolved to index.json). */
   url: z.string().url(),
-  /** Human-readable display name (defaults to the hostname). */
+  /** Human-readable name derived from the URL (e.g. the owner/repo, else the hostname). */
   name: z.string(),
+  /** Operator-declared label captured from the index's `displayName`, shown next to `name`. Optional. */
+  displayName: z.string().optional(),
   /** Pinned public key fingerprint (SHA-256 of the public key bytes, hex). */
   publicKeyFingerprint: z.string().optional(),
   /** ISO-8601 timestamp of last successful fetch. */

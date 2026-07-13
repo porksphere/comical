@@ -51,6 +51,7 @@ export class RegistryManager {
       lastFetched: new Date().toISOString(),
       requireSignature: opts.requireSignature ?? false,
       ...(fingerprint ? { publicKeyFingerprint: fingerprint } : {}),
+      ...(index.displayName ? { displayName: index.displayName } : {}),
     };
 
     await this.opts.manifest.addRegistry(registry);

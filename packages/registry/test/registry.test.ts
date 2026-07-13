@@ -163,6 +163,7 @@ describe("fetchIndex + RegistryManager", () => {
     const index = {
       registryVersion: "1",
       updated: new Date().toISOString(),
+      displayName: "Curated",
       bridges: [{
         id: "example",
         name: "Example Bridge",
@@ -199,6 +200,8 @@ describe("fetchIndex + RegistryManager", () => {
     const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-add"), manifest });
     const added = await mgr.add(registryUrl);
     expect(added.url).toBe(registryUrl);
+    // The operator's index `displayName` is captured onto the saved registry.
+    expect(added.displayName).toBe("Curated");
     const available = await mgr.browse(registryUrl);
     expect(available.length).toBe(1);
     expect(available[0]!.entry.id).toBe("example");

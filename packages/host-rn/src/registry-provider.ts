@@ -57,12 +57,14 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
 
   async add(rawUrl: string, opts: { requireSignature?: boolean } = {}): Promise<SavedRegistry> {
     const url = resolveRegistryUrl(rawUrl);
-    await this.fetchAndCache(url); // validate it's reachable + a well-formed index before saving
+    // Validate it's reachable + a well-formed index before saving, and capture the operator's label.
+    const index = await this.fetchAndCache(url);
     const registry: SavedRegistry = {
       url,
       name: registryDisplayName(url),
       lastFetched: new Date().toISOString(),
       requireSignature: opts.requireSignature ?? false,
+      ...(index.displayName ? { displayName: index.displayName } : {}),
     };
     await this.deps.registries.add(registry);
     return registry;
