@@ -84,6 +84,24 @@ const CAPABILITY_METHOD: Partial<Record<BridgeCapability, keyof Bridge>> = {
 };
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Heuristic: was this thrown error a **transient/blocked network** condition (site down, rate-limited,
+ * a Cloudflare/bot wall, a timeout) rather than a bridge *logic* bug? A live audit downgrades these
+ * from `fail` to `warn` — an evaluated capability whose only failure was a block reads as ⚠, not ✗, so
+ * a flaky/blocked site doesn't redden the whole run. A real error (parse/logic/assertion) stays `fail`.
+ */
+export function isTransientError(e: unknown): boolean {
+  const s = (e instanceof Error ? `${e.name} ${e.message}` : String(e)).toLowerCase();
+  return (
+    /\b(403|408|425|429|500|502|503|504)\b/.test(s) ||
+    /forbidden|too many requests|rate.?limit|service unavailable|bad gateway|gateway time-?out/.test(s) ||
+    /cloudflare|captcha|challenge|access denied|just a moment|blocked/.test(s) ||
+    /timed? ?out|timeout|econnreset|econnrefused|econnaborted|enotfound|eai_again|socket hang|fetch failed|network (error|request failed)|unable to (connect|resolve)/.test(
+      s,
+    )
+  );
+}
 const ids = (r: PagedResults<SeriesEntry>): string => r.items.map((i) => i.id).join(",");
 
 /**
@@ -163,7 +181,7 @@ export async function evaluateBridge(
         }
       }
     } catch (e) {
-      fail("lists", "lists.threw", `lists browse threw: ${msg(e)}`);
+      rec("lists", isTransientError(e) ? "warn" : "fail", "lists.threw", `lists browse threw: ${msg(e)}`);
     }
   }
 
@@ -188,7 +206,7 @@ export async function evaluateBridge(
         warn("search", "search.items", `search for "${query}" returned no items (try --query)`);
       }
     } catch (e) {
-      fail("search", "search.threw", `getSearchResults threw: ${msg(e)}`);
+      rec("search", isTransientError(e) ? "warn" : "fail", "search.threw", `getSearchResults threw: ${msg(e)}`);
     }
   }
 
@@ -210,7 +228,7 @@ export async function evaluateBridge(
         await probeFilterEffect(bridge, filters, options.searchQuery ?? "", warn, pass, fail);
       }
     } catch (e) {
-      fail("filters", "filters.threw", `getFilters threw: ${msg(e)}`);
+      rec("filters", isTransientError(e) ? "warn" : "fail", "filters.threw", `getFilters threw: ${msg(e)}`);
     }
   }
 
@@ -227,7 +245,7 @@ export async function evaluateBridge(
         await probeSortEffect(bridge, sorts[0]!.key, options.searchQuery ?? "", warn, pass, fail);
       }
     } catch (e) {
-      fail("sort", "sort.threw", `getSortOptions threw: ${msg(e)}`);
+      rec("sort", isTransientError(e) ? "warn" : "fail", "sort.threw", `getSortOptions threw: ${msg(e)}`);
     }
   }
 
@@ -249,7 +267,7 @@ export async function evaluateBridge(
       }
       pass("settings", "settings.descriptors", `getSettings returned ${descriptors.length} descriptor(s)`);
     } catch (e) {
-      fail("settings", "settings.threw", `getSettings threw: ${msg(e)}`);
+      rec("settings", isTransientError(e) ? "warn" : "fail", "settings.threw", `getSettings threw: ${msg(e)}`);
     }
   }
 
@@ -286,7 +304,7 @@ export async function evaluateBridge(
           }
         }
       } catch (e) {
-        fail("direct", "direct.pages.threw", `getSeriesPages threw: ${msg(e)}`);
+        rec("direct", isTransientError(e) ? "warn" : "fail", "direct.pages.threw", `getSeriesPages threw: ${msg(e)}`);
       }
     } else {
       warn("direct", "direct.noSample", "no series id available to probe getSeriesPages");
@@ -331,7 +349,7 @@ export async function evaluateBridge(
         }
       }
     } catch (e) {
-      fail("core", "read.threw", `read path threw: ${msg(e)}`);
+      rec("core", isTransientError(e) ? "warn" : "fail", "read.threw", `read path threw: ${msg(e)}`);
     }
   } else if (has("search") || has("lists")) {
     warn("core", "read.noSample", "no item available to sample the read path (search/lists returned nothing)");
