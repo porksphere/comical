@@ -18,9 +18,17 @@
  */
 import type { Bridge, BridgeCapability, Filter, PagedResults, SeriesEntry } from "@comical/contract";
 
+import { measureThumbnails, type AssetFetcher, type AssetMetrics } from "./asset-metrics.ts";
+
 export interface ConformanceOptions {
   /** A query expected to return ≥1 result from the backend the bridge is wired to. */
   searchQuery?: string;
+  /** When provided, the evaluator fetches a sample of the exercised items' `thumbnailUrl`s through it
+   *  and reports `metrics` (byte size + dimensions). Injected (not `fetch`d directly) so this stays
+   *  transport-agnostic; pass `defaultAssetFetcher` for a live run. Absent ⇒ no `metrics`. */
+  fetchAsset?: AssetFetcher;
+  /** How many distinct thumbnails to sample for metrics (default 8). */
+  assetSampleSize?: number;
 }
 
 export type Severity = "pass" | "warn" | "fail";
@@ -53,6 +61,8 @@ export interface EvaluationReport {
   summary: EvaluationSummary;
   sampledSeriesId?: string;
   sampledChapterId?: string;
+  /** Thumbnail size/dimension metrics — present only when `options.fetchAsset` was provided. */
+  metrics?: AssetMetrics;
 }
 
 /** Back-compat shape returned by `runConformance`. */
@@ -96,6 +106,8 @@ export async function evaluateBridge(
 
   let firstId: string | undefined;
   let sampledChapterId: string | undefined;
+  // Items gathered from lists/search, used to sample thumbnails for the optional metrics probe.
+  const sampledItems: SeriesEntry[] = [];
 
   // ── Self-description ──────────────────────────────────────────────────────
   if (bridge.info.capabilities.length === 0) fail("core", "info.capabilities", "info.capabilities is empty");
@@ -133,6 +145,7 @@ export async function evaluateBridge(
           fail("lists", "lists.items", `list "${first.id}" returned no items`);
         } else {
           firstId = items.items[0]!.id;
+          sampledItems.push(...items.items);
           pass("lists", "lists.items", `list "${first.id}" returned ${items.items.length} item(s)`);
           dataQualityEntries("lists", items.items, warn);
 
@@ -168,6 +181,7 @@ export async function evaluateBridge(
       }
       if (results0.items.length > 0) {
         firstId ??= results0.items[0]!.id;
+        sampledItems.push(...results0.items);
         pass("search", "search.items", `search returned ${results0.items.length} item(s)`);
         dataQualityEntries("search", results0.items, warn);
       } else {
@@ -339,6 +353,13 @@ export async function evaluateBridge(
   const report: EvaluationReport = { bridgeId: bridge.info.id, results, summary };
   if (firstId) report.sampledSeriesId = firstId;
   if (sampledChapterId) report.sampledChapterId = sampledChapterId;
+
+  // Optional thumbnail metrics — only when a fetcher is injected (a live audit passes one; unit tests
+  // pass a mock). Measured over the items gathered from lists/search above.
+  if (options.fetchAsset && sampledItems.length > 0) {
+    const assetOpts = options.assetSampleSize != null ? { sampleSize: options.assetSampleSize } : {};
+    report.metrics = await measureThumbnails(sampledItems, options.fetchAsset, assetOpts);
+  }
   return report;
 }
 

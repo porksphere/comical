@@ -7,3 +7,4 @@ export * from "./direct-fixture-backend.ts";
 export * from "./mock-host.ts";
 export * from "./cassette.ts";
 export * from "./conformance.ts";
+export * from "./asset-metrics.ts";
