@@ -29,6 +29,7 @@ import {
 } from "@comical/registry";
 import { readdir, writeFile } from "node:fs/promises";
 import { discoverBridges, discoverTrackers, filterBridgesByNsfw, readBundle, resolveBridge } from "./discover.ts";
+import { accountsCommand, sessionsCommand } from "./accounts.ts";
 
 const BRIDGES_DIR = join(import.meta.dir, "..", "..", "..", "bridges");
 
@@ -62,6 +63,14 @@ Usage:
   comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR] [--trackers-dir DIR] [--nsfw true|false] [--display-name NAME]   generate index.json
   comical registry keygen --out FILE             generate an Ed25519 keypair
 
+  Accounts (cross-device sync — needs a server run with COMICAL_SYNC=1 + a --token):
+  comical accounts add <username> <password> [--server URL] [--token SECRET]  create an account
+  comical accounts list   [--server URL] [--token SECRET]                     list accounts
+  comical accounts passwd <username> <new-password> [--server URL] [--token]  reset a password (logs it out everywhere)
+  comical accounts rm <username> [--server URL] [--token SECRET]              delete an account
+  comical sessions list   [--server URL] [--token SECRET]                     list active login sessions
+  comical sessions revoke <id> [--server URL] [--token SECRET]                revoke one session
+
 Options:
   -b, --bridge <id>   Bridge id (see \`comical list\`)
   --set key=value     Supply a user setting (repeatable), e.g. --set baseUrl=https://…
@@ -82,6 +91,7 @@ Options:
   --query Q           Search query for the \`evaluate\` probe
   --strict            \`evaluate\`: treat warnings as failures (non-zero exit)
   --json              Emit raw JSON
+  --server URL        \`accounts\`/\`sessions\`: admin endpoint of the running server (default http://localhost:<port>)
 `;
 
 function parseSettings(pairs: string[] | undefined): Record<string, string> {
@@ -135,6 +145,7 @@ async function main(): Promise<number> {
       nsfw: { type: "string" },
       out: { type: "string" },
       key: { type: "string" },
+      server: { type: "string" },
       fixture: { type: "boolean" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -178,6 +189,19 @@ async function main(): Promise<number> {
     if (!values.token) console.warn("  no --token set — server is unauthenticated (LAN use only)");
     await new Promise(() => {}); // run until killed
     return 0;
+  }
+
+  // ── Account + session admin commands ─────────────────────────────────────────
+
+  if (command === "accounts" || command === "sessions") {
+    const adminOpts = {
+      ...(values.server !== undefined ? { server: values.server } : {}),
+      ...(values.port !== undefined ? { port: Number(values.port) } : {}),
+      ...(values.token !== undefined ? { token: values.token } : {}),
+    };
+    return command === "accounts"
+      ? accountsCommand(positionals[1], positionals.slice(2), adminOpts)
+      : sessionsCommand(positionals[1], positionals.slice(2), adminOpts);
   }
 
   // ── Registry commands ────────────────────────────────────────────────────────
