@@ -1,0 +1,14 @@
+{
+  "name": "@comical/sync",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Cross-device sync: the wire contract and the CRDT merge every replica and the hub must agree on",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@comical/library": "workspace:*",
+    "zod": "^3.23.8"
+  }
+}

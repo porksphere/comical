@@ -38,6 +38,7 @@
       "@comical/host-web": ["packages/host-web/src/index.ts"],
       "@comical/proxy": ["packages/proxy/src/index.ts"],
       "@comical/runtime": ["packages/runtime/src/index.ts"],
+      "@comical/sync": ["packages/sync/src/index.ts"],
       "@comical/testkit": ["packages/testkit/src/index.ts"]
     }
   }
