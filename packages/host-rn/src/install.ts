@@ -10,6 +10,7 @@
  * a no-op when the native engine is unavailable (web, or before the native module ships), so calling
  * it unconditionally at startup is safe — the app simply stays remote.
  */
+import { Downloads } from "@comical/downloads";
 import { Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
 import { getNativeBridgeRuntime } from "./native-runtime.ts";
@@ -20,6 +21,7 @@ import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
 import { createEmbeddedTransport, type EmbeddedLibrary } from "./transport.ts";
 import type {
   CreateRouter,
+  DownloadsStore,
   EmbeddedTransport,
   InstalledStore,
   LibraryStore,
@@ -42,6 +44,11 @@ export interface EmbeddedRuntimeConfig {
    *  reused router also mounts the `/library*` endpoints so the app's Library/History/Activity work
    *  on-device — omit it and those endpoints simply 404 (the app shows a "needs a library" state). */
   libraryStore?: LibraryStore;
+  /** Optional on-device downloads persistence (AsyncStorage-backed in an app). When supplied, the
+   *  reused router also mounts the `/downloads*` endpoints so the app's offline-download manifest works
+   *  on-device — omit it and those endpoints simply 404. The image bytes themselves are stored by the
+   *  app (a filesystem blob store); this store persists only the manifest. */
+  downloadsStore?: DownloadsStore;
   /** The embedder's transport setter — passed the embedded transport (or `null` to restore remote). */
   setTransport: (transport: EmbeddedTransport | null) => void;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
@@ -103,9 +110,15 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
     embeddedLibrary = { library, runtime };
   }
 
+  // Same for downloads: when an on-device store is supplied, build the Downloads service so the reused
+  // router mounts `/downloads*` in-process. The app's blob store handles the actual page bytes.
+  const embeddedDownloads = config.downloadsStore ? new Downloads(config.downloadsStore) : undefined;
+
   provider = bridgeProvider;
   activeSetTransport = config.setTransport;
-  config.setTransport(createEmbeddedTransport(bridgeProvider, config.createRouter, registry, embeddedLibrary));
+  config.setTransport(
+    createEmbeddedTransport(bridgeProvider, config.createRouter, registry, embeddedLibrary, embeddedDownloads),
+  );
   return true;
 }
 

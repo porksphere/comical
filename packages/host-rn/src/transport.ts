@@ -21,6 +21,7 @@ import type {
   BridgeProvider,
   ComicalRuntime,
   CreateRouter,
+  Downloads,
   EmbeddedTransport,
   Library,
   RegistryProvider,
@@ -41,11 +42,13 @@ export function createEmbeddedTransport(
   createRouter: CreateRouter,
   registry?: RegistryProvider,
   lib?: EmbeddedLibrary,
+  downloads?: Downloads,
 ): EmbeddedTransport {
   const router = createRouter(provider, {
     cors: false,
     ...(registry ? { registry } : {}),
     ...(lib ? { library: lib.library, runtime: lib.runtime } : {}),
+    ...(downloads ? { downloads } : {}),
   });
   return async (path, init) => {
     const routed = await router.fetch(new Request(`${EMBEDDED_ORIGIN}${path}`, init));

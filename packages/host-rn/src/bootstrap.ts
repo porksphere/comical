@@ -16,6 +16,7 @@ import { isEmbeddedRuntimeAvailable } from "./native-runtime.ts";
 import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
 import type {
   CreateRouter,
+  DownloadsStore,
   EmbeddedTransport,
   InstalledStore,
   LibraryStore,
@@ -39,6 +40,9 @@ export interface EmbeddedBootstrapConfig {
   /** Optional on-device library persistence (AsyncStorage-backed in an app). Supplying it mounts the
    *  `/library*` endpoints on the embedded router; omitting it leaves them unmounted (they 404). */
   libraryStore?: LibraryStore;
+  /** Optional on-device downloads persistence (AsyncStorage-backed in an app). Supplying it mounts the
+   *  `/downloads*` endpoints on the embedded router; omitting it leaves them unmounted (they 404). */
+  downloadsStore?: DownloadsStore;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
   requireSignature?: boolean;
   /** Persistent bundle cache (defaults to in-memory; an expo-file-system adapter is a follow-up). */
@@ -72,6 +76,7 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     settings: config.settings,
     setTransport: config.setTransport,
     ...(config.libraryStore ? { libraryStore: config.libraryStore } : {}),
+    ...(config.downloadsStore ? { downloadsStore: config.downloadsStore } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),

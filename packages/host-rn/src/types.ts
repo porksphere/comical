@@ -8,12 +8,14 @@
  * here because they don't exist elsewhere in comical: this package is their canonical home.
  */
 import type { BridgeInfo } from "@comical/contract";
+import type { Downloads, DownloadsStore } from "@comical/downloads";
 import type { RegistryProvider } from "@comical/host-server/registry-provider";
 import type { Library, LibraryStore } from "@comical/library";
 import type { SavedRegistry } from "@comical/registry/schema";
 import type { ComicalRuntime } from "@comical/runtime";
 
 export type { Library, LibraryStore } from "@comical/library";
+export type { Downloads, DownloadsStore } from "@comical/downloads";
 export type { ComicalRuntime } from "@comical/runtime";
 
 export type { BridgeProvider, BridgeSummary, BridgeSource } from "@comical/host-server/bridge-provider";
@@ -39,6 +41,8 @@ export type CreateRouter = (
     library?: Library;
     /** Runtime orchestration layer — paired with `library` for addToLibrary / read-sync / sync. */
     runtime?: ComicalRuntime;
+    /** Downloads service — enables the `/downloads*` offline-manifest endpoints when provided. */
+    downloads?: Downloads;
   },
 ) => EmbeddedRouter;
 
