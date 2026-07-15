@@ -46,6 +46,9 @@ export interface EmbeddedBootstrapConfig {
   networkJson?: string;
   /** Fired after an install/update/uninstall so the embedder can refetch data screens. */
   onRegistryChange?: () => void;
+  /** Reports a per-bridge load failure (the bridge is skipped from the list, not fatal) so the
+   *  embedder can log it to its diagnostics. */
+  onBridgeLoadError?: (bridgeId: string, error: unknown) => void;
 }
 
 let config: EmbeddedBootstrapConfig | null = null;
@@ -76,5 +79,6 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
     ...(config.onRegistryChange ? { onRegistryChange: config.onRegistryChange } : {}),
+    ...(config.onBridgeLoadError ? { onBridgeLoadError: config.onBridgeLoadError } : {}),
   });
 }

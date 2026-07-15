@@ -54,6 +54,12 @@ export interface EmbeddedProviderDeps {
    * so an offline registry never breaks the bridge list.
    */
   refreshUpdates?: () => Promise<void>;
+  /**
+   * Reports a per-bridge failure to download / validate / init a bundle. Such a bridge is SKIPPED
+   * from `list()` (see there) rather than being allowed to reject the whole list — one 404'd or
+   * malformed bundle must not hide every other bridge. The embedder wires this to its diagnostics.
+   */
+  onLoadError?: (bridgeId: string, error: unknown) => void;
 }
 
 interface LoadedEntry {
@@ -118,7 +124,23 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
 
     const installed = await this.deps.bundles.installed();
     for (const b of installed) this.installedCache.set(b.info.id, b);
-    return Promise.all(installed.map((b) => this.summaryFor(b)));
+    // Fault-tolerant: a bridge that won't download (e.g. a 404'd stale bundle url), validate, or init
+    // is SKIPPED and reported, not allowed to reject the whole list. Only settings-bearing bridges
+    // are loaded here (see summaryFor), so this is the seam where a bad bundle would otherwise wedge
+    // the entire bridge list. The offending id stays installed (uninstall it from Registries) — it's
+    // just hidden from the list until it loads.
+    const summaries = await Promise.all(
+      installed.map((b) =>
+        this.summaryFor(b).then(
+          (s) => s,
+          (err: unknown) => {
+            this.deps.onLoadError?.(b.info.id, err);
+            return null;
+          },
+        ),
+      ),
+    );
+    return summaries.filter((s): s is BridgeSummary => s !== null);
   }
 
   /**

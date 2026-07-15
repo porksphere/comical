@@ -52,6 +52,9 @@ export interface EmbeddedRuntimeConfig {
   networkJson?: string;
   /** Fired after an install/update/uninstall so the embedder can refetch data screens (epoch bump). */
   onRegistryChange?: () => void;
+  /** Reports a per-bridge load failure (the bridge is skipped, not fatal) so the embedder can log it
+   *  to its diagnostics. */
+  onBridgeLoadError?: (bridgeId: string, error: unknown) => void;
 }
 
 let provider: EmbeddedBridgeProvider | null = null;
@@ -82,6 +85,7 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
     bundles,
     settings: config.settings,
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
+    ...(config.onBridgeLoadError ? { onLoadError: config.onBridgeLoadError } : {}),
     refreshUpdates: () => registry.checkUpdates().then(() => undefined),
   });
 

@@ -165,6 +165,41 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
     releaseRefresh();
   });
 
+  test("list() skips a bridge whose bundle fails to load, reports it, and keeps the rest", async () => {
+    // A settings-bearing bridge (so list() actually loads it) whose bundle 404s — e.g. a stale
+    // installed record pinned to a url that no longer exists.
+    const brokenInfo = { ...BRIDGE_INFO, id: "broken", capabilities: ["search", "settings"] };
+    const brokenInstalled: InstalledBridge[] = [
+      { info: BRIDGE_INFO as never, source: "registry" }, // demo — settings-less, never loaded
+      { info: CONFIGURABLE_INFO as never, source: "registry" }, // cfg — loads fine
+      { info: brokenInfo as never, source: "registry" }, // broken — 404 on resolveBundle
+    ];
+    const brokenBundles: BundleSource = {
+      installed: async () => brokenInstalled,
+      resolveBundle: async (id) => {
+        if (id === "demo") return DEMO_BUNDLE;
+        if (id === "cfg") return CONFIGURABLE_BUNDLE;
+        if (id === "broken") throw new Error('HTTP 404 downloading bridge "broken"');
+        throw new Error(`bridge not found: ${id}`);
+      },
+    };
+    const errors: { id: string; msg: string }[] = [];
+    const provider = new EmbeddedBridgeProvider({
+      native: makeFakeNative(),
+      bundles: brokenBundles,
+      settings: memorySettings(),
+      onLoadError: (id, err) => errors.push({ id, msg: (err as Error).message }),
+    });
+
+    const ids = (await provider.list()).map((s) => s.info.id);
+    expect(ids).toContain("demo"); // settings-less: unaffected
+    expect(ids).toContain("cfg"); // loads fine
+    expect(ids).not.toContain("broken"); // the 404'd bridge is skipped, not fatal
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.id).toBe("broken");
+    expect(errors[0]?.msg).toContain("404");
+  });
+
   test("search runs the bundle on-device and returns contract-shaped results", async () => {
     const transport = createEmbeddedTransport(makeProvider(), router);
     const res = await transport("/bridges/demo/search?q=naruto&page=1");
