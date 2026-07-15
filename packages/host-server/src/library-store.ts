@@ -4,13 +4,14 @@
  *
  *   {dir}/entries.json                  → { [entryKey]: LibraryEntry }
  *   {dir}/lists.json                    → LibraryList[]
+ *   {dir}/chapters/{encoded-key}.json   → KnownChapter[]
  *   {dir}/progress/{encoded-key}.json   → { [chapterId]: ChapterProgress }
  *
  * Single-user, local scale: small files, full read/parse on first touch, then cached.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { activityKey, type ActivityItem, type BridgePrefs, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
+import { activityKey, type ActivityItem, type BridgePrefs, type ChapterProgress, type HistoryItem, type KnownChapter, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -24,6 +25,7 @@ export class FileLibraryStore implements LibraryStore {
   private entriesCache?: Map<string, LibraryEntry>;
   private listsCache?: LibraryList[];
   private groupsCache?: Map<string, SeriesGroup>;
+  private chaptersCache = new Map<string, KnownChapter[]>();
   private progressCache = new Map<string, Map<string, ChapterProgress>>();
   private trackerLinksCache?: Map<string, TrackerLink[]>;
   private readingLogCache?: Map<string, HistoryItem>;
@@ -55,6 +57,9 @@ export class FileLibraryStore implements LibraryStore {
   }
   private progressPath(key: string): string {
     return join(this.dir, "progress", `${encodeURIComponent(key)}.json`);
+  }
+  private chaptersPath(key: string): string {
+    return join(this.dir, "chapters", `${encodeURIComponent(key)}.json`);
   }
 
   // ── Entries ──────────────────────────────────────────────────────────────────
@@ -97,6 +102,32 @@ export class FileLibraryStore implements LibraryStore {
   }
   async deleteEntry(key: string): Promise<void> {
     if ((await this.entries()).delete(key)) await this.flushEntries();
+  }
+
+  // ── Known chapters ─────────────────────────────────────────────────────────────
+  //
+  // One file per series, like progress — a chapter list is the biggest thing the library stores, and
+  // it must not sit in the shared entries.json, or every entry write would rewrite all of them.
+
+  private async chapters(key: string): Promise<KnownChapter[]> {
+    let list = this.chaptersCache.get(key);
+    if (!list) {
+      list = await readJson<KnownChapter[]>(this.chaptersPath(key), []);
+      this.chaptersCache.set(key, list);
+    }
+    return list;
+  }
+
+  async listChapters(key: string): Promise<KnownChapter[]> {
+    return [...(await this.chapters(key))];
+  }
+  async putChapters(key: string, chapters: KnownChapter[]): Promise<void> {
+    this.chaptersCache.set(key, [...chapters]);
+    await mkdir(join(this.dir, "chapters"), { recursive: true });
+    await writeFile(this.chaptersPath(key), JSON.stringify(chapters), "utf8");
+  }
+  async deleteChaptersForEntry(key: string): Promise<void> {
+    await this.putChapters(key, []);
   }
 
   // ── Progress ───────────────────────────────────────────────────────────────────

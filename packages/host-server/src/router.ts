@@ -16,10 +16,13 @@ import { BridgeSettingsError } from "@comical/core/errors";
 import { validateSettingsInput } from "@comical/core/settings";
 import { entryKey, type Library } from "@comical/library";
 import type { ComicalRuntime } from "@comical/runtime";
+import { isValidAccountId, parseCursor, parseSyncRecords } from "@comical/sync";
 import type { BridgeProvider } from "./bridge-provider.ts";
 import type { RegistryProvider } from "./registry-provider.ts";
 import { TagLabelCache } from "./tag-label-cache.ts";
 import type { TrackerProvider } from "./tracker-provider.ts";
+import type { SyncProvider } from "./sync-provider.ts";
+import type { AccountProvider } from "./account-provider.ts";
 
 export interface RouterOptions {
   /** CORS origin(s) allowed. Defaults to '*' for LAN use. */
@@ -41,6 +44,20 @@ export interface RouterOptions {
   runtime?: ComicalRuntime;
   /** Tracker manager — enables `/trackers` endpoints when provided. `TrackerManager` satisfies `TrackerProvider`. */
   trackers?: TrackerProvider;
+  /**
+   * Cross-device sync hub — enables `/sync` endpoints when provided. `FileSyncStore` satisfies
+   * `SyncProvider`. REQUIRES a credential (`token` and/or `accounts`): the hub holds the user's whole
+   * library in cleartext, so an unauthenticated hub would serve it to anyone who can reach the port.
+   * `createRouter` refuses to build one.
+   */
+  sync?: SyncProvider;
+  /**
+   * Username/password accounts — enables `POST /login`, the account/session admin routes, and lets
+   * EVERY gated route (`/bridges`, `/library`, `/trackers`, `/sync`) accept a per-device session
+   * token in addition to the master `token`. `FileAccountStore` satisfies `AccountProvider`. This is
+   * how the app and web client authenticate; the master `token` is the admin/superuser credential.
+   */
+  accounts?: AccountProvider;
   /** Base URL of this server, used as the OAuth callback redirect URI (e.g. "http://localhost:3100"). */
   callbackBaseUrl?: string;
 }
@@ -60,11 +77,19 @@ interface PendingOAuth {
 const pendingOAuth = new Map<string, PendingOAuth>();
 
 type Bindings = Record<string, never>;
-type Vars = { manager: BridgeProvider };
+// `account` is set by the /sync guard when the caller authenticated with a device token, so the
+// sync routes use the token's own account instead of trusting a client-supplied header.
+type Vars = { manager: BridgeProvider; account?: string };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}): Hono<any> {
   const app = new Hono<{ Bindings: Bindings; Variables: Vars }>();
+
+  // Fail closed rather than quietly standing up an open hub: /sync serves the user's entire library,
+  // so it is only ever offered behind a credential — the master `token` and/or `accounts` (login).
+  if (opts.sync && !opts.token && !opts.accounts) {
+    throw new Error("createRouter: `sync` requires `token` or `accounts` — an unauthenticated sync hub would expose the whole library");
+  }
 
   // Shared id→label memory so the host can fold tag names back into id-only responses (e.g.
   // `excludedTags`). Warms once for every client of this server. See TagLabelCache.
@@ -73,23 +98,55 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   if (opts.cors !== false) app.use("*", cors({
     origin: opts.origin ?? "*",
     allowMethods: ["GET", "PUT", "POST", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
+    // X-Comical-Account names the sync partition; without it here, a browser client's preflight
+    // would reject every /sync request.
+    allowHeaders: ["Content-Type", "Authorization", "X-Comical-Account"],
     maxAge: 3600,
   }));
 
-  if (opts.token) {
-    const guard = async (c: { req: { header: (k: string) => string | undefined }; json: (b: unknown, s?: number) => Response }, next: () => Promise<void>) => {
-      const auth = c.req.header("authorization") ?? "";
-      const provided = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-      if (provided !== opts.token) return c.json({ error: "unauthorized" }, 401);
-      await next();
-    };
+  const bearer = (c: { req: { header: (k: string) => string | undefined } }): string => {
+    const auth = c.req.header("authorization") ?? "";
+    return auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  };
+
+  const accounts = opts.accounts;
+  if (opts.token || accounts) {
+    // Access guard: the master `token` OR a valid per-device session token (from login). Gates the
+    // whole API. On a session token the account is bound FROM the token (never a client header), so a
+    // session only ever reaches its own account.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    app.use("/bridges/*", guard as any);
+    const tokenGuard = (async (c: any, next: () => Promise<void>) => {
+      const provided = bearer(c);
+      if (opts.token && provided && provided === opts.token) return next(); // master: account via header
+      if (accounts && provided) {
+        const account = await accounts.verify(provided);
+        if (account) {
+          c.set("account", account);
+          return next();
+        }
+      }
+      return c.json({ error: "unauthorized" }, 401);
+    }) as any;
+
+    // Admin guard: master token ONLY. Account/session management is the owner's, not a user session's.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    app.use("/library/*", guard as any);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    app.use("/trackers/*", guard as any);
+    const adminGuard = (async (c: any, next: () => Promise<void>) => {
+      if (!opts.token || bearer(c) !== opts.token) return c.json({ error: "unauthorized" }, 401);
+      return next();
+    }) as any;
+
+    // Both forms per prefix: Hono's `/x/*` does NOT match the bare `/x`, and the bare list routes
+    // (`GET /bridges`) must not be left open.
+    app.use("/bridges", tokenGuard);
+    app.use("/bridges/*", tokenGuard);
+    app.use("/library", tokenGuard);
+    app.use("/library/*", tokenGuard);
+    app.use("/trackers", tokenGuard);
+    app.use("/trackers/*", tokenGuard);
+    app.use("/sync/*", tokenGuard);
+    app.use("/accounts", adminGuard);
+    app.use("/accounts/*", adminGuard);
+    app.use("/sessions/*", adminGuard);
   }
 
   app.use("*", async (c, next) => {
@@ -98,8 +155,15 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   });
 
   // ── Health ──────────────────────────────────────────────────────────────────
-
-  app.get("/health", (c) => c.json({ ok: true }));
+  //
+  // Unauthenticated on purpose: a client checks server identity here BEFORE it has (or when it can't
+  // use) a credential — during discovery, and to tell "my server is down" apart from "I'm on a
+  // foreign network hitting someone else's server at the same IP". The serverId is opaque and random,
+  // so exposing it reveals nothing beyond "a comical sync hub is here", which `ok` already implies.
+  app.get("/health", async (c) => {
+    if (!opts.accounts) return c.json({ ok: true });
+    return c.json({ ok: true, sync: true, serverId: await opts.accounts.serverId() });
+  });
 
   // ── Test sprite sheet ────────────────────────────────────────────────────────
   // A local SVG sprite sheet used by the test-sprites bridge to verify CSS sprite
@@ -1161,6 +1225,126 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     // Check for available tracker updates.
     app.get("/registry/tracker-updates", async (c) => {
       return c.json(await reg.checkTrackerUpdates());
+    });
+  }
+
+  // ── Cross-device sync hub ───────────────────────────────────────────────────
+  //
+  // Two routes, and the server makes no decisions in either: it merges what it is given with the
+  // same CRDT join the devices use (@comical/sync), and hands back whatever a device hasn't seen.
+  // Devices are the source of truth; this is a rendezvous with a disk.
+
+  const sync = opts.sync;
+  if (sync) {
+    // The account partitions the hub. A device token binds it (set by the guard above); the master
+    // token instead names it via the X-Comical-Account header, so admin/CLI can reach any account.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const accountOf = (c: any): string | null => {
+      const bound = c.get("account") as string | undefined;
+      if (bound) return bound;
+      const account = c.req.header("x-comical-account");
+      return isValidAccountId(account) ? account : null;
+    };
+
+    // Merge a device's outbox into its account.
+    app.post("/sync/push", async (c) => {
+      const account = accountOf(c);
+      if (!account) return c.json({ error: "missing or invalid X-Comical-Account" }, 400);
+
+      const parsed = parseSyncRecords(await body<unknown>(c));
+      if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+
+      await sync.push(account, parsed.records);
+      return c.json({ ok: true });
+    });
+
+    // Everything in the account stamped after the device's cursor.
+    app.get("/sync/pull", async (c) => {
+      const account = accountOf(c);
+      if (!account) return c.json({ error: "missing or invalid X-Comical-Account" }, 400);
+
+      const cursor = parseCursor(c.req.query("cursor"));
+      if (!cursor.ok) return c.json({ error: cursor.error }, 400);
+
+      return c.json(await sync.pull(account, cursor.cursor));
+    });
+
+    // A session can remove ITSELF — the app's "Log out this device". Not administration: the token
+    // only ever matches its own session. Managing OTHER sessions/accounts is the owner's job (the
+    // admin routes below, the CLI, or the browser console — see server.ts).
+    if (accounts) {
+      app.delete("/sync/self", async (c) => {
+        const ok = await accounts.revokeSelf(bearer(c));
+        return c.json({ ok }, ok ? 200 : 404);
+      });
+    }
+  }
+
+  // ── Accounts: login + admin ──────────────────────────────────────────────────
+  //
+  // `POST /login` is the one gated-API-adjacent route reachable WITHOUT a credential — a fresh client
+  // has none. It trades username+password for a per-device session token that then authenticates
+  // every gated route. Account/session management (`/accounts`, `/sessions`) is admin, behind the
+  // master token (the guards above).
+
+  if (accounts) {
+    // In-memory login throttle: N failures per (username+IP) within a window → 429 cooldown. There is
+    // no other rate-limiting on the server, and /login is its only low-entropy secret.
+    const MAX_FAILS = 8;
+    const WINDOW_MS = 5 * 60_000;
+    const fails = new Map<string, { count: number; first: number }>();
+    const throttleKey = (c: { req: { header: (k: string) => string | undefined } }, user: string): string => {
+      const ip = c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+      return `${ip}|${user}`;
+    };
+
+    app.post("/login", async (c) => {
+      const b = (await body<{ username?: unknown; password?: unknown; name?: unknown }>(c)) ?? {};
+      if (typeof b.username !== "string" || typeof b.password !== "string") {
+        return c.json({ error: "username and password are required" }, 400);
+      }
+      const key = throttleKey(c, b.username);
+      const now = Date.now();
+      const rec = fails.get(key);
+      if (rec && now - rec.first < WINDOW_MS && rec.count >= MAX_FAILS) {
+        return c.json({ error: "too many attempts — try again later" }, 429);
+      }
+
+      const name = typeof b.name === "string" ? b.name : undefined;
+      const result = await accounts.login(b.username, b.password, name);
+      if (!result) {
+        // Count the failure (reset the window if it lapsed).
+        if (!rec || now - rec.first >= WINDOW_MS) fails.set(key, { count: 1, first: now });
+        else rec.count++;
+        return c.json({ error: "invalid username or password" }, 401);
+      }
+      fails.delete(key); // success clears the streak
+      return c.json({ token: result.token, account: result.account, serverId: result.serverId, sessionId: result.sessionId });
+    });
+
+    // Admin (master token) — account + session management.
+    app.get("/accounts", async (c) => c.json(await accounts.list()));
+    app.post("/accounts", async (c) => {
+      const b = (await body<{ username?: unknown; password?: unknown }>(c)) ?? {};
+      if (typeof b.username !== "string" || typeof b.password !== "string" || !b.password) {
+        return c.json({ error: "username and password are required" }, 400);
+      }
+      const ok = await accounts.createAccount(b.username, b.password);
+      return c.json({ ok }, ok ? 201 : 409);
+    });
+    app.put("/accounts/:username/password", async (c) => {
+      const b = (await body<{ password?: unknown }>(c)) ?? {};
+      if (typeof b.password !== "string" || !b.password) return c.json({ error: "password is required" }, 400);
+      const ok = await accounts.setPassword(c.req.param("username"), b.password);
+      return c.json({ ok }, ok ? 200 : 404);
+    });
+    app.delete("/accounts/:username", async (c) => {
+      const ok = await accounts.deleteAccount(c.req.param("username"));
+      return c.json({ ok }, ok ? 200 : 404);
+    });
+    app.delete("/sessions/:id", async (c) => {
+      const ok = await accounts.revokeSession(c.req.param("id"));
+      return c.json({ ok }, ok ? 200 : 404);
     });
   }
 

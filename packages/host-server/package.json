@@ -1,19 +1,6 @@
 {
   "name": "@comical/host-server",
   "version": "0.0.0",
-  "type": "module",
-  "description": "HTTP server host: exposes the bridge runtime as a REST API for browser and app clients",
-  "exports": {
-    ".": "./src/index.ts",
-    "./router": "./src/router.ts",
-    "./bridge-provider": "./src/bridge-provider.ts",
-    "./registry-provider": "./src/registry-provider.ts"
-  },
-  "types": "./src/index.ts",
-  "scripts": {
-    "start": "bun run src/server.ts",
-    "dev": "bun --hot src/server.ts"
-  },
   "dependencies": {
     "@comical/contract": "workspace:*",
     "@comical/core": "workspace:*",
@@ -21,6 +8,22 @@
     "@comical/library": "workspace:*",
     "@comical/registry": "workspace:*",
     "@comical/runtime": "workspace:*",
+    "@comical/sync": "workspace:*",
     "hono": "^4.12.23"
-  }
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./router": "./src/router.ts",
+    "./bridge-provider": "./src/bridge-provider.ts",
+    "./registry-provider": "./src/registry-provider.ts",
+    "./sync-provider": "./src/sync-provider.ts",
+    "./account-provider": "./src/account-provider.ts"
+  },
+  "description": "HTTP server host: exposes the bridge runtime as a REST API for browser and app clients",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "dev": "bun --hot src/server.ts"
+  },
+  "type": "module",
+  "types": "./src/index.ts"
 }

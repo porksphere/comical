@@ -10,3 +10,7 @@ export { FileLibraryStore } from "./library-store.ts";
 export { createRouter, type RouterOptions } from "./router.ts";
 export { SettingsStore } from "./settings-store.ts";
 export { createServer, type ServerOptions } from "./server.ts";
+export { FileSyncStore } from "./sync-store.ts";
+export type { SyncProvider } from "./sync-provider.ts";
+export { FileAccountStore, isValidUsername } from "./account-store.ts";
+export type { AccountInfo, AccountProvider, LoginResult, SessionInfo } from "./account-provider.ts";

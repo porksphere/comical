@@ -2,7 +2,7 @@
  * FileLibraryStore persistence + the one-time "categories → lists" entry migration: a legacy
  * `entries.json` (carrying `categoryIds`, no `listIds`) is healed on first read and rewritten.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { FileLibraryStore } from "../src/library-store.ts";
@@ -52,5 +52,33 @@ describe("FileLibraryStore legacy migration", () => {
     expect(entry!.listIds).toEqual(["keep"]);
     // Untouched: no migration flush reformatted the file.
     expect(readFileSync(join(LIB, "entries.json"), "utf8")).toBe(raw);
+  });
+});
+
+describe("FileLibraryStore chapters", () => {
+  test("a chapter list persists to its own file, per series, and survives a reopen", async () => {
+    const store = new FileLibraryStore(LIB);
+    await store.putChapters("demo:s1", [{ id: "c1", number: 1 }, { id: "c2", number: 2, languageCode: "en" }]);
+    await store.putChapters("demo:s2", [{ id: "x1", number: 1 }]);
+
+    // Its own file — NOT inside entries.json, which is what made an entry write carry the whole list.
+    expect(existsSync(join(LIB, "chapters", "demo%3As1.json"))).toBe(true);
+    expect(existsSync(join(LIB, "entries.json"))).toBe(false);
+
+    const reopened = new FileLibraryStore(LIB);
+    expect((await reopened.listChapters("demo:s1")).map((c) => c.id)).toEqual(["c1", "c2"]);
+    expect((await reopened.listChapters("demo:s2")).map((c) => c.id)).toEqual(["x1"]);
+    expect(await reopened.listChapters("demo:unknown")).toEqual([]);
+  });
+
+  test("putChapters replaces, and deleteChaptersForEntry empties", async () => {
+    const store = new FileLibraryStore(LIB);
+    await store.putChapters("demo:s1", [{ id: "c1" }, { id: "c2" }]);
+    await store.putChapters("demo:s1", [{ id: "c1" }]); // c2 delisted upstream
+    expect((await store.listChapters("demo:s1")).map((c) => c.id)).toEqual(["c1"]);
+
+    await store.deleteChaptersForEntry("demo:s1");
+    expect(await store.listChapters("demo:s1")).toEqual([]);
+    expect(await new FileLibraryStore(LIB).listChapters("demo:s1")).toEqual([]);
   });
 });
