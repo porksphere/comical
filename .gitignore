@@ -10,6 +10,9 @@ demo/.out/
 .comical/
 **/.tmp-*/
 .comical-demo/
+# Local runtime/sync data (device tokens, synced library snapshots) — never committed; it once
+# leaked bridge data into an unpushed commit that had to be rewritten out.
+.comical-sync/
 
 # Local Claude Code state (worktrees, settings, memory) — never committed
 .claude/
