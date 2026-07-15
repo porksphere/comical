@@ -15,6 +15,7 @@ import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } f
 import { BridgeSettingsError } from "@comical/core/errors";
 import { validateSettingsInput } from "@comical/core/settings";
 import { entryKey, type Library } from "@comical/library";
+import type { DownloadChapterMeta, DownloadPageInput, Downloads, DownloadSeriesSnapshot } from "@comical/downloads";
 import type { ComicalRuntime } from "@comical/runtime";
 import type { BridgeProvider } from "./bridge-provider.ts";
 import type { RegistryProvider } from "./registry-provider.ts";
@@ -39,6 +40,8 @@ export interface RouterOptions {
   library?: Library;
   /** Runtime orchestration layer — required alongside `library` for read-sync and richer addToLibrary. */
   runtime?: ComicalRuntime;
+  /** Downloads service — enables the optional `/downloads` offline-manifest endpoints when provided. */
+  downloads?: Downloads;
   /** Tracker manager — enables `/trackers` endpoints when provided. `TrackerManager` satisfies `TrackerProvider`. */
   trackers?: TrackerProvider;
   /** Base URL of this server, used as the OAuth callback redirect URI (e.g. "http://localhost:3100"). */
@@ -90,6 +93,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.use("/library/*", guard as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     app.use("/trackers/*", guard as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    app.use("/downloads/*", guard as any);
   }
 
   app.use("*", async (c, next) => {
@@ -841,6 +846,101 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     });
   }
 
+  // ── Downloads endpoints ────────────────────────────────────────────────────────
+  // Mounted only when a Downloads service is provided. These manage the offline-download MANIFEST
+  // (which chapters/pages are downloaded, their state and byte sizes); the image bytes themselves are
+  // a client/host concern — this router does not fetch or serve page bytes.
+
+  const downloads = opts.downloads;
+  if (downloads) {
+    const dlKeyOf = (c: { req: { param: (k: string) => string } }) =>
+      entryKey(c.req.param("bridgeId"), c.req.param("seriesId"));
+
+    // Storage-usage tree (total bytes + series → chapters breakdown) for the Downloads screen.
+    app.get("/downloads", async (c) => c.json(await downloads.getStorageUsage()));
+
+    // Chapters still needing bytes (the work queue a client drains).
+    app.get("/downloads/pending", async (c) => c.json(await downloads.pendingChapters()));
+
+    // Download preferences (wifiOnly / background).
+    app.get("/downloads/prefs", async (c) => c.json(await downloads.getPrefs()));
+    app.put("/downloads/prefs", async (c) => {
+      const b = await body<{ wifiOnly?: boolean; background?: boolean }>(c);
+      const current = await downloads.getPrefs();
+      return c.json(
+        await downloads.setPrefs({
+          wifiOnly: typeof b?.wifiOnly === "boolean" ? b.wifiOnly : current.wifiOnly,
+          background: typeof b?.background === "boolean" ? b.background : current.background,
+        }),
+      );
+    });
+
+    // One series' manifest (snapshot + its chapters).
+    app.get("/downloads/entries/:bridgeId/:seriesId", async (c) => {
+      const key = dlKeyOf(c);
+      const series = await downloads.getSeries(key);
+      if (!series) return c.json({ error: "series not downloaded" }, 404);
+      const chapters = (await downloads.getStorageUsage()).bySeries.find(
+        (s) => entryKey(s.bridgeId, s.seriesId) === key,
+      )?.chapters;
+      return c.json({ series, chapters: chapters ?? [] });
+    });
+
+    // Enqueue a chapter for download: body carries the series snapshot, chapter meta, and page list.
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId", async (c) => {
+      const b = await body<{
+        title?: string; thumbnailUrl?: string; author?: string;
+        chapterName?: string; number?: number; languageCode?: string;
+        pages?: DownloadPageInput[];
+      }>(c);
+      if (!b?.title || !b.pages) return c.json({ error: "title and pages are required" }, 400);
+      const snap: DownloadSeriesSnapshot = {
+        bridgeId: c.req.param("bridgeId"),
+        seriesId: c.req.param("seriesId"),
+        title: b.title,
+        ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
+        ...(b.author !== undefined && { author: b.author }),
+      };
+      const meta: DownloadChapterMeta = {
+        chapterId: c.req.param("chapterId"),
+        ...(b.chapterName !== undefined && { chapterName: b.chapterName }),
+        ...(b.number !== undefined && { number: b.number }),
+        ...(b.languageCode !== undefined && { languageCode: b.languageCode }),
+      };
+      return c.json(await downloads.enqueueChapter(snap, meta, b.pages), 201);
+    });
+
+    // Record one page's downloaded bytes (client writes the blob, then reports its file + size).
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages/:index", async (c) => {
+      const b = await body<{ file?: string; bytes?: number }>(c);
+      if (typeof b?.file !== "string" || typeof b.bytes !== "number") {
+        return c.json({ error: "file (string) and bytes (number) are required" }, 400);
+      }
+      return withDownloadsEntry(c, () =>
+        downloads.recordPage(dlKeyOf(c), c.req.param("chapterId"), Number(c.req.param("index")), b.file!, b.bytes!),
+      );
+    });
+
+    // The ordered page list (manifest) for a chapter — the offline page-LIST fallback.
+    app.get("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages", async (c) =>
+      c.json(await downloads.getManifestPages(dlKeyOf(c), c.req.param("chapterId"))),
+    );
+
+    // Re-queue the missing pages of a partial/failed chapter (resumable retry).
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/requeue", async (c) =>
+      withDownloadsEntry(c, () => downloads.requeueMissing(dlKeyOf(c), c.req.param("chapterId"))),
+    );
+
+    // Deletion — returns the on-disk `file` paths the client should remove.
+    app.delete("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId", async (c) =>
+      c.json({ files: await downloads.deleteChapter(dlKeyOf(c), c.req.param("chapterId")) }),
+    );
+    app.delete("/downloads/entries/:bridgeId/:seriesId", async (c) =>
+      c.json({ files: await downloads.deleteSeries(dlKeyOf(c)) }),
+    );
+    app.delete("/downloads", async (c) => c.json({ files: await downloads.deleteAll() }));
+  }
+
   // ── Tracker endpoints ─────────────────────────────────────────────────────────
   // Mounted only when a TrackerManager is provided.
 
@@ -1199,6 +1299,22 @@ async function withLibraryEntry(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const code = msg.includes("not in library") || msg.includes("not found") ? 404 : 500;
+    return c.json({ error: msg }, code);
+  }
+}
+
+/** Run a downloads mutation, mapping a missing-series/chapter error to 404 and a void result to `{ ok: true }`. */
+async function withDownloadsEntry(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  fn: () => Promise<unknown>,
+): Promise<Response> {
+  try {
+    const result = await fn();
+    return c.json(result === undefined ? { ok: true } : result);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const code = msg.includes("not downloaded") || msg.includes("not found") ? 404 : 500;
     return c.json({ error: msg }, code);
   }
 }

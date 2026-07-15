@@ -2,10 +2,12 @@
  * Assembles the complete server: SettingsStore + BridgeManager + RegistryManager + Hono router.
  */
 import { join } from "node:path";
+import { Downloads } from "@comical/downloads";
 import { Library } from "@comical/library";
 import { ManifestStore, RegistryManager } from "@comical/registry";
 import { ComicalRuntime } from "@comical/runtime";
 import { BridgeManager } from "./bridge-manager.ts";
+import { FileDownloadsStore } from "./downloads-store.ts";
 import { FileLibraryStore } from "./library-store.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
 import { SettingsStore } from "./settings-store.ts";
@@ -22,6 +24,11 @@ export interface ServerOptions {
    * pass `{ dir }` to override. Omit to leave the `/library` endpoints unmounted entirely.
    */
   library?: boolean | { dir?: string };
+  /**
+   * Enable the optional offline-downloads manifest module. `true` stores it under
+   * `{dataDir}/downloads`; pass `{ dir }` to override. Omit to leave `/downloads` endpoints unmounted.
+   */
+  downloads?: boolean | { dir?: string };
   /**
    * Enable the tracker plugin system. Pass a path (or array of paths) to scan for tracker bundles.
    * Omit to leave `/trackers` endpoints unmounted entirely.
@@ -71,6 +78,13 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
       ...(trackerManager ? { trackers: trackerManager } : {}),
     });
   }
+
+  if (opts.downloads) {
+    const dir = typeof opts.downloads === "object" && opts.downloads.dir
+      ? opts.downloads.dir
+      : join(opts.dataDir, "downloads");
+    routerOpts.downloads = new Downloads(new FileDownloadsStore(dir));
+  }
   const router = createRouter(manager, routerOpts);
 
   return Bun.serve({ port: opts.port ?? 3100, fetch: router.fetch });
@@ -85,6 +99,7 @@ if (import.meta.main) {
     bridgesDir: join(ROOT, "bridges"),
     dataDir: process.env.COMICAL_DATA_DIR ?? join(ROOT, ".comical"),
     library: true,
+    downloads: true,
     ...(process.env.COMICAL_ORIGIN ? { origin: process.env.COMICAL_ORIGIN } : {}),
     ...(process.env.COMICAL_TOKEN ? { token: process.env.COMICAL_TOKEN } : {}),
   });
