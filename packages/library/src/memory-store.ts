@@ -3,13 +3,14 @@
  * fallback for hosts without durable storage. Deep-clones on the way in and out so callers can't
  * mutate stored objects by reference.
  */
-import { activityKey, type ActivityItem, type BridgePrefs, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type SeriesGroup, type TrackerLink } from "./models.ts";
+import { activityKey, type ActivityItem, type BridgePrefs, type ChapterProgress, type HistoryItem, type KnownChapter, type LibraryEntry, type LibraryList, type SeriesGroup, type TrackerLink } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
 const clone = <T>(v: T): T => structuredClone(v);
 
 export class InMemoryLibraryStore implements LibraryStore {
   private entries = new Map<string, LibraryEntry>();
+  private chapters = new Map<string, KnownChapter[]>();
   private progress = new Map<string, Map<string, ChapterProgress>>();
   private lists = new Map<string, LibraryList>();
   private groups = new Map<string, SeriesGroup>();
@@ -30,6 +31,16 @@ export class InMemoryLibraryStore implements LibraryStore {
   }
   async deleteEntry(key: string): Promise<void> {
     this.entries.delete(key);
+  }
+
+  async listChapters(key: string): Promise<KnownChapter[]> {
+    return (this.chapters.get(key) ?? []).map(clone);
+  }
+  async putChapters(key: string, chapters: KnownChapter[]): Promise<void> {
+    this.chapters.set(key, chapters.map(clone));
+  }
+  async deleteChaptersForEntry(key: string): Promise<void> {
+    this.chapters.delete(key);
   }
 
   async listProgress(key: string): Promise<ChapterProgress[]> {

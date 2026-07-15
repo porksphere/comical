@@ -6,7 +6,7 @@
  *
  * Keys are `entryKey(bridgeId, seriesId)`.
  */
-import type { ActivityItem, BridgePrefs, ChapterProgress, HistoryItem, LibraryEntry, LibraryList, SeriesGroup, TrackerLink } from "./models.ts";
+import type { ActivityItem, BridgePrefs, ChapterProgress, HistoryItem, KnownChapter, LibraryEntry, LibraryList, SeriesGroup, TrackerLink } from "./models.ts";
 
 export interface LibraryStore {
   // ── Entries ──────────────────────────────────────────────────────────────
@@ -14,6 +14,20 @@ export interface LibraryStore {
   getEntry(key: string): Promise<LibraryEntry | undefined>;
   putEntry(entry: LibraryEntry): Promise<void>;
   deleteEntry(key: string): Promise<void>;
+
+  // ── Known chapters ────────────────────────────────────────────────────────
+  //
+  // Chapter lists live BESIDE the entry, not inside it. They dwarf everything else — a long series
+  // is thousands of chapters, and a real library measured 84% chapter list by weight, with one entry
+  // at 73KB. While they were a field on the entry, the only way to touch them was to rewrite the
+  // whole entry, which meant every page turn (which updates the resume cache) rewrote all of them.
+  // Given the entry is also one LWW register on the wire, that made a page turn cost 73KB of sync.
+  // Same key as progress: `entryKey(bridgeId, seriesId)`.
+  listChapters(key: string): Promise<KnownChapter[]>;
+  /** Full replace — `syncChapters` always reconciles against a complete freshly-fetched list. */
+  putChapters(key: string, chapters: KnownChapter[]): Promise<void>;
+  /** Drop the chapter list for a series (called when an entry is removed). */
+  deleteChaptersForEntry(key: string): Promise<void>;
 
   // ── Per-series chapter progress ────────────────────────────────────────────
   listProgress(key: string): Promise<ChapterProgress[]>;

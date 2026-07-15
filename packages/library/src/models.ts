@@ -67,10 +67,13 @@ export const libraryEntrySchema = z.object({
   lastReadChapterName: z.string().optional(),
   lastReadAt: z.number().int().optional(),
   /**
-   * Chapters known at the last `syncChapters`, for new-chapter detection + unread counts. Carries
-   * each chapter's `number`/`languageCode` so both collapse by logical chapter `(number, language)`.
+   * @deprecated Moved to the store's own chapter list (`LibraryStore.listChapters`). Chapter lists
+   * are far larger than everything else on an entry, and keeping them here meant any entry write —
+   * including the resume-cache touch on every page turn — rewrote all of them. Still parsed so
+   * libraries written before the move load; `Library` migrates them across on first read and clears
+   * the field. Nothing writes it any more. Read chapters via the store, never from here.
    */
-  knownChapters: z.array(knownChapterSchema).default([]),
+  knownChapters: z.array(knownChapterSchema).optional(),
   chaptersSyncedAt: z.number().int().optional(),
   /**
    * If set, this entry belongs to a `SeriesGroup` (same title from a different bridge). The group

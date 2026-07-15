@@ -111,7 +111,6 @@ export class Library {
           listIds: snap.listIds ?? [],
           addedAt: t,
           updatedAt: t,
-          knownChapters: [],
         };
     // Optional snapshot fields: only set when provided (exactOptionalPropertyTypes-friendly).
     if (snap.thumbnailUrl !== undefined) entry.thumbnailUrl = snap.thumbnailUrl;
@@ -143,6 +142,7 @@ export class Library {
   async removeSeries(key: string): Promise<void> {
     await this.leaveGroup(key);
     await this.store.deleteEntry(key);
+    await this.store.deleteChaptersForEntry(key);
     await this.store.deleteProgressForEntry(key);
     await this.store.deleteActivityForEntry(key);
   }
@@ -198,12 +198,32 @@ export class Library {
     return views;
   }
 
+  /**
+   * The entry's known chapters, from the store — plus a one-shot migration for libraries written
+   * before chapter lists moved off the entry (`LibraryEntry.knownChapters`, now deprecated). The
+   * legacy array is copied across and cleared, so this runs at most once per entry and every reader
+   * below can just ask the store.
+   */
+  private async chaptersOf(entry: LibraryEntry): Promise<KnownChapter[]> {
+    const key = entryKey(entry.bridgeId, entry.seriesId);
+    const stored = await this.store.listChapters(key);
+    if (stored.length > 0) return stored;
+
+    const legacy = entry.knownChapters;
+    if (!legacy || legacy.length === 0) return [];
+    await this.store.putChapters(key, legacy);
+    delete entry.knownChapters;
+    await this.store.putEntry(entry);
+    return legacy;
+  }
+
   private async toView(entry: LibraryEntry): Promise<LibraryEntryView> {
-    const progress = await this.store.listProgress(entryKey(entry.bridgeId, entry.seriesId));
+    const key = entryKey(entry.bridgeId, entry.seriesId);
+    const progress = await this.store.listProgress(key);
     // Collapse to logical chapters `(number, language)`: a logical chapter is unread when no
     // scanlation-group copy of it has been read.
     const readLogical = new Set(progress.filter((p) => p.read).map((p) => logicalChapterKey(p, p.chapterId)));
-    const knownLogical = new Set((entry.knownChapters ?? []).map((c) => logicalChapterKey(c, c.id)));
+    const knownLogical = new Set((await this.chaptersOf(entry)).map((c) => logicalChapterKey(c, c.id)));
     const unreadCount = [...knownLogical].filter((k) => !readLogical.has(k)).length;
     return { ...entry, unreadCount };
   }
@@ -218,7 +238,7 @@ export class Library {
     const entry = await this.requireEntry(key);
     // Diff by logical chapter `(number, language)` — a fresh scanlation-group copy of a chapter we
     // already know is NOT a new chapter.
-    const known = new Set((entry.knownChapters ?? []).map((c) => logicalChapterKey(c, c.id)));
+    const known = new Set((await this.chaptersOf(entry)).map((c) => logicalChapterKey(c, c.id)));
     const firstSync = entry.chaptersSyncedAt === undefined;
     // A logical chapter is "added" once: dedupe both against what we knew AND within this batch, so
     // two scanlation-group copies of the same new chapter yield a single new-chapter event.
@@ -239,12 +259,17 @@ export class Library {
           return true;
         });
     const t = this.now();
-    entry.knownChapters = chapters.map((c): KnownChapter => {
-      const k: KnownChapter = { id: c.id };
-      if (c.number !== undefined) k.number = c.number;
-      if (c.languageCode !== undefined) k.languageCode = c.languageCode;
-      return k;
-    });
+    // The chapter list goes to the store, not onto the entry — see LibraryStore.listChapters. The
+    // entry write that follows carries only `chaptersSyncedAt`, so it stays small.
+    await this.store.putChapters(
+      key,
+      chapters.map((c): KnownChapter => {
+        const k: KnownChapter = { id: c.id };
+        if (c.number !== undefined) k.number = c.number;
+        if (c.languageCode !== undefined) k.languageCode = c.languageCode;
+        return k;
+      }),
+    );
     entry.chaptersSyncedAt = t;
     await this.store.putEntry(entry);
 
@@ -647,7 +672,7 @@ export class Library {
     // Backfill the logical-chapter metadata from the synced chapter list when the caller didn't
     // supply it, so read state always collapses by `(number, language)` — e.g. a "mark read"
     // checkbox that only sends a chapter id still gets grouped correctly.
-    const meta = (entry.knownChapters ?? []).find((c) => c.id === chapterId);
+    const meta = (await this.chaptersOf(entry)).find((c) => c.id === chapterId);
     const number = patch.number ?? existing?.number ?? meta?.number;
     if (number !== undefined) next.number = number;
     const languageCode = patch.languageCode ?? existing?.languageCode ?? meta?.languageCode;

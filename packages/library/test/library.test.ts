@@ -376,6 +376,94 @@ describe("logical chapters (multi-scanlator / multi-language)", () => {
   });
 });
 
+describe("chapter lists live beside the entry, not inside it", () => {
+  test("syncChapters writes the store's chapter list and leaves the entry clean", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+
+    expect((await store.listChapters(KEY)).map((c) => c.id)).toEqual(["c1", "c2"]);
+    // The deprecated field is never written — that's the whole point: an entry write (every page
+    // turn touches the resume cache) must not carry the chapter list with it.
+    expect((await store.getEntry(KEY))?.knownChapters).toBeUndefined();
+    expect((await store.getEntry(KEY))?.chaptersSyncedAt).toBeDefined();
+  });
+
+  test("a page turn does NOT rewrite the chapter list", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+
+    let chapterWrites = 0;
+    const realPut = store.putChapters.bind(store);
+    store.putChapters = async (k, c) => {
+      chapterWrites++;
+      return realPut(k, c);
+    };
+
+    await lib.setProgress(KEY, "c1", 4, 20);
+    await lib.setProgress(KEY, "c1", 5, 20);
+    await lib.markRead(KEY, "c1", true);
+
+    expect(chapterWrites).toBe(0);
+    expect((await store.listChapters(KEY)).map((c) => c.id)).toEqual(["c1", "c2"]);
+  });
+
+  test("syncChapters replaces the list — a delisted chapter disappears", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+    await lib.syncChapters(KEY, [ch("c1", 1)]); // c2 pulled from the source
+
+    expect((await store.listChapters(KEY)).map((c) => c.id)).toEqual(["c1"]);
+  });
+
+  test("removing a series drops its chapter list too", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    await lib.removeSeries(KEY);
+
+    expect(await store.listChapters(KEY)).toEqual([]);
+  });
+
+  test("a library written BEFORE the move migrates on first read, once", async () => {
+    // The pre-move shape: chapters embedded in the entry. Reading must transparently move them into
+    // the store and clear the field, so a real library keeps working across the change.
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await store.putEntry({
+      bridgeId: SERIES.bridgeId,
+      seriesId: SERIES.seriesId,
+      title: SERIES.title,
+      addedAt: 1,
+      updatedAt: 1,
+      listIds: [],
+      knownChapters: [
+        { id: "c1", number: 1 },
+        { id: "c2", number: 2 },
+      ],
+      chaptersSyncedAt: 5,
+    });
+
+    // Derivations work off the migrated list…
+    const view = (await lib.getLibrary()).find((e) => e.seriesId === "s1");
+    expect(view?.unreadCount).toBe(2);
+
+    // …and the migration actually landed: chapters in the store, field gone from the entry.
+    expect((await store.listChapters(KEY)).map((c) => c.id)).toEqual(["c1", "c2"]);
+    expect((await store.getEntry(KEY))?.knownChapters).toBeUndefined();
+
+    // It is NOT a first sync — chaptersSyncedAt survived, so the back-catalogue isn't reported new.
+    const { added } = await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
+    expect(added.map((c) => c.id)).toEqual(["c3"]);
+  });
+});
+
 describe("history", () => {
   test("getHistory is newest-first and one row per series", async () => {
     const lib = makeLibrary();
