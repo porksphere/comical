@@ -492,8 +492,17 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }),
   );
 
-  app.get("/bridges/:id/series/:seriesId", (c) =>
-    withContentBridge(c, async (bridge) => {
+  // Series detail + chapter list are bridge-first with an OFFLINE FALLBACK to the library's
+  // metadata cache: a library entry's page must render when the bridge can't answer — device or
+  // server cut off from the source, the source down, or the bridge uninstalled entirely (every one
+  // of those surfaces here as a non-ok Response from withContentBridge). Successful live responses
+  // write through to the cache for library entries, so it stays as fresh as the user's own
+  // browsing; non-library series keep the exact error behavior they had.
+  const libMeta = opts.library;
+
+  app.get("/bridges/:id/series/:seriesId", async (c) => {
+    const key = entryKey(c.req.param("id"), c.req.param("seriesId"));
+    const live = await withContentBridge(c, async (bridge) => {
       const info = await bridge.getSeriesDetails(c.req.param("seriesId"));
       // Series detail is the one surface that pairs tag id + name — warm the cache for free so
       // later id→label folds (e.g. excluded tags) need no `resolveTags` call.
@@ -505,9 +514,16 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           );
         }
       }
+      void libMeta?.cacheSeriesDetail(key, info).catch(() => {});
       return c.json(info);
-    }),
-  );
+    });
+    if (live.ok || !libMeta) return live;
+    const cached = await libMeta.getCachedDetail(key).catch(() => undefined);
+    if (!cached) return live;
+    // Additive fields on the SeriesInfo shape — clients render the saved detail and may show a
+    // "showing saved details" affordance off `cached`/`cachedAt`.
+    return c.json({ ...cached.info, cached: true, cachedAt: cached.cachedAt });
+  });
 
   app.get("/bridges/:id/series/:seriesId/related", (c) =>
     withContentBridge(c, async (bridge) => {
@@ -516,12 +532,20 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }),
   );
 
-  app.get("/bridges/:id/series/:seriesId/chapters", (c) =>
-    withContentBridge(c, async (bridge) => {
+  app.get("/bridges/:id/series/:seriesId/chapters", async (c) => {
+    const key = entryKey(c.req.param("id"), c.req.param("seriesId"));
+    const live = await withContentBridge(c, async (bridge) => {
       if (!bridge.getChapters) return c.json({ error: "not supported" }, 400);
-      return c.json(await bridge.getChapters(c.req.param("seriesId")));
-    }),
-  );
+      const chapters = await bridge.getChapters(c.req.param("seriesId"));
+      // syncChapters throws for non-library series — the catch keeps this a library-only capture.
+      void libMeta?.syncChapters(key, chapters).catch(() => {});
+      return c.json(chapters);
+    });
+    if (live.ok || !libMeta) return live;
+    const cached = await libMeta.getCachedChapters(key).catch(() => undefined);
+    if (!cached) return live;
+    return c.json(cached.chapters); // same Chapter[] shape as live — array responses carry no marker
+  });
 
   app.get("/bridges/:id/series/:seriesId/chapters/:chapterId/pages", (c) =>
     withContentBridge(c, async (bridge) => {
