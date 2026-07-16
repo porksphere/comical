@@ -50,6 +50,10 @@ export type KnownChapter = z.infer<typeof knownChapterSchema>;
 export const cachedSeriesDetailSchema = z.object({
   info: seriesInfoSchema,
   cachedAt: z.number().int(),
+  /** Relative path of the captured cover bytes under the host's covers blob root — the manifest
+   *  pointer for guaranteed-offline covers (the bytes themselves live in a host `BlobStore`).
+   *  Absent until the host captures the cover. */
+  coverFile: z.string().optional(),
 });
 export type CachedSeriesDetail = z.infer<typeof cachedSeriesDetailSchema>;
 

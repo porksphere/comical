@@ -41,6 +41,16 @@ export interface EmbeddedDownloadsEngineConfig {
   onPageRetry?: (page: PendingPage) => void;
 }
 
+/**
+ * The device seams for guaranteed-offline library covers: where cover bytes land (`blobs`, a covers-
+ * rooted store WITH `read` — the router serves them back at `/library/entries/:b/:s/cover`) and how
+ * a cover URL becomes bytes (`fetchPage`, typically the same fetcher the download engine uses).
+ */
+export interface EmbeddedCoversConfig {
+  blobs: BlobStore;
+  fetchPage: PageFetcher;
+}
+
 export type { BridgeProvider, BridgeSummary, BridgeSource } from "@comical/host-server/bridge-provider";
 export type { RegistryProvider } from "@comical/host-server/registry-provider";
 
@@ -71,6 +81,9 @@ export type CreateRouter = (
      *  subscribe to it directly (never via `/downloads/events`, which the buffering transport
      *  could not stream). */
     downloadEngine?: DownloadEngine;
+    /** Cover byte cache — with it (alongside `library`) the router captures and serves library
+     *  entries' covers for guaranteed-offline rendering. */
+    covers?: EmbeddedCoversConfig;
   },
 ) => EmbeddedRouter;
 

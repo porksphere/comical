@@ -3,14 +3,16 @@
  * metadata cache when the bridge can't answer (source down, bridge uninstalled), and successful
  * live responses write through to it. Non-library series keep their exact error behavior.
  */
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
 import { FixtureBackend } from "@comical/testkit";
 import { BridgeManager } from "../src/bridge-manager.ts";
+import { FileBlobStore } from "../src/blob-store.ts";
 import { FileLibraryStore } from "../src/library-store.ts";
+import { createServerPageFetcher } from "../src/page-fetcher.ts";
 import { createRouter } from "../src/router.ts";
 import { SettingsStore } from "../src/settings-store.ts";
 
@@ -18,9 +20,11 @@ const BRIDGES_DIR = join(import.meta.dir, "..", "..", "..", "bridges");
 const DATA_DIR = join(import.meta.dir, ".tmp-offline-metadata");
 
 let baseUrl: string;
+let fixtureUrl: string;
 let stop: () => void;
 let fixtureStop: () => void;
 let lib: Library;
+const COVERS_DIR = join(DATA_DIR, "library", "covers");
 
 const get = (p: string) => fetch(`${baseUrl}${p}`);
 const post = (p: string, body: unknown) =>
@@ -35,9 +39,14 @@ beforeAll(async () => {
   await settings.set("example", { baseUrl: fixture.url });
   const manager = new BridgeManager({ bridgesDir: BRIDGES_DIR, dataDir: DATA_DIR, settings });
 
+  fixtureUrl = fixture.url;
   lib = new Library(new FileLibraryStore(join(DATA_DIR, "library")));
   const runtime = new ComicalRuntime({ bridges: manager, library: lib });
-  const srv = Bun.serve({ port: 0, fetch: createRouter(manager, { library: lib, runtime }).fetch });
+  let routerFetch: (req: Request) => Response | Promise<Response> = () => new Response(null, { status: 503 });
+  const covers = { blobs: new FileBlobStore(COVERS_DIR), fetchPage: createServerPageFetcher(() => routerFetch) };
+  const router = createRouter(manager, { library: lib, runtime, covers });
+  routerFetch = (req) => router.fetch(req);
+  const srv = Bun.serve({ port: 0, fetch: router.fetch });
   baseUrl = `http://localhost:${srv.port}`;
   stop = () => srv.stop(true);
 });
@@ -48,10 +57,55 @@ afterAll(() => {
   rmSync(DATA_DIR, { recursive: true, force: true });
 });
 
+/** Poll until `probe` returns ok (fire-and-forget captures land asynchronously). */
+async function waitForOk(probe: () => Promise<Response>, timeoutMs = 5_000): Promise<Response> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await probe();
+    if (res.ok || Date.now() > deadline) return res;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+describe("cover bytes", () => {
+  test("captured on library-add, served back, removed with the entry", async () => {
+    const res = await post("/library/entries", {
+      bridgeId: "example",
+      seriesId: "sherlock",
+      title: "Sherlock",
+      thumbnailUrl: `${fixtureUrl}/img/sherlock-cover.png`,
+    });
+    expect(res.status).toBe(201);
+
+    // Capture is fire-and-forget — poll the cover route until the bytes land.
+    const cover = await waitForOk(() => get("/library/entries/example/sherlock/cover"));
+    expect(cover.ok).toBe(true);
+    expect(cover.headers.get("Content-Type")).toBe("image/png");
+    expect((await cover.arrayBuffer()).byteLength).toBeGreaterThan(0);
+    expect(existsSync(join(COVERS_DIR, "example"))).toBe(true);
+
+    // Removing the entry unlinks the blob and the route 404s again.
+    await fetch(`${baseUrl}/library/entries/example/sherlock`, { method: "DELETE" });
+    expect((await get("/library/entries/example/sherlock/cover")).status).toBe(404);
+    expect(existsSync(join(COVERS_DIR, "example", "sherlock.png"))).toBe(false);
+  });
+});
+
 describe("offline metadata fallback", () => {
   test("library series stay renderable after the source goes away; non-library series keep erroring", async () => {
-    // Add to library — addToLibrary captures the detail + seeds the chapter list.
-    expect((await post("/library/entries", { bridgeId: "example", seriesId: "alice" })).status).toBe(201);
+    // Add to library — addToLibrary captures the detail + seeds the chapter list, and the cover
+    // (supplied here as a fixture-local URL so no test traffic leaves the machine) is captured too.
+    expect(
+      (
+        await post("/library/entries", {
+          bridgeId: "example",
+          seriesId: "alice",
+          title: "Alice's Adventures in Wonderland",
+          thumbnailUrl: `${fixtureUrl}/img/alice-cover.png`,
+        })
+      ).status,
+    ).toBe(201);
+    await waitForOk(() => get("/library/entries/example/alice/cover"));
 
     // Live visits still work and (re)write the cache through.
     const liveDetail = (await (await get("/bridges/example/series/alice")).json()) as { title: string; cached?: boolean };
@@ -64,11 +118,15 @@ describe("offline metadata fallback", () => {
 
     // Library entry: details come back from the cache, flagged; chapters keep their array shape.
     const cachedDetail = (await (await get("/bridges/example/series/alice")).json()) as {
-      title: string; description?: string; cached?: boolean; cachedAt?: number;
+      title: string; description?: string; cached?: boolean; cachedAt?: number; thumbnailUrl?: string;
     };
     expect(cachedDetail.cached).toBe(true);
     expect(cachedDetail.cachedAt).toBeGreaterThan(0);
     expect(cachedDetail.title.length).toBeGreaterThan(0);
+    // The captured cover replaces the (now unreachable) live thumbnail with this host's own route,
+    // which still serves the bytes from disk with the source down.
+    expect(cachedDetail.thumbnailUrl).toBe("/library/entries/example/alice/cover");
+    expect((await get("/library/entries/example/alice/cover")).ok).toBe(true);
 
     const cachedChaptersRes = await get("/bridges/example/series/alice/chapters");
     expect(cachedChaptersRes.status).toBe(200);

@@ -158,10 +158,23 @@ export class Library {
   // captured from fetches the system makes anyway (add-to-library, browsing, background sync) and
   // served back by the router when the bridge can't answer. See `cachedSeriesDetailSchema`.
 
-  /** Cache the full series detail for offline rendering. No-op unless the series is in the library. */
+  /**
+   * Cache the full series detail for offline rendering. No-op unless the series is in the library.
+   * Preserves an existing `coverFile` pointer — detail refreshes must never orphan captured covers.
+   */
   async cacheSeriesDetail(key: string, info: SeriesInfo): Promise<void> {
     if (!(await this.isInLibrary(key))) return;
-    await this.store.putSeriesDetail(key, { info, cachedAt: this.now() });
+    const existing = await this.store.getSeriesDetail(key);
+    const doc: CachedSeriesDetail = { info, cachedAt: this.now() };
+    if (existing?.coverFile !== undefined) doc.coverFile = existing.coverFile;
+    await this.store.putSeriesDetail(key, doc);
+  }
+
+  /** Record where the host stored this entry's cover bytes. No-op without a cached detail doc. */
+  async setCachedCover(key: string, coverFile: string): Promise<void> {
+    const doc = await this.store.getSeriesDetail(key);
+    if (!doc) return;
+    await this.store.putSeriesDetail(key, { ...doc, coverFile });
   }
 
   /** The cached detail, or undefined (not captured / schema-drifted doc, which is discarded). */

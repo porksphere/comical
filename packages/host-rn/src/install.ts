@@ -22,6 +22,7 @@ import { createEmbeddedTransport, type EmbeddedLibrary } from "./transport.ts";
 import type {
   CreateRouter,
   DownloadsStore,
+  EmbeddedCoversConfig,
   EmbeddedDownloadsEngineConfig,
   EmbeddedTransport,
   InstalledStore,
@@ -54,6 +55,10 @@ export interface EmbeddedRuntimeConfig {
    *  router's downloads routes go host-managed (pages-less enqueue, engine-delegated pause/resume,
    *  host-side blob deletion) and the app observes progress via `getEmbeddedDownloadEngine()`. */
   downloadsEngine?: EmbeddedDownloadsEngineConfig;
+  /** Optional device seams for guaranteed-offline library covers (a covers-rooted blob store with
+   *  `read`, plus the page fetcher). Supplied alongside `libraryStore`; the reused router captures
+   *  covers on library-add/browse and serves them at `/library/entries/:b/:s/cover`. */
+  covers?: EmbeddedCoversConfig;
   /** The embedder's transport setter — passed the embedded transport (or `null` to restore remote). */
   setTransport: (transport: EmbeddedTransport | null) => void;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
@@ -139,7 +144,15 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
   activeSetTransport = config.setTransport;
   activeEngine = embeddedEngine ?? null;
   config.setTransport(
-    createEmbeddedTransport(bridgeProvider, config.createRouter, registry, embeddedLibrary, embeddedDownloads, embeddedEngine),
+    createEmbeddedTransport(
+      bridgeProvider,
+      config.createRouter,
+      registry,
+      embeddedLibrary,
+      embeddedDownloads,
+      embeddedEngine,
+      embeddedLibrary ? config.covers : undefined, // covers only make sense with a library
+    ),
   );
   return true;
 }

@@ -76,6 +76,28 @@ describe("offline metadata cache", () => {
     expect(cached?.chapters[0]?.name).toBe("Ch 1"); // full Chapter, not the slim KnownChapter projection
   });
 
+  test("a detail refresh preserves the coverFile pointer; setCachedCover records it", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One" });
+
+    await lib.setCachedCover(KEY, "demo/s1.jpg");
+    expect((await lib.getCachedDetail(KEY))?.coverFile).toBe("demo/s1.jpg");
+
+    // Browsing rewrites the detail doc — the captured cover must survive it.
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", description: "fresh" });
+    const after = await lib.getCachedDetail(KEY);
+    expect(after?.info.description).toBe("fresh");
+    expect(after?.coverFile).toBe("demo/s1.jpg");
+  });
+
+  test("setCachedCover is a no-op without a detail doc", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.setCachedCover(KEY, "demo/s1.jpg");
+    expect(await lib.getCachedDetail(KEY)).toBeUndefined();
+  });
+
   test("removeSeries cascades away both cached docs", async () => {
     const lib = makeLibrary();
     await lib.addSeries(SERIES);

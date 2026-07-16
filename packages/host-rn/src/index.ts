@@ -43,6 +43,7 @@ export type {
   CreateRouter,
   DownloadEngine,
   DownloadEngineEvent,
+  EmbeddedCoversConfig,
   EmbeddedDownloadsEngineConfig,
   EmbeddedRouter,
   EmbeddedTransport,

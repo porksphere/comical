@@ -70,6 +70,13 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
   });
   routerOpts.trackers = trackerManager;
 
+  // Shared late-bound in-process fetch: the download engine AND the cover capture both resolve
+  // server-relative asset URLs by driving this router directly, but the router can't exist until
+  // its options (which reference them) are assembled — so the fetch is assigned after creation.
+  let routerFetch: (req: Request) => Response | Promise<Response> = () =>
+    new Response(null, { status: 503 });
+  const pageFetcher = createServerPageFetcher(() => routerFetch, opts.token);
+
   if (opts.library) {
     const dir = typeof opts.library === "object" && opts.library.dir
       ? opts.library.dir
@@ -81,32 +88,27 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
       library: lib,
       ...(trackerManager ? { trackers: trackerManager } : {}),
     });
+    // Guaranteed-offline covers for library entries, under the library's own dir.
+    routerOpts.covers = { blobs: new FileBlobStore(join(dir, "covers")), fetchPage: pageFetcher };
   }
 
-  // The engine resolves server-relative page URLs by driving the router in-process, but the router
-  // needs the engine to mount its routes — so the fetch is late-bound and assigned after creation.
-  let onRouterReady: ((fetch: (req: Request) => Response | Promise<Response>) => void) | undefined;
+  let engine: DownloadEngine | undefined;
   if (opts.downloads) {
     const dir = typeof opts.downloads === "object" && opts.downloads.dir
       ? opts.downloads.dir
       : join(opts.dataDir, "downloads");
     const downloads = new Downloads(new FileDownloadsStore(dir));
-    let routerFetch: (req: Request) => Response | Promise<Response> = () =>
-      new Response(null, { status: 503 });
-    const engine = new DownloadEngine({
+    engine = new DownloadEngine({
       downloads,
       blobs: new FileBlobStore(join(dir, "blobs")),
-      fetchPage: createServerPageFetcher(() => routerFetch, opts.token),
+      fetchPage: pageFetcher,
     });
     routerOpts.downloads = downloads;
     routerOpts.downloadEngine = engine;
-    onRouterReady = (fetch) => {
-      routerFetch = fetch;
-      engine.kick(); // resume any downloads interrupted by the previous run
-    };
   }
   const router = createRouter(manager, routerOpts);
-  onRouterReady?.((req) => router.fetch(req));
+  routerFetch = (req) => router.fetch(req);
+  engine?.kick(); // resume any downloads interrupted by the previous run
 
   return Bun.serve({ port: opts.port ?? 3100, fetch: router.fetch });
 }

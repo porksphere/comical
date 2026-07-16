@@ -15,8 +15,8 @@ import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } f
 import { BridgeSettingsError } from "@comical/core/errors";
 import { validateSettingsInput } from "@comical/core/settings";
 import { entryKey, type Library } from "@comical/library";
-import { contentTypeFor, DIRECT_CHAPTER_ID } from "@comical/downloads";
-import type { DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot } from "@comical/downloads";
+import { contentTypeFor, DIRECT_CHAPTER_ID, extFor, sanitizeSegment } from "@comical/downloads";
+import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
 import type { ComicalRuntime } from "@comical/runtime";
 import type { BridgeProvider } from "./bridge-provider.ts";
@@ -42,6 +42,14 @@ export interface RouterOptions {
   library?: Library;
   /** Runtime orchestration layer — required alongside `library` for read-sync and richer addToLibrary. */
   runtime?: ComicalRuntime;
+  /**
+   * Cover byte cache for library entries — with it (alongside `library`), the host captures each
+   * entry's cover image into `blobs` (fetched through `fetchPage`, the same seam the download
+   * engine uses, so `/img-proxy` referer rules are reused) and serves it back at
+   * `/library/entries/:b/:s/cover`; the offline details fallback then points `thumbnailUrl` at that
+   * route, making covers render with the source unreachable.
+   */
+  covers?: { blobs: BlobStore; fetchPage: PageFetcher };
   /** Downloads service — enables the optional `/downloads` offline-manifest endpoints when provided. */
   downloads?: Downloads;
   /**
@@ -499,6 +507,28 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   // write through to the cache for library entries, so it stays as fresh as the user's own
   // browsing; non-library series keep the exact error behavior they had.
   const libMeta = opts.library;
+  const covers = opts.covers;
+
+  /**
+   * Capture a library entry's cover bytes (fire-and-forget, once): fetch the entry snapshot's
+   * `thumbnailUrl` through the host's page fetcher and store it in the covers blob store, recording
+   * the pointer on the cached detail doc. Triggered on library-add and on the details write-through,
+   * both guarded by the pointer so an already-captured cover costs nothing.
+   */
+  const captureCover = (bridgeId: string, seriesId: string): void => {
+    if (!libMeta || !covers) return;
+    void (async () => {
+      const key = entryKey(bridgeId, seriesId);
+      const detail = await libMeta.getCachedDetail(key);
+      if (!detail || detail.coverFile) return; // no doc to hang the pointer on, or already captured
+      const url = (await libMeta.getEntry(key))?.thumbnailUrl;
+      if (!url) return;
+      const fetched = await covers.fetchPage({ bridgeId, seriesId, chapterId: "__cover__" }, { index: 0, sourceUrl: url });
+      const file = `${sanitizeSegment(bridgeId)}/${sanitizeSegment(seriesId)}.${extFor(fetched.contentType ?? url)}`;
+      await covers.blobs.write(file, fetched.data);
+      await libMeta.setCachedCover(key, file);
+    })().catch(() => {});
+  };
 
   app.get("/bridges/:id/series/:seriesId", async (c) => {
     const key = entryKey(c.req.param("id"), c.req.param("seriesId"));
@@ -514,15 +544,25 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           );
         }
       }
-      void libMeta?.cacheSeriesDetail(key, info).catch(() => {});
+      void libMeta
+        ?.cacheSeriesDetail(key, info)
+        .then(() => captureCover(c.req.param("id"), c.req.param("seriesId")))
+        .catch(() => {});
       return c.json(info);
     });
     if (live.ok || !libMeta) return live;
     const cached = await libMeta.getCachedDetail(key).catch(() => undefined);
     if (!cached) return live;
     // Additive fields on the SeriesInfo shape — clients render the saved detail and may show a
-    // "showing saved details" affordance off `cached`/`cachedAt`.
-    return c.json({ ...cached.info, cached: true, cachedAt: cached.cachedAt });
+    // "showing saved details" affordance off `cached`/`cachedAt`. A captured cover replaces the
+    // (likely unreachable) live thumbnail URL with this host's own cover route.
+    const info = cached.coverFile
+      ? {
+          ...cached.info,
+          thumbnailUrl: `/library/entries/${encodeURIComponent(c.req.param("id"))}/${encodeURIComponent(c.req.param("seriesId"))}/cover`,
+        }
+      : cached.info;
+    return c.json({ ...info, cached: true, cachedAt: cached.cachedAt });
   });
 
   app.get("/bridges/:id/series/:seriesId/related", (c) =>
@@ -730,12 +770,28 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           ...(b.listIds !== undefined && { listIds: b.listIds }),
           ...(b.externalIds !== undefined && { externalIds: b.externalIds }),
         });
+        // Guaranteed-offline cover: capture the new entry's cover bytes (fire-and-forget).
+        captureCover(b.bridgeId, b.seriesId);
         return c.json(result, 201);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
       }
     });
+
+    // The captured cover bytes for a library entry — the offline details fallback points
+    // `thumbnailUrl` here. Moderate caching: unlike downloaded pages, a cover can change.
+    if (covers?.blobs.read) {
+      app.get("/library/entries/:bridgeId/:seriesId/cover", async (c) => {
+        const detail = await lib.getCachedDetail(keyOf(c));
+        if (!detail?.coverFile) return c.json({ error: "no cover captured" }, 404);
+        const data = await covers.blobs.read!(detail.coverFile);
+        if (!data) return c.json({ error: "cover blob missing" }, 404);
+        return new Response(data as unknown as ArrayBuffer, {
+          headers: { "Content-Type": contentTypeFor(detail.coverFile), "Cache-Control": "max-age=86400" },
+        });
+      });
+    }
 
     app.get("/library/entries/:bridgeId/:seriesId", async (c) => {
       const key = keyOf(c);
@@ -745,7 +801,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     });
 
     app.delete("/library/entries/:bridgeId/:seriesId", async (c) => {
+      // Read the cover pointer before the cascade wipes the detail doc, then unlink the blob.
+      const coverFile = covers ? (await lib.getCachedDetail(keyOf(c)))?.coverFile : undefined;
       await lib.removeSeries(keyOf(c));
+      if (coverFile) await covers!.blobs.remove([coverFile]).catch(() => {});
       return c.json({ ok: true });
     });
 

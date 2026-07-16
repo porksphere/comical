@@ -17,6 +17,7 @@ import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
 import type {
   CreateRouter,
   DownloadsStore,
+  EmbeddedCoversConfig,
   EmbeddedDownloadsEngineConfig,
   EmbeddedTransport,
   InstalledStore,
@@ -48,6 +49,9 @@ export interface EmbeddedBootstrapConfig {
    *  Supplying it alongside `downloadsStore` runs the engine in-process behind the router — see
    *  `getEmbeddedDownloadEngine`. */
   downloadsEngine?: EmbeddedDownloadsEngineConfig;
+  /** Optional device seams for guaranteed-offline library covers (covers-rooted blob store with
+   *  `read` + page fetcher). Only effective alongside `libraryStore`. */
+  covers?: EmbeddedCoversConfig;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
   requireSignature?: boolean;
   /** Persistent bundle cache (defaults to in-memory; an expo-file-system adapter is a follow-up). */
@@ -83,6 +87,7 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     ...(config.libraryStore ? { libraryStore: config.libraryStore } : {}),
     ...(config.downloadsStore ? { downloadsStore: config.downloadsStore } : {}),
     ...(config.downloadsEngine ? { downloadsEngine: config.downloadsEngine } : {}),
+    ...(config.covers ? { covers: config.covers } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
