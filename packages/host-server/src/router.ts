@@ -931,6 +931,20 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       withDownloadsEntry(c, () => downloads.requeueMissing(dlKeyOf(c), c.req.param("chapterId"))),
     );
 
+    // Pause (cancel) / resume — chapter and whole-series. Pausing keeps the bytes already fetched.
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pause", async (c) =>
+      withDownloadsEntry(c, () => downloads.pauseChapter(dlKeyOf(c), c.req.param("chapterId"))),
+    );
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/resume", async (c) =>
+      withDownloadsEntry(c, () => downloads.resumeChapter(dlKeyOf(c), c.req.param("chapterId"))),
+    );
+    app.post("/downloads/entries/:bridgeId/:seriesId/pause", async (c) =>
+      withDownloadsEntry(c, () => downloads.pauseSeries(dlKeyOf(c))),
+    );
+    app.post("/downloads/entries/:bridgeId/:seriesId/resume", async (c) =>
+      withDownloadsEntry(c, () => downloads.resumeSeries(dlKeyOf(c))),
+    );
+
     // Deletion — returns the on-disk `file` paths the client should remove.
     app.delete("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId", async (c) =>
       c.json({ files: await downloads.deleteChapter(dlKeyOf(c), c.req.param("chapterId")) }),

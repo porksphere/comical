@@ -86,6 +86,29 @@ describe("/downloads lifecycle", () => {
     expect(((await (await get("/downloads")).json()) as { totalBytes: number }).totalBytes).toBe(0);
   });
 
+  test("pause/resume a chapter toggles the pending queue", async () => {
+    await send("POST", "/downloads/entries/demo/s2/chapters/cA", { title: "Series Two", pages: pages(3) });
+    await send("POST", "/downloads/entries/demo/s2/chapters/cA/pages/0", { file: "demo/s2/cA/0.jpg", bytes: 10 });
+
+    const paused = (await (await send("POST", "/downloads/entries/demo/s2/chapters/cA/pause")).json()) as { state: string; completedPages: number };
+    expect(paused.state).toBe("paused");
+    expect(paused.completedPages).toBe(1);
+    let pending = (await (await get("/downloads/pending")).json()) as Array<{ chapterId: string }>;
+    expect(pending.find((c) => c.chapterId === "cA")).toBeUndefined();
+
+    const resumed = (await (await send("POST", "/downloads/entries/demo/s2/chapters/cA/resume")).json()) as { state: string };
+    expect(resumed.state).toBe("queued");
+    pending = (await (await get("/downloads/pending")).json()) as Array<{ chapterId: string }>;
+    expect(pending.find((c) => c.chapterId === "cA")).toBeDefined();
+
+    // series-level pause clears it from pending again
+    expect((await send("POST", "/downloads/entries/demo/s2/pause")).status).toBe(200);
+    pending = (await (await get("/downloads/pending")).json()) as Array<{ chapterId: string }>;
+    expect(pending.find((c) => c.chapterId === "cA")).toBeUndefined();
+    // cleanup
+    await send("DELETE", "/downloads/entries/demo/s2");
+  });
+
   test("recording a page for an unknown chapter is 404", async () => {
     const res = await send("POST", "/downloads/entries/demo/nope/chapters/cX/pages/0", { file: "x", bytes: 1 });
     expect(res.status).toBe(404);
