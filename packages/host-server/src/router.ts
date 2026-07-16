@@ -1055,7 +1055,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         if (!file) return c.json({ error: "page not downloaded" }, 404);
         const data = await blobs.read!(file);
         if (!data) return c.json({ error: "blob missing" }, 404);
-        return new Response(data, {
+        // Cast: DOM's BodyInit typing lags Uint8Array<ArrayBufferLike> (this file also typechecks
+        // under comical-app's DOM lib, where `BodyInit` itself isn't a global under Bun's types —
+        // so cast to a member type both libs accept). Every runtime takes the bytes directly.
+        return new Response(data as unknown as ArrayBuffer, {
           headers: {
             "Content-Type": contentTypeFor(file),
             "Cache-Control": "public, max-age=31536000, immutable",
