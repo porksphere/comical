@@ -12,7 +12,7 @@
  *   - importBridgeFavorites: paginate getFavorites, dedupe, bulk-add to library.
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
-import type { Chapter, PagedResults, TrackerSearchResult } from "@comical/contract";
+import type { Chapter, PagedResults, SeriesInfo, TrackerSearchResult } from "@comical/contract";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
 // node:vm-backed default evaluator) so `@comical/runtime`'s types stay consumable by non-Node
 // hosts — e.g. comical-app's embedded runtime typing `RouterOptions.runtime`. See @comical/core.
@@ -88,14 +88,15 @@ export class ComicalRuntime {
     let author = snap?.author;
     let externalIds = snap?.externalIds;
 
+    let fetchedInfo: SeriesInfo | undefined;
     if (!title) {
       const bridge = await this.bridges.get(bridgeId);
-      const info = await bridge.getSeriesDetails(seriesId);
-      title = info.title;
-      if (thumbnailUrl === undefined && info.thumbnailUrl !== undefined) thumbnailUrl = info.thumbnailUrl;
-      if (author === undefined && info.author !== undefined) author = info.author;
-      if (externalIds === undefined && info.externalIds !== undefined) {
-        externalIds = info.externalIds;
+      fetchedInfo = await bridge.getSeriesDetails(seriesId);
+      title = fetchedInfo.title;
+      if (thumbnailUrl === undefined && fetchedInfo.thumbnailUrl !== undefined) thumbnailUrl = fetchedInfo.thumbnailUrl;
+      if (author === undefined && fetchedInfo.author !== undefined) author = fetchedInfo.author;
+      if (externalIds === undefined && fetchedInfo.externalIds !== undefined) {
+        externalIds = fetchedInfo.externalIds;
       }
     }
 
@@ -108,6 +109,17 @@ export class ComicalRuntime {
     const result = await lib.addSeries(full);
 
     const key = entryKey(bridgeId, seriesId);
+
+    // Offline metadata capture (best-effort — the add itself already succeeded): the full series
+    // detail plus a chapter-list seed, so the entry renders offline from the moment it's added
+    // rather than after the first background sync or series-page visit.
+    try {
+      const bridge = await this.bridges.get(bridgeId);
+      await lib.cacheSeriesDetail(key, fetchedInfo ?? (await bridge.getSeriesDetails(seriesId)));
+      if (bridge.getChapters) await lib.syncChapters(key, await bridge.getChapters(seriesId));
+    } catch {
+      // No metadata cached this time — browsing/background sync write it through later.
+    }
     const trackerSuggestions: RuntimeAddResult["trackerSuggestions"] = [];
 
     if (this.trackers) {

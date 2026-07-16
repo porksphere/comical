@@ -101,6 +101,50 @@ function mockTrackerProvider(trackers: Tracker[]): TrackerProvider {
   };
 }
 
+// ── Offline metadata capture ─────────────────────────────────────────────────
+
+describe("addToLibrary — offline metadata capture", () => {
+  test("caches the full series detail and seeds the chapter list at add time", async () => {
+    const lib = makeLib();
+    const bridge = syncBridge({
+      details: { id: "s1", title: "One Piece", description: "Pirates.", author: "Oda" },
+      chapters: [ch("c1", 1), ch("c2", 2)],
+    });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+
+    await runtime.addToLibrary("test", "s1");
+
+    const detail = await lib.getCachedDetail("test:s1");
+    expect(detail?.info.description).toBe("Pirates.");
+    const chapters = await lib.getCachedChapters("test:s1");
+    expect(chapters?.chapters.map((c) => c.id)).toEqual(["c1", "c2"]);
+  });
+
+  test("captures the detail even when the caller supplied a full snapshot (no earlier fetch)", async () => {
+    const lib = makeLib();
+    const bridge = syncBridge({ details: { id: "s1", title: "One Piece", description: "Pirates." } });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+
+    await runtime.addToLibrary("test", "s1", { title: "One Piece" });
+
+    expect((await lib.getCachedDetail("test:s1"))?.info.description).toBe("Pirates.");
+  });
+
+  test("a failing capture never fails the add", async () => {
+    const lib = makeLib();
+    const bridge: Bridge = {
+      info: BRIDGE_INFO,
+      async getSeriesDetails() { throw new Error("source down"); },
+    };
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+
+    await runtime.addToLibrary("test", "s1", { title: "Known Title" });
+
+    expect(await lib.isInLibrary("test:s1")).toBe(true);
+    expect(await lib.getCachedDetail("test:s1")).toBeUndefined();
+  });
+});
+
 // ── Auto-link via externalIds ─────────────────────────────────────────────────
 
 describe("addToLibrary — auto-link via externalIds", () => {
