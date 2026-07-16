@@ -235,6 +235,11 @@ export class Downloads {
     return this.store.getSeries(key);
   }
 
+  /** All chapters recorded for a series (any state). */
+  async listChapters(key: string): Promise<DownloadedChapter[]> {
+    return this.store.listChapters(key);
+  }
+
   async getChapter(key: string, chapterId: string): Promise<DownloadedChapter | undefined> {
     return this.store.getChapter(key, chapterId);
   }

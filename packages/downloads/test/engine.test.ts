@@ -332,6 +332,64 @@ describe("deletion", () => {
   });
 });
 
+describe("pause during bulk collection", () => {
+  test("chapters enqueued after a series pause arrive paused instead of downloading", async () => {
+    // A series download is many single-chapter enqueues, each delayed by page resolution. Pausing
+    // the series mid-collection must catch the late arrivals too — they file as paused, and the
+    // series-level cancel flag must survive them (each enqueue used to wipe it).
+    let allowed = false; // hold the drain so the first chapter is still pausable
+    const { fetch, calls } = scriptedFetcher({});
+    const { engine, downloads, events } = makeEngine(fetch, { mayDownload: async () => allowed });
+
+    await engine.enqueue(SNAP, CH, pages(2)); // c1 landed
+    await engine.pauseSeries(KEY); // user pauses while the rest are still resolving
+    const late = await engine.enqueue(SNAP, { chapterId: "c2" }, pages(2)); // c2 lands after the pause
+
+    expect(late.state).toBe("paused");
+    expect(events.some((e) => e.type === "chapter" && e.chapter.chapterId === "c2" && e.chapter.state === "paused")).toBe(true);
+    allowed = true;
+    await engine.drain();
+    expect(calls).toHaveLength(0); // nothing downloaded — both chapters held
+    expect((await downloads.getChapter(KEY, "c2"))?.state).toBe("paused");
+
+    // Resume series releases everything, late arrivals included.
+    await engine.resumeSeries(KEY);
+    await engine.drain();
+    expect((await downloads.getChapter(KEY, CH.chapterId))?.state).toBe("complete");
+    expect((await downloads.getChapter(KEY, "c2"))?.state).toBe("complete");
+    expect(calls).toHaveLength(4);
+  });
+
+  test("a stale series flag (everything since deleted) never holds a fresh download", async () => {
+    const { fetch } = scriptedFetcher({});
+    const { engine, downloads } = makeEngine(fetch);
+    await engine.enqueue(SNAP, CH, pages(1));
+    await engine.pauseSeries(KEY);
+    await engine.deleteSeries(KEY);
+
+    const fresh = await engine.enqueue(SNAP, { chapterId: "c9" }, pages(1));
+    expect(fresh.state).toBe("queued");
+    await engine.drain();
+    expect((await downloads.getChapter(KEY, "c9"))?.state).toBe("complete");
+  });
+
+  test("explicitly resuming one chapter re-activates the series for later enqueues", async () => {
+    let allowed = false;
+    const { fetch } = scriptedFetcher({});
+    const { engine } = makeEngine(fetch, { mayDownload: async () => allowed });
+    await engine.enqueue(SNAP, CH, pages(1));
+    await engine.pauseSeries(KEY);
+
+    // The user deliberately resumed a chapter of this series — that intent clears the series flag,
+    // so a later enqueue is a normal fresh download again.
+    await engine.resumeChapter(KEY, CH.chapterId);
+    const next = await engine.enqueue(SNAP, { chapterId: "c2" }, pages(1));
+    expect(next.state).toBe("queued");
+    allowed = true;
+    await engine.drain();
+  });
+});
+
 describe("series pause/resume", () => {
   test("pauseSeries stops the whole series; resumeSeries drains it", async () => {
     const { fetch } = scriptedFetcher({});

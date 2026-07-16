@@ -139,10 +139,27 @@ export class DownloadEngine {
     meta: DownloadChapterMeta,
     pages: DownloadPageInput[],
   ): Promise<DownloadedChapter> {
-    this.clearCancel(entryKey(snap.bridgeId, snap.seriesId), meta.chapterId);
-    const chapter = await this.downloads.enqueueChapter(snap, meta, pages);
+    const key = entryKey(snap.bridgeId, snap.seriesId);
+    // Clear only THIS chapter's stale cancel flag — the series-level flag deliberately survives. A
+    // bulk "download series" arrives as many single-chapter enqueues, each spending a while in
+    // bridge page-resolution before landing; pausing the series mid-collection must also catch the
+    // enqueues still in flight, so a late arrival files as paused below instead of starting fresh.
+    this.cancelledChapters.delete(chapterCancelKey(key, meta.chapterId));
+    let chapter = await this.downloads.enqueueChapter(snap, meta, pages);
+    if (chapter.state !== "complete" && this.cancelledSeries.has(key)) {
+      const siblingPaused = (await this.downloads.listChapters(key)).some(
+        (c) => c.chapterId !== meta.chapterId && c.state === "paused",
+      );
+      if (siblingPaused) {
+        chapter = await this.downloads.pauseChapter(key, meta.chapterId);
+      } else {
+        // No paused sibling left — the flag is stale (everything since resumed/completed/deleted);
+        // a stale flag must never hold back a fresh download.
+        this.cancelledSeries.delete(key);
+      }
+    }
     this.emit({ type: "chapter", chapter });
-    this.kick();
+    if (chapter.state !== "paused") this.kick();
     return chapter;
   }
 
@@ -196,14 +213,19 @@ export class DownloadEngine {
   async deleteChapter(key: string, chapterId: string): Promise<void> {
     const files = await this.downloads.deleteChapter(key, chapterId);
     await this.blobs.remove(files);
+    this.cancelledChapters.delete(chapterCancelKey(key, chapterId));
+    // The delete pruned the series (last chapter gone) — drop its pause flag too, so a future
+    // re-download of this series starts fresh instead of arriving paused.
+    if (!(await this.downloads.getSeries(key))) this.clearCancel(key);
     const { bridgeId, seriesId } = parseEntryKey(key);
     this.emit({ type: "deleted", bridgeId, seriesId, chapterId });
   }
 
-  /** Delete a whole series: purge the manifest, remove its blobs. */
+  /** Delete a whole series: purge the manifest, remove its blobs, drop its cancel flags. */
   async deleteSeries(key: string): Promise<void> {
     const files = await this.downloads.deleteSeries(key);
     await this.blobs.remove(files);
+    this.clearCancel(key);
     const { bridgeId, seriesId } = parseEntryKey(key);
     this.emit({ type: "deleted", bridgeId, seriesId });
   }
@@ -213,6 +235,8 @@ export class DownloadEngine {
     const files = await this.downloads.deleteAll();
     await this.blobs.remove(files);
     await this.blobs.removeAll?.();
+    this.cancelledChapters.clear();
+    this.cancelledSeries.clear();
     this.emit({ type: "deleted" });
   }
 
