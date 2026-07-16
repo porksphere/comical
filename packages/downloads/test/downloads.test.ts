@@ -235,6 +235,17 @@ describe("pending queue", () => {
     const pending = await dl.pendingChapters();
     expect(pending.map((c) => c.chapterId)).toEqual(["c2"]);
   });
+
+  test("failed chapters are excluded from the queue until re-queued (retry)", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, pages(2));
+    const failed = await dl.failPage(KEY, CH.chapterId, 0);
+    expect(failed.state).toBe("failed");
+    expect(await dl.pendingChapters()).toEqual([]); // not auto-retried
+
+    await dl.requeueMissing(KEY, CH.chapterId); // explicit retry
+    expect((await dl.pendingChapters()).map((c) => c.chapterId)).toEqual([CH.chapterId]);
+  });
 });
 
 describe("prefs", () => {

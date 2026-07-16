@@ -177,16 +177,17 @@ export class Downloads {
   }
 
   /**
-   * Chapters that still need work (`queued`/`downloading`/`failed`), across all series — the work
-   * queue. `paused` chapters are excluded: a cancelled download stays cancelled until resumed (which
-   * flips it back to `queued`), so it must not auto-drain here or on the next launch's resume.
+   * Chapters that still need work (`queued`/`downloading`), across all series — the work queue.
+   * `paused` (cancelled) and `failed` chapters are excluded so the queue never auto-retries them or
+   * spins on a persistent error: a paused chapter resumes to `queued`, and a failed one is re-queued
+   * by an explicit retry (`requeueMissing`) — both of which put it back here.
    */
   async pendingChapters(): Promise<DownloadedChapter[]> {
     const out: DownloadedChapter[] = [];
     for (const series of await this.store.listSeries()) {
       const key = entryKey(series.bridgeId, series.seriesId);
       for (const c of await this.store.listChapters(key)) {
-        if (c.state !== "complete" && c.state !== "paused") out.push(c);
+        if (c.state !== "complete" && c.state !== "paused" && c.state !== "failed") out.push(c);
       }
     }
     return out.sort((a, b) => a.addedAt - b.addedAt);

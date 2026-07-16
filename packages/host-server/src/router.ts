@@ -921,6 +921,13 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       );
     });
 
+    // Mark one page failed (the client gave up fetching it) — surfaces the chapter as `failed`.
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages/:index/fail", async (c) =>
+      withDownloadsEntry(c, () =>
+        downloads.failPage(dlKeyOf(c), c.req.param("chapterId"), Number(c.req.param("index"))),
+      ),
+    );
+
     // The ordered page list (manifest) for a chapter — the offline page-LIST fallback.
     app.get("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages", async (c) =>
       c.json(await downloads.getManifestPages(dlKeyOf(c), c.req.param("chapterId"))),
