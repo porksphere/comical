@@ -8,9 +8,9 @@
  *
  * Single-user, local scale: small files, full read/parse on first touch, then cached.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { activityKey, type ActivityItem, type BridgePrefs, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
+import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -56,6 +56,12 @@ export class FileLibraryStore implements LibraryStore {
   private progressPath(key: string): string {
     return join(this.dir, "progress", `${encodeURIComponent(key)}.json`);
   }
+  private detailPath(key: string): string {
+    return join(this.dir, "details", `${encodeURIComponent(key)}.json`);
+  }
+  private cachedChaptersPath(key: string): string {
+    return join(this.dir, "chapters-cache", `${encodeURIComponent(key)}.json`);
+  }
 
   // ── Entries ──────────────────────────────────────────────────────────────────
 
@@ -97,6 +103,30 @@ export class FileLibraryStore implements LibraryStore {
   }
   async deleteEntry(key: string): Promise<void> {
     if ((await this.entries()).delete(key)) await this.flushEntries();
+  }
+
+  // ── Offline metadata cache ──────────────────────────────────────────────────
+  // One JSON doc per entry (chapter lists are bulky), read lazily on demand — never bulk-loaded.
+
+  async getSeriesDetail(key: string): Promise<CachedSeriesDetail | undefined> {
+    return readJson<CachedSeriesDetail | undefined>(this.detailPath(key), undefined);
+  }
+  async putSeriesDetail(key: string, detail: CachedSeriesDetail): Promise<void> {
+    await mkdir(join(this.dir, "details"), { recursive: true });
+    await writeFile(this.detailPath(key), JSON.stringify(detail, null, 2), "utf8");
+  }
+  async deleteSeriesDetail(key: string): Promise<void> {
+    await rm(this.detailPath(key), { force: true });
+  }
+  async getCachedChapters(key: string): Promise<CachedChapters | undefined> {
+    return readJson<CachedChapters | undefined>(this.cachedChaptersPath(key), undefined);
+  }
+  async putCachedChapters(key: string, doc: CachedChapters): Promise<void> {
+    await mkdir(join(this.dir, "chapters-cache"), { recursive: true });
+    await writeFile(this.cachedChaptersPath(key), JSON.stringify(doc, null, 2), "utf8");
+  }
+  async deleteCachedChapters(key: string): Promise<void> {
+    await rm(this.cachedChaptersPath(key), { force: true });
   }
 
   // ── Progress ───────────────────────────────────────────────────────────────────

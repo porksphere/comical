@@ -3,7 +3,7 @@
  * fallback for hosts without durable storage. Deep-clones on the way in and out so callers can't
  * mutate stored objects by reference.
  */
-import { activityKey, type ActivityItem, type BridgePrefs, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type SeriesGroup, type TrackerLink } from "./models.ts";
+import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type SeriesGroup, type TrackerLink } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
 const clone = <T>(v: T): T => structuredClone(v);
@@ -17,6 +17,8 @@ export class InMemoryLibraryStore implements LibraryStore {
   private readingLog = new Map<string, HistoryItem>();
   private bridgePrefs = new Map<string, BridgePrefs>();
   private activity = new Map<string, ActivityItem>();
+  private details = new Map<string, CachedSeriesDetail>();
+  private chaptersCache = new Map<string, CachedChapters>();
 
   async listEntries(): Promise<LibraryEntry[]> {
     return [...this.entries.values()].map(clone);
@@ -30,6 +32,27 @@ export class InMemoryLibraryStore implements LibraryStore {
   }
   async deleteEntry(key: string): Promise<void> {
     this.entries.delete(key);
+  }
+
+  async getSeriesDetail(key: string): Promise<CachedSeriesDetail | undefined> {
+    const d = this.details.get(key);
+    return d ? clone(d) : undefined;
+  }
+  async putSeriesDetail(key: string, detail: CachedSeriesDetail): Promise<void> {
+    this.details.set(key, clone(detail));
+  }
+  async deleteSeriesDetail(key: string): Promise<void> {
+    this.details.delete(key);
+  }
+  async getCachedChapters(key: string): Promise<CachedChapters | undefined> {
+    const c = this.chaptersCache.get(key);
+    return c ? clone(c) : undefined;
+  }
+  async putCachedChapters(key: string, doc: CachedChapters): Promise<void> {
+    this.chaptersCache.set(key, clone(doc));
+  }
+  async deleteCachedChapters(key: string): Promise<void> {
+    this.chaptersCache.delete(key);
   }
 
   async listProgress(key: string): Promise<ChapterProgress[]> {

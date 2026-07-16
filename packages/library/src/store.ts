@@ -6,7 +6,7 @@
  *
  * Keys are `entryKey(bridgeId, seriesId)`.
  */
-import type { ActivityItem, BridgePrefs, ChapterProgress, HistoryItem, LibraryEntry, LibraryList, SeriesGroup, TrackerLink } from "./models.ts";
+import type { ActivityItem, BridgePrefs, CachedChapters, CachedSeriesDetail, ChapterProgress, HistoryItem, LibraryEntry, LibraryList, SeriesGroup, TrackerLink } from "./models.ts";
 
 export interface LibraryStore {
   // ── Entries ──────────────────────────────────────────────────────────────
@@ -14,6 +14,14 @@ export interface LibraryStore {
   getEntry(key: string): Promise<LibraryEntry | undefined>;
   putEntry(entry: LibraryEntry): Promise<void>;
   deleteEntry(key: string): Promise<void>;
+
+  // ── Offline metadata cache (beside the entry) ──────────────────────────────
+  getSeriesDetail(key: string): Promise<CachedSeriesDetail | undefined>;
+  putSeriesDetail(key: string, detail: CachedSeriesDetail): Promise<void>;
+  deleteSeriesDetail(key: string): Promise<void>;
+  getCachedChapters(key: string): Promise<CachedChapters | undefined>;
+  putCachedChapters(key: string, doc: CachedChapters): Promise<void>;
+  deleteCachedChapters(key: string): Promise<void>;
 
   // ── Per-series chapter progress ────────────────────────────────────────────
   listProgress(key: string): Promise<ChapterProgress[]>;

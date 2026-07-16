@@ -10,6 +10,7 @@
  * uninstalled (they grey out rather than vanish).
  */
 import { z } from "zod";
+import { chapterSchema, seriesInfoSchema } from "@comical/contract";
 
 /** Stable, cross-bridge key for a tracked series. */
 export function entryKey(bridgeId: string, seriesId: string): string {
@@ -40,6 +41,28 @@ export const knownChapterSchema = z.object({
   languageCode: z.string().optional(),
 });
 export type KnownChapter = z.infer<typeof knownChapterSchema>;
+
+/**
+ * The full series detail captured for offline rendering — everything the series page needs when the
+ * bridge is unreachable (device offline, LAN-only server, bridge uninstalled). Fed by data the
+ * system already fetches (add-to-library, browsing, background sync); never re-requested on its own.
+ */
+export const cachedSeriesDetailSchema = z.object({
+  info: seriesInfoSchema,
+  cachedAt: z.number().int(),
+});
+export type CachedSeriesDetail = z.infer<typeof cachedSeriesDetailSchema>;
+
+/**
+ * The full renderable chapter list for offline serving. Lives BESIDE the entry (its own store doc):
+ * it's the bulk of the metadata, and `knownChapters` on the entry stays the slim unread-count
+ * projection it always was.
+ */
+export const cachedChaptersSchema = z.object({
+  chapters: z.array(chapterSchema),
+  cachedAt: z.number().int(),
+});
+export type CachedChapters = z.infer<typeof cachedChaptersSchema>;
 
 /** A user-defined list the library groups entries into (e.g. "Reading", "Plan to Read"). */
 export const libraryListSchema = z.object({

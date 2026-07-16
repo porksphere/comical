@@ -5,13 +5,17 @@
  * Identity is the cross-bridge pair `(bridgeId, seriesId)`, encoded via `entryKey`. The library is
  * fully independent of any bridge's backend `favorites`: adding here never touches a bridge.
  */
-import type { Chapter } from "@comical/contract";
+import type { Chapter, SeriesInfo } from "@comical/contract";
 import {
+  cachedChaptersSchema,
+  cachedSeriesDetailSchema,
   entryKey,
   parseEntryKey,
   type ActivityItem,
   type ActivityItemView,
   type BridgePrefs,
+  type CachedChapters,
+  type CachedSeriesDetail,
   type ChapterProgress,
   type HistoryItem,
   type KnownChapter,
@@ -145,6 +149,35 @@ export class Library {
     await this.store.deleteEntry(key);
     await this.store.deleteProgressForEntry(key);
     await this.store.deleteActivityForEntry(key);
+    await this.store.deleteSeriesDetail(key);
+    await this.store.deleteCachedChapters(key);
+  }
+
+  // ── Offline metadata cache ─────────────────────────────────────────────────────
+  // The series page's offline data: the full SeriesInfo and the full renderable chapter list,
+  // captured from fetches the system makes anyway (add-to-library, browsing, background sync) and
+  // served back by the router when the bridge can't answer. See `cachedSeriesDetailSchema`.
+
+  /** Cache the full series detail for offline rendering. No-op unless the series is in the library. */
+  async cacheSeriesDetail(key: string, info: SeriesInfo): Promise<void> {
+    if (!(await this.isInLibrary(key))) return;
+    await this.store.putSeriesDetail(key, { info, cachedAt: this.now() });
+  }
+
+  /** The cached detail, or undefined (not captured / schema-drifted doc, which is discarded). */
+  async getCachedDetail(key: string): Promise<CachedSeriesDetail | undefined> {
+    const doc = await this.store.getSeriesDetail(key);
+    if (!doc) return undefined;
+    const parsed = cachedSeriesDetailSchema.safeParse(doc);
+    return parsed.success ? parsed.data : undefined;
+  }
+
+  /** The cached chapter list, or undefined (not captured / schema-drifted doc, which is discarded). */
+  async getCachedChapters(key: string): Promise<CachedChapters | undefined> {
+    const doc = await this.store.getCachedChapters(key);
+    if (!doc) return undefined;
+    const parsed = cachedChaptersSchema.safeParse(doc);
+    return parsed.success ? parsed.data : undefined;
   }
 
   async isInLibrary(key: string): Promise<boolean> {
@@ -247,6 +280,10 @@ export class Library {
     });
     entry.chaptersSyncedAt = t;
     await this.store.putEntry(entry);
+
+    // Write the full renderable list through to the offline cache — one sync now produces both
+    // artifacts (unread reconciliation above + the series page's offline chapter list).
+    await this.store.putCachedChapters(key, { chapters, cachedAt: t });
 
     // Record each newly-detected chapter as an activity event (the "new chapters" feed). Snapshots
     // the series display fields so the feed renders offline / after the bridge is removed.
