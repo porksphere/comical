@@ -2,13 +2,15 @@
  * Assembles the complete server: SettingsStore + BridgeManager + RegistryManager + Hono router.
  */
 import { join } from "node:path";
-import { Downloads } from "@comical/downloads";
+import { DownloadEngine, Downloads } from "@comical/downloads";
 import { Library } from "@comical/library";
 import { ManifestStore, RegistryManager } from "@comical/registry";
 import { ComicalRuntime } from "@comical/runtime";
 import { BridgeManager } from "./bridge-manager.ts";
+import { FileBlobStore } from "./blob-store.ts";
 import { FileDownloadsStore } from "./downloads-store.ts";
 import { FileLibraryStore } from "./library-store.ts";
+import { createServerPageFetcher } from "./page-fetcher.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
 import { SettingsStore } from "./settings-store.ts";
 import { TrackerManager } from "./tracker-manager.ts";
@@ -25,8 +27,10 @@ export interface ServerOptions {
    */
   library?: boolean | { dir?: string };
   /**
-   * Enable the optional offline-downloads manifest module. `true` stores it under
-   * `{dataDir}/downloads`; pass `{ dir }` to override. Omit to leave `/downloads` endpoints unmounted.
+   * Enable the optional offline-downloads module: the manifest under `{dataDir}/downloads` plus a
+   * server-side download engine that fetches page bytes via the server's own bridges and stores them
+   * under `{dataDir}/downloads/blobs` (served back at `/downloads/.../file`, progress at
+   * `/downloads/events`). Pass `{ dir }` to override the root. Omit to leave `/downloads` unmounted.
    */
   downloads?: boolean | { dir?: string };
   /**
@@ -79,13 +83,30 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
     });
   }
 
+  // The engine resolves server-relative page URLs by driving the router in-process, but the router
+  // needs the engine to mount its routes — so the fetch is late-bound and assigned after creation.
+  let onRouterReady: ((fetch: (req: Request) => Response | Promise<Response>) => void) | undefined;
   if (opts.downloads) {
     const dir = typeof opts.downloads === "object" && opts.downloads.dir
       ? opts.downloads.dir
       : join(opts.dataDir, "downloads");
-    routerOpts.downloads = new Downloads(new FileDownloadsStore(dir));
+    const downloads = new Downloads(new FileDownloadsStore(dir));
+    let routerFetch: (req: Request) => Response | Promise<Response> = () =>
+      new Response(null, { status: 503 });
+    const engine = new DownloadEngine({
+      downloads,
+      blobs: new FileBlobStore(join(dir, "blobs")),
+      fetchPage: createServerPageFetcher(() => routerFetch, opts.token),
+    });
+    routerOpts.downloads = downloads;
+    routerOpts.downloadEngine = engine;
+    onRouterReady = (fetch) => {
+      routerFetch = fetch;
+      engine.kick(); // resume any downloads interrupted by the previous run
+    };
   }
   const router = createRouter(manager, routerOpts);
+  onRouterReady?.((req) => router.fetch(req));
 
   return Bun.serve({ port: opts.port ?? 3100, fetch: router.fetch });
 }

@@ -15,7 +15,9 @@ import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } f
 import { BridgeSettingsError } from "@comical/core/errors";
 import { validateSettingsInput } from "@comical/core/settings";
 import { entryKey, type Library } from "@comical/library";
-import type { DownloadChapterMeta, DownloadPageInput, Downloads, DownloadSeriesSnapshot } from "@comical/downloads";
+import { contentTypeFor, DIRECT_CHAPTER_ID } from "@comical/downloads";
+import type { DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot } from "@comical/downloads";
+import { streamSSE } from "hono/streaming";
 import type { ComicalRuntime } from "@comical/runtime";
 import type { BridgeProvider } from "./bridge-provider.ts";
 import type { RegistryProvider } from "./registry-provider.ts";
@@ -42,6 +44,14 @@ export interface RouterOptions {
   runtime?: ComicalRuntime;
   /** Downloads service — enables the optional `/downloads` offline-manifest endpoints when provided. */
   downloads?: Downloads;
+  /**
+   * Download engine — when provided alongside `downloads`, the HOST owns the bytes: enqueue may omit
+   * `pages` (the router resolves them via the bridge) and kicks the drain, pause/resume/delete
+   * delegate to the engine (deletes unlink blobs host-side), and the `/downloads/.../file` +
+   * `/downloads/events` routes mount. Without it the routes stay manifest-only (a CLIENT fetches
+   * bytes and reports back) — the embedded/manifest-only mode.
+   */
+  downloadEngine?: DownloadEngine;
   /** Tracker manager — enables `/trackers` endpoints when provided. `TrackerManager` satisfies `TrackerProvider`. */
   trackers?: TrackerProvider;
   /** Base URL of this server, used as the OAuth callback redirect URI (e.g. "http://localhost:3100"). */
@@ -848,10 +858,13 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
 
   // ── Downloads endpoints ────────────────────────────────────────────────────────
   // Mounted only when a Downloads service is provided. These manage the offline-download MANIFEST
-  // (which chapters/pages are downloaded, their state and byte sizes); the image bytes themselves are
-  // a client/host concern — this router does not fetch or serve page bytes.
+  // (which chapters/pages are downloaded, their state and byte sizes). Who owns the bytes depends on
+  // `opts.downloadEngine`: with an engine the HOST fetches/stores/serves them (and enqueue may omit
+  // the page list — the router resolves it via the bridge); without one they stay a client concern
+  // (the client fetches bytes, reports them via `recordPage`, and unlinks the paths deletes return).
 
   const downloads = opts.downloads;
+  const dlEngine = opts.downloadEngine;
   if (downloads) {
     const dlKeyOf = (c: { req: { param: (k: string) => string } }) =>
       entryKey(c.req.param("bridgeId"), c.req.param("seriesId"));
@@ -886,14 +899,46 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ series, chapters: chapters ?? [] });
     });
 
-    // Enqueue a chapter for download: body carries the series snapshot, chapter meta, and page list.
+    // Enqueue a chapter for download: body carries the series snapshot, chapter meta, and — in
+    // manifest-only mode — the page list. With an engine the pages are optional: the router resolves
+    // them via the bridge (the reserved direct id → `getSeriesPages`) BEFORE touching the store, so a
+    // bridge failure enqueues nothing, and the engine starts draining immediately.
     app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId", async (c) => {
       const b = await body<{
         title?: string; thumbnailUrl?: string; author?: string;
         chapterName?: string; number?: number; languageCode?: string;
         pages?: DownloadPageInput[];
       }>(c);
-      if (!b?.title || !b.pages) return c.json({ error: "title and pages are required" }, 400);
+      if (!b?.title || (!b.pages && !dlEngine)) return c.json({ error: "title and pages are required" }, 400);
+      let pages = b.pages;
+      if (!pages) {
+        const bridgeId = c.req.param("bridgeId");
+        const seriesId = c.req.param("seriesId");
+        const chapterId = c.req.param("chapterId");
+        try {
+          const mgr = c.get("manager") as BridgeProvider;
+          const bridge = await mgr.get(bridgeId);
+          const missing = await mgr.missingRequired(bridgeId);
+          if (missing.length > 0) {
+            return c.json({ error: `bridge not configured: missing ${missing.join(", ")}` }, 400);
+          }
+          const resolved = chapterId === DIRECT_CHAPTER_ID
+            ? await (bridge.getSeriesPages
+                ? bridge.getSeriesPages(seriesId)
+                : Promise.reject(new Error("not supported: getSeriesPages")))
+            : await (bridge.getChapterPages
+                ? bridge.getChapterPages(seriesId, chapterId)
+                : Promise.reject(new Error("not supported: getChapterPages")));
+          pages = [...resolved]
+            .sort((a, b2) => a.index - b2.index)
+            .map((p) => ({ index: p.index, sourceUrl: p.imageUrl, ...(p.headers && { headers: p.headers }) }));
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg.includes("not found")) return c.json({ error: msg }, 404);
+          if (msg.includes("not supported")) return c.json({ error: msg }, 400);
+          return c.json({ error: `page resolution failed: ${msg}` }, 502);
+        }
+      }
       const snap: DownloadSeriesSnapshot = {
         bridgeId: c.req.param("bridgeId"),
         seriesId: c.req.param("seriesId"),
@@ -907,7 +952,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         ...(b.number !== undefined && { number: b.number }),
         ...(b.languageCode !== undefined && { languageCode: b.languageCode }),
       };
-      return c.json(await downloads.enqueueChapter(snap, meta, b.pages), 201);
+      const chapter = dlEngine
+        ? await dlEngine.enqueue(snap, meta, pages)
+        : await downloads.enqueueChapter(snap, meta, pages);
+      return c.json(chapter, 201);
     });
 
     // Record one page's downloaded bytes (client writes the blob, then reports its file + size).
@@ -933,33 +981,108 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       c.json(await downloads.getManifestPages(dlKeyOf(c), c.req.param("chapterId"))),
     );
 
-    // Re-queue the missing pages of a partial/failed chapter (resumable retry).
+    // Re-queue the missing pages of a partial/failed chapter (resumable retry). With an engine the
+    // retry also kicks the drain, so the missing bytes start landing immediately.
     app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/requeue", async (c) =>
-      withDownloadsEntry(c, () => downloads.requeueMissing(dlKeyOf(c), c.req.param("chapterId"))),
+      withDownloadsEntry(c, () =>
+        dlEngine
+          ? dlEngine.retryChapter(dlKeyOf(c), c.req.param("chapterId"))
+          : downloads.requeueMissing(dlKeyOf(c), c.req.param("chapterId")),
+      ),
     );
 
     // Pause (cancel) / resume — chapter and whole-series. Pausing keeps the bytes already fetched.
+    // Engine variants also flag/clear the in-flight cancellation markers and kick the drain on resume.
     app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pause", async (c) =>
-      withDownloadsEntry(c, () => downloads.pauseChapter(dlKeyOf(c), c.req.param("chapterId"))),
+      withDownloadsEntry(c, () =>
+        dlEngine
+          ? dlEngine.pauseChapter(dlKeyOf(c), c.req.param("chapterId"))
+          : downloads.pauseChapter(dlKeyOf(c), c.req.param("chapterId")),
+      ),
     );
     app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/resume", async (c) =>
-      withDownloadsEntry(c, () => downloads.resumeChapter(dlKeyOf(c), c.req.param("chapterId"))),
+      withDownloadsEntry(c, () =>
+        dlEngine
+          ? dlEngine.resumeChapter(dlKeyOf(c), c.req.param("chapterId"))
+          : downloads.resumeChapter(dlKeyOf(c), c.req.param("chapterId")),
+      ),
     );
     app.post("/downloads/entries/:bridgeId/:seriesId/pause", async (c) =>
-      withDownloadsEntry(c, () => downloads.pauseSeries(dlKeyOf(c))),
+      withDownloadsEntry(c, () => (dlEngine ? dlEngine.pauseSeries(dlKeyOf(c)) : downloads.pauseSeries(dlKeyOf(c)))),
     );
     app.post("/downloads/entries/:bridgeId/:seriesId/resume", async (c) =>
-      withDownloadsEntry(c, () => downloads.resumeSeries(dlKeyOf(c))),
+      withDownloadsEntry(c, () => (dlEngine ? dlEngine.resumeSeries(dlKeyOf(c)) : downloads.resumeSeries(dlKeyOf(c)))),
     );
 
-    // Deletion — returns the on-disk `file` paths the client should remove.
-    app.delete("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId", async (c) =>
-      c.json({ files: await downloads.deleteChapter(dlKeyOf(c), c.req.param("chapterId")) }),
-    );
-    app.delete("/downloads/entries/:bridgeId/:seriesId", async (c) =>
-      c.json({ files: await downloads.deleteSeries(dlKeyOf(c)) }),
-    );
-    app.delete("/downloads", async (c) => c.json({ files: await downloads.deleteAll() }));
+    // Deletion. With an engine the HOST unlinks the blobs itself and returns `{ files: [] }` (shape
+    // kept for client back-compat); manifest-only mode returns the paths for the client to remove.
+    app.delete("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId", async (c) => {
+      if (dlEngine) {
+        await dlEngine.deleteChapter(dlKeyOf(c), c.req.param("chapterId"));
+        return c.json({ files: [] });
+      }
+      return c.json({ files: await downloads.deleteChapter(dlKeyOf(c), c.req.param("chapterId")) });
+    });
+    app.delete("/downloads/entries/:bridgeId/:seriesId", async (c) => {
+      if (dlEngine) {
+        await dlEngine.deleteSeries(dlKeyOf(c));
+        return c.json({ files: [] });
+      }
+      return c.json({ files: await downloads.deleteSeries(dlKeyOf(c)) });
+    });
+    app.delete("/downloads", async (c) => {
+      if (dlEngine) {
+        await dlEngine.deleteAll();
+        return c.json({ files: [] });
+      }
+      return c.json({ files: await downloads.deleteAll() });
+    });
+
+    // ── Engine-only routes: served bytes + live progress ─────────────────────────
+
+    // The downloaded bytes for one page, straight from the host's blob store. Identity-keyed
+    // (bridge/series/chapter/index — never the expiring source URL) and immutable once complete, so
+    // clients can cache aggressively.
+    const blobs = dlEngine?.blobs;
+    if (dlEngine && blobs?.read) {
+      app.get("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages/:index/file", async (c) => {
+        const file = await downloads.localFileFor(
+          c.req.param("bridgeId"),
+          c.req.param("seriesId"),
+          c.req.param("chapterId"),
+          Number(c.req.param("index")),
+        );
+        if (!file) return c.json({ error: "page not downloaded" }, 404);
+        const data = await blobs.read!(file);
+        if (!data) return c.json({ error: "blob missing" }, 404);
+        return new Response(data, {
+          headers: {
+            "Content-Type": contentTypeFor(file),
+            "Cache-Control": "public, max-age=31536000, immutable",
+          },
+        });
+      });
+    }
+
+    // Live progress stream (SSE): every engine event, JSON-encoded, with a keepalive ping. No replay —
+    // a (re)connecting client refetches state via the GET routes; the stream only carries deltas.
+    // NEVER requested through the embedded in-process transport (it buffers whole responses); embedded
+    // clients subscribe to the engine object directly.
+    if (dlEngine) {
+      app.get("/downloads/events", (c) =>
+        streamSSE(c, async (stream) => {
+          const unsub = dlEngine.subscribe((e) => {
+            void stream.writeSSE({ event: e.type, data: JSON.stringify(e) });
+          });
+          stream.onAbort(() => unsub());
+          while (!stream.aborted) {
+            await stream.sleep(15_000);
+            if (stream.aborted) break;
+            await stream.writeSSE({ event: "ping", data: "" });
+          }
+        }),
+      );
+    }
   }
 
   // ── Tracker endpoints ─────────────────────────────────────────────────────────
