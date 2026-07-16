@@ -11,7 +11,7 @@
 export { installWebCryptoShim } from "./crypto-shim.ts";
 export { configureEmbeddedRuntime, applyEmbeddedMode } from "./bootstrap.ts";
 export type { EmbeddedBootstrapConfig } from "./bootstrap.ts";
-export { installEmbeddedTransport, uninstallEmbeddedTransport } from "./install.ts";
+export { getEmbeddedDownloadEngine, installEmbeddedTransport, uninstallEmbeddedTransport } from "./install.ts";
 export type { EmbeddedRuntimeConfig } from "./install.ts";
 export { getNativeBridgeRuntime, setNativeBridgeRuntime, isEmbeddedRuntimeAvailable } from "./native-runtime.ts";
 export { EmbeddedBridgeProvider, missingRequiredFor } from "./provider.ts";
@@ -35,18 +35,25 @@ export {
   type RegistryFetcher,
 } from "./registry-bundle-source.ts";
 export type {
+  BlobStore,
   BridgeProvider,
   BridgeSource,
   BridgeSummary,
   BundleSource,
   CreateRouter,
+  DownloadEngine,
+  DownloadEngineEvent,
+  EmbeddedDownloadsEngineConfig,
   EmbeddedRouter,
   EmbeddedTransport,
+  FetchedPage,
   InitResult,
   InstalledBridge,
   InstalledBridgeRecord,
   InstalledStore,
   NativeBridgeRuntime,
+  PageFetcher,
+  PendingPage,
   RegistryProvider,
   SavedRegistryStore,
   SettingsStore,

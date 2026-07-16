@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { createRouter } from "@comical/host-server/router";
-import { Downloads, InMemoryDownloadsStore } from "@comical/downloads";
+import { DownloadEngine, Downloads, InMemoryDownloadsStore, type BlobStore } from "@comical/downloads";
 import { createEmbeddedTransport } from "../src/transport.ts";
 import type { BridgeProvider, CreateRouter } from "../src/types.ts";
 
@@ -64,5 +64,44 @@ describe("embedded transport — on-device downloads", () => {
   test("leaves /downloads* unmounted (404) when no Downloads service is supplied", async () => {
     const t = createEmbeddedTransport(stubProvider, makeCreate());
     expect((await t("/downloads")).status).toBe(404);
+  });
+
+  test("with a DownloadEngine, the router goes host-managed: enqueue drains in-process to the injected blob store", async () => {
+    const downloads = new Downloads(new InMemoryDownloadsStore());
+    const blobs = new Map<string, Uint8Array>();
+    const blobStore: BlobStore = {
+      write: async (relPath, data) => {
+        blobs.set(relPath, data);
+        return { bytes: data.byteLength };
+      },
+      remove: async (relPaths) => {
+        for (const p of relPaths) blobs.delete(p);
+      },
+    };
+    const engine = new DownloadEngine({
+      downloads,
+      blobs: blobStore,
+      fetchPage: async () => ({ data: new Uint8Array(7), contentType: "image/png" }),
+    });
+    const t = createEmbeddedTransport(stubProvider, makeCreate(), undefined, undefined, downloads, engine);
+
+    // Enqueue with an explicit page list (the stub provider has no bridges to resolve pages from);
+    // the ENGINE fetches the bytes — no recordPage round-trip from the client.
+    const enq = await t("/downloads/entries/b1/s1/chapters/c1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Engine Series", pages: [{ index: 0, sourceUrl: "/img/0" }] }),
+    });
+    expect(enq.status).toBe(201);
+    await engine.drain(); // join the enqueue-kicked drain
+
+    expect(blobs.get("b1/s1/c1/0.png")?.byteLength).toBe(7);
+    const usage = (await (await t("/downloads")).json()) as { totalBytes: number };
+    expect(usage.totalBytes).toBe(7);
+
+    // Deletion unlinks host-side and reports no client work.
+    const del = (await (await t("/downloads/entries/b1/s1/chapters/c1", { method: "DELETE" })).json()) as { files: string[] };
+    expect(del.files).toEqual([]);
+    expect(blobs.size).toBe(0);
   });
 });

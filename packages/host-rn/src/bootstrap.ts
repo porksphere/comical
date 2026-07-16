@@ -17,6 +17,7 @@ import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
 import type {
   CreateRouter,
   DownloadsStore,
+  EmbeddedDownloadsEngineConfig,
   EmbeddedTransport,
   InstalledStore,
   LibraryStore,
@@ -43,6 +44,10 @@ export interface EmbeddedBootstrapConfig {
   /** Optional on-device downloads persistence (AsyncStorage-backed in an app). Supplying it mounts the
    *  `/downloads*` endpoints on the embedded router; omitting it leaves them unmounted (they 404). */
   downloadsStore?: DownloadsStore;
+  /** Optional device seams (blob store, page fetcher, policy gate) for the embedded download engine.
+   *  Supplying it alongside `downloadsStore` runs the engine in-process behind the router — see
+   *  `getEmbeddedDownloadEngine`. */
+  downloadsEngine?: EmbeddedDownloadsEngineConfig;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
   requireSignature?: boolean;
   /** Persistent bundle cache (defaults to in-memory; an expo-file-system adapter is a follow-up). */
@@ -77,6 +82,7 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     setTransport: config.setTransport,
     ...(config.libraryStore ? { libraryStore: config.libraryStore } : {}),
     ...(config.downloadsStore ? { downloadsStore: config.downloadsStore } : {}),
+    ...(config.downloadsEngine ? { downloadsEngine: config.downloadsEngine } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),

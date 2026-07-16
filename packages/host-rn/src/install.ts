@@ -10,7 +10,7 @@
  * a no-op when the native engine is unavailable (web, or before the native module ships), so calling
  * it unconditionally at startup is safe — the app simply stays remote.
  */
-import { Downloads } from "@comical/downloads";
+import { DownloadEngine, Downloads } from "@comical/downloads";
 import { Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
 import { getNativeBridgeRuntime } from "./native-runtime.ts";
@@ -22,6 +22,7 @@ import { createEmbeddedTransport, type EmbeddedLibrary } from "./transport.ts";
 import type {
   CreateRouter,
   DownloadsStore,
+  EmbeddedDownloadsEngineConfig,
   EmbeddedTransport,
   InstalledStore,
   LibraryStore,
@@ -46,9 +47,13 @@ export interface EmbeddedRuntimeConfig {
   libraryStore?: LibraryStore;
   /** Optional on-device downloads persistence (AsyncStorage-backed in an app). When supplied, the
    *  reused router also mounts the `/downloads*` endpoints so the app's offline-download manifest works
-   *  on-device — omit it and those endpoints simply 404. The image bytes themselves are stored by the
-   *  app (a filesystem blob store); this store persists only the manifest. */
+   *  on-device — omit it and those endpoints simply 404. This store persists only the manifest. */
   downloadsStore?: DownloadsStore;
+  /** Optional device seams for the embedded download engine (blob store, page fetcher, policy gate).
+   *  When supplied alongside `downloadsStore`, the engine runs in-process behind the router — the
+   *  router's downloads routes go host-managed (pages-less enqueue, engine-delegated pause/resume,
+   *  host-side blob deletion) and the app observes progress via `getEmbeddedDownloadEngine()`. */
+  downloadsEngine?: EmbeddedDownloadsEngineConfig;
   /** The embedder's transport setter — passed the embedded transport (or `null` to restore remote). */
   setTransport: (transport: EmbeddedTransport | null) => void;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
@@ -63,6 +68,16 @@ export interface EmbeddedRuntimeConfig {
 
 let provider: EmbeddedBridgeProvider | null = null;
 let activeSetTransport: ((transport: EmbeddedTransport | null) => void) | null = null;
+let activeEngine: DownloadEngine | null = null;
+
+/**
+ * The in-process download engine while the embedded transport is active, else `null`. The app
+ * subscribes to it for live progress (embedded mode never streams `/downloads/events` — the
+ * buffering in-process transport can't) and drives boot-resume/backgrounding via `kick()`/`stop()`.
+ */
+export function getEmbeddedDownloadEngine(): DownloadEngine | null {
+  return activeEngine;
+}
 
 /**
  * Install the embedded transport via the supplied `setTransport`.
@@ -111,13 +126,20 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
   }
 
   // Same for downloads: when an on-device store is supplied, build the Downloads service so the reused
-  // router mounts `/downloads*` in-process. The app's blob store handles the actual page bytes.
+  // router mounts `/downloads*` in-process. With engine seams too, build the DownloadEngine over the
+  // app's blob store / page fetcher, so the router's downloads routes go host-managed exactly like the
+  // standalone server's — one behavior on every host.
   const embeddedDownloads = config.downloadsStore ? new Downloads(config.downloadsStore) : undefined;
+  const embeddedEngine =
+    embeddedDownloads && config.downloadsEngine
+      ? new DownloadEngine({ downloads: embeddedDownloads, ...config.downloadsEngine })
+      : undefined;
 
   provider = bridgeProvider;
   activeSetTransport = config.setTransport;
+  activeEngine = embeddedEngine ?? null;
   config.setTransport(
-    createEmbeddedTransport(bridgeProvider, config.createRouter, registry, embeddedLibrary, embeddedDownloads),
+    createEmbeddedTransport(bridgeProvider, config.createRouter, registry, embeddedLibrary, embeddedDownloads, embeddedEngine),
   );
   return true;
 }
@@ -126,5 +148,7 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
 export function uninstallEmbeddedTransport(): void {
   provider?.refresh();
   provider = null;
+  activeEngine?.stop();
+  activeEngine = null;
   activeSetTransport?.(null);
 }
