@@ -127,6 +127,12 @@ export interface StorageUsage {
   chapterCount: number;
   pageCount: number;
   bySeries: StorageUsageSeries[];
+  /**
+   * The ACTUAL bytes under the serving host's blob root, when that host owns the bytes and its
+   * `BlobStore` reports usage. Attached by the router (not computed here — the manifest service has
+   * no blob access); a gap versus `totalBytes` surfaces orphaned blobs.
+   */
+  diskBytes?: number;
 }
 
 /** One series node in the {@link StorageUsage} tree, with its chapters. */

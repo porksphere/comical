@@ -13,4 +13,7 @@ export interface BlobStore {
   removeAll?(): Promise<void>;
   /** Optional: read a blob back — implemented by hosts that serve downloaded bytes (host-server). */
   read?(relPath: string): Promise<Uint8Array | undefined>;
+  /** Optional: the ACTUAL bytes under the blob root. Reported beside the manifest's rolled-up total
+   *  (`StorageUsage.diskBytes`) so a gap surfaces orphaned blobs on any host. */
+  usage?(): Promise<number>;
 }

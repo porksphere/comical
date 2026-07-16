@@ -869,8 +869,14 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     const dlKeyOf = (c: { req: { param: (k: string) => string } }) =>
       entryKey(c.req.param("bridgeId"), c.req.param("seriesId"));
 
-    // Storage-usage tree (total bytes + series → chapters breakdown) for the Downloads screen.
-    app.get("/downloads", async (c) => c.json(await downloads.getStorageUsage()));
+    // Storage-usage tree (total bytes + series → chapters breakdown) for the Downloads screen. When
+    // this host owns the bytes, the blob root's ACTUAL size rides along so clients can show true
+    // host-side usage (and a gap versus the manifest total surfaces orphaned blobs).
+    app.get("/downloads", async (c) => {
+      const usage = await downloads.getStorageUsage();
+      const diskBytes = await dlEngine?.blobs.usage?.().catch(() => undefined);
+      return c.json(diskBytes !== undefined ? { ...usage, diskBytes } : usage);
+    });
 
     // Chapters still needing bytes (the work queue a client drains).
     app.get("/downloads/pending", async (c) => c.json(await downloads.pendingChapters()));

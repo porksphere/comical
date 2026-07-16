@@ -109,6 +109,10 @@ describe("server-managed download lifecycle", () => {
     // Blobs landed under the server's blob root.
     expect(existsSync(join(BLOBS_DIR, "example", "local", "c1"))).toBe(true);
 
+    // The storage tree carries the blob root's actual size when the host owns the bytes.
+    const withDisk = (await (await get("/downloads")).json()) as { totalBytes: number; diskBytes?: number };
+    expect(withDisk.diskBytes).toBe(withDisk.totalBytes);
+
     // The /file route serves the downloaded bytes with the stored content type.
     const file = await get("/downloads/entries/example/local/chapters/c1/pages/0/file");
     expect(file.status).toBe(200);

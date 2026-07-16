@@ -236,6 +236,42 @@ describe("drain", () => {
     expect((await downloads.getChapter(KEY, CH.chapterId))?.state).toBe("complete");
   });
 
+  test("a resume landing while the loop is exiting still drains (rekick)", async () => {
+    // The race: pausing an IN-PROGRESS chapter means a drain loop is running; hitting Resume right
+    // after makes its kick() join that dying loop. If the resume's `queued` write lands after the
+    // loop's final (empty) pendingChapters read, the chapter must not be dropped — the rekick flag
+    // runs one more pass. Reproduced deterministically by triggering the resume from INSIDE the
+    // pendingChapters read itself, after the empty result is computed.
+    class HookedDownloads extends Downloads {
+      afterPending: (() => Promise<void>) | null = null;
+      override async pendingChapters() {
+        const out = await super.pendingChapters();
+        const hook = this.afterPending;
+        if (hook) {
+          this.afterPending = null;
+          await hook();
+        }
+        return out;
+      }
+    }
+    const downloads = new HookedDownloads(new InMemoryDownloadsStore());
+    const blobs = new FakeBlobStore();
+    const { fetch } = scriptedFetcher({});
+    const engine = new DownloadEngine({ downloads, blobs, fetchPage: fetch });
+
+    await downloads.enqueueChapter(SNAP, CH, pages(2));
+    await engine.pauseChapter(KEY, CH.chapterId);
+
+    // The loop's very first pending read comes back empty (the chapter is paused); the resume lands
+    // immediately after that read — exactly the lost-work window.
+    downloads.afterPending = async () => {
+      await engine.resumeChapter(KEY, CH.chapterId);
+    };
+    await engine.drain();
+
+    expect((await downloads.getChapter(KEY, CH.chapterId))?.state).toBe("complete");
+  });
+
   test("drain is single-flight: re-entrant calls no-op while a loop runs", async () => {
     let inFlight = 0;
     let maxInFlight = 0;

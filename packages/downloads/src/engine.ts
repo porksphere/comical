@@ -93,6 +93,8 @@ export class DownloadEngine {
   private readonly listeners = new Set<(e: DownloadEngineEvent) => void>();
   private drainPromise: Promise<void> | null = null;
   private stopRequested = false;
+  /** Set when a kick arrives while a loop is running — the loop runs one more pass after settling. */
+  private rekick = false;
 
   // Cancellation markers — the manifest is the source of truth (a paused chapter is excluded from
   // the pending queue), but a chapter the engine is downloading RIGHT NOW is mid-loop, so these let
@@ -229,15 +231,33 @@ export class DownloadEngine {
   /**
    * Single-flight queue worker. Drains every pending chapter; returns when the queue is empty, the
    * `mayDownload` gate blocks it, or a stop was requested. A re-entrant call joins the running
-   * loop's promise instead of starting a second one (the running loop picks up newly enqueued work
-   * because it re-reads the manifest each pass), so `await drain()` always means "the queue settled".
+   * loop's promise instead of starting a second one — but it also flags `rekick`, so the loop runs
+   * ONE MORE full pass after it settles. Without that, work re-activated while a loop is winding
+   * down gets lost: resuming a just-paused chapter races the dying loop's final (empty) pending
+   * read — the resume's kick would join a loop that has already decided to exit, and the chapter
+   * sits queued until some unrelated trigger. So `await drain()` always means "the queue settled,
+   * including anything re-activated while it ran".
    */
   drain(): Promise<void> {
-    if (this.drainPromise) return this.drainPromise;
+    if (this.drainPromise) {
+      this.rekick = true;
+      return this.drainPromise;
+    }
     this.stopRequested = false;
-    this.drainPromise = this.drainLoop().finally(() => {
+    this.drainPromise = (async () => {
+      do {
+        this.rekick = false;
+        await this.drainLoop();
+      } while (this.rekick && !this.stopRequested);
+    })().finally(() => {
       this.drainPromise = null;
       this.emit({ type: "idle" });
+      // A kick can land in the microtask gap between the final rekick check and this cleanup —
+      // start a fresh loop for it rather than dropping it.
+      if (this.rekick && !this.stopRequested) {
+        this.rekick = false;
+        this.kick();
+      }
     });
     return this.drainPromise;
   }

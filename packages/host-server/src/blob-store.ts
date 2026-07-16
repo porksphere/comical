@@ -8,7 +8,7 @@
  * already sanitized, but manifest `file` fields are client-writable via the manifest-only
  * `recordPage` route, so the store must not trust them.
  */
-import { mkdir, readFile, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BlobStore } from "@comical/downloads";
 
@@ -58,5 +58,25 @@ export class FileBlobStore implements BlobStore {
 
   async removeAll(): Promise<void> {
     await rm(this.root, { recursive: true, force: true });
+  }
+
+  /** The actual bytes under the blob root (0 when it doesn't exist yet). */
+  async usage(): Promise<number> {
+    let total = 0;
+    const walk = async (dir: string): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return; // root missing / transient — report what we could see
+      }
+      for (const entry of entries) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) await walk(path);
+        else total += (await stat(path).catch(() => null))?.size ?? 0;
+      }
+    };
+    await walk(this.root);
+    return total;
   }
 }
