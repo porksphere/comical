@@ -119,6 +119,7 @@ export class Downloads {
       seriesId: snap.seriesId,
       chapterId: meta.chapterId,
       pageCount: pages.length,
+      completedPages: existingChapter?.completedPages ?? 0,
       bytes: existingChapter?.bytes ?? 0,
       state: "queued",
       addedAt: existingChapter?.addedAt ?? t,
@@ -175,16 +176,56 @@ export class Downloads {
     return missing.sort((a, b) => a.index - b.index);
   }
 
-  /** Chapters that still need work (`queued`/`downloading`/`failed`), across all series — the work queue. */
+  /**
+   * Chapters that still need work (`queued`/`downloading`/`failed`), across all series — the work
+   * queue. `paused` chapters are excluded: a cancelled download stays cancelled until resumed (which
+   * flips it back to `queued`), so it must not auto-drain here or on the next launch's resume.
+   */
   async pendingChapters(): Promise<DownloadedChapter[]> {
     const out: DownloadedChapter[] = [];
     for (const series of await this.store.listSeries()) {
       const key = entryKey(series.bridgeId, series.seriesId);
       for (const c of await this.store.listChapters(key)) {
-        if (c.state !== "complete") out.push(c);
+        if (c.state !== "complete" && c.state !== "paused") out.push(c);
       }
     }
     return out.sort((a, b) => a.addedAt - b.addedAt);
+  }
+
+  // ── Pause / resume (cancel a download, keep the bytes already fetched) ──────────
+
+  /** Pause an in-flight/queued/failed chapter so it stops draining; downloaded pages are kept. */
+  async pauseChapter(key: string, chapterId: string): Promise<DownloadedChapter> {
+    const chapter = await this.requireChapter(key, chapterId);
+    if (chapter.state === "complete" || chapter.state === "paused") return chapter;
+    const next: DownloadedChapter = { ...chapter, state: "paused" };
+    await this.store.putChapter(next);
+    return next;
+  }
+
+  /** Resume a paused chapter — back to `queued` so the engine drains its remaining pages. */
+  async resumeChapter(key: string, chapterId: string): Promise<DownloadedChapter> {
+    const chapter = await this.requireChapter(key, chapterId);
+    if (chapter.state !== "paused") return chapter;
+    const next: DownloadedChapter = { ...chapter, state: "queued" };
+    await this.store.putChapter(next);
+    return next;
+  }
+
+  /** Pause every not-yet-complete chapter of a series (cancel the whole series' in-flight work). */
+  async pauseSeries(key: string): Promise<void> {
+    for (const c of await this.store.listChapters(key)) {
+      if (c.state !== "complete" && c.state !== "paused") {
+        await this.store.putChapter({ ...c, state: "paused" });
+      }
+    }
+  }
+
+  /** Resume every paused chapter of a series. */
+  async resumeSeries(key: string): Promise<void> {
+    for (const c of await this.store.listChapters(key)) {
+      if (c.state === "paused") await this.store.putChapter({ ...c, state: "queued" });
+    }
   }
 
   // ── Read / offline lookup ─────────────────────────────────────────────────────
@@ -302,13 +343,17 @@ export class Downloads {
     return chapter;
   }
 
-  /** Recompute a chapter's rolled-up bytes + state from its pages, then roll the series up. */
+  /** Recompute a chapter's rolled-up bytes/progress + state from its pages, then roll the series up. */
   private async recomputeChapter(key: string, chapterId: string): Promise<DownloadedChapter> {
     const chapter = await this.requireChapter(key, chapterId);
     const pages = await this.store.listPages(key, chapterId);
     const bytes = pages.reduce((sum, p) => sum + p.bytes, 0);
-    const state = deriveChapterState(pages);
-    const next: DownloadedChapter = { ...chapter, bytes, state };
+    const completedPages = pages.filter((p) => p.state === "complete").length;
+    const derived = deriveChapterState(pages);
+    // `paused` is a chapter-level flag the user set; it survives a recompute until explicitly resumed
+    // (or until every page is complete, at which point the chapter is genuinely done).
+    const state = chapter.state === "paused" && derived !== "complete" ? "paused" : derived;
+    const next: DownloadedChapter = { ...chapter, bytes, completedPages, state };
     if (state === "complete") {
       next.completedAt = chapter.completedAt ?? this.now();
     } else {

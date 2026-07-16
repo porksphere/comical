@@ -34,6 +34,12 @@ async function completeChapter(dl: Downloads, n: number, bytesPerPage: number) {
   }
 }
 
+/** Enqueue + fully complete an `n`-page chapter under an arbitrary `chapterId` of the same series. */
+async function completeChapterId(dl: Downloads, chapterId: string, n: number) {
+  await dl.enqueueChapter(SNAP, { chapterId }, pages(n));
+  for (let i = 0; i < n; i++) await dl.recordPage(KEY, chapterId, i, `demo/s1/${chapterId}/${i}.jpg`, 10);
+}
+
 describe("enqueue + progress", () => {
   test("enqueue creates a queued chapter with queued pages", async () => {
     const dl = makeDownloads();
@@ -90,6 +96,65 @@ describe("enqueue + progress", () => {
     // Nothing was lost — still complete with the same bytes.
     expect(chapter.state).toBe("complete");
     expect(chapter.bytes).toBe(200);
+  });
+});
+
+describe("progress (completedPages)", () => {
+  test("completedPages tracks recorded pages and clears on delete", async () => {
+    const dl = makeDownloads();
+    let chapter = await dl.enqueueChapter(SNAP, CH, pages(4));
+    expect(chapter.completedPages).toBe(0);
+    chapter = await dl.recordPage(KEY, CH.chapterId, 0, "f0", 10);
+    expect(chapter.completedPages).toBe(1);
+    chapter = await dl.recordPage(KEY, CH.chapterId, 1, "f1", 10);
+    expect(chapter.completedPages).toBe(2);
+    expect(chapter.state).toBe("downloading");
+  });
+});
+
+describe("pause / resume", () => {
+  test("pauseChapter stops it draining; resume re-queues; excluded from pendingChapters while paused", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, pages(3));
+    await dl.recordPage(KEY, CH.chapterId, 0, "f0", 10); // partial
+
+    const paused = await dl.pauseChapter(KEY, CH.chapterId);
+    expect(paused.state).toBe("paused");
+    expect(paused.completedPages).toBe(1); // keeps downloaded pages
+    expect((await dl.pendingChapters()).map((c) => c.chapterId)).toEqual([]); // not drained
+
+    const resumed = await dl.resumeChapter(KEY, CH.chapterId);
+    expect(resumed.state).toBe("queued");
+    expect((await dl.pendingChapters()).map((c) => c.chapterId)).toEqual([CH.chapterId]);
+  });
+
+  test("recording a page on a paused chapter keeps it paused (survives recompute)", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, pages(2));
+    await dl.pauseChapter(KEY, CH.chapterId);
+    const after = await dl.recordPage(KEY, CH.chapterId, 0, "f0", 10);
+    expect(after.state).toBe("paused");
+    // …but once every page lands it's genuinely complete, not stuck paused.
+    const done = await dl.recordPage(KEY, CH.chapterId, 1, "f1", 10);
+    expect(done.state).toBe("complete");
+  });
+
+  test("pauseSeries pauses all active chapters; resumeSeries re-queues them", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, pages(2)); // c1
+    await dl.enqueueChapter(SNAP, { chapterId: "c2" }, pages(2)); // c2
+    await completeChapterId(dl, "c3", 1); // c3 fully complete
+
+    await dl.pauseSeries(KEY);
+    const chapters = await dl.getStorageUsage().then((u) => u.bySeries[0]?.chapters ?? []);
+    const byId = Object.fromEntries(chapters.map((c) => [c.chapterId, c.state]));
+    expect(byId.c1).toBe("paused");
+    expect(byId.c2).toBe("paused");
+    expect(byId.c3).toBe("complete"); // complete chapters are untouched
+    expect(await dl.pendingChapters()).toEqual([]);
+
+    await dl.resumeSeries(KEY);
+    expect((await dl.pendingChapters()).map((c) => c.chapterId).sort()).toEqual(["c1", "c2"]);
   });
 });
 

@@ -34,8 +34,10 @@ export function parseEntryKey(key: string): { bridgeId: string; seriesId: string
  * - `downloading` — some but not all pages complete.
  * - `complete` — every page has bytes on disk.
  * - `failed` — a page (or the whole chapter) errored; a retry re-fetches only what's missing.
+ * - `paused` — the user cancelled an in-flight/queued download; it won't auto-drain until resumed (a
+ *   chapter-level state only — pages keep their own states so a resume re-fetches only what's missing).
  */
-export const downloadStateSchema = z.enum(["queued", "downloading", "complete", "failed"]);
+export const downloadStateSchema = z.enum(["queued", "downloading", "complete", "failed", "paused"]);
 export type DownloadState = z.infer<typeof downloadStateSchema>;
 
 /**
@@ -77,6 +79,8 @@ export const downloadedChapterSchema = z.object({
   /** Language of the chapter (mirrors `Chapter.languageCode`), when known. */
   languageCode: z.string().optional(),
   pageCount: z.number().int().nonnegative(),
+  /** Pages with bytes on disk so far — the numerator for a progress radial (denominator `pageCount`). */
+  completedPages: z.number().int().nonnegative().default(0),
   /** Rolled-up total bytes across this chapter's pages. */
   bytes: z.number().int().nonnegative().default(0),
   state: downloadStateSchema,
