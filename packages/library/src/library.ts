@@ -153,6 +153,11 @@ export class Library {
     await this.store.deleteCachedChapters(key);
   }
 
+  /** The bytes the library's persisted documents occupy, when the store can measure them. */
+  async diskUsage(): Promise<number | undefined> {
+    return this.store.diskUsage?.();
+  }
+
   // ── Offline metadata cache ─────────────────────────────────────────────────────
   // The series page's offline data: the full SeriesInfo and the full renderable chapter list,
   // captured from fetches the system makes anyway (add-to-library, browsing, background sync) and

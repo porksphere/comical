@@ -188,6 +188,10 @@ describe("offline metadata fallback", () => {
 
     // A series NOT in the library keeps the plain error.
     expect((await get("/bridges/example/series/bob")).ok).toBe(false);
+
+    // The library reports its host-side footprint: store docs + captured cover blobs.
+    const usage = (await (await get("/library/usage")).json()) as { diskBytes: number };
+    expect(usage.diskBytes).toBeGreaterThan(0);
   });
 
   test("a library entry survives its bridge being uninstalled entirely", async () => {

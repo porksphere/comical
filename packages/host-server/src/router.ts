@@ -765,6 +765,15 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       }),
     );
 
+    // The bytes the library occupies on this host — store documents plus captured cover blobs.
+    // Powers the client Storage screen's library figure, host-aware through the transport (device
+    // AsyncStorage docs when embedded, the server's library dir when remote).
+    app.get("/library/usage", async (c) => {
+      const docs = (await lib.diskUsage().catch(() => undefined)) ?? 0;
+      const coverBytes = (await covers?.blobs.usage?.().catch(() => undefined)) ?? 0;
+      return c.json({ diskBytes: docs + coverBytes });
+    });
+
     // Entries
     app.post("/library/entries", async (c) => {
       const b = await body<{

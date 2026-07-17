@@ -15,6 +15,11 @@ export interface LibraryStore {
   putEntry(entry: LibraryEntry): Promise<void>;
   deleteEntry(key: string): Promise<void>;
 
+  /** Optional: the ACTUAL bytes this store's documents occupy (files on disk, AsyncStorage blobs…).
+   *  Powers the Storage screen's library figure; excludes cover blobs (the host's covers `BlobStore`
+   *  reports those itself). */
+  diskUsage?(): Promise<number>;
+
   // ── Offline metadata cache (beside the entry) ──────────────────────────────
   getSeriesDetail(key: string): Promise<CachedSeriesDetail | undefined>;
   putSeriesDetail(key: string, detail: CachedSeriesDetail): Promise<void>;

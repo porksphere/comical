@@ -8,7 +8,7 @@
  *
  * Single-user, local scale: small files, full read/parse on first touch, then cached.
  */
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
@@ -103,6 +103,30 @@ export class FileLibraryStore implements LibraryStore {
   }
   async deleteEntry(key: string): Promise<void> {
     if ((await this.entries()).delete(key)) await this.flushEntries();
+  }
+
+  // ── Disk usage ───────────────────────────────────────────────────────────────
+
+  /** Actual bytes under the library dir, EXCLUDING the covers subdir — the covers `BlobStore` is
+   *  rooted inside it (`{dir}/covers`) and reports its own usage; counting it here would double. */
+  async diskUsage(): Promise<number> {
+    let total = 0;
+    const walk = async (dir: string, skipCovers: boolean): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return; // dir missing / transient — report what we could see
+      }
+      for (const entry of entries) {
+        if (skipCovers && entry.isDirectory() && entry.name === "covers") continue;
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) await walk(path, false);
+        else total += (await stat(path).catch(() => null))?.size ?? 0;
+      }
+    };
+    await walk(this.dir, true);
+    return total;
   }
 
   // ── Offline metadata cache ──────────────────────────────────────────────────
