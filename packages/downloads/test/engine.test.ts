@@ -436,3 +436,111 @@ describe("series pause/resume", () => {
     expect((await downloads.getChapter(KEY, "c2"))?.state).toBe("complete");
   });
 });
+
+describe("lazy page resolution (enqueue without pages)", () => {
+  /** A scripted PageResolver: per-chapter page lists, per-chapter failure counts. */
+  function scriptedResolver(opts: {
+    pagesFor?: (chapterId: string) => DownloadPageInput[];
+    /** How many times resolution for `chapterId` should fail before succeeding (Infinity = always). */
+    failuresFor?: (chapterId: string) => number;
+  }) {
+    const failures = new Map<string, number>();
+    const calls: string[] = [];
+    const resolve = async (ctx: { bridgeId: string; seriesId: string; chapterId: string }) => {
+      calls.push(ctx.chapterId);
+      const remaining = failures.get(ctx.chapterId) ?? opts.failuresFor?.(ctx.chapterId) ?? 0;
+      if (remaining > 0) {
+        failures.set(ctx.chapterId, remaining - 1);
+        throw new Error(`scripted resolution failure: ${ctx.chapterId}`);
+      }
+      return opts.pagesFor?.(ctx.chapterId) ?? pages(2);
+    };
+    return { resolve, calls };
+  }
+
+  test("a lazy enqueue is a pure manifest write; the drain resolves pages and completes", async () => {
+    const { fetch, calls: fetchCalls } = scriptedFetcher({});
+    const { resolve, calls: resolveCalls } = scriptedResolver({ pagesFor: () => pages(3) });
+    const { engine, downloads } = makeEngine(fetch, { resolvePages: resolve });
+
+    const enqueued = await engine.enqueue(SNAP, CH);
+    // Recorded instantly with pages unresolved — nothing fetched or resolved yet at enqueue time.
+    expect(enqueued.state).toBe("queued");
+    expect(enqueued.pageCount).toBe(0);
+    expect(enqueued.pagesResolved).toBe(false);
+
+    await engine.drain();
+    expect(resolveCalls).toEqual(["c1"]);
+    expect(fetchCalls.length).toBe(3);
+    const done = await downloads.getChapter(KEY, "c1");
+    expect(done?.state).toBe("complete");
+    expect(done?.pageCount).toBe(3);
+    expect(done?.pagesResolved).toBeUndefined();
+  });
+
+  test("one chapter's resolution failing marks IT failed; its siblings still complete", async () => {
+    const { fetch } = scriptedFetcher({});
+    const { resolve } = scriptedResolver({
+      pagesFor: () => pages(2),
+      failuresFor: (chapterId) => (chapterId === "bad" ? Infinity : 0),
+    });
+    const { engine, downloads, events } = makeEngine(fetch, { resolvePages: resolve });
+
+    await engine.enqueue(SNAP, { chapterId: "bad" });
+    await engine.enqueue(SNAP, { chapterId: "good" });
+    await engine.drain();
+
+    // The bad chapter surfaces as failed (a visible, retryable row) — and only the bad one.
+    expect((await downloads.getChapter(KEY, "bad"))?.state).toBe("failed");
+    expect((await downloads.getChapter(KEY, "good"))?.state).toBe("complete");
+    expect(
+      events.some((e) => e.type === "chapter" && e.chapter.chapterId === "bad" && e.chapter.state === "failed"),
+    ).toBe(true);
+  });
+
+  test("retrying a resolution-failed chapter re-attempts resolution", async () => {
+    const { fetch } = scriptedFetcher({});
+    // Fails exactly once — the retry's second attempt succeeds.
+    const { resolve, calls } = scriptedResolver({ pagesFor: () => pages(2), failuresFor: () => 1 });
+    const { engine, downloads } = makeEngine(fetch, { resolvePages: resolve });
+
+    await engine.enqueue(SNAP, CH);
+    await engine.drain();
+    expect((await downloads.getChapter(KEY, "c1"))?.state).toBe("failed");
+
+    await engine.retryChapter(KEY, "c1");
+    await engine.drain();
+    expect(calls).toEqual(["c1", "c1"]);
+    const done = await downloads.getChapter(KEY, "c1");
+    expect(done?.state).toBe("complete");
+    expect(done?.pageCount).toBe(2);
+  });
+
+  test("a lazy enqueue with no resolver configured fails the chapter instead of spinning", async () => {
+    const { fetch, calls } = scriptedFetcher({});
+    const { engine, downloads } = makeEngine(fetch);
+
+    await engine.enqueue(SNAP, CH);
+    await engine.drain();
+    expect((await downloads.getChapter(KEY, "c1"))?.state).toBe("failed");
+    expect(calls.length).toBe(0);
+  });
+
+  test("a lazy re-enqueue of a partial chapter keeps its completed bytes", async () => {
+    const { fetch, calls } = scriptedFetcher({});
+    const { resolve } = scriptedResolver({ pagesFor: () => pages(3) });
+    const { engine, downloads } = makeEngine(fetch, { resolvePages: resolve });
+
+    // First round: eager enqueue with the full page list.
+    await engine.enqueue(SNAP, CH, pages(3));
+    await engine.drain();
+    expect((await downloads.getChapter(KEY, "c1"))?.state).toBe("complete");
+    const fetchesAfterFirst = calls.length;
+
+    // Lazy re-enqueue: resolution runs again, but the already-complete pages are not re-fetched.
+    await engine.enqueue(SNAP, CH);
+    await engine.drain();
+    expect((await downloads.getChapter(KEY, "c1"))?.state).toBe("complete");
+    expect(calls.length).toBe(fetchesAfterFirst);
+  });
+});

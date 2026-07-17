@@ -15,7 +15,7 @@ import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } f
 import { BridgeSettingsError } from "@comical/core/errors";
 import { validateSettingsInput } from "@comical/core/settings";
 import { entryKey, type Library } from "@comical/library";
-import { contentTypeFor, DIRECT_CHAPTER_ID, extFor, sanitizeSegment } from "@comical/downloads";
+import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
 import type { ComicalRuntime } from "@comical/runtime";
@@ -1011,9 +1011,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     });
 
     // Enqueue a chapter for download: body carries the series snapshot, chapter meta, and — in
-    // manifest-only mode — the page list. With an engine the pages are optional: the router resolves
-    // them via the bridge (the reserved direct id → `getSeriesPages`) BEFORE touching the store, so a
-    // bridge failure enqueues nothing, and the engine starts draining immediately.
+    // manifest-only mode — the page list. With an engine the pages are optional: the chapter is
+    // recorded `queued` with its pages UNRESOLVED (a pure store write, so the response is instant
+    // and the intent is durable), and the engine resolves the page list via its own bridge when the
+    // drain picks the chapter up. A resolution failure surfaces as a `failed` (retryable) chapter.
     app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId", async (c) => {
       const b = await body<{
         title?: string; thumbnailUrl?: string; author?: string;
@@ -1021,35 +1022,6 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         pages?: DownloadPageInput[];
       }>(c);
       if (!b?.title || (!b.pages && !dlEngine)) return c.json({ error: "title and pages are required" }, 400);
-      let pages = b.pages;
-      if (!pages) {
-        const bridgeId = c.req.param("bridgeId");
-        const seriesId = c.req.param("seriesId");
-        const chapterId = c.req.param("chapterId");
-        try {
-          const mgr = c.get("manager") as BridgeProvider;
-          const bridge = await mgr.get(bridgeId);
-          const missing = await mgr.missingRequired(bridgeId);
-          if (missing.length > 0) {
-            return c.json({ error: `bridge not configured: missing ${missing.join(", ")}` }, 400);
-          }
-          const resolved = chapterId === DIRECT_CHAPTER_ID
-            ? await (bridge.getSeriesPages
-                ? bridge.getSeriesPages(seriesId)
-                : Promise.reject(new Error("not supported: getSeriesPages")))
-            : await (bridge.getChapterPages
-                ? bridge.getChapterPages(seriesId, chapterId)
-                : Promise.reject(new Error("not supported: getChapterPages")));
-          pages = [...resolved]
-            .sort((a, b2) => a.index - b2.index)
-            .map((p) => ({ index: p.index, sourceUrl: p.imageUrl, ...(p.headers && { headers: p.headers }) }));
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          if (msg.includes("not found")) return c.json({ error: msg }, 404);
-          if (msg.includes("not supported")) return c.json({ error: msg }, 400);
-          return c.json({ error: `page resolution failed: ${msg}` }, 502);
-        }
-      }
       const snap: DownloadSeriesSnapshot = {
         bridgeId: c.req.param("bridgeId"),
         seriesId: c.req.param("seriesId"),
@@ -1065,8 +1037,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       };
       try {
         const chapter = dlEngine
-          ? await dlEngine.enqueue(snap, meta, pages)
-          : await downloads.enqueueChapter(snap, meta, pages);
+          ? await dlEngine.enqueue(snap, meta, b.pages)
+          : await downloads.enqueueChapter(snap, meta, b.pages);
         return c.json(chapter, 201);
       } catch (e) {
         // A delete can race a bulk collection's enqueues — answer with a clean conflict instead of
@@ -1075,6 +1047,46 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         return c.json({ error: msg }, msg.includes("not downloaded") ? 409 : 500);
       }
     });
+
+    // Bulk enqueue (engine only): land a whole series' worth of chapters in ONE request. Each
+    // chapter is a lazy manifest write (pages resolve at download time), so a 300-chapter queue
+    // lands atomically in well under a second — closing the client mid-collection can no longer
+    // strand the tail of a bulk download. Without an engine there is nobody to resolve pages, so
+    // the route isn't mounted (manifest-only clients must send pages per chapter).
+    if (dlEngine) {
+      app.post("/downloads/entries/:bridgeId/:seriesId/chapters", async (c) => {
+        const b = await body<{
+          title?: string; thumbnailUrl?: string; author?: string;
+          chapters?: { chapterId?: string; chapterName?: string; number?: number; languageCode?: string }[];
+        }>(c);
+        const chapters = b?.chapters?.filter((ch) => typeof ch?.chapterId === "string" && ch.chapterId.length > 0);
+        if (!b?.title || !chapters || chapters.length === 0) {
+          return c.json({ error: "title and a non-empty chapters array are required" }, 400);
+        }
+        const snap: DownloadSeriesSnapshot = {
+          bridgeId: c.req.param("bridgeId"),
+          seriesId: c.req.param("seriesId"),
+          title: b.title,
+          ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
+          ...(b.author !== undefined && { author: b.author }),
+        };
+        const enqueued = [];
+        for (const ch of chapters) {
+          const meta: DownloadChapterMeta = {
+            chapterId: ch.chapterId!,
+            ...(ch.chapterName !== undefined && { chapterName: ch.chapterName }),
+            ...(ch.number !== undefined && { number: ch.number }),
+            ...(ch.languageCode !== undefined && { languageCode: ch.languageCode }),
+          };
+          try {
+            enqueued.push(await dlEngine.enqueue(snap, meta));
+          } catch {
+            // A delete racing the bulk write — skip that chapter, keep landing the rest.
+          }
+        }
+        return c.json({ chapters: enqueued }, 201);
+      });
+    }
 
     // Record one page's downloaded bytes (client writes the blob, then reports its file + size).
     app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages/:index", async (c) => {
@@ -1196,8 +1208,13 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
             void stream.writeSSE({ event: e.type, data: JSON.stringify(e) });
           });
           stream.onAbort(() => unsub());
+          // Write a hello ping IMMEDIATELY: some servers (Bun) don't flush the response headers
+          // until the first body byte, so a silent stream leaves the client's fetch() hanging —
+          // and Bun.serve's default 10s idleTimeout then resets the connection. The same timeout
+          // is why the keepalive ping stays under 10s.
+          await stream.writeSSE({ event: "ping", data: "" });
           while (!stream.aborted) {
-            await stream.sleep(15_000);
+            await stream.sleep(8_000);
             if (stream.aborted) break;
             await stream.writeSSE({ event: "ping", data: "" });
           }

@@ -11,10 +11,27 @@
  * `getFetch` is late-bound because the router and the engine reference each other at composition
  * time (the router mounts the engine's routes; the engine resolves pages through the router).
  */
-import type { FetchedPage, PageFetcher } from "@comical/downloads";
+import { createRouterPageResolver, type FetchedPage, type PageFetcher, type PageResolver } from "@comical/downloads";
 
 /** Arbitrary in-process origin — the router matches on path only; nothing leaves the host. */
 const ENGINE_ORIGIN = "http://downloads.comical.local";
+
+/**
+ * The server host's `PageResolver`: resolves a lazily-enqueued chapter's page list by driving this
+ * server's own `/bridges/...` routes in-process (same late-bound fetch as the page fetcher), so the
+ * bridge lookup / direct-chapter mapping live in one place — the router.
+ */
+export function createServerPageResolver(
+  getFetch: () => (req: Request) => Response | Promise<Response>,
+  /** The server's bearer token, if auth is enabled — in-process requests must pass their own guard. */
+  token?: string,
+): PageResolver {
+  return createRouterPageResolver(async (path) =>
+    getFetch()(
+      new Request(`${ENGINE_ORIGIN}${path}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined),
+    ),
+  );
+}
 
 export function createServerPageFetcher(
   getFetch: () => (req: Request) => Response | Promise<Response>,

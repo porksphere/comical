@@ -38,6 +38,18 @@ export type PageFetcher = (
   page: PendingPage,
 ) => Promise<FetchedPage>;
 
+/**
+ * Resolve a lazily-enqueued chapter's page list (an enqueue without `pages` records only the intent;
+ * the engine calls this when it picks the chapter up). Throwing marks the chapter `failed` —
+ * retryable, and the retry re-attempts resolution. See `createRouterPageResolver` for the standard
+ * router-backed implementation.
+ */
+export type PageResolver = (ctx: {
+  bridgeId: string;
+  seriesId: string;
+  chapterId: string;
+}) => Promise<DownloadPageInput[]>;
+
 /** A progress/state event pushed to subscribers. */
 export type DownloadEngineEvent =
   /** One page landed — carries the chapter's rolled-up progress so UIs can patch caches in place. */
@@ -66,6 +78,11 @@ export interface DownloadEngineOptions {
   blobs: BlobStore;
   fetchPage: PageFetcher;
   /**
+   * Resolves page lists for lazily-enqueued chapters (enqueues without `pages`). Without it, such a
+   * chapter is marked `failed` at pickup — hosts that accept pages-less enqueues must supply this.
+   */
+  resolvePages?: PageResolver;
+  /**
    * Policy gate checked before each chapter: return false to hold the queue (device Wi-Fi-only /
    * metered-network rules). Defaults to always-allowed (servers don't gate).
    */
@@ -85,6 +102,7 @@ export class DownloadEngine {
   readonly downloads: Downloads;
   readonly blobs: BlobStore;
   private readonly fetchPage: PageFetcher;
+  private readonly resolvePages: PageResolver | undefined;
   private readonly mayDownload: () => Promise<boolean>;
   private readonly pageConcurrency: number;
   private readonly attemptsPerPage: number;
@@ -107,6 +125,7 @@ export class DownloadEngine {
     this.downloads = opts.downloads;
     this.blobs = opts.blobs;
     this.fetchPage = opts.fetchPage;
+    this.resolvePages = opts.resolvePages;
     this.mayDownload = opts.mayDownload ?? (async () => true);
     this.pageConcurrency = opts.pageConcurrency ?? 1;
     this.attemptsPerPage = opts.attemptsPerPage ?? 2;
@@ -133,11 +152,15 @@ export class DownloadEngine {
 
   // ── Queue mutations (each kicks the drain where it makes sense) ────────────────
 
-  /** Enqueue a chapter (idempotent — completed pages are kept) and start draining. */
+  /**
+   * Enqueue a chapter (idempotent — completed pages are kept) and start draining. Omitting `pages`
+   * is the LAZY path: a pure manifest write (instant, crash-safe for bulk enqueues); the engine
+   * resolves the page list via `resolvePages` when the drain picks the chapter up.
+   */
   async enqueue(
     snap: DownloadSeriesSnapshot,
     meta: DownloadChapterMeta,
-    pages: DownloadPageInput[],
+    pages?: DownloadPageInput[],
   ): Promise<DownloadedChapter> {
     const key = entryKey(snap.bridgeId, snap.seriesId);
     // Clear only THIS chapter's stale cancel flag — the series-level flag deliberately survives. A
@@ -326,6 +349,26 @@ export class DownloadEngine {
   private async downloadChapter(chapter: DownloadedChapter): Promise<boolean> {
     const { bridgeId, seriesId, chapterId } = chapter;
     const key = entryKey(bridgeId, seriesId);
+
+    // A lazily-enqueued chapter has no page rows yet — resolve them NOW (this must precede the
+    // outstanding-pages check below, which would otherwise read "already complete" from zero rows).
+    // Announce 'downloading' first so the pickup is visible while resolution runs; a failure marks
+    // the chapter `failed` (a visible, retryable row — the retry re-attempts resolution) and the
+    // drain moves on to the next chapter.
+    if (chapter.pagesResolved === false) {
+      this.emit({ type: "chapter", chapter: { ...chapter, state: "downloading" } });
+      try {
+        if (!this.resolvePages) throw new Error("no page resolver configured");
+        const inputs = await this.resolvePages({ bridgeId, seriesId, chapterId });
+        const resolved = await this.downloads.resolveChapterPages(key, chapterId, inputs);
+        this.emit({ type: "chapter", chapter: resolved });
+      } catch {
+        const failed = await this.downloads.failChapter(key, chapterId);
+        this.emit({ type: "chapter", chapter: failed });
+        return false;
+      }
+    }
+
     const manifest = await this.downloads.getManifestPages(key, chapterId);
     const outstanding = manifest.filter((p) => p.state !== "complete");
 

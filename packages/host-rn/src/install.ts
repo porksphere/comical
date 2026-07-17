@@ -10,7 +10,7 @@
  * a no-op when the native engine is unavailable (web, or before the native module ships), so calling
  * it unconditionally at startup is safe — the app simply stays remote.
  */
-import { DownloadEngine, Downloads } from "@comical/downloads";
+import { createRouterPageResolver, DownloadEngine, Downloads } from "@comical/downloads";
 import { Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
 import { getNativeBridgeRuntime } from "./native-runtime.ts";
@@ -135,25 +135,33 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
   // app's blob store / page fetcher, so the router's downloads routes go host-managed exactly like the
   // standalone server's — one behavior on every host.
   const embeddedDownloads = config.downloadsStore ? new Downloads(config.downloadsStore) : undefined;
+  // Lazily-enqueued chapters resolve their page lists through the reused router in-process. The
+  // transport can't exist until the engine is threaded into it (the router mounts the engine's
+  // routes), so the resolver's fetch is late-bound — resolution only ever runs from a drain, well
+  // after installation completes.
+  let transport: EmbeddedTransport | null = null;
   const embeddedEngine =
     embeddedDownloads && config.downloadsEngine
-      ? new DownloadEngine({ downloads: embeddedDownloads, ...config.downloadsEngine })
+      ? new DownloadEngine({
+          downloads: embeddedDownloads,
+          resolvePages: createRouterPageResolver(async (path) => transport!(path)),
+          ...config.downloadsEngine,
+        })
       : undefined;
 
   provider = bridgeProvider;
   activeSetTransport = config.setTransport;
   activeEngine = embeddedEngine ?? null;
-  config.setTransport(
-    createEmbeddedTransport(
-      bridgeProvider,
-      config.createRouter,
-      registry,
-      embeddedLibrary,
-      embeddedDownloads,
-      embeddedEngine,
-      embeddedLibrary ? config.covers : undefined, // covers only make sense with a library
-    ),
+  transport = createEmbeddedTransport(
+    bridgeProvider,
+    config.createRouter,
+    registry,
+    embeddedLibrary,
+    embeddedDownloads,
+    embeddedEngine,
+    embeddedLibrary ? config.covers : undefined, // covers only make sense with a library
   );
+  config.setTransport(transport);
   return true;
 }
 

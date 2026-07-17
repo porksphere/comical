@@ -14,3 +14,4 @@ export * from "./downloads.ts";
 export * from "./paths.ts";
 export * from "./blob-store.ts";
 export * from "./engine.ts";
+export * from "./page-resolver.ts";

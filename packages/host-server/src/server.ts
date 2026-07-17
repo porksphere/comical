@@ -10,7 +10,7 @@ import { BridgeManager } from "./bridge-manager.ts";
 import { FileBlobStore } from "./blob-store.ts";
 import { FileDownloadsStore } from "./downloads-store.ts";
 import { FileLibraryStore } from "./library-store.ts";
-import { createServerPageFetcher } from "./page-fetcher.ts";
+import { createServerPageFetcher, createServerPageResolver } from "./page-fetcher.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
 import { SettingsStore } from "./settings-store.ts";
 import { TrackerManager } from "./tracker-manager.ts";
@@ -102,6 +102,9 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
       downloads,
       blobs: new FileBlobStore(join(dir, "blobs")),
       fetchPage: pageFetcher,
+      // Lazily-enqueued chapters (the instant bulk-enqueue path) resolve their page lists at
+      // download time, through this router's own bridge routes.
+      resolvePages: createServerPageResolver(() => routerFetch, opts.token),
     });
     routerOpts.downloads = downloads;
     routerOpts.downloadEngine = engine;

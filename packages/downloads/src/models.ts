@@ -79,6 +79,13 @@ export const downloadedChapterSchema = z.object({
   /** Language of the chapter (mirrors `Chapter.languageCode`), when known. */
   languageCode: z.string().optional(),
   pageCount: z.number().int().nonnegative(),
+  /**
+   * `false` while the chapter was enqueued WITHOUT a page list (a lazy enqueue: recording the intent
+   * is a cheap store write, so a bulk "download series" lands the whole queue instantly and survives
+   * the app closing). The engine resolves the pages via its `resolvePages` seam when it picks the
+   * chapter up, then clears this. Absent means resolved (all pre-lazy records had pages up front).
+   */
+  pagesResolved: z.boolean().optional(),
   /** Pages with bytes on disk so far — the numerator for a progress radial (denominator `pageCount`). */
   completedPages: z.number().int().nonnegative().default(0),
   /** Rolled-up total bytes across this chapter's pages. */

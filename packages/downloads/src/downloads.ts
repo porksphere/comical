@@ -79,11 +79,17 @@ export class Downloads {
    * Record the intent to download a chapter: upserts the series snapshot, creates (or resets) the
    * chapter as `queued`, and lays down one `queued` page row per input page. Idempotent — enqueuing
    * an already-complete chapter re-queues only pages that aren't complete.
+   *
+   * `pages` may be OMITTED (a lazy enqueue): the chapter is recorded `queued` with
+   * `pagesResolved: false` and NO page rows are touched — a pure store write, so bulk enqueues land
+   * the whole queue instantly and survive interruption. Whoever drains the queue resolves the page
+   * list later ({@link resolveChapterPages}); the fresh resolution also means the source URLs can't
+   * have gone stale between enqueue and download.
    */
   async enqueueChapter(
     snap: DownloadSeriesSnapshot,
     meta: DownloadChapterMeta,
-    pages: DownloadPageInput[],
+    pages?: DownloadPageInput[],
   ): Promise<DownloadedChapter> {
     const key = entryKey(snap.bridgeId, snap.seriesId);
     const t = this.now();
@@ -97,33 +103,21 @@ export class Downloads {
     if (snap.author !== undefined) series.author = snap.author;
     await this.store.putSeries(series);
 
-    // Merge pages against any existing rows so a re-enqueue preserves already-complete bytes.
-    const existingPages = new Map((await this.store.listPages(key, meta.chapterId)).map((p) => [p.index, p]));
-    for (const input of pages) {
-      const prior = existingPages.get(input.index);
-      if (prior?.state === "complete") {
-        // Keep the downloaded bytes; just refresh the source in case it changed.
-        const kept: DownloadedPage = { ...prior, sourceUrl: input.sourceUrl };
-        if (input.headers !== undefined) kept.headers = input.headers;
-        await this.store.putPage(key, meta.chapterId, kept);
-        continue;
-      }
-      const page: DownloadedPage = { index: input.index, sourceUrl: input.sourceUrl, file: "", bytes: 0, state: "queued" };
-      if (input.headers !== undefined) page.headers = input.headers;
-      await this.store.putPage(key, meta.chapterId, page);
-    }
+    if (pages) await this.writePages(key, meta.chapterId, pages);
 
     const existingChapter = await this.store.getChapter(key, meta.chapterId);
     const chapter: DownloadedChapter = {
       bridgeId: snap.bridgeId,
       seriesId: snap.seriesId,
       chapterId: meta.chapterId,
-      pageCount: pages.length,
+      // A lazy enqueue keeps any prior count so a partial chapter's progress display stays sensible.
+      pageCount: pages ? pages.length : (existingChapter?.pageCount ?? 0),
       completedPages: existingChapter?.completedPages ?? 0,
       bytes: existingChapter?.bytes ?? 0,
       state: "queued",
       addedAt: existingChapter?.addedAt ?? t,
     };
+    if (!pages) chapter.pagesResolved = false;
     if (meta.chapterName !== undefined) chapter.chapterName = meta.chapterName;
     if (meta.number !== undefined) chapter.number = meta.number;
     if (meta.languageCode !== undefined) chapter.languageCode = meta.languageCode;
@@ -131,6 +125,32 @@ export class Downloads {
     await this.rollUpSeries(key);
     // Recompute state in case pages were already complete from a prior download.
     return this.recomputeChapter(key, meta.chapterId);
+  }
+
+  /**
+   * Supply the resolved page list for a lazily-enqueued chapter (see {@link enqueueChapter} without
+   * `pages`): lays down the page rows (preserving already-complete bytes, exactly like an eager
+   * enqueue), sets `pageCount`, and clears the `pagesResolved: false` marker.
+   */
+  async resolveChapterPages(key: string, chapterId: string, pages: DownloadPageInput[]): Promise<DownloadedChapter> {
+    const chapter = await this.requireChapter(key, chapterId);
+    await this.writePages(key, chapterId, pages);
+    const next: DownloadedChapter = { ...chapter, pageCount: pages.length };
+    delete next.pagesResolved;
+    await this.store.putChapter(next);
+    return this.recomputeChapter(key, chapterId);
+  }
+
+  /**
+   * Mark a chapter failed as a whole — for failures that happen BEFORE any page exists to blame
+   * (page-list resolution failing on a lazy enqueue). A retry (`requeueMissing`) puts it back to
+   * `queued`, and — its `pagesResolved` marker still unset — resolution is attempted again.
+   */
+  async failChapter(key: string, chapterId: string): Promise<DownloadedChapter> {
+    const chapter = await this.requireChapter(key, chapterId);
+    const next: DownloadedChapter = { ...chapter, state: "failed" };
+    await this.store.putChapter(next);
+    return next;
   }
 
   // ── Progress ────────────────────────────────────────────────────────────────
@@ -340,6 +360,24 @@ export class Downloads {
 
   // ── Internals ─────────────────────────────────────────────────────────────────
 
+  /** Lay down page rows, merging against existing ones so already-complete bytes are preserved. */
+  private async writePages(key: string, chapterId: string, pages: DownloadPageInput[]): Promise<void> {
+    const existingPages = new Map((await this.store.listPages(key, chapterId)).map((p) => [p.index, p]));
+    for (const input of pages) {
+      const prior = existingPages.get(input.index);
+      if (prior?.state === "complete") {
+        // Keep the downloaded bytes; just refresh the source in case it changed.
+        const kept: DownloadedPage = { ...prior, sourceUrl: input.sourceUrl };
+        if (input.headers !== undefined) kept.headers = input.headers;
+        await this.store.putPage(key, chapterId, kept);
+        continue;
+      }
+      const page: DownloadedPage = { index: input.index, sourceUrl: input.sourceUrl, file: "", bytes: 0, state: "queued" };
+      if (input.headers !== undefined) page.headers = input.headers;
+      await this.store.putPage(key, chapterId, page);
+    }
+  }
+
   private async requireChapter(key: string, chapterId: string): Promise<DownloadedChapter> {
     const chapter = await this.store.getChapter(key, chapterId);
     if (!chapter) {
@@ -362,6 +400,8 @@ export class Downloads {
     const next: DownloadedChapter = { ...chapter, bytes, completedPages, state };
     if (state === "complete") {
       next.completedAt = chapter.completedAt ?? this.now();
+      // Every page has bytes, so an unresolved-pages marker is stale by definition.
+      delete next.pagesResolved;
     } else {
       delete next.completedAt;
     }

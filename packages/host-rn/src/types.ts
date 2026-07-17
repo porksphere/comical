@@ -8,7 +8,7 @@
  * here because they don't exist elsewhere in comical: this package is their canonical home.
  */
 import type { BridgeInfo } from "@comical/contract";
-import type { BlobStore, DownloadEngine, Downloads, DownloadsStore, PageFetcher, PendingPage } from "@comical/downloads";
+import type { BlobStore, DownloadEngine, Downloads, DownloadsStore, PageFetcher, PageResolver, PendingPage } from "@comical/downloads";
 import type { RegistryProvider } from "@comical/host-server/registry-provider";
 import type { Library, LibraryStore } from "@comical/library";
 import type { SavedRegistry } from "@comical/registry/schema";
@@ -23,6 +23,7 @@ export type {
   DownloadsStore,
   FetchedPage,
   PageFetcher,
+  PageResolver,
   PendingPage,
 } from "@comical/downloads";
 export type { ComicalRuntime } from "@comical/runtime";
@@ -39,6 +40,9 @@ export interface EmbeddedDownloadsEngineConfig {
   fetchPage: PageFetcher;
   mayDownload?: () => Promise<boolean>;
   onPageRetry?: (page: PendingPage) => void;
+  /** How lazily-enqueued chapters resolve their page lists at download time. Defaults to driving
+   *  the reused router's own `/bridges/...` routes in-process — override only in tests. */
+  resolvePages?: PageResolver;
 }
 
 /**

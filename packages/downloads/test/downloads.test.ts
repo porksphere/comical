@@ -263,3 +263,76 @@ describe("guards", () => {
     await expect(dl.recordPage(KEY, "nope", 0, "x", 1)).rejects.toThrow("not downloaded");
   });
 });
+
+describe("lazy enqueue (no pages)", () => {
+  test("records the chapter queued with pages unresolved; no page rows are written", async () => {
+    const dl = makeDownloads();
+    const chapter = await dl.enqueueChapter(SNAP, CH);
+    expect(chapter.state).toBe("queued");
+    expect(chapter.pageCount).toBe(0);
+    expect(chapter.pagesResolved).toBe(false);
+    expect(await dl.getManifestPages(KEY, CH.chapterId)).toEqual([]);
+    // It counts as pending work — the drain queue picks it up.
+    expect((await dl.pendingChapters()).map((c) => c.chapterId)).toEqual([CH.chapterId]);
+  });
+
+  test("resolveChapterPages lays down rows, sets pageCount, clears the marker", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH);
+    const resolved = await dl.resolveChapterPages(KEY, CH.chapterId, [
+      { index: 0, sourceUrl: "/img/0" },
+      { index: 1, sourceUrl: "/img/1" },
+    ]);
+    expect(resolved.pageCount).toBe(2);
+    expect(resolved.pagesResolved).toBeUndefined();
+    expect(resolved.state).toBe("queued");
+    expect((await dl.getManifestPages(KEY, CH.chapterId)).length).toBe(2);
+  });
+
+  test("resolveChapterPages preserves already-complete pages (lazy re-enqueue)", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, [
+      { index: 0, sourceUrl: "/img/0" },
+      { index: 1, sourceUrl: "/img/1" },
+    ]);
+    await dl.recordPage(KEY, CH.chapterId, 0, "demo/s1/c1/0.jpg", 100);
+
+    // Lazy re-enqueue keeps the prior progress numbers, then resolution merges.
+    const requeued = await dl.enqueueChapter(SNAP, CH);
+    expect(requeued.pagesResolved).toBe(false);
+    expect(requeued.completedPages).toBe(1);
+    const resolved = await dl.resolveChapterPages(KEY, CH.chapterId, [
+      { index: 0, sourceUrl: "/img/0-fresh" },
+      { index: 1, sourceUrl: "/img/1-fresh" },
+    ]);
+    const pagesAfter = await dl.getManifestPages(KEY, CH.chapterId);
+    expect(pagesAfter[0]!.state).toBe("complete");
+    expect(pagesAfter[0]!.file).toBe("demo/s1/c1/0.jpg");
+    expect(pagesAfter[0]!.sourceUrl).toBe("/img/0-fresh"); // source refreshed, bytes kept
+    expect(pagesAfter[1]!.state).toBe("queued");
+    expect(resolved.completedPages).toBe(1);
+    expect(resolved.state).toBe("downloading");
+  });
+
+  test("failChapter marks it failed and out of the pending queue; requeueMissing revives it", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH);
+    const failed = await dl.failChapter(KEY, CH.chapterId);
+    expect(failed.state).toBe("failed");
+    expect(failed.pagesResolved).toBe(false); // still unresolved — a retry re-attempts resolution
+    expect(await dl.pendingChapters()).toEqual([]);
+
+    await dl.requeueMissing(KEY, CH.chapterId);
+    const revived = await dl.getChapter(KEY, CH.chapterId);
+    expect(revived?.state).toBe("queued");
+    expect(revived?.pagesResolved).toBe(false);
+  });
+
+  test("an eager enqueue of a previously-lazy chapter clears the marker", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH);
+    const eager = await dl.enqueueChapter(SNAP, CH, [{ index: 0, sourceUrl: "/img/0" }]);
+    expect(eager.pagesResolved).toBeUndefined();
+    expect(eager.pageCount).toBe(1);
+  });
+});

@@ -16,7 +16,7 @@ import { FixtureBackend } from "@comical/testkit";
 import { BridgeManager } from "../src/bridge-manager.ts";
 import { FileBlobStore } from "../src/blob-store.ts";
 import { FileDownloadsStore } from "../src/downloads-store.ts";
-import { createServerPageFetcher } from "../src/page-fetcher.ts";
+import { createServerPageFetcher, createServerPageResolver } from "../src/page-fetcher.ts";
 import { createRouter } from "../src/router.ts";
 import { SettingsStore } from "../src/settings-store.ts";
 
@@ -71,6 +71,7 @@ beforeAll(async () => {
     downloads,
     blobs: new FileBlobStore(BLOBS_DIR),
     fetchPage: createServerPageFetcher(() => routerFetch),
+    resolvePages: createServerPageResolver(() => routerFetch),
   });
   const router = createRouter(manager, { downloads, downloadEngine: engine });
   routerFetch = (req) => router.fetch(req);
@@ -130,27 +131,83 @@ describe("server-managed download lifecycle", () => {
     expect(((await (await get("/downloads")).json()) as { totalBytes: number }).totalBytes).toBe(0);
   });
 
-  test("pages-less enqueue resolves the page list via the bridge", async () => {
+  test("pages-less enqueue lands instantly (pages unresolved) and resolves at pickup", async () => {
     const chapters = (await (await get("/bridges/example/series/alice/chapters")).json()) as Array<{ id: string }>;
     const chapterId = chapters[0]!.id;
 
-    // Enqueue WITHOUT pages — the router asks the bridge for them. Pause immediately: the fixture
-    // bridge's page URLs point at an external host, and this test only asserts resolution.
+    // Enqueue WITHOUT pages — a pure manifest write: the response is instant and carries NO page
+    // count yet (the engine resolves the list via the bridge when the drain picks the chapter up).
     const enq = await send("POST", `/downloads/entries/example/alice/chapters/${encodeURIComponent(chapterId)}`, {
       title: "Alice",
     });
     expect(enq.status).toBe(201);
-    const enqueued = (await enq.json()) as { pageCount: number; state: string };
-    expect(enqueued.pageCount).toBeGreaterThan(0);
+    const enqueued = (await enq.json()) as { pageCount: number; state: string; pagesResolved?: boolean };
+    expect(enqueued.pageCount).toBe(0);
     expect(enqueued.state).toBe("queued");
+    expect(enqueued.pagesResolved).toBe(false);
 
+    // Pause IMMEDIATELY — the fixture bridge's resolved page URLs point at an external host, and
+    // letting the drain reach them would make the whole suite network-dependent. (The full
+    // lazy-resolve-to-complete cycle is covered network-free in the engine's own tests.)
     await send("POST", `/downloads/entries/example/alice/chapters/${encodeURIComponent(chapterId)}/pause`);
+    await waitForUsage((u) => (chapterIn(u, "alice", chapterId)?.state === "paused" ? true : undefined));
     await send("DELETE", "/downloads/entries/example/alice");
   });
 
-  test("pages-less enqueue for an unknown bridge is 404", async () => {
+  test("an unknown bridge enqueues fine, then fails at pickup (visible, retryable)", async () => {
+    // The lazy contract: enqueue can't know the bridge is bad (it's a pure store write) — the
+    // failure surfaces when the engine tries to resolve pages, as a `failed` chapter row.
     const res = await send("POST", "/downloads/entries/nonexistent/s/chapters/c", { title: "X" });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(201);
+    const failed = await waitForUsage((u) => {
+      const c = chapterIn(u, "s", "c");
+      return c?.state === "failed" ? c : undefined;
+    });
+    expect(failed.pageCount).toBe(0);
+
+    // Retry re-attempts resolution — the bridge still doesn't exist, so it settles failed again.
+    await send("POST", "/downloads/entries/nonexistent/s/chapters/c/requeue");
+    await waitForUsage((u) => (chapterIn(u, "s", "c")?.state === "failed" ? true : undefined));
+    await send("DELETE", "/downloads/entries/nonexistent/s");
+  });
+
+  test("bulk enqueue lands a whole queue in one request; one bad chapter fails alone", async () => {
+    const chapters = (await (await get("/bridges/example/series/alice/chapters")).json()) as Array<{
+      id: string;
+      name?: string;
+    }>;
+    const goodId = chapters[0]!.id;
+
+    const res = await send("POST", "/downloads/entries/example/alice/chapters", {
+      title: "Alice",
+      chapters: [
+        { chapterId: goodId, chapterName: "Good", number: 1 },
+        { chapterId: "definitely-not-a-chapter", chapterName: "Bad", number: 2 },
+      ],
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { chapters: Array<{ chapterId: string; state: string; pageCount: number }> };
+    expect(body.chapters.length).toBe(2);
+    for (const c of body.chapters) {
+      expect(c.state).toBe("queued");
+      expect(c.pageCount).toBe(0);
+    }
+
+    // Hold the good chapter (its resolved page URLs point at an external host); the bad one keeps
+    // going, fails resolution — and ONLY it fails.
+    await send("POST", `/downloads/entries/example/alice/chapters/${encodeURIComponent(goodId)}/pause`);
+    await waitForUsage((u) =>
+      chapterIn(u, "alice", "definitely-not-a-chapter")?.state === "failed" ? true : undefined,
+    );
+    const good = await waitForUsage((u) => chapterIn(u, "alice", goodId));
+    expect(good.state).toBe("paused");
+
+    await send("DELETE", "/downloads/entries/example/alice");
+  });
+
+  test("bulk enqueue validates its body", async () => {
+    expect((await send("POST", "/downloads/entries/example/alice/chapters", { title: "X", chapters: [] })).status).toBe(400);
+    expect((await send("POST", "/downloads/entries/example/alice/chapters", { chapters: [{ chapterId: "c" }] })).status).toBe(400);
   });
 
   test(
@@ -238,6 +295,13 @@ describe("absence: engine not provided", () => {
       // Engine-only routes don't exist.
       expect((await fetch(`${base}/downloads/entries/example/alice/chapters/c1/pages/0/file`)).status).toBe(404);
       expect((await fetch(`${base}/downloads/events`)).status).toBe(404);
+      // Bulk enqueue is engine-only too (without an engine nobody would resolve the pages).
+      const bulk = await fetch(`${base}/downloads/entries/example/alice/chapters`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "Alice", chapters: [{ chapterId: "c1" }] }),
+      });
+      expect(bulk.status).toBe(404);
     } finally {
       srv.stop(true);
     }
