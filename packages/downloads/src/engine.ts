@@ -191,6 +191,24 @@ export class DownloadEngine {
     return chapter;
   }
 
+  /**
+   * Bulk lazy enqueue: land a whole series' worth of chapters as ONE batch of manifest writes, with
+   * a SINGLE `changed` event and a single kick at the end — per-chapter events would make observers
+   * refetch once per landing chapter, which reads as the queue "counting up" in the UI. An explicit
+   * bulk download is a re-activation (like resume), so it clears the series' cancel flag: the
+   * mid-collection pause race that flag guarded can't happen anymore — the batch lands atomically
+   * within this one call.
+   */
+  async enqueueMany(snap: DownloadSeriesSnapshot, metas: DownloadChapterMeta[]): Promise<DownloadedChapter[]> {
+    const key = entryKey(snap.bridgeId, snap.seriesId);
+    this.cancelledSeries.delete(key);
+    for (const meta of metas) this.cancelledChapters.delete(chapterCancelKey(key, meta.chapterId));
+    const chapters = await this.downloads.enqueueChapters(snap, metas);
+    this.emit({ type: "changed", bridgeId: snap.bridgeId, seriesId: snap.seriesId });
+    this.kick();
+    return chapters;
+  }
+
   /** Pause one in-flight/queued chapter (resumable): flag its workers and pause the manifest. */
   async pauseChapter(key: string, chapterId: string): Promise<DownloadedChapter> {
     this.cancelledChapters.add(chapterCancelKey(key, chapterId));

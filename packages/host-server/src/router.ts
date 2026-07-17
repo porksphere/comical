@@ -1070,21 +1070,15 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
           ...(b.author !== undefined && { author: b.author }),
         };
-        const enqueued = [];
-        for (const ch of chapters) {
-          const meta: DownloadChapterMeta = {
-            chapterId: ch.chapterId!,
-            ...(ch.chapterName !== undefined && { chapterName: ch.chapterName }),
-            ...(ch.number !== undefined && { number: ch.number }),
-            ...(ch.languageCode !== undefined && { languageCode: ch.languageCode }),
-          };
-          try {
-            enqueued.push(await dlEngine.enqueue(snap, meta));
-          } catch {
-            // A delete racing the bulk write — skip that chapter, keep landing the rest.
-          }
-        }
-        return c.json({ chapters: enqueued }, 201);
+        const metas: DownloadChapterMeta[] = chapters.map((ch) => ({
+          chapterId: ch.chapterId!,
+          ...(ch.chapterName !== undefined && { chapterName: ch.chapterName }),
+          ...(ch.number !== undefined && { number: ch.number }),
+          ...(ch.languageCode !== undefined && { languageCode: ch.languageCode }),
+        }));
+        // One engine call: the whole batch lands with a single event + kick, so observers refetch
+        // once and see the full queue at once (per-chapter enqueues read as a slow count-up).
+        return c.json({ chapters: await dlEngine.enqueueMany(snap, metas) }, 201);
       });
     }
 

@@ -93,8 +93,30 @@ export class Downloads {
   ): Promise<DownloadedChapter> {
     const key = entryKey(snap.bridgeId, snap.seriesId);
     const t = this.now();
+    await this.upsertSeriesSnapshot(snap, t);
+    const chapter = await this.writeChapterQueued(key, snap, meta, t, pages);
+    await this.rollUpSeries(key);
+    return chapter;
+  }
 
-    // Upsert the series snapshot (refresh display fields; keep addedAt).
+  /**
+   * Bulk {@link enqueueChapter} (always lazy — no page lists): every chapter of one series lands in
+   * one call, with the series snapshot upserted and rolled up ONCE instead of per chapter. This is
+   * the whole-queue write behind the router's bulk enqueue route.
+   */
+  async enqueueChapters(snap: DownloadSeriesSnapshot, metas: DownloadChapterMeta[]): Promise<DownloadedChapter[]> {
+    const key = entryKey(snap.bridgeId, snap.seriesId);
+    const t = this.now();
+    await this.upsertSeriesSnapshot(snap, t);
+    const out: DownloadedChapter[] = [];
+    for (const meta of metas) out.push(await this.writeChapterQueued(key, snap, meta, t));
+    await this.rollUpSeries(key);
+    return out;
+  }
+
+  /** Upsert the series snapshot (refresh display fields; keep addedAt). */
+  private async upsertSeriesSnapshot(snap: DownloadSeriesSnapshot, t: number): Promise<void> {
+    const key = entryKey(snap.bridgeId, snap.seriesId);
     const existingSeries = await this.store.getSeries(key);
     const series: DownloadedSeries = existingSeries
       ? { ...existingSeries, title: snap.title }
@@ -102,7 +124,17 @@ export class Downloads {
     if (snap.thumbnailUrl !== undefined) series.thumbnailUrl = snap.thumbnailUrl;
     if (snap.author !== undefined) series.author = snap.author;
     await this.store.putSeries(series);
+  }
 
+  /** Record one chapter as `queued` (laying down pages when given), then settle its state from its
+   *  page rows. Series rollup is the CALLER's job — bulk enqueues roll up once at the end. */
+  private async writeChapterQueued(
+    key: string,
+    snap: DownloadSeriesSnapshot,
+    meta: DownloadChapterMeta,
+    t: number,
+    pages?: DownloadPageInput[],
+  ): Promise<DownloadedChapter> {
     if (pages) await this.writePages(key, meta.chapterId, pages);
 
     const existingChapter = await this.store.getChapter(key, meta.chapterId);
@@ -122,9 +154,8 @@ export class Downloads {
     if (meta.number !== undefined) chapter.number = meta.number;
     if (meta.languageCode !== undefined) chapter.languageCode = meta.languageCode;
     await this.store.putChapter(chapter);
-    await this.rollUpSeries(key);
     // Recompute state in case pages were already complete from a prior download.
-    return this.recomputeChapter(key, meta.chapterId);
+    return this.recomputeChapter(key, meta.chapterId, { rollUp: false });
   }
 
   /**
@@ -387,8 +418,9 @@ export class Downloads {
     return chapter;
   }
 
-  /** Recompute a chapter's rolled-up bytes/progress + state from its pages, then roll the series up. */
-  private async recomputeChapter(key: string, chapterId: string): Promise<DownloadedChapter> {
+  /** Recompute a chapter's rolled-up bytes/progress + state from its pages, then roll the series up
+   *  (skippable when the caller batches many chapters and rolls up once at the end). */
+  private async recomputeChapter(key: string, chapterId: string, opts?: { rollUp?: boolean }): Promise<DownloadedChapter> {
     const chapter = await this.requireChapter(key, chapterId);
     const pages = await this.store.listPages(key, chapterId);
     const bytes = pages.reduce((sum, p) => sum + p.bytes, 0);
@@ -406,7 +438,7 @@ export class Downloads {
       delete next.completedAt;
     }
     await this.store.putChapter(next);
-    await this.rollUpSeries(key);
+    if (opts?.rollUp !== false) await this.rollUpSeries(key);
     return next;
   }
 

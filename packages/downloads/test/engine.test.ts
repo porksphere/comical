@@ -544,3 +544,47 @@ describe("lazy page resolution (enqueue without pages)", () => {
     expect(calls.length).toBe(fetchesAfterFirst);
   });
 });
+
+describe("enqueueMany (bulk)", () => {
+  test("lands the batch with ONE changed event (no per-chapter spam) and drains it all", async () => {
+    const { fetch } = scriptedFetcher({});
+    const resolve = async () => pages(2);
+    const { engine, downloads, events } = makeEngine(fetch, { resolvePages: resolve });
+
+    const metas = Array.from({ length: 5 }, (_, i) => ({ chapterId: `c${i}` }));
+    const enqueued = await engine.enqueueMany(SNAP, metas);
+    expect(enqueued).toHaveLength(5);
+    for (const c of enqueued) {
+      expect(c.state).toBe("queued");
+      expect(c.pagesResolved).toBe(false);
+    }
+    // Exactly one event so far — the batch-level 'changed' (observers refetch once, see all 5).
+    expect(events.filter((e) => e.type !== "idle")).toEqual([
+      { type: "changed", bridgeId: SNAP.bridgeId, seriesId: SNAP.seriesId },
+    ]);
+
+    await engine.drain();
+    for (const meta of metas) {
+      expect((await downloads.getChapter(KEY, meta.chapterId))?.state).toBe("complete");
+    }
+  });
+
+  test("a bulk download after a series pause is a re-activation, not a paused arrival", async () => {
+    const { fetch } = scriptedFetcher({});
+    const resolve = async () => pages(1);
+    const { engine, downloads } = makeEngine(fetch, { resolvePages: resolve });
+
+    // Pause an in-progress series (sets the series cancel flag)…
+    await engine.enqueue(SNAP, { chapterId: "old" });
+    await engine.pauseSeries(KEY);
+    expect((await downloads.getChapter(KEY, "old"))?.state).toBe("paused");
+
+    // …then explicitly bulk-download more: the new chapters must download (the flag is stale for
+    // them — the atomic batch can't race a mid-collection pause), while 'old' stays paused.
+    await engine.enqueueMany(SNAP, [{ chapterId: "new1" }, { chapterId: "new2" }]);
+    await engine.drain();
+    expect((await downloads.getChapter(KEY, "new1"))?.state).toBe("complete");
+    expect((await downloads.getChapter(KEY, "new2"))?.state).toBe("complete");
+    expect((await downloads.getChapter(KEY, "old"))?.state).toBe("paused");
+  });
+});
