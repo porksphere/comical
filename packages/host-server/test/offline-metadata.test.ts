@@ -89,6 +89,59 @@ describe("cover bytes", () => {
     expect((await get("/library/entries/example/sherlock/cover")).status).toBe(404);
     expect(existsSync(join(COVERS_DIR, "example", "sherlock.png"))).toBe(false);
   });
+
+  test("a changed cover URL re-captures; an unchanged one doesn't", async () => {
+    const key = "example:moby-dick";
+    const urlA = `${fixtureUrl}/img/moby-cover-a.png`;
+    const urlB = `${fixtureUrl}/img/moby-cover-b.png`;
+
+    await post("/library/entries", { bridgeId: "example", seriesId: "moby-dick", title: "Moby-Dick", thumbnailUrl: urlA });
+    await waitForOk(() => get("/library/entries/example/moby-dick/cover"));
+    expect((await lib.getCachedDetail(key))?.coverSourceUrl).toBe(urlA);
+
+    // The source changed its cover art (surfacing here as a refreshed snapshot thumbnail) — the
+    // next capture trigger sees the mismatch and re-captures from the new URL.
+    await post("/library/entries", { bridgeId: "example", seriesId: "moby-dick", title: "Moby-Dick", thumbnailUrl: urlB });
+    const deadline = Date.now() + 5_000;
+    while ((await lib.getCachedDetail(key))?.coverSourceUrl !== urlB && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect((await lib.getCachedDetail(key))?.coverSourceUrl).toBe(urlB);
+    expect((await get("/library/entries/example/moby-dick/cover")).ok).toBe(true);
+
+    await fetch(`${baseUrl}/library/entries/example/moby-dick`, { method: "DELETE" });
+  });
+});
+
+describe("entry snapshot reconciliation", () => {
+  test("browsing heals a stale library snapshot from the live info", async () => {
+    // A covers-less router so the background capture never fires at the fixture's external cover URLs.
+    const manager = new BridgeManager({
+      bridgesDir: BRIDGES_DIR,
+      dataDir: DATA_DIR,
+      settings: new SettingsStore(DATA_DIR),
+    });
+    const lib2 = new Library(new FileLibraryStore(join(DATA_DIR, "library-reconcile")));
+    const runtime = new ComicalRuntime({ bridges: manager, library: lib2 });
+    const srv = Bun.serve({ port: 0, fetch: createRouter(manager, { library: lib2, runtime }).fetch });
+    const base = `http://localhost:${srv.port}`;
+    try {
+      // Seed a deliberately stale snapshot (wrong title/author).
+      await lib2.addSeries({ bridgeId: "example", seriesId: "dracula", title: "Wrong Old Title", author: "Nobody" });
+
+      // A live series-page visit write-throughs the fresh info and reconciles the snapshot.
+      expect((await fetch(`${base}/bridges/example/series/dracula`)).ok).toBe(true);
+      const deadline = Date.now() + 5_000;
+      while ((await lib2.getEntry("example:dracula"))?.title !== "Dracula" && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const entry = await lib2.getEntry("example:dracula");
+      expect(entry?.title).toBe("Dracula");
+      expect(entry?.author).toBe("Bram Stoker");
+    } finally {
+      srv.stop(true);
+    }
+  });
 });
 
 describe("offline metadata fallback", () => {

@@ -54,6 +54,9 @@ export const cachedSeriesDetailSchema = z.object({
    *  pointer for guaranteed-offline covers (the bytes themselves live in a host `BlobStore`).
    *  Absent until the host captures the cover. */
   coverFile: z.string().optional(),
+  /** The URL `coverFile` was captured from. When the entry's live `thumbnailUrl` no longer matches
+   *  (the source changed its cover art), the host re-captures on the next browse. */
+  coverSourceUrl: z.string().optional(),
 });
 export type CachedSeriesDetail = z.infer<typeof cachedSeriesDetailSchema>;
 

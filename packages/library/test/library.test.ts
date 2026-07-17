@@ -91,6 +91,48 @@ describe("offline metadata cache", () => {
     expect(after?.coverFile).toBe("demo/s1.jpg");
   });
 
+  test("setCachedCover records the source URL; cacheSeriesDetail preserves both cover fields", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One" });
+    await lib.setCachedCover(KEY, "demo/s1.jpg", "https://cdn.example/cover-v1.jpg");
+
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", description: "fresh" });
+    const after = await lib.getCachedDetail(KEY);
+    expect(after?.coverFile).toBe("demo/s1.jpg");
+    expect(after?.coverSourceUrl).toBe("https://cdn.example/cover-v1.jpg");
+  });
+
+  test("refreshSnapshot reconciles changed display fields and merges externalIds", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries({ ...SERIES, title: "Old Title", author: "Old Author", externalIds: { anilist: 1 } });
+
+    await lib.refreshSnapshot(KEY, {
+      id: "s1",
+      title: "New Title",
+      thumbnailUrl: "https://cdn.example/new-cover.jpg",
+      author: "New Author",
+      externalIds: { mal: 42 },
+    });
+    const entry = await lib.getEntry(KEY);
+    expect(entry?.title).toBe("New Title");
+    expect(entry?.thumbnailUrl).toBe("https://cdn.example/new-cover.jpg");
+    expect(entry?.author).toBe("New Author");
+    expect(entry?.externalIds).toEqual({ anilist: 1, mal: 42 }); // merged, never removed
+  });
+
+  test("refreshSnapshot is a no-op when nothing changed (updatedAt untouched) or not in library", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries({ ...SERIES, author: "A. Author" });
+    const before = await lib.getEntry(KEY);
+
+    await lib.refreshSnapshot(KEY, { id: "s1", title: SERIES.title, author: "A. Author" });
+    expect((await lib.getEntry(KEY))?.updatedAt).toBe(before!.updatedAt);
+
+    await lib.refreshSnapshot("demo:not-added", { id: "x", title: "X" }); // must not throw or create
+    expect(await lib.getEntry("demo:not-added")).toBeUndefined();
+  });
+
   test("setCachedCover is a no-op without a detail doc", async () => {
     const lib = makeLibrary();
     await lib.addSeries(SERIES);

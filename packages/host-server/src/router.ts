@@ -510,23 +510,28 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   const covers = opts.covers;
 
   /**
-   * Capture a library entry's cover bytes (fire-and-forget, once): fetch the entry snapshot's
+   * Capture a library entry's cover bytes (fire-and-forget): fetch the entry snapshot's
    * `thumbnailUrl` through the host's page fetcher and store it in the covers blob store, recording
-   * the pointer on the cached detail doc. Triggered on library-add and on the details write-through,
-   * both guarded by the pointer so an already-captured cover costs nothing.
+   * the pointer + source URL on the cached detail doc. Triggered on library-add and on the details
+   * write-through; skipped while the captured cover's source URL still matches the entry's, so an
+   * up-to-date cover costs nothing and a source-side cover change re-captures on the next browse.
+   * A failed re-capture keeps the previous blob — stale beats missing.
    */
   const captureCover = (bridgeId: string, seriesId: string): void => {
     if (!libMeta || !covers) return;
     void (async () => {
       const key = entryKey(bridgeId, seriesId);
       const detail = await libMeta.getCachedDetail(key);
-      if (!detail || detail.coverFile) return; // no doc to hang the pointer on, or already captured
+      if (!detail) return; // no doc to hang the pointer on
       const url = (await libMeta.getEntry(key))?.thumbnailUrl;
       if (!url) return;
+      if (detail.coverFile && detail.coverSourceUrl === url) return; // captured and still current
       const fetched = await covers.fetchPage({ bridgeId, seriesId, chapterId: "__cover__" }, { index: 0, sourceUrl: url });
       const file = `${sanitizeSegment(bridgeId)}/${sanitizeSegment(seriesId)}.${extFor(fetched.contentType ?? url)}`;
       await covers.blobs.write(file, fetched.data);
-      await libMeta.setCachedCover(key, file);
+      await libMeta.setCachedCover(key, file, url);
+      // A re-capture whose extension changed leaves the old blob behind — unlink it.
+      if (detail.coverFile && detail.coverFile !== file) await covers.blobs.remove([detail.coverFile]).catch(() => {});
     })().catch(() => {});
   };
 
@@ -544,10 +549,18 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           );
         }
       }
-      void libMeta
-        ?.cacheSeriesDetail(key, info)
-        .then(() => captureCover(c.req.param("id"), c.req.param("seriesId")))
-        .catch(() => {});
+      // Write-through for library entries: refresh the offline detail doc AND reconcile the entry's
+      // display snapshot with this fresh, successful info (the source is authoritative for its own
+      // metadata — a renamed series or changed cover heals here). Snapshot first-then-cover, so the
+      // capture's staleness check sees the entry's up-to-date thumbnailUrl.
+      if (libMeta) {
+        const lib = libMeta;
+        void (async () => {
+          await lib.cacheSeriesDetail(key, info);
+          await lib.refreshSnapshot(key, info);
+          captureCover(c.req.param("id"), c.req.param("seriesId"));
+        })().catch(() => {});
+      }
       return c.json(info);
     });
     if (live.ok || !libMeta) return live;

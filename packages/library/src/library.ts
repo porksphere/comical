@@ -160,21 +160,61 @@ export class Library {
 
   /**
    * Cache the full series detail for offline rendering. No-op unless the series is in the library.
-   * Preserves an existing `coverFile` pointer — detail refreshes must never orphan captured covers.
+   * Preserves the existing cover pointer fields — detail refreshes must never orphan captured covers.
    */
   async cacheSeriesDetail(key: string, info: SeriesInfo): Promise<void> {
     if (!(await this.isInLibrary(key))) return;
     const existing = await this.store.getSeriesDetail(key);
     const doc: CachedSeriesDetail = { info, cachedAt: this.now() };
     if (existing?.coverFile !== undefined) doc.coverFile = existing.coverFile;
+    if (existing?.coverSourceUrl !== undefined) doc.coverSourceUrl = existing.coverSourceUrl;
     await this.store.putSeriesDetail(key, doc);
   }
 
-  /** Record where the host stored this entry's cover bytes. No-op without a cached detail doc. */
-  async setCachedCover(key: string, coverFile: string): Promise<void> {
+  /** Record where the host stored this entry's cover bytes (and the URL they came from, for the
+   *  staleness check). No-op without a cached detail doc. */
+  async setCachedCover(key: string, coverFile: string, coverSourceUrl?: string): Promise<void> {
     const doc = await this.store.getSeriesDetail(key);
     if (!doc) return;
-    await this.store.putSeriesDetail(key, { ...doc, coverFile });
+    const next: CachedSeriesDetail = { ...doc, coverFile };
+    if (coverSourceUrl !== undefined) next.coverSourceUrl = coverSourceUrl;
+    await this.store.putSeriesDetail(key, next);
+  }
+
+  /**
+   * Reconcile the entry's display snapshot (what the library grid/history render) with a fresh,
+   * successful `SeriesInfo` — the source is authoritative for its own metadata, so a renamed series
+   * or changed cover/author heals on the next browse instead of staying frozen at add time. New
+   * `externalIds` merge in (never removed); `addedAt`/`listIds`/progress are untouched. No-op when
+   * nothing changed or the series isn't in the library.
+   */
+  async refreshSnapshot(key: string, info: SeriesInfo): Promise<void> {
+    const entry = await this.store.getEntry(key);
+    if (!entry) return;
+    let changed = false;
+    if (info.title && info.title !== entry.title) {
+      entry.title = info.title;
+      changed = true;
+    }
+    if (info.thumbnailUrl !== undefined && info.thumbnailUrl !== entry.thumbnailUrl) {
+      entry.thumbnailUrl = info.thumbnailUrl;
+      changed = true;
+    }
+    if (info.author !== undefined && info.author !== entry.author) {
+      entry.author = info.author;
+      changed = true;
+    }
+    if (info.externalIds) {
+      for (const [tracker, id] of Object.entries(info.externalIds)) {
+        if (entry.externalIds?.[tracker] !== id) {
+          entry.externalIds = { ...entry.externalIds, [tracker]: id };
+          changed = true;
+        }
+      }
+    }
+    if (!changed) return;
+    entry.updatedAt = this.now();
+    await this.store.putEntry(entry);
   }
 
   /** The cached detail, or undefined (not captured / schema-drifted doc, which is discarded). */
