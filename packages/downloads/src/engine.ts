@@ -370,16 +370,19 @@ export class DownloadEngine {
 
     // A lazily-enqueued chapter has no page rows yet — resolve them NOW (this must precede the
     // outstanding-pages check below, which would otherwise read "already complete" from zero rows).
-    // Announce 'downloading' first so the pickup is visible while resolution runs; a failure marks
-    // the chapter `failed` (a visible, retryable row — the retry re-attempts resolution) and the
-    // drain moves on to the next chapter.
+    // The pickup is recorded as manifest state (`markChapterDownloading`, emitted) so it's visible
+    // while resolution runs; a failure marks the chapter `failed` (a visible, retryable row — the
+    // retry re-attempts resolution) and the drain moves on to the next chapter.
     if (chapter.pagesResolved === false) {
-      this.emit({ type: "chapter", chapter: { ...chapter, state: "downloading" } });
+      const picked = await this.downloads.markChapterDownloading(key, chapterId);
+      this.emit({ type: "chapter", chapter: picked });
       try {
         if (!this.resolvePages) throw new Error("no page resolver configured");
         const inputs = await this.resolvePages({ bridgeId, seriesId, chapterId });
-        const resolved = await this.downloads.resolveChapterPages(key, chapterId, inputs);
-        this.emit({ type: "chapter", chapter: resolved });
+        // NOT emitted here: the resolution recompute derives from pages, which reads `queued` until
+        // the first byte lands — announcing that would flash the chapter back to a queued icon
+        // between pickup and its first page. The re-mark below settles it as downloading.
+        await this.downloads.resolveChapterPages(key, chapterId, inputs);
       } catch {
         const failed = await this.downloads.failChapter(key, chapterId);
         this.emit({ type: "chapter", chapter: failed });
@@ -391,16 +394,19 @@ export class DownloadEngine {
     const outstanding = manifest.filter((p) => p.state !== "complete");
 
     if (outstanding.length === 0) {
-      // Already complete (e.g. re-enqueued) — settle the rolled-up state and tell subscribers.
+      // Already complete (a re-enqueue, or resolution found every page already downloaded) — settle
+      // the rolled-up state and tell subscribers.
       const settled = await this.downloads.getChapter(key, chapterId);
       if (settled) this.emit({ type: "chapter", chapter: settled });
       return false;
     }
 
-    // Announce 'downloading' the moment the engine picks the chapter up (before the first byte).
-    // Without this the chapter reads 'queued' until its first page lands, so at the hand-off from one
-    // chapter to the next a SERIES indicator would dip to 'queued' for that gap.
-    this.emit({ type: "chapter", chapter: { ...chapter, state: "downloading" } });
+    // Record the pickup IN THE MANIFEST, not just as a synthetic event: page-derived state stays
+    // `queued` until the first byte lands, so an observer refetching in that window (and the
+    // chapter hand-off gap) would dip back to a queued icon. The emitted chapter carries the
+    // resolved pageCount, so progress UIs have their denominator before the first page event.
+    const picked = await this.downloads.markChapterDownloading(key, chapterId);
+    this.emit({ type: "chapter", chapter: picked });
 
     let landed = false;
     const queue: DownloadedPage[] = [...outstanding];

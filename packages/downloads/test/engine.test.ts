@@ -588,3 +588,40 @@ describe("enqueueMany (bulk)", () => {
     expect((await downloads.getChapter(KEY, "old"))?.state).toBe("paused");
   });
 });
+
+describe("pickup state (no queued flash)", () => {
+  test("once a chapter is picked up, its events never dip back to 'queued' before completion", async () => {
+    const { fetch } = scriptedFetcher({});
+    const resolve = async () => pages(3);
+    const { engine, events } = makeEngine(fetch, { resolvePages: resolve });
+
+    await engine.enqueue(SNAP, CH);
+    await engine.drain();
+
+    const states = events
+      .filter((e): e is Extract<DownloadEngineEvent, { type: "chapter" }> => e.type === "chapter")
+      .map((e) => e.chapter.state);
+    const pickedAt = states.indexOf("downloading");
+    expect(pickedAt).toBeGreaterThanOrEqual(0);
+    // After pickup: only downloading → complete. A 'queued' in between is the icon flash.
+    expect(states.slice(pickedAt)).not.toContain("queued");
+    expect(states.at(-1)).toBe("complete");
+
+    // And the pickup event carries the resolved pageCount (the progress denominator).
+    const picked = events.find(
+      (e): e is Extract<DownloadEngineEvent, { type: "chapter" }> =>
+        e.type === "chapter" && e.chapter.state === "downloading" && e.chapter.pageCount > 0,
+    );
+    expect(picked).toBeDefined();
+  });
+
+  test("markChapterDownloading records pickup in the manifest but never resurrects a pause", async () => {
+    const { fetch } = scriptedFetcher({});
+    const { engine, downloads } = makeEngine(fetch);
+    await engine.enqueue(SNAP, CH, pages(2));
+
+    expect((await downloads.markChapterDownloading(KEY, "c1")).state).toBe("downloading");
+    await downloads.pauseChapter(KEY, "c1");
+    expect((await downloads.markChapterDownloading(KEY, "c1")).state).toBe("paused");
+  });
+});

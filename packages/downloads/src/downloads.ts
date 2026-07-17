@@ -184,6 +184,20 @@ export class Downloads {
     return next;
   }
 
+  /**
+   * Mark a chapter as actively downloading — the engine records its pickup HERE, in the manifest,
+   * so observers that refetch mid-download read `downloading` instead of `queued` (page-derived
+   * state only says `downloading` once a page has landed, which left a "queued" window between
+   * pickup and the first byte that flashed in UIs). No-op once pages complete or when paused.
+   */
+  async markChapterDownloading(key: string, chapterId: string): Promise<DownloadedChapter> {
+    const chapter = await this.requireChapter(key, chapterId);
+    if (chapter.state !== "queued" && chapter.state !== "failed") return chapter;
+    const next: DownloadedChapter = { ...chapter, state: "downloading" };
+    await this.store.putChapter(next);
+    return next;
+  }
+
   // ── Progress ────────────────────────────────────────────────────────────────
 
   /**
