@@ -81,6 +81,84 @@ describe("installEmbeddedTransport — download engine", () => {
     expect(getEmbeddedDownloadEngine()).toBeNull();
   });
 
+  test("a pages-less enqueue resolves lazily through the supplied resolver and drains", async () => {
+    setNativeBridgeRuntime(stubNative);
+    const blobs = new Map<string, Uint8Array>();
+    const blobStore: BlobStore = {
+      write: async (relPath, data) => {
+        blobs.set(relPath, data);
+        return { bytes: data.byteLength };
+      },
+      remove: async () => {},
+    };
+    let transport: EmbeddedTransport | null = null;
+    installEmbeddedTransport({
+      createRouter: createRouter as unknown as CreateRouter,
+      ...memStores(),
+      downloadsStore: new InMemoryDownloadsStore(),
+      downloadsEngine: {
+        blobs: blobStore,
+        fetchPage: async () => ({ data: new Uint8Array(5), contentType: "image/png" }),
+        // Config override (the default drives the router's bridge routes, which the stub native
+        // runtime can't answer) — proves the seam plumbs through install.
+        resolvePages: async () => [
+          { index: 0, sourceUrl: "/img/0" },
+          { index: 1, sourceUrl: "/img/1" },
+        ],
+      },
+      setTransport: (t) => {
+        transport = t;
+      },
+    });
+
+    const enq = await transport!("/downloads/entries/b1/s1/chapters/lazy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "S" }), // NO pages
+    });
+    expect(enq.status).toBe(201);
+    const chapter = (await enq.json()) as { state: string; pageCount: number; pagesResolved?: boolean };
+    expect(chapter.pageCount).toBe(0);
+    expect(chapter.pagesResolved).toBe(false);
+
+    const engine = getEmbeddedDownloadEngine();
+    await engine!.drain();
+    const settled = await engine!.downloads.getChapter("b1:s1", "lazy");
+    expect(settled?.state).toBe("complete");
+    expect(settled?.pageCount).toBe(2);
+    expect(blobs.size).toBe(2);
+  });
+
+  test("the default resolver drives the reused router; an unanswerable bridge fails the chapter", async () => {
+    setNativeBridgeRuntime(stubNative);
+    let transport: EmbeddedTransport | null = null;
+    installEmbeddedTransport({
+      createRouter: createRouter as unknown as CreateRouter,
+      ...memStores(),
+      downloadsStore: new InMemoryDownloadsStore(),
+      downloadsEngine: {
+        blobs: { write: async () => ({ bytes: 0 }), remove: async () => {} },
+        fetchPage: async () => ({ data: new Uint8Array(1) }),
+      },
+      setTransport: (t) => {
+        transport = t;
+      },
+    });
+
+    // No resolvePages override — resolution goes through the transport to the router's
+    // /bridges/... routes, where the stub provider has no such bridge → the chapter fails
+    // (visible + retryable) instead of wedging the queue.
+    const enq = await transport!("/downloads/entries/nope/s1/chapters/c1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "S" }),
+    });
+    expect(enq.status).toBe(201);
+    const engine = getEmbeddedDownloadEngine();
+    await engine!.drain();
+    expect((await engine!.downloads.getChapter("nope:s1", "c1"))?.state).toBe("failed");
+  });
+
   test("no engine without the seams (manifest-only embedded mode)", () => {
     setNativeBridgeRuntime(stubNative);
     installEmbeddedTransport({
