@@ -360,6 +360,33 @@ describe("pause during bulk collection", () => {
     expect(calls).toHaveLength(4);
   });
 
+  test("a delete racing a late enqueue's pause never rejects the enqueue", async () => {
+    // Pausing a mid-collection series makes every late enqueue pause its fresh chapter; if a delete
+    // (or a racy store) removed that chapter between the two writes, the pause throws "chapter not
+    // downloaded" — which must not reject the enqueue itself.
+    class VanishingDownloads extends Downloads {
+      override async pauseChapter(key: string, chapterId: string): Promise<never> {
+        throw new Error(`chapter not downloaded: ${key}/${chapterId}`);
+      }
+    }
+    const downloads = new VanishingDownloads(new InMemoryDownloadsStore());
+    const { fetch } = scriptedFetcher({});
+    let allowed = false;
+    const engine = new DownloadEngine({
+      downloads,
+      blobs: new FakeBlobStore(),
+      fetchPage: fetch,
+      mayDownload: async () => allowed,
+    });
+    await downloads.enqueueChapter(SNAP, CH, pages(1));
+    await engine.pauseSeries(KEY); // marks the series held; c1 stays queued (pauseChapter throws)
+
+    // With a paused-looking sibling, the late enqueue takes the pause branch — which throws.
+    const late = await engine.enqueue(SNAP, { chapterId: "c2" }, pages(1)); // must not reject
+    expect(late.chapterId).toBe("c2");
+    allowed = true;
+  });
+
   test("a stale series flag (everything since deleted) never holds a fresh download", async () => {
     const { fetch } = scriptedFetcher({});
     const { engine, downloads } = makeEngine(fetch);

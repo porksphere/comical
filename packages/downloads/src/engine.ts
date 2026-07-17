@@ -151,7 +151,12 @@ export class DownloadEngine {
         (c) => c.chapterId !== meta.chapterId && c.state === "paused",
       );
       if (siblingPaused) {
-        chapter = await this.downloads.pauseChapter(key, meta.chapterId);
+        try {
+          chapter = await this.downloads.pauseChapter(key, meta.chapterId);
+        } catch {
+          // The chapter vanished between the enqueue write and this pause (a delete raced a bulk
+          // collection) — there is nothing left to hold; report the enqueued snapshot as-was.
+        }
       } else {
         // No paused sibling left — the flag is stale (everything since resumed/completed/deleted);
         // a stale flag must never hold back a fresh download.

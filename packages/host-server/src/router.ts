@@ -1063,10 +1063,17 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         ...(b.number !== undefined && { number: b.number }),
         ...(b.languageCode !== undefined && { languageCode: b.languageCode }),
       };
-      const chapter = dlEngine
-        ? await dlEngine.enqueue(snap, meta, pages)
-        : await downloads.enqueueChapter(snap, meta, pages);
-      return c.json(chapter, 201);
+      try {
+        const chapter = dlEngine
+          ? await dlEngine.enqueue(snap, meta, pages)
+          : await downloads.enqueueChapter(snap, meta, pages);
+        return c.json(chapter, 201);
+      } catch (e) {
+        // A delete can race a bulk collection's enqueues — answer with a clean conflict instead of
+        // letting the store error surface as a bare 500.
+        const msg = e instanceof Error ? e.message : String(e);
+        return c.json({ error: msg }, msg.includes("not downloaded") ? 409 : 500);
+      }
     });
 
     // Record one page's downloaded bytes (client writes the blob, then reports its file + size).
