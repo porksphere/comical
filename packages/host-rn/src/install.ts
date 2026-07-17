@@ -145,6 +145,11 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
       ? new DownloadEngine({
           downloads: embeddedDownloads,
           resolvePages: createRouterPageResolver(async (path) => transport!(path)),
+          // The embedded engine ALWAYS gates on `mayDownload` (the app's Wi-Fi-only policy), so it's
+          // exactly where a transient gate-false could wedge the queue until an app restart. Arm the
+          // self-heal by default (the app may override via its downloadsEngine config) — the
+          // standalone server has no gate and omits it. See `DownloadEngineOptions.idleRecheckMs`.
+          idleRecheckMs: 15_000,
           ...config.downloadsEngine,
         })
       : undefined;

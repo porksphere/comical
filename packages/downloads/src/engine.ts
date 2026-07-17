@@ -96,6 +96,15 @@ export interface DownloadEngineOptions {
   attemptsPerPage?: number;
   /** Called between attempts on a page that failed once (device hosts bust a stale asset resolve). */
   onPageRetry?: (page: PendingPage) => void;
+  /**
+   * SELF-HEAL interval (ms). When set, a drain that settles with pending work still queued — but no
+   * explicit `stop()` — schedules a re-kick after this long, so the queue can't wedge permanently.
+   * This is the safety net for the `mayDownload` gate: a transient false reading (a device's Wi-Fi
+   * reading flapping without a real disconnect, so no network-change event fires to re-kick) would
+   * otherwise leave downloads stalled until the app restarts. Hosts WITHOUT a gate (the server)
+   * omit it — their queue only settles when genuinely empty. Off when undefined.
+   */
+  idleRecheckMs?: number;
 }
 
 export class DownloadEngine {
@@ -107,6 +116,8 @@ export class DownloadEngine {
   private readonly pageConcurrency: number;
   private readonly attemptsPerPage: number;
   private readonly onPageRetry: ((page: PendingPage) => void) | undefined;
+  private readonly idleRecheckMs: number | undefined;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly listeners = new Set<(e: DownloadEngineEvent) => void>();
   private drainPromise: Promise<void> | null = null;
@@ -130,6 +141,7 @@ export class DownloadEngine {
     this.pageConcurrency = opts.pageConcurrency ?? 1;
     this.attemptsPerPage = opts.attemptsPerPage ?? 2;
     this.onPageRetry = opts.onPageRetry;
+    this.idleRecheckMs = opts.idleRecheckMs;
   }
 
   // ── Events ───────────────────────────────────────────────────────────────────
@@ -296,6 +308,7 @@ export class DownloadEngine {
   /** Ask the running drain loop to stop after the current page (e.g. app backgrounding). */
   stop(): void {
     this.stopRequested = true;
+    this.clearIdleTimer();
   }
 
   /**
@@ -313,6 +326,8 @@ export class DownloadEngine {
       this.rekick = true;
       return this.drainPromise;
     }
+    // A fresh loop is starting — any pending self-heal timer is now redundant.
+    this.clearIdleTimer();
     this.stopRequested = false;
     this.drainPromise = (async () => {
       do {
@@ -327,9 +342,43 @@ export class DownloadEngine {
       if (this.rekick && !this.stopRequested) {
         this.rekick = false;
         this.kick();
+        return;
       }
+      // The loop settled. If it stopped with work still queued (a gate blip, a transient store
+      // hiccup) rather than a genuine empty/stop, arm the self-heal so the queue can't wedge until
+      // an app restart — see `idleRecheckMs`.
+      this.scheduleIdleRecheck();
     });
     return this.drainPromise;
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
+  /**
+   * Self-heal: if downloads are configured to re-check and the queue settled with work still
+   * pending (not a `stop()`), re-kick after `idleRecheckMs`. One trailing timer at a time; when it
+   * fires it kicks only if work is still pending and nothing's already draining. The kicked drain
+   * re-arms this through its own settle (`drain().finally`), so a gate that stays closed becomes a
+   * low-frequency poll that drains the instant it reopens — while an empty queue simply lets the
+   * timer lapse without re-arming (no forever-poll when there's nothing to do).
+   */
+  private scheduleIdleRecheck(): void {
+    if (this.idleRecheckMs === undefined || this.stopRequested || this.idleTimer) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.drainPromise || this.stopRequested) return;
+      void this.downloads
+        .pendingChapters()
+        .then((pending) => {
+          if (pending.length > 0 && !this.drainPromise && !this.stopRequested) this.kick();
+        })
+        .catch(() => {});
+    }, this.idleRecheckMs);
   }
 
   private async drainLoop(): Promise<void> {

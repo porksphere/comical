@@ -625,3 +625,88 @@ describe("pickup state (no queued flash)", () => {
     expect((await downloads.markChapterDownloading(KEY, "c1")).state).toBe("paused");
   });
 });
+
+describe("gate wedge (the on-device 'stalls until app restart' bug)", () => {
+  test("REPRO: a transient mayDownload=false leaves the queue wedged until an explicit kick", async () => {
+    const { fetch, calls } = scriptedFetcher({});
+    // The Wi-Fi-only gate. It reads FALSE for a beat (a transient network misread on-device — the
+    // reading flaps even though the device never really left Wi-Fi), then reads true again.
+    let gateOpen = false;
+    const { engine, downloads } = makeEngine(fetch, { mayDownload: async () => gateOpen });
+
+    // Enqueue three chapters while the gate is closed — each kicks a drain that immediately breaks
+    // on the closed gate, so nothing downloads.
+    await engine.enqueue(SNAP, { chapterId: "a" }, pages(1));
+    await engine.enqueue(SNAP, { chapterId: "b" }, pages(1));
+    await engine.enqueue(SNAP, { chapterId: "c" }, pages(1));
+    await engine.drain(); // settle the gated loop
+    expect(calls.length).toBe(0);
+    expect((await downloads.getChapter(KEY, "a"))?.state).toBe("queued");
+
+    // The gate reopens — but nothing tells the engine. NO kick, NO network-change event (there was
+    // no real change to fire one). On device this is the wedge: downloads sit forever.
+    gateOpen = true;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(calls.length).toBe(0); // <-- STILL nothing: the queue is wedged
+    expect((await downloads.getChapter(KEY, "a"))?.state).toBe("queued");
+
+    // The only cure today is an explicit kick — which is exactly what an app restart does
+    // (resumePendingDownloads -> kick). After it, the queue drains fine (it was never broken).
+    engine.kick();
+    await engine.drain();
+    expect((await downloads.getChapter(KEY, "a"))?.state).toBe("complete");
+    expect((await downloads.getChapter(KEY, "c"))?.state).toBe("complete");
+  });
+});
+
+describe("gate wedge self-heal (idleRecheckMs)", () => {
+  test("a re-check auto-drains the queue after a transient gate-false — no restart needed", async () => {
+    const { fetch, calls } = scriptedFetcher({});
+    let gateOpen = false;
+    const { engine, downloads } = makeEngine(fetch, {
+      mayDownload: async () => gateOpen,
+      idleRecheckMs: 20, // tiny for the test
+    });
+
+    await engine.enqueue(SNAP, { chapterId: "a" }, pages(1));
+    await engine.enqueue(SNAP, { chapterId: "b" }, pages(1));
+    await engine.drain();
+    expect(calls.length).toBe(0); // gated: nothing yet
+
+    // The gate reopens with NO kick and NO network event — exactly the wedge. The self-heal timer
+    // (armed when the gated loop settled with work pending) re-kicks on its own.
+    gateOpen = true;
+    await new Promise((r) => setTimeout(r, 80));
+    expect((await downloads.getChapter(KEY, "a"))?.state).toBe("complete");
+    expect((await downloads.getChapter(KEY, "b"))?.state).toBe("complete");
+  });
+
+  test("the self-heal poll stops once the queue is empty (no forever-timer)", async () => {
+    const { fetch } = scriptedFetcher({});
+    const { engine, downloads } = makeEngine(fetch, { idleRecheckMs: 15 });
+    await engine.enqueue(SNAP, CH, pages(1));
+    await engine.drain();
+    expect((await downloads.getChapter(KEY, "c1"))?.state).toBe("complete");
+    // Drained cleanly; a couple of recheck intervals pass with the queue empty. `stop()` must find
+    // no armed timer to clear (the poll lapsed) — asserted indirectly: nothing throws / re-drains.
+    await new Promise((r) => setTimeout(r, 50));
+    engine.stop(); // clears any timer; a no-op if already lapsed
+    expect((await downloads.getChapter(KEY, "c1"))?.state).toBe("complete");
+  });
+
+  test("stop() cancels a pending self-heal (backgrounding shouldn't silently resume)", async () => {
+    const { fetch, calls } = scriptedFetcher({});
+    let gateOpen = false;
+    const { engine, downloads } = makeEngine(fetch, {
+      mayDownload: async () => gateOpen,
+      idleRecheckMs: 20,
+    });
+    await engine.enqueue(SNAP, CH, pages(1));
+    await engine.drain(); // gated → armed
+    engine.stop(); // background: cancel the self-heal
+    gateOpen = true;
+    await new Promise((r) => setTimeout(r, 80));
+    expect(calls.length).toBe(0); // stayed put — no ghost resume after stop
+    expect((await downloads.getChapter(KEY, "c1"))?.state).toBe("queued");
+  });
+});
