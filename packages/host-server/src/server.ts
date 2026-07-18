@@ -2,11 +2,15 @@
  * Assembles the complete server: SettingsStore + BridgeManager + RegistryManager + Hono router.
  */
 import { join } from "node:path";
+import { DownloadEngine, Downloads } from "@comical/downloads";
 import { Library } from "@comical/library";
 import { ManifestStore, RegistryManager } from "@comical/registry";
 import { ComicalRuntime } from "@comical/runtime";
 import { BridgeManager } from "./bridge-manager.ts";
+import { FileBlobStore } from "./blob-store.ts";
+import { FileDownloadsStore } from "./downloads-store.ts";
 import { FileLibraryStore } from "./library-store.ts";
+import { createServerPageFetcher, createServerPageResolver } from "./page-fetcher.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
 import { SettingsStore } from "./settings-store.ts";
 import { TrackerManager } from "./tracker-manager.ts";
@@ -22,6 +26,13 @@ export interface ServerOptions {
    * pass `{ dir }` to override. Omit to leave the `/library` endpoints unmounted entirely.
    */
   library?: boolean | { dir?: string };
+  /**
+   * Enable the optional offline-downloads module: the manifest under `{dataDir}/downloads` plus a
+   * server-side download engine that fetches page bytes via the server's own bridges and stores them
+   * under `{dataDir}/downloads/blobs` (served back at `/downloads/.../file`, progress at
+   * `/downloads/events`). Pass `{ dir }` to override the root. Omit to leave `/downloads` unmounted.
+   */
+  downloads?: boolean | { dir?: string };
   /**
    * Enable the tracker plugin system. Pass a path (or array of paths) to scan for tracker bundles.
    * Omit to leave `/trackers` endpoints unmounted entirely.
@@ -59,6 +70,13 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
   });
   routerOpts.trackers = trackerManager;
 
+  // Shared late-bound in-process fetch: the download engine AND the cover capture both resolve
+  // server-relative asset URLs by driving this router directly, but the router can't exist until
+  // its options (which reference them) are assembled — so the fetch is assigned after creation.
+  let routerFetch: (req: Request) => Response | Promise<Response> = () =>
+    new Response(null, { status: 503 });
+  const pageFetcher = createServerPageFetcher(() => routerFetch, opts.token);
+
   if (opts.library) {
     const dir = typeof opts.library === "object" && opts.library.dir
       ? opts.library.dir
@@ -70,8 +88,30 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
       library: lib,
       ...(trackerManager ? { trackers: trackerManager } : {}),
     });
+    // Guaranteed-offline covers for library entries, under the library's own dir.
+    routerOpts.covers = { blobs: new FileBlobStore(join(dir, "covers")), fetchPage: pageFetcher };
+  }
+
+  let engine: DownloadEngine | undefined;
+  if (opts.downloads) {
+    const dir = typeof opts.downloads === "object" && opts.downloads.dir
+      ? opts.downloads.dir
+      : join(opts.dataDir, "downloads");
+    const downloads = new Downloads(new FileDownloadsStore(dir));
+    engine = new DownloadEngine({
+      downloads,
+      blobs: new FileBlobStore(join(dir, "blobs")),
+      fetchPage: pageFetcher,
+      // Lazily-enqueued chapters (the instant bulk-enqueue path) resolve their page lists at
+      // download time, through this router's own bridge routes.
+      resolvePages: createServerPageResolver(() => routerFetch, opts.token),
+    });
+    routerOpts.downloads = downloads;
+    routerOpts.downloadEngine = engine;
   }
   const router = createRouter(manager, routerOpts);
+  routerFetch = (req) => router.fetch(req);
+  engine?.kick(); // resume any downloads interrupted by the previous run
 
   return Bun.serve({ port: opts.port ?? 3100, fetch: router.fetch });
 }
@@ -85,6 +125,7 @@ if (import.meta.main) {
     bridgesDir: join(ROOT, "bridges"),
     dataDir: process.env.COMICAL_DATA_DIR ?? join(ROOT, ".comical"),
     library: true,
+    downloads: true,
     ...(process.env.COMICAL_ORIGIN ? { origin: process.env.COMICAL_ORIGIN } : {}),
     ...(process.env.COMICAL_TOKEN ? { token: process.env.COMICAL_TOKEN } : {}),
   });

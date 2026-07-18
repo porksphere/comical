@@ -51,6 +51,121 @@ describe("collection", () => {
   });
 });
 
+describe("offline metadata cache", () => {
+  test("cacheSeriesDetail stores the full SeriesInfo for a library entry; no-op otherwise", async () => {
+    const lib = makeLibrary();
+    const info = { id: "s1", title: "Series One", description: "A tale.", author: "A. Author", genres: ["Fantasy"] };
+
+    await lib.cacheSeriesDetail(KEY, info); // not in library yet
+    await lib.addSeries(SERIES);
+    expect(await lib.getCachedDetail(KEY)).toBeUndefined();
+
+    await lib.cacheSeriesDetail(KEY, info);
+    const cached = await lib.getCachedDetail(KEY);
+    expect(cached?.info.description).toBe("A tale.");
+    expect(cached?.cachedAt).toBeGreaterThan(0);
+  });
+
+  test("syncChapters writes the full renderable chapter list through to the cache", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+
+    const cached = await lib.getCachedChapters(KEY);
+    expect(cached?.chapters.map((c) => c.id)).toEqual(["c1", "c2"]);
+    expect(cached?.chapters[0]?.name).toBe("Ch 1"); // full Chapter, not the slim KnownChapter projection
+  });
+
+  test("a detail refresh preserves the coverFile pointer; setCachedCover records it", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One" });
+
+    await lib.setCachedCover(KEY, "demo/s1.jpg");
+    expect((await lib.getCachedDetail(KEY))?.coverFile).toBe("demo/s1.jpg");
+
+    // Browsing rewrites the detail doc — the captured cover must survive it.
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", description: "fresh" });
+    const after = await lib.getCachedDetail(KEY);
+    expect(after?.info.description).toBe("fresh");
+    expect(after?.coverFile).toBe("demo/s1.jpg");
+  });
+
+  test("setCachedCover records the source URL; cacheSeriesDetail preserves both cover fields", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One" });
+    await lib.setCachedCover(KEY, "demo/s1.jpg", "https://cdn.example/cover-v1.jpg");
+
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", description: "fresh" });
+    const after = await lib.getCachedDetail(KEY);
+    expect(after?.coverFile).toBe("demo/s1.jpg");
+    expect(after?.coverSourceUrl).toBe("https://cdn.example/cover-v1.jpg");
+  });
+
+  test("refreshSnapshot reconciles changed display fields and merges externalIds", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries({ ...SERIES, title: "Old Title", author: "Old Author", externalIds: { anilist: 1 } });
+
+    await lib.refreshSnapshot(KEY, {
+      id: "s1",
+      title: "New Title",
+      thumbnailUrl: "https://cdn.example/new-cover.jpg",
+      author: "New Author",
+      externalIds: { mal: 42 },
+    });
+    const entry = await lib.getEntry(KEY);
+    expect(entry?.title).toBe("New Title");
+    expect(entry?.thumbnailUrl).toBe("https://cdn.example/new-cover.jpg");
+    expect(entry?.author).toBe("New Author");
+    expect(entry?.externalIds).toEqual({ anilist: 1, mal: 42 }); // merged, never removed
+  });
+
+  test("refreshSnapshot is a no-op when nothing changed (updatedAt untouched) or not in library", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries({ ...SERIES, author: "A. Author" });
+    const before = await lib.getEntry(KEY);
+
+    await lib.refreshSnapshot(KEY, { id: "s1", title: SERIES.title, author: "A. Author" });
+    expect((await lib.getEntry(KEY))?.updatedAt).toBe(before!.updatedAt);
+
+    await lib.refreshSnapshot("demo:not-added", { id: "x", title: "X" }); // must not throw or create
+    expect(await lib.getEntry("demo:not-added")).toBeUndefined();
+  });
+
+  test("setCachedCover is a no-op without a detail doc", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.setCachedCover(KEY, "demo/s1.jpg");
+    expect(await lib.getCachedDetail(KEY)).toBeUndefined();
+  });
+
+  test("removeSeries cascades away both cached docs", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One" });
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+
+    await lib.removeSeries(KEY);
+    expect(await lib.getCachedDetail(KEY)).toBeUndefined();
+    expect(await lib.getCachedChapters(KEY)).toBeUndefined();
+  });
+
+  test("a schema-drifted persisted doc is discarded, not served", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await lib.addSeries(SERIES);
+    // Simulate an old/corrupt doc written by a previous version.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await store.putSeriesDetail(KEY, { info: { notATitle: true }, cachedAt: "soon" } as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await store.putCachedChapters(KEY, { chapters: [{ bogus: 1 }] } as any);
+
+    expect(await lib.getCachedDetail(KEY)).toBeUndefined();
+    expect(await lib.getCachedChapters(KEY)).toBeUndefined();
+  });
+});
+
 describe("read state", () => {
   test("markReadUpTo marks all earlier chapters in reading order, regardless of input order", async () => {
     const lib = makeLibrary();

@@ -83,6 +83,9 @@ class ExampleBridge extends BridgeBase<Settings> {
     languages: ["en"],
     nsfw: false,
     capabilities: ["lists", "search", "filters", "sort", "settings", "favorites", "exclude-tags", "exclude-genres", "resolve-tags"],
+    // Entries carry an author subtitle (see `entry.subtitle` below) — clients reserve the card
+    // sub-line for this bridge's grids.
+    cardSubtitles: true,
     iconUrl: "https://example.com/favicon.ico",
   };
 

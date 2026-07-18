@@ -8,13 +8,52 @@
  * here because they don't exist elsewhere in comical: this package is their canonical home.
  */
 import type { BridgeInfo } from "@comical/contract";
+import type { BlobStore, DownloadEngine, Downloads, DownloadsStore, PageFetcher, PageResolver, PendingPage } from "@comical/downloads";
 import type { RegistryProvider } from "@comical/host-server/registry-provider";
 import type { Library, LibraryStore } from "@comical/library";
 import type { SavedRegistry } from "@comical/registry/schema";
 import type { ComicalRuntime } from "@comical/runtime";
 
 export type { Library, LibraryStore } from "@comical/library";
+export type {
+  BlobStore,
+  DownloadEngine,
+  DownloadEngineEvent,
+  Downloads,
+  DownloadsStore,
+  FetchedPage,
+  PageFetcher,
+  PageResolver,
+  PendingPage,
+} from "@comical/downloads";
 export type { ComicalRuntime } from "@comical/runtime";
+
+/**
+ * The device seams for an embedded download engine. Supplied by the app alongside `downloadsStore`:
+ * the engine itself (drain loop, queue, events) is built here from `@comical/downloads`, and the
+ * app injects only what's platform-bound — where bytes land (`blobs`, expo-file-system in an app),
+ * how a `sourceUrl` becomes bytes (`fetchPage`, the reader's own asset resolver), the Wi-Fi-only
+ * policy gate, and the between-attempts retry hook (busting a stale asset resolution).
+ */
+export interface EmbeddedDownloadsEngineConfig {
+  blobs: BlobStore;
+  fetchPage: PageFetcher;
+  mayDownload?: () => Promise<boolean>;
+  onPageRetry?: (page: PendingPage) => void;
+  /** How lazily-enqueued chapters resolve their page lists at download time. Defaults to driving
+   *  the reused router's own `/bridges/...` routes in-process — override only in tests. */
+  resolvePages?: PageResolver;
+}
+
+/**
+ * The device seams for guaranteed-offline library covers: where cover bytes land (`blobs`, a covers-
+ * rooted store WITH `read` — the router serves them back at `/library/entries/:b/:s/cover`) and how
+ * a cover URL becomes bytes (`fetchPage`, typically the same fetcher the download engine uses).
+ */
+export interface EmbeddedCoversConfig {
+  blobs: BlobStore;
+  fetchPage: PageFetcher;
+}
 
 export type { BridgeProvider, BridgeSummary, BridgeSource } from "@comical/host-server/bridge-provider";
 export type { RegistryProvider } from "@comical/host-server/registry-provider";
@@ -39,6 +78,16 @@ export type CreateRouter = (
     library?: Library;
     /** Runtime orchestration layer — paired with `library` for addToLibrary / read-sync / sync. */
     runtime?: ComicalRuntime;
+    /** Downloads service — enables the `/downloads*` offline-manifest endpoints when provided. */
+    downloads?: Downloads;
+    /** Download engine — with it the router's downloads routes go host-managed (engine-delegated
+     *  mutations, host-side blob deletion). The embedded host runs the engine in-process; clients
+     *  subscribe to it directly (never via `/downloads/events`, which the buffering transport
+     *  could not stream). */
+    downloadEngine?: DownloadEngine;
+    /** Cover byte cache — with it (alongside `library`) the router captures and serves library
+     *  entries' covers for guaranteed-offline rendering. */
+    covers?: EmbeddedCoversConfig;
   },
 ) => EmbeddedRouter;
 

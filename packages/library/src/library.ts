@@ -5,13 +5,17 @@
  * Identity is the cross-bridge pair `(bridgeId, seriesId)`, encoded via `entryKey`. The library is
  * fully independent of any bridge's backend `favorites`: adding here never touches a bridge.
  */
-import type { Chapter } from "@comical/contract";
+import type { Chapter, SeriesInfo } from "@comical/contract";
 import {
+  cachedChaptersSchema,
+  cachedSeriesDetailSchema,
   entryKey,
   parseEntryKey,
   type ActivityItem,
   type ActivityItemView,
   type BridgePrefs,
+  type CachedChapters,
+  type CachedSeriesDetail,
   type ChapterProgress,
   type HistoryItem,
   type KnownChapter,
@@ -145,6 +149,93 @@ export class Library {
     await this.store.deleteEntry(key);
     await this.store.deleteProgressForEntry(key);
     await this.store.deleteActivityForEntry(key);
+    await this.store.deleteSeriesDetail(key);
+    await this.store.deleteCachedChapters(key);
+  }
+
+  /** The bytes the library's persisted documents occupy, when the store can measure them. */
+  async diskUsage(): Promise<number | undefined> {
+    return this.store.diskUsage?.();
+  }
+
+  // ── Offline metadata cache ─────────────────────────────────────────────────────
+  // The series page's offline data: the full SeriesInfo and the full renderable chapter list,
+  // captured from fetches the system makes anyway (add-to-library, browsing, background sync) and
+  // served back by the router when the bridge can't answer. See `cachedSeriesDetailSchema`.
+
+  /**
+   * Cache the full series detail for offline rendering. No-op unless the series is in the library.
+   * Preserves the existing cover pointer fields — detail refreshes must never orphan captured covers.
+   */
+  async cacheSeriesDetail(key: string, info: SeriesInfo): Promise<void> {
+    if (!(await this.isInLibrary(key))) return;
+    const existing = await this.store.getSeriesDetail(key);
+    const doc: CachedSeriesDetail = { info, cachedAt: this.now() };
+    if (existing?.coverFile !== undefined) doc.coverFile = existing.coverFile;
+    if (existing?.coverSourceUrl !== undefined) doc.coverSourceUrl = existing.coverSourceUrl;
+    await this.store.putSeriesDetail(key, doc);
+  }
+
+  /** Record where the host stored this entry's cover bytes (and the URL they came from, for the
+   *  staleness check). No-op without a cached detail doc. */
+  async setCachedCover(key: string, coverFile: string, coverSourceUrl?: string): Promise<void> {
+    const doc = await this.store.getSeriesDetail(key);
+    if (!doc) return;
+    const next: CachedSeriesDetail = { ...doc, coverFile };
+    if (coverSourceUrl !== undefined) next.coverSourceUrl = coverSourceUrl;
+    await this.store.putSeriesDetail(key, next);
+  }
+
+  /**
+   * Reconcile the entry's display snapshot (what the library grid/history render) with a fresh,
+   * successful `SeriesInfo` — the source is authoritative for its own metadata, so a renamed series
+   * or changed cover/author heals on the next browse instead of staying frozen at add time. New
+   * `externalIds` merge in (never removed); `addedAt`/`listIds`/progress are untouched. No-op when
+   * nothing changed or the series isn't in the library.
+   */
+  async refreshSnapshot(key: string, info: SeriesInfo): Promise<void> {
+    const entry = await this.store.getEntry(key);
+    if (!entry) return;
+    let changed = false;
+    if (info.title && info.title !== entry.title) {
+      entry.title = info.title;
+      changed = true;
+    }
+    if (info.thumbnailUrl !== undefined && info.thumbnailUrl !== entry.thumbnailUrl) {
+      entry.thumbnailUrl = info.thumbnailUrl;
+      changed = true;
+    }
+    if (info.author !== undefined && info.author !== entry.author) {
+      entry.author = info.author;
+      changed = true;
+    }
+    if (info.externalIds) {
+      for (const [tracker, id] of Object.entries(info.externalIds)) {
+        if (entry.externalIds?.[tracker] !== id) {
+          entry.externalIds = { ...entry.externalIds, [tracker]: id };
+          changed = true;
+        }
+      }
+    }
+    if (!changed) return;
+    entry.updatedAt = this.now();
+    await this.store.putEntry(entry);
+  }
+
+  /** The cached detail, or undefined (not captured / schema-drifted doc, which is discarded). */
+  async getCachedDetail(key: string): Promise<CachedSeriesDetail | undefined> {
+    const doc = await this.store.getSeriesDetail(key);
+    if (!doc) return undefined;
+    const parsed = cachedSeriesDetailSchema.safeParse(doc);
+    return parsed.success ? parsed.data : undefined;
+  }
+
+  /** The cached chapter list, or undefined (not captured / schema-drifted doc, which is discarded). */
+  async getCachedChapters(key: string): Promise<CachedChapters | undefined> {
+    const doc = await this.store.getCachedChapters(key);
+    if (!doc) return undefined;
+    const parsed = cachedChaptersSchema.safeParse(doc);
+    return parsed.success ? parsed.data : undefined;
   }
 
   async isInLibrary(key: string): Promise<boolean> {
@@ -247,6 +338,10 @@ export class Library {
     });
     entry.chaptersSyncedAt = t;
     await this.store.putEntry(entry);
+
+    // Write the full renderable list through to the offline cache — one sync now produces both
+    // artifacts (unread reconciliation above + the series page's offline chapter list).
+    await this.store.putCachedChapters(key, { chapters, cachedAt: t });
 
     // Record each newly-detected chapter as an activity event (the "new chapters" feed). Snapshots
     // the series display fields so the feed renders offline / after the bridge is removed.

@@ -11,6 +11,7 @@
   "dependencies": {
     "@comical/contract": "workspace:*",
     "@comical/core": "workspace:*",
+    "@comical/downloads": "workspace:*",
     "@comical/host-server": "workspace:*",
     "@comical/library": "workspace:*",
     "@comical/registry": "workspace:*",

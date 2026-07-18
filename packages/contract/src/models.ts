@@ -606,6 +606,15 @@ export const bridgeInfoSchema = z.object({
   languages: z.array(z.string()).min(1),
   nsfw: z.boolean(),
   capabilities: z.array(bridgeCapabilitySchema),
+  /**
+   * Whether this bridge's series entries carry a `subtitle` (the secondary line under a card's
+   * title — latest chapter, author, …). A presentation-layout hint, not a behaviour switch: card
+   * grids reserve a FIXED per-card height up front (virtualized lists need it before entries
+   * arrive), so a bridge that never emits subtitles declaring nothing (the default) lets clients
+   * drop the reserved subtitle line instead of rendering a blank band under every card. Additive
+   * and optional — omitted means "no subtitles".
+   */
+  cardSubtitles: z.boolean().optional(),
   /** Absolute URL (or data URI) to a small square icon representing the bridge/source. Optional. */
   iconUrl: z.string().url().optional(),
   /**

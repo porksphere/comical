@@ -1,0 +1,14 @@
+{
+  "name": "@comical/downloads",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Optional durable downloads: portable manifest model, a DownloadsStore seam, and a pure Downloads service for offline reading (bytes stored per-platform)",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@comical/contract": "workspace:*",
+    "zod": "^3.23.8"
+  }
+}

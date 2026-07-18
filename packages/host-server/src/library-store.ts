@@ -8,9 +8,9 @@
  *
  * Single-user, local scale: small files, full read/parse on first touch, then cached.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { activityKey, type ActivityItem, type BridgePrefs, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
+import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -56,6 +56,12 @@ export class FileLibraryStore implements LibraryStore {
   private progressPath(key: string): string {
     return join(this.dir, "progress", `${encodeURIComponent(key)}.json`);
   }
+  private detailPath(key: string): string {
+    return join(this.dir, "details", `${encodeURIComponent(key)}.json`);
+  }
+  private cachedChaptersPath(key: string): string {
+    return join(this.dir, "chapters-cache", `${encodeURIComponent(key)}.json`);
+  }
 
   // ── Entries ──────────────────────────────────────────────────────────────────
 
@@ -97,6 +103,54 @@ export class FileLibraryStore implements LibraryStore {
   }
   async deleteEntry(key: string): Promise<void> {
     if ((await this.entries()).delete(key)) await this.flushEntries();
+  }
+
+  // ── Disk usage ───────────────────────────────────────────────────────────────
+
+  /** Actual bytes under the library dir, EXCLUDING the covers subdir — the covers `BlobStore` is
+   *  rooted inside it (`{dir}/covers`) and reports its own usage; counting it here would double. */
+  async diskUsage(): Promise<number> {
+    let total = 0;
+    const walk = async (dir: string, skipCovers: boolean): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return; // dir missing / transient — report what we could see
+      }
+      for (const entry of entries) {
+        if (skipCovers && entry.isDirectory() && entry.name === "covers") continue;
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) await walk(path, false);
+        else total += (await stat(path).catch(() => null))?.size ?? 0;
+      }
+    };
+    await walk(this.dir, true);
+    return total;
+  }
+
+  // ── Offline metadata cache ──────────────────────────────────────────────────
+  // One JSON doc per entry (chapter lists are bulky), read lazily on demand — never bulk-loaded.
+
+  async getSeriesDetail(key: string): Promise<CachedSeriesDetail | undefined> {
+    return readJson<CachedSeriesDetail | undefined>(this.detailPath(key), undefined);
+  }
+  async putSeriesDetail(key: string, detail: CachedSeriesDetail): Promise<void> {
+    await mkdir(join(this.dir, "details"), { recursive: true });
+    await writeFile(this.detailPath(key), JSON.stringify(detail, null, 2), "utf8");
+  }
+  async deleteSeriesDetail(key: string): Promise<void> {
+    await rm(this.detailPath(key), { force: true });
+  }
+  async getCachedChapters(key: string): Promise<CachedChapters | undefined> {
+    return readJson<CachedChapters | undefined>(this.cachedChaptersPath(key), undefined);
+  }
+  async putCachedChapters(key: string, doc: CachedChapters): Promise<void> {
+    await mkdir(join(this.dir, "chapters-cache"), { recursive: true });
+    await writeFile(this.cachedChaptersPath(key), JSON.stringify(doc, null, 2), "utf8");
+  }
+  async deleteCachedChapters(key: string): Promise<void> {
+    await rm(this.cachedChaptersPath(key), { force: true });
   }
 
   // ── Progress ───────────────────────────────────────────────────────────────────

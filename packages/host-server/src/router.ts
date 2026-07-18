@@ -15,6 +15,9 @@ import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } f
 import { BridgeSettingsError } from "@comical/core/errors";
 import { validateSettingsInput } from "@comical/core/settings";
 import { entryKey, type Library } from "@comical/library";
+import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
+import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
+import { streamSSE } from "hono/streaming";
 import type { ComicalRuntime } from "@comical/runtime";
 import type { BridgeProvider } from "./bridge-provider.ts";
 import type { RegistryProvider } from "./registry-provider.ts";
@@ -39,6 +42,24 @@ export interface RouterOptions {
   library?: Library;
   /** Runtime orchestration layer — required alongside `library` for read-sync and richer addToLibrary. */
   runtime?: ComicalRuntime;
+  /**
+   * Cover byte cache for library entries — with it (alongside `library`), the host captures each
+   * entry's cover image into `blobs` (fetched through `fetchPage`, the same seam the download
+   * engine uses, so `/img-proxy` referer rules are reused) and serves it back at
+   * `/library/entries/:b/:s/cover`; the offline details fallback then points `thumbnailUrl` at that
+   * route, making covers render with the source unreachable.
+   */
+  covers?: { blobs: BlobStore; fetchPage: PageFetcher };
+  /** Downloads service — enables the optional `/downloads` offline-manifest endpoints when provided. */
+  downloads?: Downloads;
+  /**
+   * Download engine — when provided alongside `downloads`, the HOST owns the bytes: enqueue may omit
+   * `pages` (the router resolves them via the bridge) and kicks the drain, pause/resume/delete
+   * delegate to the engine (deletes unlink blobs host-side), and the `/downloads/.../file` +
+   * `/downloads/events` routes mount. Without it the routes stay manifest-only (a CLIENT fetches
+   * bytes and reports back) — the embedded/manifest-only mode.
+   */
+  downloadEngine?: DownloadEngine;
   /** Tracker manager — enables `/trackers` endpoints when provided. `TrackerManager` satisfies `TrackerProvider`. */
   trackers?: TrackerProvider;
   /** Base URL of this server, used as the OAuth callback redirect URI (e.g. "http://localhost:3100"). */
@@ -90,6 +111,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.use("/library/*", guard as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     app.use("/trackers/*", guard as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    app.use("/downloads/*", guard as any);
   }
 
   app.use("*", async (c, next) => {
@@ -477,8 +500,44 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }),
   );
 
-  app.get("/bridges/:id/series/:seriesId", (c) =>
-    withContentBridge(c, async (bridge) => {
+  // Series detail + chapter list are bridge-first with an OFFLINE FALLBACK to the library's
+  // metadata cache: a library entry's page must render when the bridge can't answer — device or
+  // server cut off from the source, the source down, or the bridge uninstalled entirely (every one
+  // of those surfaces here as a non-ok Response from withContentBridge). Successful live responses
+  // write through to the cache for library entries, so it stays as fresh as the user's own
+  // browsing; non-library series keep the exact error behavior they had.
+  const libMeta = opts.library;
+  const covers = opts.covers;
+
+  /**
+   * Capture a library entry's cover bytes (fire-and-forget): fetch the entry snapshot's
+   * `thumbnailUrl` through the host's page fetcher and store it in the covers blob store, recording
+   * the pointer + source URL on the cached detail doc. Triggered on library-add and on the details
+   * write-through; skipped while the captured cover's source URL still matches the entry's, so an
+   * up-to-date cover costs nothing and a source-side cover change re-captures on the next browse.
+   * A failed re-capture keeps the previous blob — stale beats missing.
+   */
+  const captureCover = (bridgeId: string, seriesId: string): void => {
+    if (!libMeta || !covers) return;
+    void (async () => {
+      const key = entryKey(bridgeId, seriesId);
+      const detail = await libMeta.getCachedDetail(key);
+      if (!detail) return; // no doc to hang the pointer on
+      const url = (await libMeta.getEntry(key))?.thumbnailUrl;
+      if (!url) return;
+      if (detail.coverFile && detail.coverSourceUrl === url) return; // captured and still current
+      const fetched = await covers.fetchPage({ bridgeId, seriesId, chapterId: "__cover__" }, { index: 0, sourceUrl: url });
+      const file = `${sanitizeSegment(bridgeId)}/${sanitizeSegment(seriesId)}.${extFor(fetched.contentType ?? url)}`;
+      await covers.blobs.write(file, fetched.data);
+      await libMeta.setCachedCover(key, file, url);
+      // A re-capture whose extension changed leaves the old blob behind — unlink it.
+      if (detail.coverFile && detail.coverFile !== file) await covers.blobs.remove([detail.coverFile]).catch(() => {});
+    })().catch(() => {});
+  };
+
+  app.get("/bridges/:id/series/:seriesId", async (c) => {
+    const key = entryKey(c.req.param("id"), c.req.param("seriesId"));
+    const live = await withContentBridge(c, async (bridge) => {
       const info = await bridge.getSeriesDetails(c.req.param("seriesId"));
       // Series detail is the one surface that pairs tag id + name — warm the cache for free so
       // later id→label folds (e.g. excluded tags) need no `resolveTags` call.
@@ -490,9 +549,34 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           );
         }
       }
+      // Write-through for library entries: refresh the offline detail doc AND reconcile the entry's
+      // display snapshot with this fresh, successful info (the source is authoritative for its own
+      // metadata — a renamed series or changed cover heals here). Snapshot first-then-cover, so the
+      // capture's staleness check sees the entry's up-to-date thumbnailUrl.
+      if (libMeta) {
+        const lib = libMeta;
+        void (async () => {
+          await lib.cacheSeriesDetail(key, info);
+          await lib.refreshSnapshot(key, info);
+          captureCover(c.req.param("id"), c.req.param("seriesId"));
+        })().catch(() => {});
+      }
       return c.json(info);
-    }),
-  );
+    });
+    if (live.ok || !libMeta) return live;
+    const cached = await libMeta.getCachedDetail(key).catch(() => undefined);
+    if (!cached) return live;
+    // Additive fields on the SeriesInfo shape — clients render the saved detail and may show a
+    // "showing saved details" affordance off `cached`/`cachedAt`. A captured cover replaces the
+    // (likely unreachable) live thumbnail URL with this host's own cover route.
+    const info = cached.coverFile
+      ? {
+          ...cached.info,
+          thumbnailUrl: `/library/entries/${encodeURIComponent(c.req.param("id"))}/${encodeURIComponent(c.req.param("seriesId"))}/cover`,
+        }
+      : cached.info;
+    return c.json({ ...info, cached: true, cachedAt: cached.cachedAt });
+  });
 
   app.get("/bridges/:id/series/:seriesId/related", (c) =>
     withContentBridge(c, async (bridge) => {
@@ -501,12 +585,20 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }),
   );
 
-  app.get("/bridges/:id/series/:seriesId/chapters", (c) =>
-    withContentBridge(c, async (bridge) => {
+  app.get("/bridges/:id/series/:seriesId/chapters", async (c) => {
+    const key = entryKey(c.req.param("id"), c.req.param("seriesId"));
+    const live = await withContentBridge(c, async (bridge) => {
       if (!bridge.getChapters) return c.json({ error: "not supported" }, 400);
-      return c.json(await bridge.getChapters(c.req.param("seriesId")));
-    }),
-  );
+      const chapters = await bridge.getChapters(c.req.param("seriesId"));
+      // syncChapters throws for non-library series — the catch keeps this a library-only capture.
+      void libMeta?.syncChapters(key, chapters).catch(() => {});
+      return c.json(chapters);
+    });
+    if (live.ok || !libMeta) return live;
+    const cached = await libMeta.getCachedChapters(key).catch(() => undefined);
+    if (!cached) return live;
+    return c.json(cached.chapters); // same Chapter[] shape as live — array responses carry no marker
+  });
 
   app.get("/bridges/:id/series/:seriesId/chapters/:chapterId/pages", (c) =>
     withContentBridge(c, async (bridge) => {
@@ -673,6 +765,15 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       }),
     );
 
+    // The bytes the library occupies on this host — store documents plus captured cover blobs.
+    // Powers the client Storage screen's library figure, host-aware through the transport (device
+    // AsyncStorage docs when embedded, the server's library dir when remote).
+    app.get("/library/usage", async (c) => {
+      const docs = (await lib.diskUsage().catch(() => undefined)) ?? 0;
+      const coverBytes = (await covers?.blobs.usage?.().catch(() => undefined)) ?? 0;
+      return c.json({ diskBytes: docs + coverBytes });
+    });
+
     // Entries
     app.post("/library/entries", async (c) => {
       const b = await body<{
@@ -691,12 +792,28 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           ...(b.listIds !== undefined && { listIds: b.listIds }),
           ...(b.externalIds !== undefined && { externalIds: b.externalIds }),
         });
+        // Guaranteed-offline cover: capture the new entry's cover bytes (fire-and-forget).
+        captureCover(b.bridgeId, b.seriesId);
         return c.json(result, 201);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
       }
     });
+
+    // The captured cover bytes for a library entry — the offline details fallback points
+    // `thumbnailUrl` here. Moderate caching: unlike downloaded pages, a cover can change.
+    if (covers?.blobs.read) {
+      app.get("/library/entries/:bridgeId/:seriesId/cover", async (c) => {
+        const detail = await lib.getCachedDetail(keyOf(c));
+        if (!detail?.coverFile) return c.json({ error: "no cover captured" }, 404);
+        const data = await covers.blobs.read!(detail.coverFile);
+        if (!data) return c.json({ error: "cover blob missing" }, 404);
+        return new Response(data as unknown as ArrayBuffer, {
+          headers: { "Content-Type": contentTypeFor(detail.coverFile), "Cache-Control": "max-age=86400" },
+        });
+      });
+    }
 
     app.get("/library/entries/:bridgeId/:seriesId", async (c) => {
       const key = keyOf(c);
@@ -706,7 +823,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     });
 
     app.delete("/library/entries/:bridgeId/:seriesId", async (c) => {
+      // Read the cover pointer before the cascade wipes the detail doc, then unlink the blob.
+      const coverFile = covers ? (await lib.getCachedDetail(keyOf(c)))?.coverFile : undefined;
       await lib.removeSeries(keyOf(c));
+      if (coverFile) await covers!.blobs.remove([coverFile]).catch(() => {});
       return c.json({ ok: true });
     });
 
@@ -839,6 +959,262 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       await lib.setBridgePrefs(c.req.param("bridgeId"), update);
       return c.json({ ok: true });
     });
+  }
+
+  // ── Downloads endpoints ────────────────────────────────────────────────────────
+  // Mounted only when a Downloads service is provided. These manage the offline-download MANIFEST
+  // (which chapters/pages are downloaded, their state and byte sizes). Who owns the bytes depends on
+  // `opts.downloadEngine`: with an engine the HOST fetches/stores/serves them (and enqueue may omit
+  // the page list — the router resolves it via the bridge); without one they stay a client concern
+  // (the client fetches bytes, reports them via `recordPage`, and unlinks the paths deletes return).
+
+  const downloads = opts.downloads;
+  const dlEngine = opts.downloadEngine;
+  if (downloads) {
+    const dlKeyOf = (c: { req: { param: (k: string) => string } }) =>
+      entryKey(c.req.param("bridgeId"), c.req.param("seriesId"));
+
+    // Storage-usage tree (total bytes + series → chapters breakdown) for the Downloads screen. When
+    // this host owns the bytes, the blob root's ACTUAL size rides along so clients can show true
+    // host-side usage (and a gap versus the manifest total surfaces orphaned blobs).
+    app.get("/downloads", async (c) => {
+      const usage = await downloads.getStorageUsage();
+      const diskBytes = await dlEngine?.blobs.usage?.().catch(() => undefined);
+      return c.json(diskBytes !== undefined ? { ...usage, diskBytes } : usage);
+    });
+
+    // Chapters still needing bytes (the work queue a client drains).
+    app.get("/downloads/pending", async (c) => c.json(await downloads.pendingChapters()));
+
+    // Download preferences (wifiOnly / background).
+    app.get("/downloads/prefs", async (c) => c.json(await downloads.getPrefs()));
+    app.put("/downloads/prefs", async (c) => {
+      const b = await body<{ wifiOnly?: boolean; background?: boolean }>(c);
+      const current = await downloads.getPrefs();
+      return c.json(
+        await downloads.setPrefs({
+          wifiOnly: typeof b?.wifiOnly === "boolean" ? b.wifiOnly : current.wifiOnly,
+          background: typeof b?.background === "boolean" ? b.background : current.background,
+        }),
+      );
+    });
+
+    // One series' manifest (snapshot + its chapters).
+    app.get("/downloads/entries/:bridgeId/:seriesId", async (c) => {
+      const key = dlKeyOf(c);
+      const series = await downloads.getSeries(key);
+      if (!series) return c.json({ error: "series not downloaded" }, 404);
+      const chapters = (await downloads.getStorageUsage()).bySeries.find(
+        (s) => entryKey(s.bridgeId, s.seriesId) === key,
+      )?.chapters;
+      return c.json({ series, chapters: chapters ?? [] });
+    });
+
+    // Enqueue a chapter for download: body carries the series snapshot, chapter meta, and — in
+    // manifest-only mode — the page list. With an engine the pages are optional: the chapter is
+    // recorded `queued` with its pages UNRESOLVED (a pure store write, so the response is instant
+    // and the intent is durable), and the engine resolves the page list via its own bridge when the
+    // drain picks the chapter up. A resolution failure surfaces as a `failed` (retryable) chapter.
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId", async (c) => {
+      const b = await body<{
+        title?: string; thumbnailUrl?: string; author?: string;
+        chapterName?: string; number?: number; languageCode?: string;
+        pages?: DownloadPageInput[];
+      }>(c);
+      if (!b?.title || (!b.pages && !dlEngine)) return c.json({ error: "title and pages are required" }, 400);
+      const snap: DownloadSeriesSnapshot = {
+        bridgeId: c.req.param("bridgeId"),
+        seriesId: c.req.param("seriesId"),
+        title: b.title,
+        ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
+        ...(b.author !== undefined && { author: b.author }),
+      };
+      const meta: DownloadChapterMeta = {
+        chapterId: c.req.param("chapterId"),
+        ...(b.chapterName !== undefined && { chapterName: b.chapterName }),
+        ...(b.number !== undefined && { number: b.number }),
+        ...(b.languageCode !== undefined && { languageCode: b.languageCode }),
+      };
+      try {
+        const chapter = dlEngine
+          ? await dlEngine.enqueue(snap, meta, b.pages)
+          : await downloads.enqueueChapter(snap, meta, b.pages);
+        return c.json(chapter, 201);
+      } catch (e) {
+        // A delete can race a bulk collection's enqueues — answer with a clean conflict instead of
+        // letting the store error surface as a bare 500.
+        const msg = e instanceof Error ? e.message : String(e);
+        return c.json({ error: msg }, msg.includes("not downloaded") ? 409 : 500);
+      }
+    });
+
+    // Bulk enqueue (engine only): land a whole series' worth of chapters in ONE request. Each
+    // chapter is a lazy manifest write (pages resolve at download time), so a 300-chapter queue
+    // lands atomically in well under a second — closing the client mid-collection can no longer
+    // strand the tail of a bulk download. Without an engine there is nobody to resolve pages, so
+    // the route isn't mounted (manifest-only clients must send pages per chapter).
+    if (dlEngine) {
+      app.post("/downloads/entries/:bridgeId/:seriesId/chapters", async (c) => {
+        const b = await body<{
+          title?: string; thumbnailUrl?: string; author?: string;
+          chapters?: { chapterId?: string; chapterName?: string; number?: number; languageCode?: string }[];
+        }>(c);
+        const chapters = b?.chapters?.filter((ch) => typeof ch?.chapterId === "string" && ch.chapterId.length > 0);
+        if (!b?.title || !chapters || chapters.length === 0) {
+          return c.json({ error: "title and a non-empty chapters array are required" }, 400);
+        }
+        const snap: DownloadSeriesSnapshot = {
+          bridgeId: c.req.param("bridgeId"),
+          seriesId: c.req.param("seriesId"),
+          title: b.title,
+          ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
+          ...(b.author !== undefined && { author: b.author }),
+        };
+        const metas: DownloadChapterMeta[] = chapters.map((ch) => ({
+          chapterId: ch.chapterId!,
+          ...(ch.chapterName !== undefined && { chapterName: ch.chapterName }),
+          ...(ch.number !== undefined && { number: ch.number }),
+          ...(ch.languageCode !== undefined && { languageCode: ch.languageCode }),
+        }));
+        // One engine call: the whole batch lands with a single event + kick, so observers refetch
+        // once and see the full queue at once (per-chapter enqueues read as a slow count-up).
+        return c.json({ chapters: await dlEngine.enqueueMany(snap, metas) }, 201);
+      });
+    }
+
+    // Record one page's downloaded bytes (client writes the blob, then reports its file + size).
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages/:index", async (c) => {
+      const b = await body<{ file?: string; bytes?: number }>(c);
+      if (typeof b?.file !== "string" || typeof b.bytes !== "number") {
+        return c.json({ error: "file (string) and bytes (number) are required" }, 400);
+      }
+      return withDownloadsEntry(c, () =>
+        downloads.recordPage(dlKeyOf(c), c.req.param("chapterId"), Number(c.req.param("index")), b.file!, b.bytes!),
+      );
+    });
+
+    // Mark one page failed (the client gave up fetching it) — surfaces the chapter as `failed`.
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages/:index/fail", async (c) =>
+      withDownloadsEntry(c, () =>
+        downloads.failPage(dlKeyOf(c), c.req.param("chapterId"), Number(c.req.param("index"))),
+      ),
+    );
+
+    // The ordered page list (manifest) for a chapter — the offline page-LIST fallback.
+    app.get("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages", async (c) =>
+      c.json(await downloads.getManifestPages(dlKeyOf(c), c.req.param("chapterId"))),
+    );
+
+    // Re-queue the missing pages of a partial/failed chapter (resumable retry). With an engine the
+    // retry also kicks the drain, so the missing bytes start landing immediately.
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/requeue", async (c) =>
+      withDownloadsEntry(c, () =>
+        dlEngine
+          ? dlEngine.retryChapter(dlKeyOf(c), c.req.param("chapterId"))
+          : downloads.requeueMissing(dlKeyOf(c), c.req.param("chapterId")),
+      ),
+    );
+
+    // Pause (cancel) / resume — chapter and whole-series. Pausing keeps the bytes already fetched.
+    // Engine variants also flag/clear the in-flight cancellation markers and kick the drain on resume.
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pause", async (c) =>
+      withDownloadsEntry(c, () =>
+        dlEngine
+          ? dlEngine.pauseChapter(dlKeyOf(c), c.req.param("chapterId"))
+          : downloads.pauseChapter(dlKeyOf(c), c.req.param("chapterId")),
+      ),
+    );
+    app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/resume", async (c) =>
+      withDownloadsEntry(c, () =>
+        dlEngine
+          ? dlEngine.resumeChapter(dlKeyOf(c), c.req.param("chapterId"))
+          : downloads.resumeChapter(dlKeyOf(c), c.req.param("chapterId")),
+      ),
+    );
+    app.post("/downloads/entries/:bridgeId/:seriesId/pause", async (c) =>
+      withDownloadsEntry(c, () => (dlEngine ? dlEngine.pauseSeries(dlKeyOf(c)) : downloads.pauseSeries(dlKeyOf(c)))),
+    );
+    app.post("/downloads/entries/:bridgeId/:seriesId/resume", async (c) =>
+      withDownloadsEntry(c, () => (dlEngine ? dlEngine.resumeSeries(dlKeyOf(c)) : downloads.resumeSeries(dlKeyOf(c)))),
+    );
+
+    // Deletion. With an engine the HOST unlinks the blobs itself and returns `{ files: [] }` (shape
+    // kept for client back-compat); manifest-only mode returns the paths for the client to remove.
+    app.delete("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId", async (c) => {
+      if (dlEngine) {
+        await dlEngine.deleteChapter(dlKeyOf(c), c.req.param("chapterId"));
+        return c.json({ files: [] });
+      }
+      return c.json({ files: await downloads.deleteChapter(dlKeyOf(c), c.req.param("chapterId")) });
+    });
+    app.delete("/downloads/entries/:bridgeId/:seriesId", async (c) => {
+      if (dlEngine) {
+        await dlEngine.deleteSeries(dlKeyOf(c));
+        return c.json({ files: [] });
+      }
+      return c.json({ files: await downloads.deleteSeries(dlKeyOf(c)) });
+    });
+    app.delete("/downloads", async (c) => {
+      if (dlEngine) {
+        await dlEngine.deleteAll();
+        return c.json({ files: [] });
+      }
+      return c.json({ files: await downloads.deleteAll() });
+    });
+
+    // ── Engine-only routes: served bytes + live progress ─────────────────────────
+
+    // The downloaded bytes for one page, straight from the host's blob store. Identity-keyed
+    // (bridge/series/chapter/index — never the expiring source URL) and immutable once complete, so
+    // clients can cache aggressively.
+    const blobs = dlEngine?.blobs;
+    if (dlEngine && blobs?.read) {
+      app.get("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages/:index/file", async (c) => {
+        const file = await downloads.localFileFor(
+          c.req.param("bridgeId"),
+          c.req.param("seriesId"),
+          c.req.param("chapterId"),
+          Number(c.req.param("index")),
+        );
+        if (!file) return c.json({ error: "page not downloaded" }, 404);
+        const data = await blobs.read!(file);
+        if (!data) return c.json({ error: "blob missing" }, 404);
+        // Cast: DOM's BodyInit typing lags Uint8Array<ArrayBufferLike> (this file also typechecks
+        // under comical-app's DOM lib, where `BodyInit` itself isn't a global under Bun's types —
+        // so cast to a member type both libs accept). Every runtime takes the bytes directly.
+        return new Response(data as unknown as ArrayBuffer, {
+          headers: {
+            "Content-Type": contentTypeFor(file),
+            "Cache-Control": "public, max-age=31536000, immutable",
+          },
+        });
+      });
+    }
+
+    // Live progress stream (SSE): every engine event, JSON-encoded, with a keepalive ping. No replay —
+    // a (re)connecting client refetches state via the GET routes; the stream only carries deltas.
+    // NEVER requested through the embedded in-process transport (it buffers whole responses); embedded
+    // clients subscribe to the engine object directly.
+    if (dlEngine) {
+      app.get("/downloads/events", (c) =>
+        streamSSE(c, async (stream) => {
+          const unsub = dlEngine.subscribe((e) => {
+            void stream.writeSSE({ event: e.type, data: JSON.stringify(e) });
+          });
+          stream.onAbort(() => unsub());
+          // Write a hello ping IMMEDIATELY: some servers (Bun) don't flush the response headers
+          // until the first body byte, so a silent stream leaves the client's fetch() hanging —
+          // and Bun.serve's default 10s idleTimeout then resets the connection. The same timeout
+          // is why the keepalive ping stays under 10s.
+          await stream.writeSSE({ event: "ping", data: "" });
+          while (!stream.aborted) {
+            await stream.sleep(8_000);
+            if (stream.aborted) break;
+            await stream.writeSSE({ event: "ping", data: "" });
+          }
+        }),
+      );
+    }
   }
 
   // ── Tracker endpoints ─────────────────────────────────────────────────────────
@@ -1199,6 +1575,22 @@ async function withLibraryEntry(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const code = msg.includes("not in library") || msg.includes("not found") ? 404 : 500;
+    return c.json({ error: msg }, code);
+  }
+}
+
+/** Run a downloads mutation, mapping a missing-series/chapter error to 404 and a void result to `{ ok: true }`. */
+async function withDownloadsEntry(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  fn: () => Promise<unknown>,
+): Promise<Response> {
+  try {
+    const result = await fn();
+    return c.json(result === undefined ? { ok: true } : result);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const code = msg.includes("not downloaded") || msg.includes("not found") ? 404 : 500;
     return c.json({ error: msg }, code);
   }
 }
