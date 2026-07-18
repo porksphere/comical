@@ -157,6 +157,41 @@ describe("/library lifecycle", () => {
   });
 });
 
+describe("sync + activity-count params", () => {
+  test("activity/count?since= counts only items detected after the watermark", async () => {
+    // Self-contained entry (prior tests removed theirs and purged the feed).
+    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "act-1", title: "Active" });
+    await send("POST", "/library/entries/demo/act-1/sync", { chapters: [chapters[0]!] }); // baseline
+    await send("POST", "/library/entries/demo/act-1/sync", { chapters }); // c2, c3 detected
+
+    const feed = (await (await get("/library/activity")).json()) as Array<{ detectedAt: number }>;
+    expect(feed).toHaveLength(2);
+    const newest = Math.max(...feed.map((a) => a.detectedAt));
+    const oldest = Math.min(...feed.map((a) => a.detectedAt));
+
+    const count = async (q = "") => ((await (await get(`/library/activity/count${q}`)).json()) as { unread: number }).unread;
+    expect(await count()).toBe(2);
+    expect(await count(`?since=${newest}`)).toBe(0); // boundary is excluded ("seen at" time)
+    expect(await count(`?since=${oldest - 1}`)).toBe(2);
+  });
+
+  test("POST /library/sync accepts options and reports the new result fields", async () => {
+    const res = await send("POST", "/library/sync", { force: true, trackers: false, budgetMs: 10_000 });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { scanned: number; skipped: number; partial: boolean; suggestions: unknown[] };
+    expect(body.scanned).toBeGreaterThanOrEqual(1); // the act-1 entry
+    expect(body.skipped).toBe(0); // force syncs everything
+    expect(body.partial).toBe(false);
+    expect(body.suggestions).toEqual([]);
+
+    // Bodyless call stays valid (back-compat) — and the staleness window now skips the fresh entry.
+    const plain = await send("POST", "/library/sync");
+    expect(plain.status).toBe(200);
+    const plainBody = (await plain.json()) as { skipped: number };
+    expect(plainBody.skipped).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("disabled by default", () => {
   test("no /library routes when opts.library is omitted", async () => {
     const manager = new BridgeManager({

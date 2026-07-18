@@ -904,7 +904,16 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ ok: true });
     });
 
-    app.post("/library/sync", async (c) => c.json(await runtime!.backgroundSync()));
+    app.post("/library/sync", async (c) => {
+      const b = await body<{ force?: boolean; budgetMs?: number; trackers?: boolean }>(c);
+      return c.json(
+        await runtime!.backgroundSync({
+          ...(b?.force !== undefined ? { force: b.force } : {}),
+          ...(b?.budgetMs !== undefined ? { budgetMs: b.budgetMs } : {}),
+          ...(b?.trackers !== undefined ? { trackers: b.trackers } : {}),
+        }),
+      );
+    });
 
     // Activity feed — newly-detected chapters across the library (a "new chapters" news feed)
     app.get("/library/activity", async (c) => {
@@ -917,7 +926,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         }),
       );
     });
-    app.get("/library/activity/count", async (c) => c.json({ unread: await lib.unreadActivityCount() }));
+    app.get("/library/activity/count", async (c) => {
+      const since = c.req.query("since");
+      return c.json({ unread: await lib.unreadActivityCount(since ? Number(since) : undefined) });
+    });
     app.delete("/library/activity", async (c) => {
       await lib.clearActivity();
       return c.json({ ok: true });
