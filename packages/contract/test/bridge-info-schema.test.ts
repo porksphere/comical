@@ -58,6 +58,20 @@ describe("bridgeInfoSchema id scoping", () => {
   });
 });
 
+describe("bridgeInfoSchema cardSubtitles", () => {
+  test("accepts true (bridge whose entries carry a subtitle line)", () => {
+    expect(bridgeInfoSchema.parse({ ...BASE, cardSubtitles: true }).cardSubtitles).toBe(true);
+  });
+
+  test("parses when omitted (backward-compatible; means no subtitles)", () => {
+    expect(bridgeInfoSchema.parse({ ...BASE }).cardSubtitles).toBeUndefined();
+  });
+
+  test("rejects a non-boolean", () => {
+    expect(() => bridgeInfoSchema.parse({ ...BASE, cardSubtitles: "yes" })).toThrow();
+  });
+});
+
 describe("bridgeInfoSchema assetProxy", () => {
   test("accepts declared hosts with a Referer", () => {
     const info = bridgeInfoSchema.parse({
