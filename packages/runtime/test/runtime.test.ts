@@ -383,7 +383,8 @@ describe("backgroundSync — re-link", () => {
       library: lib,
       trackers: mockTrackerProvider([mockTracker("anilist", { capabilities: ["status-sync"] })]),
     });
-    await withTracker.backgroundSync();
+    // force: add time counts as a chapter sync, so a plain call would skip this fresh entry.
+    await withTracker.backgroundSync({ force: true });
 
     const links = await lib.listTrackerLinks(entryKey("test", "s1"));
     expect(links).toHaveLength(1);
@@ -418,5 +419,134 @@ describe("backgroundSync — best-effort", () => {
     const res = await runtime.backgroundSync();
     expect(res).toMatchObject({ updated: 0, newChapters: 0, readSynced: 0 });
     expect(res.suggestions).toEqual([]);
+  });
+});
+
+// ── backgroundSync — large-library behavior (staleness, concurrency, budget) ──
+
+/**
+ * A bridge whose getChapters is instrumented: counts calls per series, tracks the max number of
+ * concurrent in-flight calls, and can delay to make timing-sensitive behavior observable.
+ */
+function instrumentedBridge(opts: { delayMs?: number } = {}) {
+  const calls = new Map<string, number>();
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const bridge: Bridge = {
+    info: BRIDGE_INFO,
+    async getSeriesDetails(id: string) { return { id, title: `Series ${id}` }; },
+    async getChapters(seriesId: string) {
+      calls.set(seriesId, (calls.get(seriesId) ?? 0) + 1);
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      if (opts.delayMs) await new Promise((r) => setTimeout(r, opts.delayMs));
+      inFlight--;
+      return [ch("c1", 1)];
+    },
+  };
+  return { bridge, calls, maxInFlight: () => maxInFlight };
+}
+
+/** Seed `n` entries directly through the library so chaptersSyncedAt stays unset (= stale). */
+async function seedStaleEntries(lib: Library, n: number): Promise<void> {
+  for (let i = 0; i < n; i++) {
+    await lib.addSeries({ bridgeId: "test", seriesId: `s${i}`, title: `Series ${i}` });
+  }
+}
+
+describe("backgroundSync — staleness window", () => {
+  test("skips entries synced within the window; force overrides", async () => {
+    const lib = makeLib();
+    const { bridge, calls } = instrumentedBridge();
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+
+    // addToLibrary seeds chapters → chaptersSyncedAt is fresh.
+    await runtime.addToLibrary("test", "s1");
+    expect(calls.get("s1")).toBe(1);
+
+    const res = await runtime.backgroundSync();
+    expect(calls.get("s1")).toBe(1); // untouched — inside the window
+    expect(res).toMatchObject({ updated: 0, scanned: 1, skipped: 1, partial: false });
+
+    const forced = await runtime.backgroundSync({ force: true });
+    expect(calls.get("s1")).toBe(2);
+    expect(forced).toMatchObject({ updated: 1, skipped: 0 });
+  });
+
+  test("never-synced entries always qualify", async () => {
+    const lib = makeLib();
+    const { bridge, calls } = instrumentedBridge();
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 2);
+
+    const res = await runtime.backgroundSync();
+    expect(res).toMatchObject({ updated: 2, scanned: 2, skipped: 0 });
+    expect(calls.get("s0")).toBe(1);
+    expect(calls.get("s1")).toBe(1);
+
+    // A second run finds everything freshly synced.
+    const again = await runtime.backgroundSync();
+    expect(again).toMatchObject({ updated: 0, skipped: 2 });
+  });
+});
+
+describe("backgroundSync — bounded concurrency", () => {
+  test("at most `concurrency` entries sync in parallel", async () => {
+    const lib = makeLib();
+    const { bridge, maxInFlight } = instrumentedBridge({ delayMs: 10 });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 6);
+
+    await runtime.backgroundSync({ concurrency: 2 });
+    expect(maxInFlight()).toBeGreaterThan(1); // actually parallel…
+    expect(maxInFlight()).toBeLessThanOrEqual(2); // …but bounded
+  });
+});
+
+describe("backgroundSync — time budget", () => {
+  test("stops starting entries past the budget and resumes stalest-first next run", async () => {
+    const lib = makeLib();
+    const { bridge, calls } = instrumentedBridge({ delayMs: 20 });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 3);
+
+    // Budget expires during the first entry → exactly one synced, run reports partial.
+    const first = await runtime.backgroundSync({ concurrency: 1, budgetMs: 1 });
+    expect(first.partial).toBe(true);
+    expect(first.updated).toBe(1);
+
+    // Next run (no budget) picks up the two remaining never-synced entries — not the synced one.
+    const second = await runtime.backgroundSync({ concurrency: 1 });
+    expect(second).toMatchObject({ updated: 2, skipped: 1, partial: false });
+    const total = [...calls.values()].reduce((a, b) => a + b, 0);
+    expect(total).toBe(3); // every entry synced exactly once across both runs
+  });
+});
+
+describe("backgroundSync — tracker gate", () => {
+  test("trackers: false skips the whole-list tracker pull", async () => {
+    const lib = makeLib();
+    let pulls = 0;
+    const tracker: Tracker = {
+      info: { ...TRACKER_INFO, id: "anilist", capabilities: ["library-sync"] },
+      async getLibrary(page) {
+        void page;
+        pulls++;
+        return { items: [], page: 1, hasNextPage: false };
+      },
+    };
+    const { bridge } = instrumentedBridge();
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+    await seedStaleEntries(lib, 1);
+
+    await runtime.backgroundSync({ trackers: false });
+    expect(pulls).toBe(0);
+
+    await runtime.backgroundSync({ force: true });
+    expect(pulls).toBe(1);
   });
 });

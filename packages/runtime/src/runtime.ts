@@ -18,7 +18,14 @@ import type { Chapter, PagedResults, SeriesInfo, TrackerSearchResult } from "@co
 // hosts — e.g. comical-app's embedded runtime typing `RouterOptions.runtime`. See @comical/core.
 import type { LoadedBridge } from "@comical/core/loader";
 import type { LoadedTracker } from "@comical/core/tracker-loader";
-import { entryKey, type AddSeriesResult, type Library, type SeriesSnapshot, type TrackerLink } from "@comical/library";
+import {
+  entryKey,
+  type AddSeriesResult,
+  type Library,
+  type LibraryEntryView,
+  type SeriesSnapshot,
+  type TrackerLink,
+} from "@comical/library";
 
 /** Extends AddSeriesResult with tracker suggestions when no externalId match was found. */
 export interface RuntimeAddResult extends AddSeriesResult {
@@ -36,6 +43,32 @@ export interface TrackerSuggestion {
   externalId: string | number;
   title: string;
   thumbnailUrl?: string;
+}
+
+export interface BackgroundSyncOptions {
+  /** Sync every entry regardless of the staleness window (the manual "Check for updates" path). */
+  force?: boolean;
+  /** Skip entries whose chapters were synced more recently than this. Default 6 hours. */
+  staleMs?: number;
+  /** Max entries synced in parallel. Default 4 — conservative so same-bridge rate limits don't pile up. */
+  concurrency?: number;
+  /** Wall-clock budget: stop starting new entries once exceeded (short OS background windows). */
+  budgetMs?: number;
+  /** Run the whole-list tracker pull at the end. Default true; quick background runs pass false. */
+  trackers?: boolean;
+}
+
+export interface BackgroundSyncResult {
+  updated: number;
+  newChapters: number;
+  readSynced: number;
+  suggestions: TrackerSuggestion[];
+  /** Library size at scan time. */
+  scanned: number;
+  /** Entries skipped because they were synced within the staleness window. */
+  skipped: number;
+  /** True when the time budget ran out before every candidate was synced. */
+  partial: boolean;
 }
 
 export interface BridgeProvider {
@@ -242,71 +275,116 @@ export class ComicalRuntime {
   // ── Background sync ───────────────────────────────────────────────────────────
 
   /**
-   * One reconciliation pass over the whole library. Per entry: pull fresh chapters (new-chapter
+   * One reconciliation pass over the library. Per entry: pull fresh chapters (new-chapter
    * detection), auto-link any newly-configured trackers, union-merge the bridge's read state, and
    * push local read state back out. Then, once per library-sync tracker, pull the tracker's list
    * and union-merge its progress in too. Read-state pulls go through `reconcileRead`, so they update
    * read flags WITHOUT moving the user's resume point or recency. Per-entry/per-tracker errors are
    * swallowed so one unreachable source doesn't abort the run.
+   *
+   * Large-library behavior: entries synced within `staleMs` are skipped (pass `force` to override —
+   * the user-facing "Check for updates" path), entries run through a bounded worker pool
+   * (`concurrency` wide — parallelism is across entries; per-bridge rate limiting still serializes
+   * same-bridge fetches inside the bridge layer), and `budgetMs` caps the wall clock by not
+   * *starting* further entries past the deadline. Candidates are processed stalest-first, and every
+   * synced entry refreshes its `chaptersSyncedAt`, so a budget-truncated run resumes where it left
+   * off on the next call — the staleness ordering is the incremental cursor, no extra state.
    */
-  async backgroundSync(): Promise<{ updated: number; newChapters: number; readSynced: number; suggestions: TrackerSuggestion[] }> {
+  async backgroundSync(opts: BackgroundSyncOptions = {}): Promise<BackgroundSyncResult> {
     const lib = this.requireLibrary();
+    const { force = false, staleMs = 6 * 60 * 60 * 1000, concurrency = 4, budgetMs, trackers = true } = opts;
+    const startedAt = Date.now();
+
     const entries = await lib.getLibrary();
-    let updated = 0;
-    let newChapters = 0;
-    let readSynced = 0;
-    for (const entry of entries) {
-      try {
-        const bridge = await this.bridges.get(entry.bridgeId);
-        const key = entryKey(entry.bridgeId, entry.seriesId);
+    const candidates = force
+      ? [...entries]
+      : entries.filter((e) => e.chaptersSyncedAt === undefined || startedAt - e.chaptersSyncedAt > staleMs);
+    // Stalest first (never-synced entries lead) so a truncated run picks up the remainder next time.
+    candidates.sort((a, b) => (a.chaptersSyncedAt ?? -1) - (b.chaptersSyncedAt ?? -1));
 
-        // Pull fresh chapter list and detect new chapters.
-        let chapters: Chapter[] | undefined;
-        if (bridge.getChapters) {
-          chapters = await bridge.getChapters(entry.seriesId);
-          const result = await lib.syncChapters(key, chapters);
-          newChapters += result.added.length;
-          updated++;
+    const counters = { updated: 0, newChapters: 0, readSynced: 0 };
+    let partial = false;
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < candidates.length) {
+        // Budget gates *starting* entries, but never the very first one — a run must always make
+        // forward progress, or a budget shorter than startup overhead would starve forever.
+        if (next > 0 && budgetMs !== undefined && Date.now() - startedAt >= budgetMs) {
+          partial = true;
+          return;
         }
-
-        // Wire up any tracker configured after this entry was added (externalId already known).
-        await this.relinkEntry(entry.bridgeId, entry.seriesId, entry.externalIds);
-
-        // Union-merge the bridge's read state — read flags only, resume untouched.
-        if (bridge.getReadChapters) {
-          const remoteRead = await bridge.getReadChapters(entry.seriesId);
-          const numById = new Map((chapters ?? []).map((c) => [c.id, c.number]));
-          const res = await lib.reconcileRead(
-            key,
-            remoteRead.map((id) => {
-              const n = numById.get(id);
-              return n !== undefined ? { chapterId: id, number: n } : { chapterId: id };
-            }),
-          );
-          readSynced += res.marked;
-        }
-
-        await this.syncEntryToTrackers(entry.bridgeId, entry.seriesId).catch(() => {});
-      } catch {
-        // continue — one bad bridge or deleted series should not abort the sync
+        const entry = candidates[next++]!;
+        await this.syncOneEntry(entry, counters);
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => worker()));
 
     // Tracker pull is a whole-list operation, so run it once per tracker (not per entry).
     const suggestions: TrackerSuggestion[] = [];
-    if (this.trackers) {
+    if (trackers && this.trackers) {
       const trackerList = await this.trackers.list().catch(() => []);
       for (const t of trackerList) {
         if (!t.info.capabilities.includes("library-sync")) continue;
         try {
           const res = await this.syncFromTracker(t.info.id);
-          readSynced += res.readSynced;
+          counters.readSynced += res.readSynced;
           suggestions.push(...res.suggestions);
         } catch { /* best-effort — one bad tracker shouldn't abort */ }
       }
     }
 
-    return { updated, newChapters, readSynced, suggestions };
+    // Keep the activity feed bounded — best-effort, never fails the sync.
+    await lib.pruneActivity().catch(() => {});
+
+    return {
+      ...counters,
+      suggestions,
+      scanned: entries.length,
+      skipped: entries.length - candidates.length,
+      partial,
+    };
+  }
+
+  /** One entry's reconciliation pass — see backgroundSync. Errors are swallowed per entry. */
+  private async syncOneEntry(
+    entry: LibraryEntryView,
+    counters: { updated: number; newChapters: number; readSynced: number },
+  ): Promise<void> {
+    const lib = this.requireLibrary();
+    try {
+      const bridge = await this.bridges.get(entry.bridgeId);
+      const key = entryKey(entry.bridgeId, entry.seriesId);
+
+      // Pull fresh chapter list and detect new chapters.
+      let chapters: Chapter[] | undefined;
+      if (bridge.getChapters) {
+        chapters = await bridge.getChapters(entry.seriesId);
+        const result = await lib.syncChapters(key, chapters);
+        counters.newChapters += result.added.length;
+        counters.updated++;
+      }
+
+      // Wire up any tracker configured after this entry was added (externalId already known).
+      await this.relinkEntry(entry.bridgeId, entry.seriesId, entry.externalIds);
+
+      // Union-merge the bridge's read state — read flags only, resume untouched.
+      if (bridge.getReadChapters) {
+        const remoteRead = await bridge.getReadChapters(entry.seriesId);
+        const numById = new Map((chapters ?? []).map((c) => [c.id, c.number]));
+        const res = await lib.reconcileRead(
+          key,
+          remoteRead.map((id) => {
+            const n = numById.get(id);
+            return n !== undefined ? { chapterId: id, number: n } : { chapterId: id };
+          }),
+        );
+        counters.readSynced += res.marked;
+      }
+
+      await this.syncEntryToTrackers(entry.bridgeId, entry.seriesId).catch(() => {});
+    } catch {
+      // continue — one bad bridge or deleted series should not abort the sync
+    }
   }
 
   // ── Tracker sync ─────────────────────────────────────────────────────────────
