@@ -4,7 +4,7 @@
  * A bridge bundle is pre-compiled CJS. Evaluating it safely requires a JS execution context
  * that withholds dangerous host globals — how that context is created differs per platform:
  *   - Bun/Node:  `node:vm` createContext (NodeVmEvaluator, below)
- *   - Browser:   new Function + explicit global shadowing (FunctionEvaluator in host-web)
+ *   - Browser:   new Function + explicit global shadowing
  *   - iOS:       JavaScriptCore JSContext (M3)
  *   - Android:   QuickJS runtime (M3)
  *

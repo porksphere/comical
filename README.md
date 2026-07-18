@@ -284,7 +284,6 @@ so every bridge on every platform benefits uniformly without any per-bridge code
 |------------|-----------------------------------|
 | `host-bun` (desktop/CLI) | Native Bun `fetch` + cookie jar. Direct to backend, no infrastructure. |
 | `host-server` (LAN server) | Native Bun `fetch` on the server. Browser/app calls the server's REST API instead of fetching directly. |
-| `host-web` (browser, no server) | Routes through a self-hosted `@comical/proxy` instance that adds CORS headers and fetches server-side. |
 | `host-ios` | `URLSession`. Direct to backend. |
 | `host-android` | OkHttp. Direct to backend. |
 
@@ -313,8 +312,6 @@ bundles or needs CORS at all.
 |---------|----------|-----------------|
 | `@comical/host-bun` | Desktop / CLI | Bun `fetch` + cookie jar, `FileStorage` / `MemoryStorage`, `node:vm` loader |
 | `@comical/host-server` | LAN / home server | Hono REST API, `BridgeManager` (load on demand, cache, orphan detection), `SettingsStore`, registry-aware |
-| `@comical/host-web` | Browser (no server) | `FunctionEvaluator`, proxy-backed `ProxyNetworkCapability`, `LocalStorageCapability` |
-| `@comical/proxy` | CORS relay | Hono, SSRF guard, optional Ed25519 bearer auth, 10 MB cap. Deployed independently. |
 | `host-ios` (Swift Package) | iOS / macOS | `JSContext` evaluator, `URLSession`, `FileManager`, on-device `ComicalServer` |
 | `host-android` (Kotlin library) | Android | QuickJS (~1 MB), OkHttp, DataStore, on-device `ComicalServer` |
 | `@comical/host-rn` | React Native / Expo | Reusable in-process embedding layer: proxy `BridgeProvider`, reused-router transport, registry-download `BundleSource`, Hermes WebCrypto shim. See below. |
@@ -764,8 +761,6 @@ comical/
 │   ├── registry/      @comical/registry  — index schema, URL resolution, signing, manager
 │   ├── host-bun/      @comical/host-bun  — desktop/CLI adapter
 │   ├── host-server/   @comical/host-server — REST API server
-│   ├── host-web/      @comical/host-web  — browser adapter (FunctionEvaluator + proxy)
-│   ├── proxy/         @comical/proxy     — self-hostable CORS relay (Hono)
 │   └── cli/           @comical/cli       — comical command-line tool
 ├── bridges/
 │   └── example-bridge/                  — reference bridge (public-domain demo backend)

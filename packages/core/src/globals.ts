@@ -1,6 +1,6 @@
 /**
  * The allow-list of ambient globals injected into a bridge sandbox, shared by every evaluator
- * (NodeVmEvaluator, host-web FunctionEvaluator, the native JSC/QuickJS harness). All are pure /
+ * (NodeVmEvaluator, the native JSC/QuickJS harness). All are pure /
  * standalone (no I/O) except `console`, which is routed to the bridge's log capability. Standard
  * ECMAScript globals (Object, Array, JSON, Math, Promise, Map, Set, …) come from the realm itself.
  *
