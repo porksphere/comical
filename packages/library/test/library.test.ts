@@ -373,6 +373,40 @@ describe("activity feed", () => {
     await lib.clearActivity();
     expect(await lib.getActivity()).toHaveLength(0);
   });
+
+  test("since keeps only items detected strictly after the watermark", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)]); // baseline
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+    const c2At = (await lib.getActivity()).find((a) => a.chapterId === "c2")!.detectedAt;
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
+
+    // Watermark exactly at c2's detection: c2 is "seen" (boundary excluded), only c3 is newer.
+    expect((await lib.getActivity({ since: c2At })).map((a) => a.chapterId)).toEqual(["c3"]);
+    expect(await lib.unreadActivityCount(c2At)).toBe(1);
+    // Reading c3 empties the since-window count while the plain count still sees c2.
+    await lib.markRead(KEY, "c3", true);
+    expect(await lib.unreadActivityCount(c2At)).toBe(0);
+    expect(await lib.unreadActivityCount()).toBe(1);
+  });
+
+  test("pruneActivity caps the feed at the newest N", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)]); // baseline
+    for (let n = 2; n <= 5; n++) {
+      // One sync per chapter so each item gets its own (monotonic) detectedAt.
+      await lib.syncChapters(KEY, Array.from({ length: n }, (_, i) => ch(`c${i + 1}`, i + 1)));
+    }
+    expect(await lib.getActivity()).toHaveLength(4);
+
+    expect(await lib.pruneActivity(2)).toBe(2);
+    expect((await lib.getActivity()).map((a) => a.chapterId)).toEqual(["c5", "c4"]);
+    // Under the cap: no-op.
+    expect(await lib.pruneActivity(2)).toBe(0);
+    expect(await lib.getActivity()).toHaveLength(2);
+  });
 });
 
 describe("logical chapters (multi-scanlator / multi-language)", () => {

@@ -547,8 +547,9 @@ export class Library {
   /**
    * The new-chapter feed, newest first. Each item's `read` flag is derived live from chapter
    * progress, so an item drops out of the unread count the moment the user reads its chapter.
+   * `since` keeps only items detected strictly after that time — the badge watermark filter.
    */
-  async getActivity(opts: { limit?: number; unreadOnly?: boolean } = {}): Promise<ActivityItemView[]> {
+  async getActivity(opts: { limit?: number; unreadOnly?: boolean; since?: number } = {}): Promise<ActivityItemView[]> {
     const items = (await this.store.listActivity()).sort((a, b) => b.detectedAt - a.detectedAt);
     const readByKey = new Map<string, Set<string>>();
     const readSet = async (key: string): Promise<Set<string>> => {
@@ -563,6 +564,8 @@ export class Library {
     };
     const views: ActivityItemView[] = [];
     for (const item of items) {
+      // Sorted newest-first, so the first at-or-before-`since` item ends the scan (large-feed fast path).
+      if (opts.since !== undefined && item.detectedAt <= opts.since) break;
       const read = (await readSet(entryKey(item.bridgeId, item.seriesId))).has(logicalChapterKey(item, item.chapterId));
       if (opts.unreadOnly && read) continue;
       views.push({ ...item, read });
@@ -571,14 +574,30 @@ export class Library {
     return views;
   }
 
-  /** Count of feed items whose chapter the user hasn't read yet — the "new" badge value. */
-  async unreadActivityCount(): Promise<number> {
-    return (await this.getActivity({ unreadOnly: true })).length;
+  /**
+   * Count of feed items whose chapter the user hasn't read yet — the "new" badge value.
+   * `since` restricts the count to items detected after that time (the client's seen watermark).
+   */
+  async unreadActivityCount(since?: number): Promise<number> {
+    return (await this.getActivity({ unreadOnly: true, ...(since !== undefined && { since }) })).length;
   }
 
   /** Empty the feed (user "clear" action). */
   async clearActivity(): Promise<void> {
     await this.store.clearActivity();
+  }
+
+  /**
+   * Cap the feed at the newest `keepNewest` items so it can't grow unbounded — every sync
+   * appends detections and nothing else ever removes them. Returns how many were dropped.
+   */
+  async pruneActivity(keepNewest = 500): Promise<number> {
+    const items = await this.store.listActivity();
+    if (items.length <= keepNewest) return 0;
+    const keep = items.sort((a, b) => b.detectedAt - a.detectedAt).slice(0, keepNewest);
+    await this.store.clearActivity();
+    for (const item of keep) await this.store.putActivity(item);
+    return items.length - keepNewest;
   }
 
   // ── Lists ────────────────────────────────────────────────────────────────────
