@@ -175,6 +175,25 @@ describe("sync + activity-count params", () => {
     expect(await count(`?since=${oldest - 1}`)).toBe(2);
   });
 
+  test("DELETE /library/activity/:bridgeId/:seriesId clears one series' feed only", async () => {
+    // Two library entries, each with a fresh new chapter in the feed.
+    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "clr-1", title: "Clear One" });
+    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "clr-2", title: "Clear Two" });
+    await send("POST", "/library/entries/demo/clr-1/sync", { chapters: [chapters[0]!] });
+    await send("POST", "/library/entries/demo/clr-1/sync", { chapters }); // clr-1: c2, c3 detected
+    await send("POST", "/library/entries/demo/clr-2/sync", { chapters: [chapters[0]!] });
+    await send("POST", "/library/entries/demo/clr-2/sync", { chapters: [chapters[0]!, chapters[1]!] }); // clr-2: c2
+
+    const seriesOf = async () =>
+      ((await (await get("/library/activity")).json()) as Array<{ seriesId: string }>).map((a) => a.seriesId);
+    expect((await seriesOf()).filter((s) => s === "clr-1")).toHaveLength(2);
+
+    expect((await send("DELETE", "/library/activity/demo/clr-1")).status).toBe(200);
+    const after = await seriesOf();
+    expect(after).not.toContain("clr-1");
+    expect(after).toContain("clr-2");
+  });
+
   test("POST /library/sync accepts options and reports the new result fields", async () => {
     const res = await send("POST", "/library/sync", { force: true, trackers: false, budgetMs: 10_000 });
     expect(res.status).toBe(200);

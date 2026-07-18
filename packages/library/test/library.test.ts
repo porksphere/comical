@@ -374,6 +374,23 @@ describe("activity feed", () => {
     expect(await lib.getActivity()).toHaveLength(0);
   });
 
+  test("clearActivityForEntry drops one series' feed items, leaving others", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Series Two" });
+    // s1 gets two new chapters (coalesced into one Activity row), s2 gets one.
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
+    await lib.syncChapters(entryKey("demo", "s2"), [ch("b1", 1)]);
+    await lib.syncChapters(entryKey("demo", "s2"), [ch("b1", 1), ch("b2", 2)]);
+    expect(await lib.getActivity()).toHaveLength(3); // c2, c3, b2
+
+    await lib.clearActivityForEntry("demo", "s1");
+    const remaining = await lib.getActivity();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.seriesId).toBe("s2");
+  });
+
   test("since keeps only items detected strictly after the watermark", async () => {
     const lib = makeLibrary();
     await lib.addSeries(SERIES);

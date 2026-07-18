@@ -587,6 +587,12 @@ export class Library {
     await this.store.clearActivity();
   }
 
+  /** Drop every feed entry for ONE library entry — the Activity row's swipe-away, which coalesces a
+   *  series' new chapters into a single row and clears them together. */
+  async clearActivityForEntry(bridgeId: string, seriesId: string): Promise<void> {
+    await this.store.deleteActivityForEntry(entryKey(bridgeId, seriesId));
+  }
+
   /**
    * Cap the feed at the newest `keepNewest` items so it can't grow unbounded — every sync
    * appends detections and nothing else ever removes them. Returns how many were dropped.

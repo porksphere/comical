@@ -934,6 +934,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       await lib.clearActivity();
       return c.json({ ok: true });
     });
+    app.delete("/library/activity/:bridgeId/:seriesId", async (c) => {
+      await lib.clearActivityForEntry(c.req.param("bridgeId"), c.req.param("seriesId"));
+      return c.json({ ok: true });
+    });
 
     // Tracker links — per-entry associations to external tracker services
     app.get("/library/entries/:bridgeId/:seriesId/tracker-links", async (c) =>
