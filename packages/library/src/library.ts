@@ -594,6 +594,24 @@ export class Library {
   }
 
   /**
+   * Mark every feed chapter for ONE library entry as read — the Activity row's "mark read" action.
+   * Goes through {@link reconcileRead} (union semantics, `touchResume: false`): it never un-reads,
+   * and dismissing a feed row is not reading, so the resume pointer and history stay where the
+   * user's own reading left them. The items stay in the feed, now `read` (the row dims), and drop
+   * out of the unread badge count.
+   */
+  async markActivityRead(bridgeId: string, seriesId: string): Promise<{ marked: number }> {
+    const key = entryKey(bridgeId, seriesId);
+    const items = (await this.store.listActivity()).filter(
+      (a) => a.bridgeId === bridgeId && a.seriesId === seriesId,
+    );
+    return this.reconcileRead(
+      key,
+      items.map((a) => ({ chapterId: a.chapterId, ...(a.number !== undefined && { number: a.number }) })),
+    );
+  }
+
+  /**
    * Cap the feed at the newest `keepNewest` items so it can't grow unbounded — every sync
    * appends detections and nothing else ever removes them. Returns how many were dropped.
    */

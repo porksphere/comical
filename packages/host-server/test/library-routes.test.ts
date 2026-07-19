@@ -194,6 +194,32 @@ describe("sync + activity-count params", () => {
     expect(after).toContain("clr-2");
   });
 
+  test("POST /library/activity/:bridgeId/:seriesId/read marks one series' feed read, resume untouched", async () => {
+    // Two entries, each with new chapters in the feed (mrk-2 is the untouched control).
+    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "mrk-1", title: "Mark One" });
+    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "mrk-2", title: "Mark Two" });
+    await send("POST", "/library/entries/demo/mrk-1/sync", { chapters: [chapters[0]!] });
+    await send("POST", "/library/entries/demo/mrk-1/sync", { chapters }); // mrk-1: c2, c3 detected
+    await send("POST", "/library/entries/demo/mrk-2/sync", { chapters: [chapters[0]!] });
+    await send("POST", "/library/entries/demo/mrk-2/sync", { chapters: [chapters[0]!, chapters[1]!] }); // mrk-2: c2
+
+    const res = await send("POST", "/library/activity/demo/mrk-1/read");
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { marked: number }).marked).toBe(2);
+
+    // mrk-1's items remain in the feed but read; mrk-2's stays unread.
+    const feed = (await (await get("/library/activity")).json()) as Array<{ seriesId: string; read: boolean }>;
+    expect(feed.filter((a) => a.seriesId === "mrk-1").map((a) => a.read)).toEqual([true, true]);
+    expect(feed.find((a) => a.seriesId === "mrk-2")?.read).toBe(false);
+
+    // Dismissing is not reading: no resume point on the entry.
+    const entry = (await (await get("/library/entries/demo/mrk-1")).json()) as { resume?: unknown };
+    expect(entry.resume ?? null).toBeNull();
+
+    // Unknown series → 404 (withLibraryEntry mapping).
+    expect((await send("POST", "/library/activity/demo/nope/read")).status).toBe(404);
+  });
+
   test("POST /library/sync accepts options and reports the new result fields", async () => {
     const res = await send("POST", "/library/sync", { force: true, trackers: false, budgetMs: 10_000 });
     expect(res.status).toBe(200);

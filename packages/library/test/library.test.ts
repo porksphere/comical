@@ -391,6 +391,33 @@ describe("activity feed", () => {
     expect(remaining[0]!.seriesId).toBe("s2");
   });
 
+  test("markActivityRead flips one series' feed items read without touching resume/history", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Series Two" });
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
+    await lib.syncChapters(entryKey("demo", "s2"), [ch("b1", 1)]);
+    await lib.syncChapters(entryKey("demo", "s2"), [ch("b1", 1), ch("b2", 2)]);
+    expect(await lib.unreadActivityCount()).toBe(3);
+
+    const { marked } = await lib.markActivityRead("demo", "s1");
+    expect(marked).toBe(2);
+
+    // s1's items stay in the feed, now read; s2's item is untouched.
+    const feed = await lib.getActivity();
+    expect(feed.filter((a) => a.seriesId === "s1").every((a) => a.read)).toBe(true);
+    expect(feed.find((a) => a.seriesId === "s2")?.read).toBe(false);
+    expect(await lib.unreadActivityCount()).toBe(1);
+
+    // Dismissing is not reading: no resume point, no history entry.
+    expect(await lib.getResume(KEY)).toBeUndefined();
+    expect(await lib.getHistory()).toHaveLength(0);
+
+    // Union semantics: a second pass has nothing left to mark.
+    expect((await lib.markActivityRead("demo", "s1")).marked).toBe(0);
+  });
+
   test("since keeps only items detected strictly after the watermark", async () => {
     const lib = makeLibrary();
     await lib.addSeries(SERIES);
