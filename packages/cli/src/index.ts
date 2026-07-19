@@ -428,7 +428,7 @@ async function main(): Promise<number> {
 
 /** Human-readable evaluation report: results grouped by capability + a summary & coverage line. */
 function printEvaluation(report: EvaluationReport): void {
-  const icon = { pass: "✓", warn: "⚠", fail: "✗" } as const;
+  const icon = { pass: "✓", warn: "⚠", fail: "✗", skip: "⊘" } as const;
   const order = ["core", ...report.summary.capabilitiesDeclared];
   const groups = [...new Set(report.results.map((r) => r.capability))]
     .sort((a, b) => order.indexOf(a) - order.indexOf(b));
@@ -442,7 +442,9 @@ function printEvaluation(report: EvaluationReport): void {
   }
   const s = report.summary;
   const verdict = s.verdict === "pass" ? "PASS" : "FAIL";
-  console.log(`\nSummary: ${s.pass} pass · ${s.warn} warn · ${s.fail} fail — ${verdict}`);
+  console.log(
+    `\nSummary: ${s.pass} pass · ${s.warn} warn · ${s.fail} fail${s.skip ? ` · ${s.skip} skip` : ""} — ${verdict}`,
+  );
   console.log(
     `Coverage: ${s.capabilitiesExercised.length}/${s.capabilitiesDeclared.length} declared ` +
       `capabilities exercised, ${s.capabilitiesPassing.length} passing` +

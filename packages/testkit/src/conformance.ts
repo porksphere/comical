@@ -31,7 +31,13 @@ export interface ConformanceOptions {
   assetSampleSize?: number;
 }
 
-export type Severity = "pass" | "warn" | "fail";
+/**
+ * `skip` = a probe that could not reach a conclusion and is *not* a defect: a capability gated behind
+ * credentials the audit doesn't supply (favorites), or a behavioral probe whose outcome is inherently
+ * inconclusive (a sort/filter whose effect isn't observable on the sampled page). Skips never redden a
+ * run and are not counted as warnings — they read as ⊘ "not applicable / inconclusive".
+ */
+export type Severity = "pass" | "warn" | "fail" | "skip";
 
 export interface CheckResult {
   /** Short, stable id, e.g. "search.item.title". */
@@ -46,6 +52,8 @@ export interface EvaluationSummary {
   pass: number;
   warn: number;
   fail: number;
+  /** Inconclusive/not-applicable probes (auth-gated capability, unobservable sort/filter effect). */
+  skip: number;
   capabilitiesDeclared: BridgeCapability[];
   /** Declared capabilities a probe actually ran for. */
   capabilitiesExercised: BridgeCapability[];
@@ -102,6 +110,19 @@ export function isTransientError(e: unknown): boolean {
     )
   );
 }
+/**
+ * Heuristic: did this thrown error mean the capability is gated behind **credentials the audit didn't
+ * supply** (e.g. `getFavorites` needs a login / API key / session cookies)? Such a throw is not a
+ * bridge defect — the audit runs unauthenticated by design — so it's recorded `skip`, not `warn`.
+ */
+export function isAuthRequiredError(e: unknown): boolean {
+  const s = (e instanceof Error ? `${e.name} ${e.message}` : String(e)).toLowerCase();
+  return (
+    /\b401\b|unauthorized|authentication required|not (?:logged|signed) in|log ?in required/.test(s) ||
+    /require[sd]?\b[^.]*\b(username|password|api ?key|token|session|cookie|credential|log ?in|sign ?in)/.test(s)
+  );
+}
+
 const ids = (r: PagedResults<SeriesEntry>): string => r.items.map((i) => i.id).join(",");
 
 /**
@@ -121,6 +142,7 @@ export async function evaluateBridge(
   const pass = (c: CheckResult["capability"], id: string, m: string) => rec(c, "pass", id, m);
   const warn = (c: CheckResult["capability"], id: string, m: string) => rec(c, "warn", id, m);
   const fail = (c: CheckResult["capability"], id: string, m: string) => rec(c, "fail", id, m);
+  const skip = (c: CheckResult["capability"], id: string, m: string) => rec(c, "skip", id, m);
 
   let firstId: string | undefined;
   let sampledChapterId: string | undefined;
@@ -225,7 +247,7 @@ export async function evaluateBridge(
           }
         }
         pass("filters", "filters.descriptors", `getFilters returned ${filters.length} filter(s)`);
-        await probeFilterEffect(bridge, filters, options.searchQuery ?? "", warn, pass, fail);
+        await probeFilterEffect(bridge, filters, options.searchQuery ?? "", skip, pass, fail);
       }
     } catch (e) {
       rec("filters", isTransientError(e) ? "warn" : "fail", "filters.threw", `getFilters threw: ${msg(e)}`);
@@ -242,7 +264,7 @@ export async function evaluateBridge(
       } else {
         for (const s of sorts) if (!s.key) fail("sort", "sort.key", "a sort option has an empty key");
         pass("sort", "sort.options", `getSortOptions returned ${sorts.length} option(s)`);
-        await probeSortEffect(bridge, sorts[0]!.key, options.searchQuery ?? "", warn, pass, fail);
+        await probeSortEffect(bridge, sorts[0]!.key, options.searchQuery ?? "", skip, pass, fail);
       }
     } catch (e) {
       rec("sort", isTransientError(e) ? "warn" : "fail", "sort.threw", `getSortOptions threw: ${msg(e)}`);
@@ -286,7 +308,13 @@ export async function evaluateBridge(
       }
       pass("favorites", "favorites.read", `getFavorites returned ${favs.items.length} item(s)`);
     } catch (e) {
-      warn("favorites", "favorites.read", `getFavorites could not be read (authentication required?): ${msg(e)}`);
+      // Unauthenticated by design: a "needs credentials" throw is skipped (not a defect); anything else
+      // (or a transient block) is a real read problem worth a warning.
+      if (isAuthRequiredError(e)) {
+        skip("favorites", "favorites.read", `getFavorites needs credentials (none configured) — skipped: ${msg(e)}`);
+      } else {
+        warn("favorites", "favorites.read", `getFavorites could not be read: ${msg(e)}`);
+      }
     }
   }
 
@@ -364,6 +392,7 @@ export async function evaluateBridge(
     pass: results.filter((r) => r.severity === "pass").length,
     warn: results.filter((r) => r.severity === "warn").length,
     fail: results.filter((r) => r.severity === "fail").length,
+    skip: results.filter((r) => r.severity === "skip").length,
     capabilitiesDeclared: declared,
     capabilitiesExercised: declared.filter((c) => exercised.has(c)),
     capabilitiesPassing: declared.filter((c) => exercised.has(c) && !failedCaps.has(c)),
@@ -441,12 +470,12 @@ async function probeFilterEffect(
   bridge: Bridge,
   filters: Filter[],
   query: string,
-  warn: Rec,
+  skip: Rec,
   pass: Rec,
   fail: Rec,
 ): Promise<void> {
   if (!bridge.getSearchResults) {
-    warn("filters", "filters.effect", "cannot probe filter effect without search");
+    skip("filters", "filters.effect", "cannot probe filter effect without search");
     return;
   }
   const picked = filters.find(
@@ -454,7 +483,7 @@ async function probeFilterEffect(
       (f.type === "select" || f.type === "multiselect") && Array.isArray(f.options) && f.options.length > 0,
   );
   if (!picked) {
-    warn("filters", "filters.effect", "no select/multiselect filter to probe");
+    skip("filters", "filters.effect", "no select/multiselect filter to probe");
     return;
   }
   const optionValue = picked.options[0]!.value;
@@ -463,7 +492,8 @@ async function probeFilterEffect(
     const value = picked.type === "multiselect" ? [optionValue] : optionValue;
     const filtered = await bridge.getSearchResults(query, 1, { filters: [{ key: picked.key, value }] });
     if (ids(filtered) === ids(base)) {
-      warn("filters", "filters.effect", `applying filter "${picked.key}=${optionValue}" did not change results`);
+      // Inconclusive, not a defect: the sampled page may legitimately be unchanged by this filter.
+      skip("filters", "filters.effect", `applying filter "${picked.key}=${optionValue}" did not change the sampled page`);
     } else {
       pass("filters", "filters.effect", `filter "${picked.key}" changed results (${base.items.length}→${filtered.items.length})`);
     }
@@ -476,21 +506,22 @@ async function probeSortEffect(
   bridge: Bridge,
   sortKey: string,
   query: string,
-  warn: Rec,
+  skip: Rec,
   pass: Rec,
   fail: Rec,
 ): Promise<void> {
   if (!bridge.getSearchResults) {
-    warn("sort", "sort.effect", "cannot probe sort effect without search");
+    skip("sort", "sort.effect", "cannot probe sort effect without search");
     return;
   }
   try {
     const asc = await bridge.getSearchResults(query, 1, { sort: { key: sortKey, ascending: true } });
     const desc = await bridge.getSearchResults(query, 1, { sort: { key: sortKey, ascending: false } });
     if (asc.items.length < 2) {
-      warn("sort", "sort.effect", "not enough results to observe sort order");
+      skip("sort", "sort.effect", "not enough results to observe sort order");
     } else if (ids(asc) === ids(desc)) {
-      warn("sort", "sort.effect", `asc/desc on "${sortKey}" produced identical order`);
+      // Inconclusive, not a defect: a single-direction key or an already-ordered page can look identical.
+      skip("sort", "sort.effect", `asc/desc on "${sortKey}" produced identical order`);
     } else {
       pass("sort", "sort.effect", `sort "${sortKey}" reorders results (asc ≠ desc)`);
     }

@@ -82,6 +82,68 @@ describe("evaluateBridge", () => {
     expect(r.summary.verdict).toBe("fail");
   });
 
+  test("favorites gated behind missing credentials → skip (not warn), verdict pass", async () => {
+    const r = await evaluateBridge(
+      bridge({
+        info: INFO(["search", "favorites"]),
+        getFavorites: async () => {
+          throw new Error("favorites require a username + password (set them in this bridge's settings)");
+        },
+        addFavorite: async () => {},
+        removeFavorite: async () => {},
+      }),
+    );
+    const fav = r.results.find((x) => x.id === "favorites.read");
+    expect(fav?.severity).toBe("skip");
+    expect(r.summary.skip).toBeGreaterThan(0);
+    expect(r.summary.verdict).toBe("pass");
+  });
+
+  test("favorites throwing a non-auth error → warn (a real read problem)", async () => {
+    const r = await evaluateBridge(
+      bridge({
+        info: INFO(["search", "favorites"]),
+        getFavorites: async () => {
+          throw new Error("unexpected JSON while parsing favorites page");
+        },
+        addFavorite: async () => {},
+        removeFavorite: async () => {},
+      }),
+    );
+    expect(r.results.find((x) => x.id === "favorites.read")?.severity).toBe("warn");
+  });
+
+  test("sort with no observable asc/desc effect → skip (inconclusive, not a defect)", async () => {
+    const items = [
+      { id: "a", title: "Alpha", thumbnailUrl: "https://x/a.png" },
+      { id: "b", title: "Beta", thumbnailUrl: "https://x/b.png" },
+    ];
+    const r = await evaluateBridge(
+      bridge({
+        info: INFO(["search", "sort"]),
+        getSortOptions: async () => [{ key: "date", label: "Date" }],
+        getSearchResults: async (_q, page) => ({ items, page, hasNextPage: false }),
+      }),
+    );
+    expect(r.results.find((x) => x.id === "sort.effect")?.severity).toBe("skip");
+    expect(r.summary.verdict).toBe("pass");
+  });
+
+  test("filter with no observable effect → skip (inconclusive, not a defect)", async () => {
+    const items = [{ id: "a", title: "Alpha", thumbnailUrl: "https://x/a.png" }];
+    const r = await evaluateBridge(
+      bridge({
+        info: INFO(["search", "filters"]),
+        getFilters: async () => [
+          { key: "genre", label: "Genre", type: "select", options: [{ value: "action", label: "Action" }] },
+        ],
+        getSearchResults: async (_q, page) => ({ items, page, hasNextPage: false }),
+      }),
+    );
+    expect(r.results.find((x) => x.id === "filters.effect")?.severity).toBe("skip");
+    expect(r.summary.verdict).toBe("pass");
+  });
+
   test("runConformance throws on a failing bridge, resolves on a clean one", async () => {
     await expect(runConformance(bridge({ info: INFO(["search", "filters"]) }))).rejects.toThrow();
     const ok = await runConformance(bridge());
