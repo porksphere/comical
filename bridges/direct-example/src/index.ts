@@ -106,7 +106,8 @@ class DirectExampleBridge extends BridgeBase<Settings> {
     if (artist) info.author = artist;
     if (description) info.description = description;
     if (cover) info.thumbnailUrl = this.resolve(this.base(), cover);
-    if (genres.length > 0) info.genres = genres;
+    // Genres are a `kind: "genre"` tag group, not a separate axis.
+    if (genres.length > 0) info.tagGroups = [{ kind: "genre", label: "Genres", tags: genres }];
     return info;
   }
 

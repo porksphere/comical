@@ -277,21 +277,26 @@ class ExampleBridge extends BridgeBase<Settings> {
     const cover = article.find("img.cover").first().attr("src");
     const liText = (selector: string): string[] =>
       article.find(selector).toArray().map((el) => $(el).text().trim()).filter(Boolean);
+    // Genres are just a leading tag group with `kind: "genre"` — no separate `SeriesInfo.genres` axis.
     const genres = liText("ul.genres > li");
-    const tagGroups: TagGroup[] = article
-      .find("ul.tag-group")
-      .toArray()
-      .map((el) => {
-        const node = $(el);
-        const group: TagGroup = {
-          label: node.attr("data-label") ?? "Tags",
-          tags: node.find("li").toArray().map((li) => $(li).text().trim()).filter(Boolean),
-        };
-        const kind = node.attr("data-kind");
-        if (kind) group.kind = kind as TagKind;
-        return group;
-      })
-      .filter((g) => g.tags.length > 0);
+    const tagGroups: TagGroup[] = [];
+    if (genres.length > 0) tagGroups.push({ kind: "genre", label: "Genres", tags: genres });
+    tagGroups.push(
+      ...article
+        .find("ul.tag-group")
+        .toArray()
+        .map((el) => {
+          const node = $(el);
+          const group: TagGroup = {
+            label: node.attr("data-label") ?? "Tags",
+            tags: node.find("li").toArray().map((li) => $(li).text().trim()).filter(Boolean),
+          };
+          const kind = node.attr("data-kind");
+          if (kind) group.kind = kind as TagKind;
+          return group;
+        })
+        .filter((g) => g.tags.length > 0),
+    );
 
     // Related-series rails — each `ul.related-group` is a labeled list of other series cards.
     const relatedSeriesGroups: RelatedSeriesGroup[] = article
@@ -330,7 +335,6 @@ class ExampleBridge extends BridgeBase<Settings> {
     if (author) info.author = author;
     if (description) info.description = description;
     if (cover) info.thumbnailUrl = this.resolve(this.base(), cover);
-    if (genres.length > 0) info.genres = genres;
     if (tagGroups.length > 0) info.tagGroups = tagGroups;
     if (relatedSeriesGroups.length > 0) info.relatedSeriesGroups = relatedSeriesGroups;
     return info;

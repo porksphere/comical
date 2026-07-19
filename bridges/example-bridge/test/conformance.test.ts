@@ -43,7 +43,7 @@ describe("example-bridge", () => {
       title: details.title,
       author: details.author,
       status: details.status,
-      genres: details.genres,
+      genres: details.tagGroups?.find((g) => g.kind === "genre")?.tags,
     }).toMatchSnapshot("sherlock-details");
 
     const chapters = await bridge.getChapters!("sherlock");

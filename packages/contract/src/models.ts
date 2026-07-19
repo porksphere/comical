@@ -68,8 +68,9 @@ export type TagKind = z.infer<typeof tagKindSchema>;
 
 /**
  * A labeled group of series tags. Sites categorize differently (genres / themes / demographics /
- * format / content-warnings / free-form tags); a bridge surfaces each grouping faithfully. `genres`
- * remains the one normalized axis on `SeriesInfo`; everything else lives here.
+ * format / content-warnings / free-form tags); a bridge surfaces each grouping faithfully, one group
+ * per axis. There is no separate normalized `genres` field — genres are simply a group with
+ * `kind: "genre"` (conventionally `label: "Genres"`), so every taxonomy is rendered by one path.
  */
 export const tagGroupSchema = z.object({
   /** Display label, e.g. "Themes", "Demographics", "Content Warnings". */
@@ -156,13 +157,16 @@ export const seriesInfoSchema = z.object({
   description: z.string().optional(),
   /**
    * The series' overall type / format / category as one short label (e.g. "Manga", "Doujinshi",
-   * "Webtoon", "Artist CG"). Distinct from `genres` — it answers "what kind of thing is this", not
-   * "what is it about". Hosts render it as a single Type metadata cell beside status/author rather
-   * than mixing it into the genre chips. Bridges that only have this one taxonomy still use it here.
+   * "Webtoon", "Artist CG"). Distinct from the genre tag group — it answers "what kind of thing is
+   * this", not "what is it about". Hosts render it as a single Type metadata cell beside status/author
+   * rather than mixing it into the genre chips. Bridges that only have this one taxonomy still use it here.
    */
   type: z.string().min(1).optional(),
-  genres: z.array(z.string()).optional(),
-  /** Other site taxonomies beyond genres (themes, demographics, format, content warnings, …). */
+  /**
+   * All site taxonomies, each a labeled group: genres (`kind: "genre"`), themes, demographics, format,
+   * content warnings, free-form tags, … A bridge emits genres as a `{ kind: "genre", label: "Genres" }`
+   * group like any other axis — there is no separate flat `genres` field.
+   */
   tagGroups: z.array(tagGroupSchema).optional(),
   /**
    * Related series surfaced on the detail page, grouped and labeled by the bridge (sequels,

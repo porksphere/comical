@@ -101,7 +101,7 @@ describe("evaluateBridge — metrics integration", () => {
       page,
       hasNextPage: false,
     }),
-    getSeriesDetails: async (id: string) => ({ id, title: "A", author: "x", description: "d", genres: ["g"], status: "completed" }),
+    getSeriesDetails: async (id: string) => ({ id, title: "A", author: "x", description: "d", tagGroups: [{ kind: "genre" as const, label: "Genres", tags: ["g"] }], status: "completed" }),
     getChapters: async () => [{ id: "c1", name: "C1", number: 1 }],
     getChapterPages: async () => [{ index: 0, imageUrl: "https://x/0.png" }],
   } as unknown as Bridge;

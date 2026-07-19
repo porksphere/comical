@@ -320,7 +320,9 @@ export async function evaluateBridge(
       } else pass("core", "read.detailsRoundTrip", "details round-trip the sampled id");
       if (!details.author) warn("core", "read.details.author", "series details have no author");
       if (!details.description) warn("core", "read.details.description", "series details have no description");
-      if (!details.genres || details.genres.length === 0) warn("core", "read.details.genres", "series details have no genres");
+      const genreGroup = details.tagGroups?.find((g) => g.kind === "genre");
+      if (!genreGroup || genreGroup.tags.length === 0)
+        warn("core", "read.details.genres", 'series details have no genre tag group (kind: "genre")');
 
       if (has("direct")) {
         // Chapter-based read path not applicable for direct bridges.

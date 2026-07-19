@@ -30,7 +30,7 @@ function bridge(over: Partial<Bridge> = {}): Bridge {
       title: "Alpha",
       author: "Author",
       description: "desc",
-      genres: ["g"],
+      tagGroups: [{ kind: "genre", label: "Genres", tags: ["g"] }],
       status: "completed",
     }),
     getChapters: async () => [{ id: "c1", name: "Chapter 1", number: 1 }],
