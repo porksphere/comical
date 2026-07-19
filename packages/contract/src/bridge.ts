@@ -9,7 +9,6 @@ import type {
   Chapter,
   Filter,
   FilterValue,
-  GenreExclusions,
   Page,
   PageThumbnail,
   PagedResults,
@@ -151,16 +150,6 @@ export interface Bridge {
    * the result, so this is called only for ids it has never seen a label for.
    */
   resolveTags?(ids: string[]): Promise<Tag[]>;
-
-  // ---- Genre exclusions — capability "exclude-genres" ----
-  // Backed by the bridge's backend account (server-side, applies to every surface), so these typically
-  // need auth and throw a clear error when credentials are absent — unlike host-injected `excludedTags`.
-
-  /** The pickable genres plus the account's currently-excluded subset. (capability "exclude-genres") */
-  getGenreExclusions?(): Promise<GenreExclusions>;
-
-  /** Replace the account's excluded-genre set (a write-through to the backend); returns the new state. (capability "exclude-genres") */
-  setExcludedGenres?(genreIds: string[]): Promise<GenreExclusions>;
 
   /**
    * Declarative settings this bridge needs from the user (backend URL, credentials, options).

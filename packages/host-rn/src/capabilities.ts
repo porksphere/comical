@@ -24,7 +24,6 @@ export const CAPABILITY_METHODS: Record<BridgeCapability, string[]> = {
   sort: ["getSortOptions"],
   favorites: ["getFavorites", "addFavorite", "removeFavorite", "isFavorite"],
   "read-sync": ["getReadChapters", "markChapterRead", "markChapterUnread", "setSeriesStatus"],
-  "exclude-genres": ["getGenreExclusions", "setExcludedGenres"],
   "resolve-tags": ["resolveTags"],
   "related-series": ["getRelatedSeries"],
   // Host-injected into query options; the bridge exposes no dedicated method for it.

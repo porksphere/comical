@@ -9,7 +9,6 @@ import { describe, expect, test } from "bun:test";
 import {
   EXCLUDED_TAGS_KEY,
   bridgeCapabilitySchema,
-  genreExclusionsSchema,
   seriesEntrySchema,
 } from "../src/models.ts";
 
@@ -78,30 +77,7 @@ describe("exclusion plumbing exports", () => {
     expect(bridgeCapabilitySchema.parse("exclude-tags")).toBe("exclude-tags");
   });
 
-  test('"exclude-genres" is a recognized capability', () => {
-    expect(bridgeCapabilitySchema.parse("exclude-genres")).toBe("exclude-genres");
-  });
-
   test('"resolve-tags" is a recognized capability', () => {
     expect(bridgeCapabilitySchema.parse("resolve-tags")).toBe("resolve-tags");
-  });
-});
-
-describe("genreExclusionsSchema", () => {
-  test("parses available genres + the excluded subset", () => {
-    const state = genreExclusionsSchema.parse({
-      available: [{ id: "39", label: "Action" }, { id: "44", label: "Horror" }],
-      excluded: ["44"],
-    });
-    expect(state.available).toHaveLength(2);
-    expect(state.excluded).toEqual(["44"]);
-  });
-
-  test("accepts an empty exclusion set", () => {
-    expect(genreExclusionsSchema.parse({ available: [], excluded: [] }).excluded).toEqual([]);
-  });
-
-  test("rejects a malformed available entry", () => {
-    expect(() => genreExclusionsSchema.parse({ available: [{ id: "1" }], excluded: [] })).toThrow();
   });
 });

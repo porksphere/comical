@@ -14,7 +14,6 @@ import {
   chapterSchema,
   filterSchema,
   filterValueSchema,
-  genreExclusionsSchema,
   type HostCapabilities,
   isContractCompatible,
   pageSchema,
@@ -258,14 +257,6 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
   }
   if (raw.resolveTags) {
     bridge.resolveTags = (ids) => call("resolveTags", z.array(tagSchema), () => raw.resolveTags!(ids));
-  }
-  if (raw.getGenreExclusions) {
-    bridge.getGenreExclusions = () =>
-      call("getGenreExclusions", genreExclusionsSchema, () => raw.getGenreExclusions!());
-  }
-  if (raw.setExcludedGenres) {
-    bridge.setExcludedGenres = (ids) =>
-      call("setExcludedGenres", genreExclusionsSchema, () => raw.setExcludedGenres!(ids));
   }
   if (raw.getFavorites) {
     bridge.getFavorites = (p) => call("getFavorites", entryPage, () => raw.getFavorites!(p));

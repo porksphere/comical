@@ -14,7 +14,6 @@ import {
   type Chapter,
   type CheerioRoot,
   type Filter,
-  type GenreExclusions,
   type InferSettings,
   type ListOptions,
   type Page,
@@ -82,34 +81,15 @@ class ExampleBridge extends BridgeBase<Settings> {
     contractVersion: "1.0.0",
     languages: ["en"],
     nsfw: false,
-    capabilities: ["lists", "search", "filters", "sort", "settings", "favorites", "exclude-tags", "exclude-genres", "resolve-tags"],
+    capabilities: ["lists", "search", "filters", "sort", "settings", "favorites", "exclude-tags", "resolve-tags"],
     // Entries carry an author subtitle (see `entry.subtitle` below) — clients reserve the card
     // sub-line for this bridge's grids.
     cardSubtitles: true,
     iconUrl: "https://example.com/favicon.ico",
   };
 
-  /** The pickable genre universe for the "exclude-genres" control (mirrors the genre filter axis). */
-  private static readonly GENRES = ["Fantasy", "Adventure", "Mystery", "Crime", "Horror", "Gothic"];
-  /** Currently-excluded genres. In a real bridge this lives on the backend account; here it's in-memory
-   *  state on the (manager-cached) instance — enough to exercise the host read/write round-trip. */
-  private excludedGenres: string[] = [];
-
   getSettings(): SettingDescriptor[] {
     return [...SETTINGS];
-  }
-
-  getGenreExclusions(): Promise<GenreExclusions> {
-    return Promise.resolve({
-      available: ExampleBridge.GENRES.map((g) => ({ id: g, label: g })),
-      excluded: [...this.excludedGenres],
-    });
-  }
-
-  setExcludedGenres(genreIds: string[]): Promise<GenreExclusions> {
-    const allowed = new Set(ExampleBridge.GENRES);
-    this.excludedGenres = [...new Set(genreIds)].filter((g) => allowed.has(g));
-    return this.getGenreExclusions();
   }
 
   /** A tiny id→label table so the host's reverse lookup ("resolve-tags") has something to resolve. */

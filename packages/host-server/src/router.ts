@@ -429,34 +429,6 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }),
   );
 
-  // ── Genre exclusions (capability "exclude-genres") — backend-account state, the bridge owns auth ──
-  // Distinct from the host-stored, query-injected tag exclusions: the account is the source of truth,
-  // so the host neither persists nor injects these — it just reads/writes through the bridge.
-
-  app.get("/bridges/:id/genre-exclusions", (c) =>
-    withContentBridge(c, async (bridge) => {
-      if (!bridge.getGenreExclusions) return c.json({ error: "not supported" }, 400);
-      return c.json(await bridge.getGenreExclusions());
-    }),
-  );
-
-  app.put("/bridges/:id/genre-exclusions", (c) =>
-    withContentBridge(c, async (bridge) => {
-      if (!bridge.setExcludedGenres) return c.json({ error: "not supported" }, 400);
-      let body: { genres?: unknown };
-      try {
-        body = await c.req.json<{ genres?: unknown }>();
-      } catch {
-        return c.json({ error: "invalid JSON" }, 400);
-      }
-      if (!Array.isArray(body.genres) || body.genres.some((g) => typeof g !== "string")) {
-        return c.json({ error: "expected { genres: string[] }" }, 400);
-      }
-      const genres = [...new Set(body.genres as string[])].filter((g) => g.trim().length > 0);
-      return c.json(await bridge.setExcludedGenres(genres));
-    }),
-  );
-
   // ── Favorites (capability "favorites") — backend-synced; the bridge handles auth ──────────────
 
   app.get("/bridges/:id/favorites", (c) =>

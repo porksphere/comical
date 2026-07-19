@@ -343,19 +343,6 @@ export const tagSchema = z.object({ id: z.string(), label: z.string() });
 export type Tag = z.infer<typeof tagSchema>;
 
 /**
- * The genre-exclusion state for a bridge advertising `"exclude-genres"`. Unlike tag exclusions
- * (which the host stores and injects per-query), genre exclusions live on the bridge's backend
- * account — `available` is the full pickable genre set and `excluded` the currently-hidden subset,
- * both read straight from that account. A single GET yields both, so the picker and current state
- * stay consistent.
- */
-export const genreExclusionsSchema = z.object({
-  available: z.array(tagSchema),
-  excluded: z.array(z.string()),
-});
-export type GenreExclusions = z.infer<typeof genreExclusionsSchema>;
-
-/**
  * A browsable collection a bridge offers — its own self-defined "list" (Trending, Recently
  * Updated, a genre, Staff Picks, …). The catalog is returned by `getLists()`; a list's paginated
  * entries are fetched with `getListItems(listId, page)`.
@@ -522,14 +509,6 @@ export const bridgeCapabilitySchema = z.enum([
    * it, configured exclusions are stored but inert.
    */
   "exclude-tags",
-  /**
-   * Honors persistent per-bridge GENRE exclusions, written through to the backend account so they
-   * apply across every surface server-side (search, lists, everything) — distinct from the
-   * per-query, host-injected `"exclude-tags"`. The bridge enumerates pickable genres and the current
-   * exclusion set via `getGenreExclusions()` and replaces it via `setExcludedGenres()`. These
-   * typically require the bridge's account auth; without it the methods throw and the UI says so.
-   */
-  "exclude-genres",
   /**
    * Resolves bare tag ids to labels via `resolveTags(ids)` — the inverse of the name-keyed `getTags`
    * search. The host uses it to put names back on ids it persists (e.g. `excludedTags`) without the
