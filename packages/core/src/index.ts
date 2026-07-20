@@ -10,6 +10,7 @@ export * from "./settings.ts";
 export * from "./net/rate-limiter.ts";
 export * from "./net/cookie-jar.ts";
 export * from "./net/gated-network.ts";
+export * from "./net/refreshable-network.ts";
 export * from "./evaluator.ts";
 export * from "./globals.ts";
 export { evaluateBundle, NodeVmEvaluator } from "./sandbox.ts";

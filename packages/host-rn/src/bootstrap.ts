@@ -24,6 +24,7 @@ import type {
   LibraryStore,
   SavedRegistryStore,
   SettingsStore,
+  TrackerBundles,
 } from "./types.ts";
 
 export interface EmbeddedBootstrapConfig {
@@ -52,6 +53,12 @@ export interface EmbeddedBootstrapConfig {
   /** Optional device seams for guaranteed-offline library covers (covers-rooted blob store with
    *  `read` + page fetcher). Only effective alongside `libraryStore`. */
   covers?: EmbeddedCoversConfig;
+  /** Static id → bundle source code for the trackers built into the app. Supplying it alongside
+   *  `trackerSettings` mounts the `/trackers*` endpoints (also needs a native tracker runtime
+   *  registered — see `EmbeddedRuntimeConfig.trackerBundles`'s doc comment in install.ts). */
+  trackerBundles?: TrackerBundles;
+  /** Per-tracker settings persistence (AsyncStorage-backed in an app). */
+  trackerSettings?: SettingsStore;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
   requireSignature?: boolean;
   /** Persistent bundle cache (defaults to in-memory; an expo-file-system adapter is a follow-up). */
@@ -88,6 +95,8 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     ...(config.downloadsStore ? { downloadsStore: config.downloadsStore } : {}),
     ...(config.downloadsEngine ? { downloadsEngine: config.downloadsEngine } : {}),
     ...(config.covers ? { covers: config.covers } : {}),
+    ...(config.trackerBundles ? { trackerBundles: config.trackerBundles } : {}),
+    ...(config.trackerSettings ? { trackerSettings: config.trackerSettings } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),

@@ -7,9 +7,10 @@
  * (the native-module JSON contract, the bundle source, the in-process router adapter) are defined
  * here because they don't exist elsewhere in comical: this package is their canonical home.
  */
-import type { BridgeInfo } from "@comical/contract";
+import type { BridgeInfo, TrackerInfo } from "@comical/contract";
 import type { BlobStore, DownloadEngine, Downloads, DownloadsStore, PageFetcher, PageResolver, PendingPage } from "@comical/downloads";
 import type { RegistryProvider } from "@comical/host-server/registry-provider";
+import type { TrackerProvider } from "@comical/host-server/tracker-provider";
 import type { Library, LibraryStore } from "@comical/library";
 import type { SavedRegistry } from "@comical/registry/schema";
 import type { ComicalRuntime } from "@comical/runtime";
@@ -57,6 +58,7 @@ export interface EmbeddedCoversConfig {
 
 export type { BridgeProvider, BridgeSummary, BridgeSource } from "@comical/host-server/bridge-provider";
 export type { RegistryProvider } from "@comical/host-server/registry-provider";
+export type { TrackerProvider, TrackerSummary } from "@comical/host-server/tracker-provider";
 
 /**
  * A `Hono`-like app as returned by `@comical/host-server`'s `createRouter` — only `.fetch` is used
@@ -88,6 +90,8 @@ export type CreateRouter = (
     /** Cover byte cache — with it (alongside `library`) the router captures and serves library
      *  entries' covers for guaranteed-offline rendering. */
     covers?: EmbeddedCoversConfig;
+    /** Tracker-management surface — enables the `/trackers*` endpoints when provided. */
+    trackers?: TrackerProvider;
   },
 ) => EmbeddedRouter;
 
@@ -190,3 +194,37 @@ export interface SettingsStore {
   get(id: string): Promise<Record<string, import("@comical/contract").SettingValue>>;
   set(id: string, values: Record<string, import("@comical/contract").SettingValue>): Promise<void>;
 }
+
+/**
+ * The native-module JSON contract for trackers — parallel to `NativeBridgeRuntime`, wrapping
+ * `ComicalTrackerContext` (see host-native's `comical_init_tracker`/`comical_call_tracker`).
+ *
+ * `drainTrackerSettingsPatch` is tracker-only (no bridge equivalent): the sandboxed context has no
+ * channel to persist a refreshed OAuth token back to the RN-level settings store on its own, so it
+ * buffers the refreshed blob and the native side polls it after every `callTracker` — see
+ * `installComicalHarness`'s `comical_drain_tracker_patch` doc comment in `@comical/host-native`.
+ */
+export interface NativeTrackerRuntime {
+  initTracker(id: string, code: string, settingsJson: string, networkJson?: string): Promise<string>;
+  callTracker(id: string, method: string, argsJson: string): Promise<string>;
+  disposeTracker(id: string): void;
+  /** JSON `{ key: string, blob: OAuthTokenBlob }` if a token was refreshed since the last drain,
+   *  else `null`. Call after every `callTracker`. */
+  drainTrackerSettingsPatch(id: string): Promise<string | null>;
+}
+
+/** What `initTracker` resolves to (JSON-encoded) — parallel to `InitResult`. */
+export interface TrackerInitResult {
+  info: TrackerInfo;
+  /** Method names the loaded tracker implements; omitted by older native builds (see
+   *  tracker-capabilities.ts fallback). */
+  methods?: string[];
+}
+
+/**
+ * Static id → bundle source code for the trackers built into the app. v1 install model: trackers
+ * ship in the app bundle rather than being registry-installed like bridges (comical-trackers'
+ * `index.json` isn't fully published yet) — this is the natural seam to swap for a dynamic
+ * `BundleSource`-style flow once it is.
+ */
+export type TrackerBundles = Record<string, string>;

@@ -13,13 +13,24 @@ export { configureEmbeddedRuntime, applyEmbeddedMode } from "./bootstrap.ts";
 export type { EmbeddedBootstrapConfig } from "./bootstrap.ts";
 export { getEmbeddedDownloadEngine, installEmbeddedTransport, uninstallEmbeddedTransport } from "./install.ts";
 export type { EmbeddedRuntimeConfig } from "./install.ts";
-export { getNativeBridgeRuntime, setNativeBridgeRuntime, isEmbeddedRuntimeAvailable } from "./native-runtime.ts";
+export {
+  getNativeBridgeRuntime,
+  setNativeBridgeRuntime,
+  isEmbeddedRuntimeAvailable,
+  getNativeTrackerRuntime,
+  setNativeTrackerRuntime,
+} from "./native-runtime.ts";
 export { EmbeddedBridgeProvider, missingRequiredFor } from "./provider.ts";
 export type { EmbeddedProviderDeps } from "./provider.ts";
 export { EmbeddedRegistryProvider } from "./registry-provider.ts";
 export type { EmbeddedRegistryProviderDeps } from "./registry-provider.ts";
 export { buildProxyBridge } from "./proxy-bridge.ts";
 export { CAPABILITY_METHODS, methodsForBridge } from "./capabilities.ts";
+export { buildProxyTracker } from "./tracker-proxy.ts";
+export type { ProxyTrackerHooks } from "./tracker-proxy.ts";
+export { TRACKER_CAPABILITY_METHODS, methodsForTracker } from "./tracker-capabilities.ts";
+export { EmbeddedTrackerProvider } from "./tracker-provider.ts";
+export type { EmbeddedTrackerProviderDeps } from "./tracker-provider.ts";
 export { createEmbeddedTransport } from "./transport.ts";
 export {
   RegistryBundleSource,
@@ -53,9 +64,14 @@ export type {
   InstalledBridgeRecord,
   InstalledStore,
   NativeBridgeRuntime,
+  NativeTrackerRuntime,
   PageFetcher,
   PendingPage,
   RegistryProvider,
   SavedRegistryStore,
   SettingsStore,
+  TrackerBundles,
+  TrackerInitResult,
+  TrackerProvider,
+  TrackerSummary,
 } from "./types.ts";

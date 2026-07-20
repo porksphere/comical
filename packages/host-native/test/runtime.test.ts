@@ -28,6 +28,10 @@ const NATIVE_GLOBALS = [
   "comical_init",
   "comical_call",
   "comical_bridge",
+  "comical_init_tracker",
+  "comical_call_tracker",
+  "comical_drain_tracker_patch",
+  "comical_tracker",
 ];
 
 afterEach(() => {
@@ -54,6 +58,23 @@ function installAsyncNatives(): void {
   g._native_storage_set = (k: string, v: string) => { store.set(k, v); return Promise.resolve(null); };
   g._native_storage_delete = (k: string) => { store.delete(k); return Promise.resolve(null); };
   g._native_storage_keys = () => Promise.resolve(JSON.stringify([...store.keys()]));
+}
+
+/** Android-style network mock whose response depends on the request URL — for tracker OAuth-refresh
+ *  tests, which need a distinct `refreshUrl` response and content calls that 401 until refreshed. */
+function installScriptedNetwork(
+  script: (req: { url: string; method?: string; headers?: Record<string, string> }) => {
+    status: number;
+    body: unknown;
+  },
+): void {
+  g._native_network_request = (reqJSON: string) => {
+    const req = JSON.parse(reqJSON) as { url: string; method?: string; headers?: Record<string, string> };
+    const r = script(req);
+    return Promise.resolve(
+      JSON.stringify({ url: req.url, status: r.status, statusText: "", headers: {}, body: JSON.stringify(r.body) }),
+    );
+  };
 }
 
 /** iOS-style: callback (err, result) functions. */
@@ -176,5 +197,89 @@ describe("host-native runtime (iOS / callback adapter)", () => {
     const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify(["", 1])));
     expect(res.items.length).toBe(3);
     expect(spread(res.items)).toBeGreaterThanOrEqual(140);
+  });
+});
+
+// ── Trackers (comical_init_tracker / comical_call_tracker / comical_drain_tracker_patch) ────────
+// Verifies the tracker path goes through @comical/core's loadTracker (contract-validated results,
+// getSettings enforced) exactly like the bridge path, AND that an expired OAuth token is refreshed
+// transparently via the shared RefreshableNetwork — with the refreshed blob buffered for the native
+// side to persist (comical_drain_tracker_patch), since the sandboxed context has no other channel
+// back to the RN-level settings store.
+
+const TRACKER_INFO = `{ id: "t", name: "T", version: "0.0.0", contractVersion: "1.0.0", capabilities: ["library-sync"] }`;
+
+/** A tracker whose getLibrary makes one authenticated content request and echoes its response title. */
+const oauthTracker = (info: string): string => `module.exports = { default: (host) => ({
+  info: ${info},
+  getSettings: () => [{
+    type: "oauth-pin", key: "token", label: "Account", authUrl: "https://x/pin",
+    exchange: { url: "https://x/token", clientId: "cid", clientSecret: "secret", redirectUri: "urn:ietf:wg:oauth:2.0:oob", refreshUrl: "https://x/refresh" },
+  }],
+  getLibrary: async (page) => {
+    const res = await host.network.request({ url: "https://x/content", headers: { Authorization: "Bearer " + host.settings.token } });
+    return { items: [{ externalId: "1", title: JSON.parse(res.body).title, status: "reading" }], page, hasNextPage: false };
+  },
+}) };`;
+
+describe("host-native runtime — trackers", () => {
+  test("loads through core and round-trips getLibrary", async () => {
+    installNativeEval();
+    installScriptedNetwork(() => ({ status: 200, body: { title: "ok" } }));
+    installComicalHarness(makeAsyncHost);
+
+    const info = JSON.parse(g.comical_init_tracker!(oauthTracker(TRACKER_INFO), JSON.stringify({ token: "a1" })) as string);
+    expect(info.id).toBe("t");
+
+    const res = JSON.parse(await g.comical_call_tracker!("getLibrary", JSON.stringify([1])));
+    expect(res.items[0].title).toBe("ok");
+  });
+
+  test("refreshes an expired OAuth token on 401, retries, and buffers the new blob for comical_drain_tracker_patch", async () => {
+    installNativeEval();
+    let contentCalls = 0;
+    installScriptedNetwork((req) => {
+      if (req.url === "https://x/refresh") {
+        return { status: 200, body: { access_token: "a2", refresh_token: "r2", expires_in: 3600 } };
+      }
+      contentCalls++;
+      return contentCalls === 1 ? { status: 401, body: "" } : { status: 200, body: { title: "refreshed" } };
+    });
+    installComicalHarness(makeAsyncHost);
+
+    // Stored value is a token blob (has a refresh token) — the shape buildRefreshConfigs needs to
+    // wire up a refresh; the tracker itself only ever sees the unwrapped access token.
+    const stored = { token: JSON.stringify({ access: "a1", refresh: "r1" }) };
+    g.comical_init_tracker!(oauthTracker(TRACKER_INFO), JSON.stringify(stored));
+
+    const res = JSON.parse(await g.comical_call_tracker!("getLibrary", JSON.stringify([1])));
+    expect(res.items[0].title).toBe("refreshed");
+
+    const patchJSON = g.comical_drain_tracker_patch!();
+    expect(patchJSON).not.toBeNull();
+    expect(JSON.parse(patchJSON!)).toEqual({
+      key: "token",
+      blob: { access: "a2", refresh: "r2", expiresAt: expect.any(Number) },
+    });
+
+    // Drained once — a second drain with nothing new since returns null.
+    expect(g.comical_drain_tracker_patch!()).toBeNull();
+  });
+
+  test("a plain (non-blob) stored token is passed through unchanged, with no refresh configured", async () => {
+    installNativeEval();
+    installScriptedNetwork(() => ({ status: 200, body: { title: "ok" } }));
+    installComicalHarness(makeAsyncHost);
+
+    // No `refresh` token on the stored value → buildRefreshConfigs skips it → nothing to drain.
+    g.comical_init_tracker!(oauthTracker(TRACKER_INFO), JSON.stringify({ token: "plain-token" }));
+    const res = JSON.parse(await g.comical_call_tracker!("getLibrary", JSON.stringify([1])));
+    expect(res.items[0].title).toBe("ok");
+    expect(g.comical_drain_tracker_patch!()).toBeNull();
+  });
+
+  test("comical_call_tracker rejects before comical_init_tracker has run", async () => {
+    installComicalHarness(makeAsyncHost);
+    await expect(g.comical_call_tracker!("getLibrary", "[1]")).rejects.toThrow(/not initialised/);
   });
 });

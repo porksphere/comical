@@ -27,6 +27,7 @@ import type {
   EmbeddedTransport,
   Library,
   RegistryProvider,
+  TrackerProvider,
 } from "./types.ts";
 
 /** Base is arbitrary — the router matches on path only; nothing leaves the device. */
@@ -47,6 +48,7 @@ export function createEmbeddedTransport(
   downloads?: Downloads,
   downloadEngine?: DownloadEngine,
   covers?: EmbeddedCoversConfig,
+  trackers?: TrackerProvider,
 ): EmbeddedTransport {
   const router = createRouter(provider, {
     cors: false,
@@ -55,6 +57,7 @@ export function createEmbeddedTransport(
     ...(downloads ? { downloads } : {}),
     ...(downloadEngine ? { downloadEngine } : {}),
     ...(covers ? { covers } : {}),
+    ...(trackers ? { trackers } : {}),
   });
   return async (path, init) => {
     const routed = await router.fetch(new Request(`${EMBEDDED_ORIGIN}${path}`, init));
