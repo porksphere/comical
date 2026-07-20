@@ -29,7 +29,12 @@ export function createBunNetwork(opts: BunNetworkOptions = {}): NetworkCapabilit
       if (req.body !== undefined) init.body = req.body;
 
       const res = await fetch(req.url, init);
-      const body = await res.text();
+      // "base64": return raw bytes base64-encoded so a bridge can parse a binary resource without a
+      // lossy UTF-8 decode (the default `res.text()` would corrupt it). Otherwise decode as text.
+      const body =
+        req.responseType === "base64"
+          ? Buffer.from(await res.arrayBuffer()).toString("base64")
+          : await res.text();
       const setCookies = res.headers.getSetCookie();
 
       const response: HttpResponse = {

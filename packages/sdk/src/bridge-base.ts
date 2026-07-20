@@ -9,6 +9,7 @@
  *   export default defineBridge((host) => new MyBridge(host));
  */
 import * as cheerio from "cheerio";
+import { base64ToBytes } from "./base64.ts";
 import type {
   Bridge,
   BridgeFactory,
@@ -88,6 +89,19 @@ export abstract class BridgeBase<
   ): Promise<T> {
     const body = await this.fetchText(url, headers);
     return JSON.parse(body) as T;
+  }
+
+  /**
+   * GET a URL and return its raw bytes. The body is fetched with `responseType: "base64"` so it
+   * survives transports that only carry text (the host base64-encodes; this decodes) — use it for a
+   * binary resource a bridge must parse itself (a packed index, a length-prefixed blob). Binary
+   * *display* assets stay URL-referenced in `Page`; don't pull image data through here.
+   */
+  protected async fetchBytes(url: string, headers?: Record<string, string>): Promise<Uint8Array> {
+    const res = await this.request(
+      headers ? { url, headers, responseType: "base64" } : { url, responseType: "base64" },
+    );
+    return base64ToBytes(res.body);
   }
 
   /** GET a URL and load its HTML into a cheerio root for CSS-selector querying. */

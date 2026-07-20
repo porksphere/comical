@@ -19,6 +19,14 @@ export interface HttpRequest {
   headers?: Record<string, string>;
   /** Raw request body for POST/PUT/PATCH. */
   body?: string;
+  /**
+   * How the host should encode the response `body`. `"text"` (the default) decodes as UTF-8 text.
+   * `"base64"` returns the raw response bytes base64-encoded — for the rare bridge that must PARSE a
+   * binary resource itself (e.g. a packed index file) that a lossy UTF-8 decode would corrupt. This
+   * is not for binary *display* assets: those are still referenced by URL in `Page` and fetched by
+   * the client, never inlined. A bridge decodes the base64 with the SDK's `base64ToBytes`.
+   */
+  responseType?: "text" | "base64";
 }
 
 export interface HttpResponse {
@@ -33,7 +41,11 @@ export interface HttpResponse {
    * per-bridge cookie jar (session auth) uniformly across platforms.
    */
   setCookies?: string[];
-  /** Decoded text body. (Binary assets are referenced by URL in `Page`, never inlined.) */
+  /**
+   * The response body. Decoded UTF-8 text by default; when the request set
+   * `responseType: "base64"`, this is the raw bytes base64-encoded instead (decode with the SDK's
+   * `base64ToBytes`). Binary *display* assets are referenced by URL in `Page`, never inlined here.
+   */
   body: string;
 }
 
