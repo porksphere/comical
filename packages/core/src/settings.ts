@@ -97,6 +97,26 @@ export function validateSettingsInput(
   return out;
 }
 
+/**
+ * Strip the server-only OAuth exchange secret (`exchange.clientSecret`) from descriptors before
+ * they're serialized to a client. `clientId`/`url`/`clientSecretKey`/etc. are not sensitive on
+ * their own (`client_id` is public — it appears in the browser-visible authorize URL, and
+ * `clientSecretKey` only *names* another setting key, it isn't a value); `clientSecret` is the
+ * one static value that must never leave the host. Masked to `""` (rather than omitted) so the
+ * redacted descriptor still satisfies `SettingDescriptor`'s shape.
+ */
+export function redactSettingSecrets(descriptors: readonly SettingDescriptor[]): SettingDescriptor[] {
+  return descriptors.map((d): SettingDescriptor => {
+    if (d.type === "oauth-pin" && d.exchange?.clientSecret) {
+      return { ...d, exchange: { ...d.exchange, clientSecret: "" } };
+    }
+    if (d.type === "oauth-callback" && d.exchange.clientSecret) {
+      return { ...d, exchange: { ...d.exchange, clientSecret: "" } };
+    }
+    return d;
+  });
+}
+
 export function resolveSettings(
   raw: Readonly<Record<string, SettingValue>>,
   descriptors: readonly SettingDescriptor[],

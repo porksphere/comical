@@ -13,7 +13,7 @@ import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } f
 // node:vm-backed default evaluator) so this router can also be bundled into non-Node hosts
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
-import { validateSettingsInput } from "@comical/core/settings";
+import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
 import { entryKey, type Library } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
@@ -276,7 +276,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       const excludedTags = readExcludedTags(stored);
       return c.json({
         info: bridge.info,
-        settings,
+        settings: redactSettingSecrets(settings),
         values,
         secretsSet,
         missingRequired,
@@ -1242,7 +1242,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           if (secretKeys.has(k)) { if (v !== undefined && v !== "") secretsSet.push(k); }
           else values[k] = v;
         }
-        return c.json({ info: tracker.info, settings, values, secretsSet });
+        return c.json({ info: tracker.info, settings: redactSettingSecrets(settings), values, secretsSet });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);

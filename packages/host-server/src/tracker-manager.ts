@@ -10,7 +10,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { HostCapabilities, HttpRequest, HttpResponse, NetworkCapability, SettingValue } from "@comical/contract";
-import { type LoadedTracker, loadTracker, resolveSettings } from "@comical/core";
+import { type LoadedTracker, loadTracker, redactSettingSecrets, resolveSettings } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
 import type { RegistryManager } from "@comical/registry";
 import type { SettingsStore } from "./settings-store.ts";
@@ -255,7 +255,7 @@ export class TrackerManager {
       if (secretKeys.has(k)) { if (v !== undefined && v !== "") secretsSet.push(k); }
       else values[k] = v;
     }
-    return { info: tracker.info, settings, values, secretsSet, configured: missingRequired.length === 0, missingRequired };
+    return { info: tracker.info, settings: redactSettingSecrets(settings), values, secretsSet, configured: missingRequired.length === 0, missingRequired };
   }
 
   async list(): Promise<TrackerSummary[]> {

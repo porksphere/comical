@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { HostCapabilities, SettingDescriptor, SettingValue } from "@comical/contract";
-import { BridgeSettingsError, loadBridge, resolveSettings, validateSettingsInput } from "../src/index.ts";
+import { BridgeSettingsError, loadBridge, redactSettingSecrets, resolveSettings, validateSettingsInput } from "../src/index.ts";
 
 function mockHost(settings: Record<string, SettingValue>): HostCapabilities {
   const store = new Map<string, string>();
@@ -100,6 +100,43 @@ describe("validateSettingsInput (update-time, no defaults)", () => {
 
   test("accepts a valid enum value", () => {
     expect(validateSettingsInput({ region: "eu" }, DESCRIPTORS)).toEqual({ region: "eu" });
+  });
+});
+
+describe("redactSettingSecrets", () => {
+  test("masks exchange.clientSecret on an oauth-callback descriptor, keeps clientId/url visible", () => {
+    const descriptors: SettingDescriptor[] = [{
+      type: "oauth-callback",
+      key: "token",
+      label: "Account",
+      authUrlTemplate: "https://example.com/authorize?client_id={clientId}",
+      exchange: { url: "https://example.com/token", clientId: "public-id", clientSecret: "super-secret" },
+    }];
+    const [redacted] = redactSettingSecrets(descriptors);
+    expect(redacted?.type).toBe("oauth-callback");
+    expect(redacted?.type === "oauth-callback" && redacted.exchange.clientSecret).toBe("");
+    expect(redacted?.type === "oauth-callback" && redacted.exchange.clientId).toBe("public-id");
+    expect(redacted?.type === "oauth-callback" && redacted.exchange.url).toBe("https://example.com/token");
+  });
+
+  test("masks exchange.clientSecret on an oauth-pin descriptor", () => {
+    const descriptors: SettingDescriptor[] = [{
+      type: "oauth-pin",
+      key: "token",
+      label: "Account",
+      authUrl: "https://example.com/pin",
+      exchange: { url: "https://example.com/token", clientId: "public-id", clientSecret: "super-secret", redirectUri: "urn:ietf:wg:oauth:2.0:oob" },
+    }];
+    const [redacted] = redactSettingSecrets(descriptors);
+    expect(redacted?.type === "oauth-pin" && redacted.exchange?.clientSecret).toBe("");
+  });
+
+  test("leaves non-oauth descriptors and oauth descriptors without a clientSecret untouched", () => {
+    const descriptors: SettingDescriptor[] = [
+      { type: "string", key: "baseUrl", label: "URL", required: true },
+      { type: "oauth-callback", key: "token", label: "Account", authUrlTemplate: "https://x", exchange: { url: "https://x/token", clientIdKey: "clientId" } },
+    ];
+    expect(redactSettingSecrets(descriptors)).toEqual(descriptors);
   });
 });
 

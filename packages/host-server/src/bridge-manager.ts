@@ -11,7 +11,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SettingValue } from "@comical/contract";
-import { type LoadedBridge, loadBridge, resolveSettings } from "@comical/core";
+import { type LoadedBridge, loadBridge, redactSettingSecrets, resolveSettings } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
 import type { RegistryManager } from "@comical/registry";
 import {
@@ -75,7 +75,7 @@ export class BridgeManager implements BridgeProvider {
       const userSettings = await this.opts.settings.get(d.id);
       results.push({
         info: bridge.info,
-        settings: bridge.getSettings?.() ?? [],
+        settings: redactSettingSecrets(bridge.getSettings?.() ?? []),
         configured: Object.keys(userSettings).length > 0,
         missingRequired: await this.missingRequired(d.id),
         source: "local",

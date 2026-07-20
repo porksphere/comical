@@ -22,7 +22,16 @@ const TRACKER_SUMMARY: TrackerSummary = {
     contractVersion: "1.0.0",
     capabilities: [],
   },
-  settings: [{ key: "apiKey", label: "API Key", type: "string", secret: true }],
+  settings: [
+    { key: "apiKey", label: "API Key", type: "string", secret: true },
+    {
+      key: "token",
+      label: "Account",
+      type: "oauth-callback",
+      authUrlTemplate: "https://example.com/authorize?client_id={clientId}",
+      exchange: { url: "https://example.com/token", clientId: "public-client-id", clientSecret: "should-never-leave-the-host" },
+    },
+  ],
   values: {},
   secretsSet: ["apiKey"],
   configured: true,
@@ -79,15 +88,21 @@ describe("GET /trackers/:id/settings", () => {
   test("returns info, settings descriptors, and masks secret values", async () => {
     const data = await fetch(`${baseUrl}/trackers/mock-tracker/settings`).then((r) => r.json()) as {
       info: { id: string };
-      settings: { key: string }[];
+      settings: { key: string; type: string; exchange?: { clientSecret?: string; clientId?: string } }[];
       values: Record<string, SettingValue>;
       secretsSet: string[];
     };
     expect(data.info.id).toBe("mock-tracker");
-    expect(data.settings).toHaveLength(1);
+    expect(data.settings).toHaveLength(2);
     // apiKey is secret — must appear in secretsSet, not in values
     expect(data.secretsSet).toContain("apiKey");
     expect(data.values["apiKey"]).toBeUndefined();
+    // the oauth-callback descriptor's exchange.clientSecret must never be serialized to a client,
+    // while non-secret exchange metadata (clientId) stays visible — regression test for a real
+    // credential leak found in this route.
+    const oauth = data.settings.find((s) => s.key === "token");
+    expect(oauth?.exchange?.clientSecret).toBe("");
+    expect(oauth?.exchange?.clientId).toBe("public-client-id");
   });
 
   test("returns 404 for unknown tracker", async () => {
