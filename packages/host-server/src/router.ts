@@ -936,6 +936,19 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ ok: true });
     });
 
+    // Pull-sync one entry's link from its tracker (manual "Sync" action on a single row) — the
+    // scoped counterpart to POST /trackers/:id/sync, which resyncs the tracker's whole library.
+    app.post("/library/entries/:bridgeId/:seriesId/tracker-links/:trackerId/sync", async (c) => {
+      try {
+        return c.json(
+          await runtime!.syncEntryFromTracker(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("trackerId")),
+        );
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return c.json({ error: msg }, msg.includes("no ") && msg.includes("link") ? 404 : 400);
+      }
+    });
+
     // Bridge preferences — per-bridge user settings (e.g. disable tracker sync)
     app.get("/library/bridges/:bridgeId/prefs", async (c) =>
       c.json(await lib.getBridgePrefs(c.req.param("bridgeId"))),

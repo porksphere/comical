@@ -365,6 +365,102 @@ describe("backgroundSync — tracker read-pull", () => {
   });
 });
 
+// ── syncEntryFromTracker — scoped, manual per-entry pull ─────────────────────
+
+describe("syncEntryFromTracker", () => {
+  test("pulls a single linked entry: updates the link and reconciles read state", async () => {
+    const lib = makeLib();
+    const bridge = syncBridge({
+      details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
+      chapters: [ch("c1", 1), ch("c2", 2), ch("c3", 3)],
+    });
+    const tracker = mockTracker("anilist", {
+      capabilities: ["library-sync", "status-sync"],
+      libraryEntries: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 2 }],
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+
+    const res = await runtime.syncEntryFromTracker("test", "s1", "anilist");
+
+    expect(res).toEqual({ updated: true, readSynced: 2 });
+    const [link] = await lib.listTrackerLinks("test:s1");
+    expect(link).toMatchObject({ trackerId: "anilist", status: "reading", chaptersRead: 2 });
+    const read = new Set((await lib.getProgress("test:s1")).filter((p) => p.read).map((p) => p.chapterId));
+    expect(read).toEqual(new Set(["c1", "c2"]));
+  });
+
+  test("throws when the entry has no link for that tracker", async () => {
+    const lib = makeLib();
+    const bridge = mockBridge({ id: "s1", title: "Series" });
+    const tracker = mockTracker("anilist", { capabilities: ["library-sync"] });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1"); // no externalIds on this series → no auto-link
+
+    await expect(runtime.syncEntryFromTracker("test", "s1", "anilist")).rejects.toThrow(/no anilist link/);
+  });
+
+  test("returns updated: false when the tracker's list doesn't (yet) contain the linked entry", async () => {
+    const lib = makeLib();
+    const bridge = syncBridge({ details: { id: "s1", title: "Series", externalIds: { anilist: 111 } } });
+    const tracker = mockTracker("anilist", { capabilities: ["library-sync"], libraryEntries: [] });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+
+    const res = await runtime.syncEntryFromTracker("test", "s1", "anilist");
+
+    expect(res).toEqual({ updated: false, readSynced: 0 });
+  });
+
+  test("paginates through getLibrary until the linked entry is found", async () => {
+    const lib = makeLib();
+    const bridge = syncBridge({
+      details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
+      chapters: [ch("c1", 1)],
+    });
+    const pages: Record<number, { items: TrackerLibraryEntry[]; hasNextPage: boolean }> = {
+      1: { items: [{ externalId: 222, title: "Other", status: "reading" }], hasNextPage: true },
+      2: { items: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 1 }], hasNextPage: false },
+    };
+    const calledPages: number[] = [];
+    const tracker: Tracker = {
+      info: { ...TRACKER_INFO, id: "anilist", capabilities: ["library-sync"] },
+      async getLibrary(page) {
+        calledPages.push(page);
+        const p = pages[page]!;
+        return { items: p.items, page, hasNextPage: p.hasNextPage };
+      },
+    };
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+
+    const res = await runtime.syncEntryFromTracker("test", "s1", "anilist");
+
+    expect(res).toEqual({ updated: true, readSynced: 1 });
+    expect(calledPages).toEqual([1, 2]);
+  });
+});
+
 // ── backgroundSync — re-link pass ─────────────────────────────────────────────
 
 describe("backgroundSync — re-link", () => {

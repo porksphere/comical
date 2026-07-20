@@ -12,7 +12,7 @@
  *   - importBridgeFavorites: paginate getFavorites, dedupe, bulk-add to library.
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
-import type { Chapter, PagedResults, SeriesInfo, TrackerSearchResult } from "@comical/contract";
+import type { Chapter, PagedResults, SeriesInfo, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
 // node:vm-backed default evaluator) so `@comical/runtime`'s types stay consumable by non-Node
 // hosts — e.g. comical-app's embedded runtime typing `RouterOptions.runtime`. See @comical/core.
@@ -465,15 +465,8 @@ export class ComicalRuntime {
       for (const item of result.items) {
         const match = linkIndex.get(String(item.externalId));
         if (match) {
-          await lib.updateTrackerLink(match.key, trackerId, {
-            status: item.status,
-            ...(item.chaptersRead !== undefined && { chaptersRead: item.chaptersRead }),
-            lastSyncAt: Date.now(),
-          });
           updated++;
-          if (item.chaptersRead !== undefined && item.chaptersRead > 0) {
-            readSynced += await this.reconcileTrackerRead(match.bridgeId, match.seriesId, match.key, item.chaptersRead);
-          }
+          readSynced += await this.applyTrackerItem(match, item, trackerId);
         } else {
           suggestions.push({
             trackerId,
@@ -487,6 +480,60 @@ export class ComicalRuntime {
       page++;
     }
     return { updated, readSynced, suggestions };
+  }
+
+  /**
+   * Pull a single library entry's link from a tracker: pages through `tracker.getLibrary` (the
+   * contract has no single-entry lookup) looking for the linked `externalId`, applying it the same
+   * way `syncFromTracker` does for a bulk pull. For a manual, per-row "Sync" action, so the paging
+   * cost (worst case: the tracker's whole list) is acceptable — infrequent and user-initiated.
+   * Returns `updated: false` (not an error) when the tracker's list doesn't contain this entry yet.
+   */
+  async syncEntryFromTracker(bridgeId: string, seriesId: string, trackerId: string): Promise<{ updated: boolean; readSynced: number }> {
+    const lib = this.requireLibrary();
+    if (!this.trackers) throw new Error("ComicalRuntime: no trackers configured");
+    const key = entryKey(bridgeId, seriesId);
+    const link = await lib.getTrackerLink(key, trackerId);
+    if (!link) throw new Error(`no ${trackerId} link for this entry`);
+    const tracker = await this.trackers.get(trackerId);
+    if (!tracker.info.capabilities.includes("library-sync") || !tracker.getLibrary) {
+      throw new Error(`tracker "${trackerId}" does not support library-sync`);
+    }
+    let page = 1;
+    while (true) {
+      const result = await tracker.getLibrary(page);
+      const item = result.items.find((i) => String(i.externalId) === String(link.externalId));
+      if (item) {
+        const readSynced = await this.applyTrackerItem({ key, bridgeId, seriesId }, item, trackerId);
+        return { updated: true, readSynced };
+      }
+      if (!result.hasNextPage) break;
+      page++;
+    }
+    return { updated: false, readSynced: 0 };
+  }
+
+  /**
+   * Apply one tracker library item to a matched, already-linked entry: update the link's
+   * status/chaptersRead, then reconcile the tracker's read progress into local chapter-read flags.
+   * Shared by the bulk (`syncFromTracker`) and scoped (`syncEntryFromTracker`) pull paths.
+   * Returns how many chapters were newly marked read.
+   */
+  private async applyTrackerItem(
+    match: { key: string; bridgeId: string; seriesId: string },
+    item: TrackerLibraryEntry,
+    trackerId: string,
+  ): Promise<number> {
+    const lib = this.requireLibrary();
+    await lib.updateTrackerLink(match.key, trackerId, {
+      status: item.status,
+      ...(item.chaptersRead !== undefined && { chaptersRead: item.chaptersRead }),
+      lastSyncAt: Date.now(),
+    });
+    if (item.chaptersRead !== undefined && item.chaptersRead > 0) {
+      return this.reconcileTrackerRead(match.bridgeId, match.seriesId, match.key, item.chaptersRead);
+    }
+    return 0;
   }
 
   /**
