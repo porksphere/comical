@@ -1,16 +1,14 @@
 /**
- * Wraps a host's raw `NetworkCapability` with the runtime's politeness layer: rate limiting and
- * optional response caching. This is the network object actually handed to a bridge, so every
- * bridge benefits uniformly regardless of platform.
+ * Wraps a host's raw `NetworkCapability` with the runtime's politeness layer: rate limiting (and
+ * session-cookie handling). This is the network object actually handed to a bridge, so every bridge
+ * benefits uniformly regardless of platform.
  */
 import type { HttpRequest, HttpResponse, NetworkCapability } from "@comical/contract";
-import { type CacheOptions, ResponseCache } from "./cache.ts";
 import { CookieJar } from "./cookie-jar.ts";
 import { type RateLimitOptions, RateLimiter } from "./rate-limiter.ts";
 
 export interface GatedNetworkOptions {
   rateLimit?: Partial<RateLimitOptions>;
-  cache?: Partial<CacheOptions>;
 }
 
 export interface GatedNetwork {
@@ -28,14 +26,10 @@ export function createGatedNetwork(
   opts: GatedNetworkOptions = {},
 ): GatedNetwork {
   const limiter = new RateLimiter(opts.rateLimit);
-  const cache = new ResponseCache(opts.cache);
   const jar = new CookieJar();
 
   const network: NetworkCapability = {
     async request(req: HttpRequest): Promise<HttpResponse> {
-      const cached = cache.get(req);
-      if (cached) return cached;
-
       // Attach the session cookie for this host (unless the bridge set one explicitly).
       const cookie = jar.header(req.url);
       const gatedReq =
@@ -54,7 +48,6 @@ export function createGatedNetwork(
       if (response.setCookies && response.setCookies.length > 0) {
         jar.store(response.url || req.url, response.setCookies);
       }
-      cache.set(req, response);
       return response;
     },
   };

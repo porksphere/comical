@@ -8,7 +8,6 @@ export * from "./tracker-loader.ts";
 export * from "./validation.ts";
 export * from "./settings.ts";
 export * from "./net/rate-limiter.ts";
-export * from "./net/cache.ts";
 export * from "./net/cookie-jar.ts";
 export * from "./net/gated-network.ts";
 export * from "./evaluator.ts";
