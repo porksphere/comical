@@ -44,7 +44,13 @@ export const seriesEntrySchema = z.object({
   /** Opaque, bridge-namespaced, stable-across-sessions identifier. */
   id: z.string().min(1),
   title: z.string().min(1),
-  thumbnailUrl: z.string().url().optional(),
+  /**
+   * Cover image: an absolute URL, OR a server-relative path (e.g. `/img-proxy?url=…`) for a
+   * source whose cover CDN needs host-applied headers — same "absolute or server-relative" rule as
+   * {@link pageSchema}'s `imageUrl`. Clients resolve a relative path against the host (or the
+   * in-process transport on device) before rendering.
+   */
+  thumbnailUrl: z.string().min(1).optional(),
   subtitle: z.string().optional(),
   /**
    * Bridge-defined badges overlaid on the card's cover (language, rating, "NEW", …). Optional and
@@ -141,7 +147,8 @@ export type Credit = z.infer<typeof creditSchema>;
 export const seriesInfoSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
-  thumbnailUrl: z.string().url().optional(),
+  /** Cover image — absolute URL or server-relative path; see {@link seriesEntrySchema}'s `thumbnailUrl`. */
+  thumbnailUrl: z.string().min(1).optional(),
   /**
    * Author/artist credit lines. `author`/`artist` (+ `*Id`) are the single-value convenience form
    * kept for back-compat; `authors`/`artists` are the richer multi-credit form a bridge fills in when

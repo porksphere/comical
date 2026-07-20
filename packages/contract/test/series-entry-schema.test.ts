@@ -33,6 +33,22 @@ describe("seriesEntrySchema excluded flag", () => {
   });
 });
 
+describe("seriesEntrySchema thumbnailUrl", () => {
+  test("accepts an absolute URL", () => {
+    const entry = seriesEntrySchema.parse({ id: "1", title: "T", thumbnailUrl: "https://cdn/x.jpg" });
+    expect(entry.thumbnailUrl).toBe("https://cdn/x.jpg");
+  });
+
+  test("accepts a server-relative path (e.g. an /img-proxy cover for a Referer-gated CDN)", () => {
+    const entry = seriesEntrySchema.parse({ id: "1", title: "T", thumbnailUrl: "/img-proxy?url=https%3A%2F%2Fx%2Fy.webp" });
+    expect(entry.thumbnailUrl).toBe("/img-proxy?url=https%3A%2F%2Fx%2Fy.webp");
+  });
+
+  test("still rejects an empty thumbnailUrl", () => {
+    expect(() => seriesEntrySchema.parse({ id: "1", title: "T", thumbnailUrl: "" })).toThrow();
+  });
+});
+
 describe("seriesEntrySchema card badges", () => {
   test("parses badges with text, position and tone", () => {
     const entry = seriesEntrySchema.parse({
