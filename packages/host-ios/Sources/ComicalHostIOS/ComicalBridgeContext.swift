@@ -464,6 +464,7 @@ public final class ComicalBridgeContext {
         let method: String?
         let headers: [String: String]?
         let body: String?
+        let responseType: String?
     }
 
     private struct NativeResponse: Encodable {
@@ -495,7 +496,11 @@ public final class ComicalBridgeContext {
 
         let (data, response) = try await urlSession.data(for: urlReq)
         let http = response as! HTTPURLResponse
-        let body = String(data: data, encoding: .utf8) ?? ""
+        // "base64": return the raw bytes base64-encoded so a bridge can parse a binary resource; a
+        // UTF-8 decode would corrupt it. Otherwise decode as text (invalid UTF-8 → empty string).
+        let body = req.responseType == "base64"
+            ? data.base64EncodedString()
+            : (String(data: data, encoding: .utf8) ?? "")
         var headers: [String: String] = [:]
         var headerFields: [String: String] = [:]
         http.allHeaderFields.forEach { k, v in

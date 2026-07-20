@@ -220,7 +220,19 @@ class ComicalBridgeContext private constructor(
                 put("statusText", response.message)
                 put("headers", responseHeaders)
                 if (setCookies.isNotEmpty()) put("setCookies", JSONArray(setCookies))
-                put("body", response.body?.string() ?: "")
+                // "base64": return the raw bytes base64-encoded so a bridge can parse a binary
+                // resource; the default `.string()` UTF-8 decode would corrupt it. (.bytes()/.string()
+                // each consume the body once, so branch and call exactly one.)
+                put(
+                    "body",
+                    response.body?.let { rb ->
+                        if (req.optString("responseType") == "base64") {
+                            android.util.Base64.encodeToString(rb.bytes(), android.util.Base64.NO_WRAP)
+                        } else {
+                            rb.string()
+                        }
+                    } ?: "",
+                )
             }.toString()
         }
 
