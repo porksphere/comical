@@ -49,6 +49,14 @@ export function createEmbeddedTransport(
   downloadEngine?: DownloadEngine,
   covers?: EmbeddedCoversConfig,
   trackers?: TrackerProvider,
+  /** The app's own custom-scheme redirect URI (e.g. `comical://oauth-callback`, from
+   *  `expo-linking`'s `Linking.createURL(...)`) — there's no real server to redirect an OAuth
+   *  provider to on-device, so `/trackers/:id/oauth-start` builds the auth URL around this
+   *  instead. The app completes the round trip itself by calling `GET /oauth/callback` through
+   *  this SAME router once it intercepts the redirect (see `openAuthSessionAsync`'s native
+   *  redirect detection) — `pendingOAuth` is module-scoped in `@comical/host-server`'s router, so
+   *  both calls land on the same state regardless of which `createRouter()` instance handled them. */
+  callbackBaseUrl?: string,
 ): EmbeddedTransport {
   const router = createRouter(provider, {
     cors: false,
@@ -58,6 +66,7 @@ export function createEmbeddedTransport(
     ...(downloadEngine ? { downloadEngine } : {}),
     ...(covers ? { covers } : {}),
     ...(trackers ? { trackers } : {}),
+    ...(callbackBaseUrl ? { callbackBaseUrl } : {}),
   });
   return async (path, init) => {
     const routed = await router.fetch(new Request(`${EMBEDDED_ORIGIN}${path}`, init));

@@ -59,6 +59,11 @@ export interface EmbeddedBootstrapConfig {
   trackerBundles?: TrackerBundles;
   /** Per-tracker settings persistence (AsyncStorage-backed in an app). */
   trackerSettings?: SettingsStore;
+  /** The app's own custom-scheme OAuth redirect base (e.g. `comical://oauth-callback`) — see
+   *  `EmbeddedRuntimeConfig.oauthCallbackUrl` in install.ts. Only meaningful alongside
+   *  `trackerBundles`/`trackerSettings`; a tracker with an `oauth-callback` field simply can't
+   *  connect on-device without it. */
+  oauthCallbackUrl?: string;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
   requireSignature?: boolean;
   /** Persistent bundle cache (defaults to in-memory; an expo-file-system adapter is a follow-up). */
@@ -97,6 +102,7 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     ...(config.covers ? { covers: config.covers } : {}),
     ...(config.trackerBundles ? { trackerBundles: config.trackerBundles } : {}),
     ...(config.trackerSettings ? { trackerSettings: config.trackerSettings } : {}),
+    ...(config.oauthCallbackUrl ? { oauthCallbackUrl: config.oauthCallbackUrl } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),

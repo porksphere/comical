@@ -73,6 +73,12 @@ export interface EmbeddedRuntimeConfig {
   /** Per-tracker settings persistence (AsyncStorage-backed in an app; reuses the same store shape as
    *  bridge `settings`, just keyed by tracker id). */
   trackerSettings?: SettingsStore;
+  /** The app's own custom-scheme redirect base (e.g. `comical://oauth-callback`, from
+   *  `expo-linking`'s `Linking.createURL(...)`) — threaded into the reused router as
+   *  `callbackBaseUrl` so an `oauth-callback` tracker field's auth URL redirects back into the app
+   *  instead of a (nonexistent, on-device) HTTP server. See `createEmbeddedTransport`'s doc
+   *  comment for how the round trip completes without a second endpoint. */
+  oauthCallbackUrl?: string;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
   requireSignature?: boolean;
   /** Persistent bundle cache (defaults to in-memory). */
@@ -193,6 +199,7 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
     embeddedEngine,
     embeddedLibrary ? config.covers : undefined, // covers only make sense with a library
     trackerProvider,
+    config.oauthCallbackUrl,
   );
   config.setTransport(transport);
   return true;

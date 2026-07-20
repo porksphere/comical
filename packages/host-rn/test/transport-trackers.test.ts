@@ -51,6 +51,40 @@ const stubTrackerProvider: TrackerProvider = {
   invalidate: () => {},
 };
 
+const OAUTH_TRACKER_SUMMARY: TrackerSummary = {
+  info: {
+    id: "anilist",
+    name: "AniList",
+    version: "1.0.0",
+    contractVersion: "1.0.0",
+    capabilities: ["library-sync", "settings"],
+  },
+  settings: [
+    {
+      type: "oauth-callback",
+      key: "token",
+      label: "AniList Account",
+      authUrlTemplate: "https://example.com/authorize?client_id={clientId}&redirect_uri={callbackUrl}&state={state}",
+      exchange: { url: "https://example.com/token", clientId: "abc" },
+    },
+  ],
+  values: {},
+  secretsSet: [],
+  configured: false,
+  missingRequired: [],
+};
+
+const oauthTrackerProvider: TrackerProvider = {
+  list: async () => [OAUTH_TRACKER_SUMMARY],
+  get: async (id) => {
+    if (id !== "anilist") throw new Error(`tracker not found: ${id}`);
+    return { info: OAUTH_TRACKER_SUMMARY.info, getSettings: () => OAUTH_TRACKER_SUMMARY.settings };
+  },
+  storedSettings: async () => ({}),
+  updateSettings: async (_id, patch) => patch,
+  invalidate: () => {},
+};
+
 const makeCreate = () => createRouter as unknown as CreateRouter;
 
 describe("embedded transport — on-device trackers", () => {
@@ -78,5 +112,40 @@ describe("embedded transport — on-device trackers", () => {
     const t = createEmbeddedTransport(stubBridgeProvider, makeCreate());
     const res = await t("/trackers");
     expect(res.status).toBe(404);
+  });
+
+  // On-device there's no real HTTP server to redirect an OAuth provider back to, so
+  // `installEmbeddedTransport` threads the app's own custom-scheme deep link through as
+  // `callbackBaseUrl` — this proves it actually reaches the router's `oauth-start` route instead of
+  // silently falling back to the default `http://localhost:3100`.
+  test("threads callbackBaseUrl into oauth-start's authUrl instead of the localhost default", async () => {
+    const withCustomBase = createEmbeddedTransport(
+      stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined,
+      oauthTrackerProvider, "comical://oauth-callback",
+    );
+    const res = await withCustomBase("/trackers/anilist/oauth-start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "token" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { authUrl: string };
+    expect(body.authUrl).toContain(encodeURIComponent("comical://oauth-callback/oauth/callback"));
+    expect(body.authUrl).not.toContain("localhost");
+  });
+
+  test("falls back to the localhost default when no callbackBaseUrl is supplied", async () => {
+    const withoutCustomBase = createEmbeddedTransport(
+      stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined,
+      oauthTrackerProvider,
+    );
+    const res = await withoutCustomBase("/trackers/anilist/oauth-start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "token" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { authUrl: string };
+    expect(body.authUrl).toContain(encodeURIComponent("http://localhost:3100/oauth/callback"));
   });
 });
