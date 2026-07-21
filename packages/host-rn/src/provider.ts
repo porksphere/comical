@@ -117,8 +117,19 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
     this.runUpdateCheck();
 
     const installed = await this.deps.bundles.installed();
-    for (const b of installed) this.installedCache.set(b.info.id, b);
-    return Promise.all(installed.map((b) => this.summaryFor(b)));
+    const results: BridgeSummary[] = [];
+    for (const b of installed) {
+      try {
+        this.installedCache.set(b.info.id, b);
+        results.push(await this.summaryFor(b));
+      } catch {
+        // A malformed installed record (e.g. from an older schema) or a bridge whose native load
+        // fails (bad code, contract-version mismatch, …) is skipped — mirrors
+        // EmbeddedTrackerProvider.list()'s per-tracker isolation, so one broken bridge never takes
+        // the whole list (and every OTHER installed bridge) down with it.
+      }
+    }
+    return results;
   }
 
   /**

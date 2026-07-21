@@ -181,6 +181,35 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
     expect(pages).toHaveLength(1);
   });
 
+  test("a broken installed bridge is skipped, not a 500 for the whole list", async () => {
+    // A bridge whose bundle fails to resolve/load (corrupt cache, bad code, …) must not take every
+    // OTHER installed bridge down with it — mirrors EmbeddedTrackerProvider.list()'s per-tracker
+    // isolation. "broken" advertises "settings" so summaryFor() actually loads it (triggering the
+    // failure); "demo" doesn't, so it never touches native and must still come back.
+    const brokenInfo = { ...BRIDGE_INFO, id: "broken", capabilities: ["search", "settings"] };
+    const localInstalled: InstalledBridge[] = [
+      { info: BRIDGE_INFO as never, source: "registry" },
+      { info: brokenInfo as never, source: "registry" },
+    ];
+    const localBundles: BundleSource = {
+      installed: async () => localInstalled,
+      resolveBundle: async (id) => {
+        if (id === "demo") return DEMO_BUNDLE;
+        if (id === "broken") throw new Error("boom: corrupt bundle");
+        throw new Error(`bridge not found: ${id}`);
+      },
+    };
+    const provider = new EmbeddedBridgeProvider({
+      native: makeFakeNative(),
+      bundles: localBundles,
+      settings: memorySettings(),
+    });
+    const res = await createEmbeddedTransport(provider, router)("/bridges");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { info: { id: string } }[];
+    expect(body.map((b) => b.info.id)).toEqual(["demo"]);
+  });
+
   test("unknown bridge → 404", async () => {
     const transport = createEmbeddedTransport(makeProvider(), router);
     expect((await transport("/bridges/nope/lists")).status).toBe(404);
