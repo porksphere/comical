@@ -6,6 +6,7 @@ import {
   ManifestStore,
   RegistryManager,
   VerificationError,
+  assertVersionImmutable,
   generateKeyPair,
   publicKeyFingerprint,
   registryBridgeEntrySchema,
@@ -108,6 +109,28 @@ describe("verifyChecksum", () => {
   test("throws VerificationError for wrong checksum", async () => {
     const bytes = new Uint8Array(Buffer.from("hello"));
     await expect(verifyChecksum(bytes, "a".repeat(64))).rejects.toBeInstanceOf(VerificationError);
+  });
+});
+
+// ── Publish-time immutability guard ────────────────────────────────────────────
+// This is what stops a version-pinned path (`bridges/<id>/<version>/bridge.js`) from being
+// silently republished with different bytes — content changing at an already-published version
+// broke every installed device's pinned sha256, since a same-version republish never bumps and so
+// never surfaces as an "update" for the client to catch.
+
+describe("assertVersionImmutable", () => {
+  test("no-op when nothing was previously published at this path", () => {
+    expect(() => assertVersionImmutable("demo@1.0.0", undefined, "abc123")).not.toThrow();
+  });
+
+  test("no-op when republishing byte-identical content", () => {
+    expect(() => assertVersionImmutable("demo@1.0.0", "abc123", "abc123")).not.toThrow();
+  });
+
+  test("throws when the hash changed at an already-published version", () => {
+    expect(() => assertVersionImmutable("demo@1.0.0", "abc123", "def456")).toThrow(
+      /demo@1\.0\.0.*version was not bumped/s,
+    );
   });
 });
 

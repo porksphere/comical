@@ -261,6 +261,39 @@ describe("EmbeddedRegistryProvider", () => {
     expect((await installed.get("demo"))?.availableVersion).toBe("2.0.0");
   });
 
+  test("checkUpdates() silently re-pins a same-version hash drift instead of leaving it wedged", async () => {
+    // Mirrors the real incident: a registry republishes different bytes at the SAME version (an
+    // operator mistake — see assertVersionImmutable in @comical/registry). A device that already
+    // pinned the earlier sha256 would otherwise fail SHA-256 verification forever, since there's no
+    // version bump for the normal update flow to ever detect.
+    const indexes = { [REG_A]: index([entry({ version: "1.0.0", sha256: "a".repeat(64) })]) };
+    const { provider, installed } = setup(indexes);
+    await provider.install(REG_A, "demo");
+    expect((await installed.get("demo"))?.sha256).toBe("a".repeat(64));
+
+    // The registry silently republishes different bytes at the identical version.
+    indexes[REG_A] = index([
+      entry({ version: "1.0.0", sha256: "b".repeat(64), url: "https://reg-a.example/bridges/demo-v2.js" }),
+    ]);
+    const p2 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed,
+      fetcher: fakeFetcher(indexes),
+    });
+    let changed = 0;
+    p2.onChange = () => (changed += 1);
+    const updates = await p2.checkUpdates();
+
+    expect(updates).toEqual([]); // not a version bump, so not reported as a user-facing "update"
+    expect(changed).toBe(1); // but the drop-cache/refetch side effect still fires, so it self-heals
+    const rec = await installed.get("demo");
+    expect(rec?.sha256).toBe("b".repeat(64));
+    expect(rec?.url).toBe("https://reg-a.example/bridges/demo-v2.js");
+    expect(rec?.version).toBe("1.0.0");
+    expect(rec?.availableVersion).toBeUndefined();
+    expect(rec?.discontinued).toBeUndefined();
+  });
+
   test("checkUpdates() marks a bridge dropped from the index as discontinued (kept installed)", async () => {
     const indexes: Record<string, RegistryIndex> = { [REG_A]: index([entry()]) };
     const { provider, installed } = setup(indexes);

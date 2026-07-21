@@ -75,6 +75,28 @@ export async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string>
 }
 
 /**
+ * A registry-publish path is version-pinned (`bridges/<id>/<version>/bridge.js`) and MUST be
+ * immutable once published: clients pin `(url, sha256)` at install time and never re-check it for
+ * content drift — only a version-string bump triggers an update check. Silently republishing
+ * different bytes at the same version overwrites what every already-installed device has pinned;
+ * their next re-download fails SHA-256 verification, and — since the version didn't change —
+ * they never get offered an update, so the bridge is stuck until manually reinstalled.
+ * @throws Error if a previously-published hash exists and differs from the one about to be written.
+ */
+export function assertVersionImmutable(
+  label: string,
+  previousHash: string | undefined,
+  nextHash: string,
+): void {
+  if (previousHash === undefined || previousHash === nextHash) return;
+  throw new Error(
+    `refusing to overwrite already-published ${label}: content changed ` +
+      `(sha256 ${previousHash.slice(0, 12)}… → ${nextHash.slice(0, 12)}…) but the version was not ` +
+      `bumped. Bump the version before republishing.`,
+  );
+}
+
+/**
  * Generate an Ed25519 keypair for a registry operator.
  * Returns { publicKey, privateKey } as base64url strings.
  */

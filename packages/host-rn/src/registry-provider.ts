@@ -182,6 +182,25 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
       const discontinued = !entry;
       const availableVersion = entry && isNewer(entry.version, rec.version) ? entry.version : undefined;
 
+      // A registry can (by operator mistake) republish different bytes at the SAME version — see
+      // `assertVersionImmutable` in @comical/registry, which now guards new publishes against this.
+      // A device that already pinned the earlier bytes gets a permanent SHA-256 verification failure
+      // on every reload, with no version bump to ever surface as an "update available": silently
+      // re-pin to the registry's current url/sha256/signature/info for this version so the next load
+      // recovers instead of staying wedged forever.
+      if (entry && !availableVersion && !discontinued && entry.sha256 !== rec.sha256) {
+        const { availableVersion: _av, discontinued: _dc, ...base } = rec;
+        await this.deps.installed.add({
+          ...base,
+          info: entryToInfo(entry),
+          url: entry.url,
+          sha256: entry.sha256,
+          ...(entry.signature !== undefined ? { signature: entry.signature } : {}),
+        });
+        persisted = true;
+        continue;
+      }
+
       if ((rec.availableVersion ?? undefined) !== availableVersion || Boolean(rec.discontinued) !== discontinued) {
         // Rebuild off a base without the annotation fields so a no-longer-applicable one is cleared
         // (exactOptionalPropertyTypes forbids writing them back as `undefined`).

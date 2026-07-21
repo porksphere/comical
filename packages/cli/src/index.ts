@@ -4,7 +4,7 @@
  * Bun host, and runs a backend operation. Use `--set baseUrl=…` to point a bridge at your own
  * backend, or `--fixture` to run against the built-in legal demo backend (testkit).
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import type { FilterValue, HostCapabilities, ListOptions, NetworkCapability, ResolvedSettings } from "@comical/contract";
@@ -22,6 +22,7 @@ import { createServer } from "@comical/host-server";
 import {
   ManifestStore,
   RegistryManager,
+  assertVersionImmutable,
   generateKeyPair,
   resolveRegistryUrl,
   sha256Hex,
@@ -527,6 +528,10 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
 
     const relPath = `bridges/${b.id}/${b.info.version}/bridge.js`;
     const destPath = pjoin(outDir, relPath);
+    if (existsSync(destPath)) {
+      const previousHash = await sha256Hex(new Uint8Array(readFileSync(destPath)));
+      assertVersionImmutable(`${b.id}@${b.info.version}`, previousHash, hash);
+    }
     mkdirSync(dirname(destPath), { recursive: true });
     copyFileSync(b.bundlePath, destPath);
 
@@ -560,6 +565,10 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
 
       const relPath = `trackers/${t.id}/${t.info.version}/tracker.js`;
       const destPath = pjoin(outDir, relPath);
+      if (existsSync(destPath)) {
+        const previousHash = await sha256Hex(new Uint8Array(readFileSync(destPath)));
+        assertVersionImmutable(`${t.id}@${t.info.version}`, previousHash, hash);
+      }
       mkdirSync(dirname(destPath), { recursive: true });
       copyFileSync(t.bundlePath, destPath);
 
