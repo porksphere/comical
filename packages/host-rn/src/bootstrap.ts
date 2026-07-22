@@ -21,10 +21,10 @@ import type {
   EmbeddedDownloadsEngineConfig,
   EmbeddedTransport,
   InstalledStore,
+  InstalledTrackerStore,
   LibraryStore,
   SavedRegistryStore,
   SettingsStore,
-  TrackerBundles,
 } from "./types.ts";
 
 export interface EmbeddedBootstrapConfig {
@@ -53,16 +53,17 @@ export interface EmbeddedBootstrapConfig {
   /** Optional device seams for guaranteed-offline library covers (covers-rooted blob store with
    *  `read` + page fetcher). Only effective alongside `libraryStore`. */
   covers?: EmbeddedCoversConfig;
-  /** Static id → bundle source code for the trackers built into the app. Supplying it alongside
-   *  `trackerSettings` mounts the `/trackers*` endpoints (also needs a native tracker runtime
-   *  registered — see `EmbeddedRuntimeConfig.trackerBundles`'s doc comment in install.ts). */
-  trackerBundles?: TrackerBundles;
+  /** The installed-tracker manifest (AsyncStorage-backed) — trackers are registry-installed exactly
+   *  like bridges. Supplying `trackerSettings` alongside a registered native tracker runtime mounts
+   *  the `/trackers*` endpoints (see `EmbeddedRuntimeConfig.installedTrackers`'s doc comment in
+   *  install.ts). */
+  installedTrackers: InstalledTrackerStore;
   /** Per-tracker settings persistence (AsyncStorage-backed in an app). */
   trackerSettings?: SettingsStore;
   /** The app's own custom-scheme OAuth redirect base (e.g. `comical://oauth-callback`) — see
    *  `EmbeddedRuntimeConfig.oauthCallbackUrl` in install.ts. Only meaningful alongside
-   *  `trackerBundles`/`trackerSettings`; a tracker with an `oauth-callback` field simply can't
-   *  connect on-device without it. */
+   *  `trackerSettings`; a tracker with an `oauth-callback` field simply can't connect on-device
+   *  without it. */
   oauthCallbackUrl?: string;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
   requireSignature?: boolean;
@@ -96,11 +97,11 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     registries: config.registries,
     settings: config.settings,
     setTransport: config.setTransport,
+    installedTrackers: config.installedTrackers,
     ...(config.libraryStore ? { libraryStore: config.libraryStore } : {}),
     ...(config.downloadsStore ? { downloadsStore: config.downloadsStore } : {}),
     ...(config.downloadsEngine ? { downloadsEngine: config.downloadsEngine } : {}),
     ...(config.covers ? { covers: config.covers } : {}),
-    ...(config.trackerBundles ? { trackerBundles: config.trackerBundles } : {}),
     ...(config.trackerSettings ? { trackerSettings: config.trackerSettings } : {}),
     ...(config.oauthCallbackUrl ? { oauthCallbackUrl: config.oauthCallbackUrl } : {}),
     ...(config.cache ? { cache: config.cache } : {}),

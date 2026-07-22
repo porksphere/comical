@@ -3,7 +3,10 @@
  * backed by real `@comical/core` `loadTracker` + the default NodeVmEvaluator, the same node:vm
  * stand-in for the on-device JSC/QuickJS engine that host-native's own tests use), but exercises
  * the provider directly rather than through the router — router-level `/trackers*` mounting is
- * covered by `transport-trackers.test.ts`.
+ * covered by `transport-trackers.test.ts`. The `bundles` dep is a `TrackerBundleSource` test double
+ * (see `bundleSourceOf` below) — trackers are registry-installed on-device exactly like bridges
+ * (`ManifestTrackerBundleSource`'s real tests live in `registry-bundle-source.test.ts` and
+ * `manifest-install.test.ts`), not a static app-bundled map.
  *
  * Also covers the drain-and-persist path unique to trackers: `NativeTrackerRuntime.
  * drainTrackerSettingsPatch` is how a refreshed OAuth token gets from the sandboxed native context
@@ -12,7 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import { loadTracker, type LoadedTracker } from "@comical/core";
 import { EmbeddedTrackerProvider } from "../src/tracker-provider.ts";
-import type { NativeTrackerRuntime, SettingsStore, TrackerBundles } from "../src/types.ts";
+import type { NativeTrackerRuntime, SettingsStore, TrackerBundleSource } from "../src/types.ts";
 
 // A minimal in-memory HostCapabilities for loadTracker (these demo trackers do no network I/O).
 function makeHost(settings: Record<string, unknown>): unknown {
@@ -48,7 +51,23 @@ const CFG_BUNDLE = `module.exports = { default: (host) => ({
   getLibrary: async (page) => ({ items: [], page, hasNextPage: false }),
 }) };`;
 
-const bundles: TrackerBundles = { anilist: TRACKER_BUNDLE, cfg: CFG_BUNDLE };
+/** A `TrackerBundleSource` test double over a static map — trackers are registry-installed on-device
+ *  (see `ManifestTrackerBundleSource`), but this file exercises the provider in isolation, so a tiny
+ *  in-memory source stands in the same way `provider.test.ts`'s bundle fixtures do for bridges. */
+function bundleSourceOf(map: Record<string, string>): TrackerBundleSource {
+  return {
+    async ids() {
+      return Object.keys(map);
+    },
+    async resolveBundle(id) {
+      const code = map[id];
+      if (!code) throw new Error(`tracker not found: ${id}`);
+      return code;
+    },
+  };
+}
+
+const bundles: TrackerBundleSource = bundleSourceOf({ anilist: TRACKER_BUNDLE, cfg: CFG_BUNDLE });
 
 function memorySettings(): SettingsStore {
   const map = new Map<string, Record<string, never>>();
@@ -89,7 +108,7 @@ function makeFakeNative(nextPatch: () => { key: string; blob: unknown } | null =
 }
 
 describe("EmbeddedTrackerProvider", () => {
-  test("list() summarizes configured vs. unconfigured trackers from the static bundle map", async () => {
+  test("list() summarizes configured vs. unconfigured installed trackers", async () => {
     const settings = memorySettings();
     await settings.set("anilist", { token: "t1" });
     const provider = new EmbeddedTrackerProvider({ native: makeFakeNative(), bundles, settings });
@@ -112,7 +131,7 @@ describe("EmbeddedTrackerProvider", () => {
     expect(result.items[0]?.title).toBe("Series t1");
   });
 
-  test("get() rejects an id absent from the bundle map", async () => {
+  test("get() rejects an id the bundle source doesn't know about", async () => {
     const provider = new EmbeddedTrackerProvider({ native: makeFakeNative(), bundles, settings: memorySettings() });
     await expect(provider.get("nope")).rejects.toThrow(/not found/);
   });
@@ -228,5 +247,27 @@ describe("EmbeddedTrackerProvider", () => {
     await tracker.getLibrary!(1);
     expect(await settings.get("anilist")).toEqual({ token: "t1" });
     expect(initCount).toBe(1); // never invalidated -> still cached
+  });
+
+  test("list() returns without awaiting the (networked) update check, running it in the background", async () => {
+    let refreshCalls = 0;
+    let releaseRefresh!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const provider = new EmbeddedTrackerProvider({
+      native: makeFakeNative(),
+      bundles,
+      settings: memorySettings(),
+      // A refresh that never settles until we release the gate — list() must not wait on it.
+      refreshUpdates: async () => {
+        refreshCalls += 1;
+        await gate;
+      },
+    });
+    const list = await provider.list();
+    expect(list.length).toBeGreaterThan(0); // resolved even though refreshUpdates is still pending
+    expect(refreshCalls).toBe(1); // …but the check was kicked off
+    releaseRefresh();
   });
 });

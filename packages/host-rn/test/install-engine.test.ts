@@ -18,6 +18,7 @@ const stubNative: NativeBridgeRuntime = {
 
 const memStores = () => ({
   installed: { all: async () => [], get: async () => null, add: async () => {}, remove: async () => {} },
+  installedTrackers: { all: async () => [], get: async () => null, add: async () => {}, remove: async () => {} },
   registries: { all: async () => [], get: async () => null, add: async () => {}, remove: async () => {} },
   settings: { get: async () => ({}), set: async () => {} },
   fetcher: {

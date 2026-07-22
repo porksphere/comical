@@ -16,7 +16,7 @@ import { ComicalRuntime } from "@comical/runtime";
 import { getNativeBridgeRuntime, getNativeTrackerRuntime } from "./native-runtime.ts";
 import { EmbeddedBridgeProvider } from "./provider.ts";
 import { EmbeddedRegistryProvider } from "./registry-provider.ts";
-import { ManifestBundleSource } from "./registry-bundle-source.ts";
+import { ManifestBundleSource, ManifestTrackerBundleSource } from "./registry-bundle-source.ts";
 import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
 import { EmbeddedTrackerProvider } from "./tracker-provider.ts";
 import { createEmbeddedTransport, type EmbeddedLibrary } from "./transport.ts";
@@ -27,10 +27,10 @@ import type {
   EmbeddedDownloadsEngineConfig,
   EmbeddedTransport,
   InstalledStore,
+  InstalledTrackerStore,
   LibraryStore,
   SavedRegistryStore,
   SettingsStore,
-  TrackerBundles,
 } from "./types.ts";
 
 export interface EmbeddedRuntimeConfig {
@@ -63,13 +63,13 @@ export interface EmbeddedRuntimeConfig {
   covers?: EmbeddedCoversConfig;
   /** The embedder's transport setter — passed the embedded transport (or `null` to restore remote). */
   setTransport: (transport: EmbeddedTransport | null) => void;
-  /** Static id → bundle source code for the trackers built into the app (see `TrackerBundles`'s doc
-   *  comment — v1 install model, not registry-installed). Supplying it alongside `trackerSettings`
-   *  mounts the `/trackers*` endpoints; omitting either leaves them unmounted (they 404), matching
-   *  the `libraryStore`/`downloadsStore` optional-capability pattern. Only takes effect when the
-   *  native tracker runtime is registered (`setNativeTrackerRuntime`) — an older native build without
-   *  it simply leaves trackers unavailable on-device, same as an absent bridge runtime. */
-  trackerBundles?: TrackerBundles;
+  /** The installed-tracker manifest (AsyncStorage-backed in an app) — what `EmbeddedRegistryProvider`'s
+   *  tracker methods write to and `ManifestTrackerBundleSource` reads from. Trackers are installed
+   *  exactly like bridges (registry-backed), not a static app-bundled map. Supplying `trackerSettings`
+   *  alongside a registered native tracker runtime (`setNativeTrackerRuntime`) mounts the `/trackers*`
+   *  endpoints; omitting either leaves them unmounted (they 404), matching the
+   *  `libraryStore`/`downloadsStore` optional-capability pattern. */
+  installedTrackers: InstalledTrackerStore;
   /** Per-tracker settings persistence (AsyncStorage-backed in an app; reuses the same store shape as
    *  bridge `settings`, just keyed by tracker id). */
   trackerSettings?: SettingsStore;
@@ -120,6 +120,7 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
   const registry = new EmbeddedRegistryProvider({
     registries: config.registries,
     installed: config.installed,
+    installedTrackers: config.installedTrackers,
     fetcher: config.fetcher,
   });
 
@@ -131,10 +132,34 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
     refreshUpdates: () => registry.checkUpdates().then(() => undefined),
   });
 
-  // An install/update/uninstall changes what's installed: drop the proxy provider's cached bridge
-  // state so the next `list()`/`get()` re-reads the manifest, then let the app refetch its screens.
+  // Trackers: mounted only when the app supplied a tracker settings store AND a native tracker
+  // runtime is registered — a build with bridge-only native support (no ComicalTrackerContext yet)
+  // simply leaves `/trackers*` unmounted, the same "absent capability 404s" shape as downloads.
+  // Built before `registry.onChange` below so that callback can refresh it too.
+  const nativeTrackerRuntime = getNativeTrackerRuntime();
+  const trackerBundles = new ManifestTrackerBundleSource({
+    installed: config.installedTrackers,
+    fetcher: config.fetcher,
+    ...(config.cache ? { cache: config.cache } : {}),
+    ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
+  });
+  const trackerProvider =
+    config.trackerSettings && nativeTrackerRuntime
+      ? new EmbeddedTrackerProvider({
+          native: nativeTrackerRuntime,
+          bundles: trackerBundles,
+          settings: config.trackerSettings,
+          ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
+          refreshUpdates: () => registry.checkTrackerUpdates().then(() => undefined),
+        })
+      : undefined;
+
+  // An install/update/uninstall changes what's installed: drop the proxy providers' cached
+  // bridge/tracker state so the next `list()`/`get()` re-reads the manifest, then let the app
+  // refetch its screens.
   registry.onChange = () => {
     bridgeProvider.refresh();
+    trackerProvider?.refresh();
     config.onRegistryChange?.();
   };
 
@@ -154,19 +179,6 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
   // app's blob store / page fetcher, so the router's downloads routes go host-managed exactly like the
   // standalone server's — one behavior on every host.
   const embeddedDownloads = config.downloadsStore ? new Downloads(config.downloadsStore) : undefined;
-  // Trackers: mounted only when both the app supplied bundles + a settings store AND a native
-  // tracker runtime is registered — a build with bridge-only native support (no ComicalTrackerContext
-  // yet) simply leaves `/trackers*` unmounted, the same "absent capability 404s" shape as downloads.
-  const nativeTrackerRuntime = getNativeTrackerRuntime();
-  const trackerProvider =
-    config.trackerBundles && config.trackerSettings && nativeTrackerRuntime
-      ? new EmbeddedTrackerProvider({
-          native: nativeTrackerRuntime,
-          bundles: config.trackerBundles,
-          settings: config.trackerSettings,
-          ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
-        })
-      : undefined;
   // Lazily-enqueued chapters resolve their page lists through the reused router in-process. The
   // transport can't exist until the engine is threaded into it (the router mounts the engine's
   // routes), so the resolver's fetch is late-bound — resolution only ever runs from a drain, well

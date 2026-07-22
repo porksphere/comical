@@ -1,15 +1,27 @@
 /**
- * The on-device install model: `ManifestBundleSource` (installed() reads the pinned manifest, no
- * index fetch; resolveBundle re-downloads + verifies the pinned bundle) and `EmbeddedRegistryProvider`
- * (browse/install/update/uninstall/checkUpdates over injected stores + fetcher, incl. discontinuation).
+ * The on-device install model: `ManifestBundleSource`/`ManifestTrackerBundleSource` (installed()/
+ * ids() read the pinned manifest, no index fetch; resolveBundle re-downloads + verifies the pinned
+ * bundle) and `EmbeddedRegistryProvider` (browse/install/update/uninstall/checkUpdates over injected
+ * stores + fetcher, incl. discontinuation — bridges and trackers mirror each other 1:1).
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { downloadBundle, fetchIndex } from "@comical/registry/fetcher";
 import { sha256Hex } from "@comical/registry/verify";
-import type { RegistryBridgeEntry, RegistryIndex, SavedRegistry } from "@comical/registry/schema";
+import type { RegistryBridgeEntry, RegistryIndex, RegistryTrackerEntry, SavedRegistry } from "@comical/registry/schema";
 import { EmbeddedRegistryProvider } from "../src/registry-provider.ts";
-import { entryToInfo, ManifestBundleSource, type RegistryFetcher } from "../src/registry-bundle-source.ts";
-import type { InstalledBridgeRecord, InstalledStore, SavedRegistryStore } from "../src/types.ts";
+import {
+  entryToInfo,
+  ManifestBundleSource,
+  ManifestTrackerBundleSource,
+  type RegistryFetcher,
+} from "../src/registry-bundle-source.ts";
+import type {
+  InstalledBridgeRecord,
+  InstalledStore,
+  InstalledTrackerRecord,
+  InstalledTrackerStore,
+  SavedRegistryStore,
+} from "../src/types.ts";
 
 // ── In-memory stores (what the app implements over AsyncStorage) ────────────────
 
@@ -42,6 +54,22 @@ class MemRegistryStore implements SavedRegistryStore {
   }
   async remove(url: string) {
     this.map.delete(url);
+  }
+}
+
+class MemInstalledTrackerStore implements InstalledTrackerStore {
+  readonly map = new Map<string, InstalledTrackerRecord>();
+  async all() {
+    return [...this.map.values()];
+  }
+  async get(id: string) {
+    return this.map.get(id) ?? null;
+  }
+  async add(record: InstalledTrackerRecord) {
+    this.map.set(record.id, record); // upsert
+  }
+  async remove(id: string) {
+    this.map.delete(id);
   }
 }
 
@@ -97,6 +125,56 @@ function fakeFetcher(indexes: Record<string, RegistryIndex>): RegistryFetcher {
     },
   };
 }
+
+// ── Tracker fixtures (mirror the bridge ones above 1:1) ──────────────────────────
+
+const TRACKER_BUNDLE_URL = "https://reg-a.example/trackers/anilist.js";
+
+function trackerEntry(over: Partial<RegistryTrackerEntry> = {}): RegistryTrackerEntry {
+  return {
+    id: "anilist",
+    name: "AniList",
+    version: "1.0.0",
+    contractVersion: "1.0.0",
+    capabilities: ["library-sync"],
+    url: TRACKER_BUNDLE_URL,
+    sha256: "a".repeat(64),
+    ...over,
+  };
+}
+
+function trackerIndex(trackers: RegistryTrackerEntry[], bridges: RegistryBridgeEntry[] = []): RegistryIndex {
+  return { registryVersion: "1", updated: new Date().toISOString(), bridges, trackers };
+}
+
+function trackerRecordFor(over: Partial<InstalledTrackerRecord> = {}): InstalledTrackerRecord {
+  const e = trackerEntry();
+  return {
+    id: e.id,
+    registryUrl: REG_A,
+    version: e.version,
+    contractVersion: e.contractVersion,
+    url: e.url,
+    sha256: e.sha256,
+    ...over,
+  };
+}
+
+/** Like `fakeFetcher`, but downloads resolve to a tracker bundle body. */
+function fakeTrackerFetcher(indexes: Record<string, RegistryIndex>): RegistryFetcher {
+  return {
+    async fetchIndex(url) {
+      const idx = indexes[url];
+      if (!idx) throw new Error(`no index at ${url}`);
+      return idx;
+    },
+    async downloadBundle() {
+      return { text: TRACKER_BUNDLE };
+    },
+  };
+}
+
+const TRACKER_BUNDLE = 'module.exports = { default: () => ({ info: { id: "anilist" } }) };';
 
 // ── ManifestBundleSource ─────────────────────────────────────────────────────────
 
@@ -154,14 +232,70 @@ describe("ManifestBundleSource", () => {
   });
 });
 
+// ── ManifestTrackerBundleSource ───────────────────────────────────────────────────
+
+describe("ManifestTrackerBundleSource", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("ids() reads the manifest with no index fetch", async () => {
+    const store = new MemInstalledTrackerStore();
+    await store.add(trackerRecordFor());
+    let fetched = false;
+    const src = new ManifestTrackerBundleSource({
+      installed: store,
+      fetcher: { downloadBundle: async () => ((fetched = true), { text: TRACKER_BUNDLE }) },
+    });
+    expect(await src.ids()).toEqual(["anilist"]);
+    expect(fetched).toBe(false); // no network to list
+  });
+
+  test("resolveBundle downloads + verifies the pinned bundle, then serves from cache", async () => {
+    const digest = await sha256Hex(new TextEncoder().encode(TRACKER_BUNDLE));
+    const store = new MemInstalledTrackerStore();
+    await store.add(trackerRecordFor({ sha256: digest }));
+
+    let bundleFetches = 0;
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === TRACKER_BUNDLE_URL) {
+        bundleFetches += 1;
+        return new Response(new TextEncoder().encode(TRACKER_BUNDLE), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const src = new ManifestTrackerBundleSource({ installed: store, fetcher: { downloadBundle } });
+    expect(await src.resolveBundle("anilist")).toBe(TRACKER_BUNDLE);
+    expect(await src.resolveBundle("anilist")).toBe(TRACKER_BUNDLE); // cached
+    expect(bundleFetches).toBe(1);
+  });
+
+  test('unknown id → "not found"', async () => {
+    const src = new ManifestTrackerBundleSource({
+      installed: new MemInstalledTrackerStore(),
+      fetcher: { downloadBundle: async () => ({ text: TRACKER_BUNDLE }) },
+    });
+    await expect(src.resolveBundle("nope")).rejects.toThrow(/not found/);
+  });
+});
+
 // ── EmbeddedRegistryProvider ──────────────────────────────────────────────────────
 
 describe("EmbeddedRegistryProvider", () => {
   function setup(indexes: Record<string, RegistryIndex>) {
     const registries = new MemRegistryStore();
     const installed = new MemInstalledStore();
-    const provider = new EmbeddedRegistryProvider({ registries, installed, fetcher: fakeFetcher(indexes) });
-    return { registries, installed, provider };
+    const installedTrackers = new MemInstalledTrackerStore();
+    const provider = new EmbeddedRegistryProvider({
+      registries,
+      installed,
+      installedTrackers,
+      fetcher: fakeFetcher(indexes),
+    });
+    return { registries, installed, installedTrackers, provider };
   }
 
   test("add() validates + saves a registry; list() returns it", async () => {
@@ -184,6 +318,7 @@ describe("EmbeddedRegistryProvider", () => {
     const provider = new EmbeddedRegistryProvider({
       registries,
       installed: new MemInstalledStore(),
+      installedTrackers: new MemInstalledTrackerStore(),
       fetcher: fakeFetcher({ [REG_A]: { ...index([entry()]), displayName: "Fresh" } }),
     });
     await provider.browse(REG_A); // fetch → reconcile side-effect
@@ -254,6 +389,7 @@ describe("EmbeddedRegistryProvider", () => {
     const p2 = new EmbeddedRegistryProvider({
       registries: new MemRegistryStore(),
       installed,
+      installedTrackers: new MemInstalledTrackerStore(),
       fetcher: fakeFetcher(indexes),
     });
     const updates = await p2.checkUpdates();
@@ -278,6 +414,7 @@ describe("EmbeddedRegistryProvider", () => {
     const p2 = new EmbeddedRegistryProvider({
       registries: new MemRegistryStore(),
       installed,
+      installedTrackers: new MemInstalledTrackerStore(),
       fetcher: fakeFetcher(indexes),
     });
     let changed = 0;
@@ -303,6 +440,7 @@ describe("EmbeddedRegistryProvider", () => {
     const p2 = new EmbeddedRegistryProvider({
       registries: new MemRegistryStore(),
       installed,
+      installedTrackers: new MemInstalledTrackerStore(),
       fetcher: fakeFetcher(indexes),
     });
     const updates = await p2.checkUpdates();
@@ -321,6 +459,7 @@ describe("EmbeddedRegistryProvider", () => {
     const p1 = new EmbeddedRegistryProvider({
       registries: new MemRegistryStore(),
       installed,
+      installedTrackers: new MemInstalledTrackerStore(),
       fetcher: fakeFetcher({ [REG_A]: index([entry({ version: "2.0.0" })]) }),
     });
     let changed1 = 0;
@@ -334,6 +473,7 @@ describe("EmbeddedRegistryProvider", () => {
     const p2 = new EmbeddedRegistryProvider({
       registries: new MemRegistryStore(),
       installed,
+      installedTrackers: new MemInstalledTrackerStore(),
       fetcher: fakeFetcher({ [REG_A]: index([entry({ version: "2.0.0" })]) }),
     });
     let changed2 = 0;
@@ -351,11 +491,185 @@ describe("EmbeddedRegistryProvider", () => {
     expect(await installed.get("demo")).not.toBeNull();
   });
 
-  test("tracker methods are inert on-device", async () => {
-    const { provider } = setup({ [REG_A]: index([entry()]) });
-    expect(await provider.browseTrackers(REG_A)).toEqual([]);
-    expect(await provider.browseAllTrackers()).toEqual([]);
-    expect(await provider.checkTrackerUpdates()).toEqual([]);
-    await expect(provider.installTracker(REG_A, "t")).rejects.toThrow(/not supported/);
+  // ── Trackers (mirror the bridge tests above 1:1) ─────────────────────────────────
+
+  test("browseTrackers() annotates installed + updateAvailable", async () => {
+    const { provider, installedTrackers } = setup({
+      [REG_A]: trackerIndex([trackerEntry({ version: "2.0.0" })]),
+    });
+    let rows = await provider.browseTrackers(REG_A);
+    expect(rows[0]?.installedVersion).toBeNull();
+    expect(rows[0]?.updateAvailable).toBe(false);
+
+    await installedTrackers.add(trackerRecordFor({ version: "1.0.0" }));
+    rows = await provider.browseTrackers(REG_A);
+    expect(rows[0]?.installedVersion).toBe("1.0.0");
+    expect(rows[0]?.updateAvailable).toBe(true);
+  });
+
+  test("browseAllTrackers() merges across saved registries, tolerating a failing one", async () => {
+    const REG_B = "https://reg-b.example/index.json";
+    const registries = new MemRegistryStore();
+    await registries.add({ url: REG_A, name: "reg-a", requireSignature: false });
+    await registries.add({ url: REG_B, name: "reg-b", requireSignature: false });
+    const provider = new EmbeddedRegistryProvider({
+      registries,
+      installed: new MemInstalledStore(),
+      installedTrackers: new MemInstalledTrackerStore(),
+      fetcher: fakeTrackerFetcher({ [REG_A]: trackerIndex([trackerEntry()]) }), // REG_B has no index → throws
+    });
+    const rows = await provider.browseAllTrackers();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.entry.id).toBe("anilist");
+  });
+
+  test("installTracker() pins a record and fires onChange", async () => {
+    const { provider, installedTrackers } = setup({
+      [REG_A]: trackerIndex([trackerEntry({ signature: "sig", version: "1.2.0" })]),
+    });
+    let changed = 0;
+    provider.onChange = () => (changed += 1);
+
+    const result = await provider.installTracker(REG_A, "anilist");
+    expect(result.version).toBe("1.2.0");
+    expect(changed).toBe(1);
+    const rec = await installedTrackers.get("anilist");
+    expect(rec?.version).toBe("1.2.0");
+    expect(rec?.url).toBe(TRACKER_BUNDLE_URL);
+    expect(rec?.signature).toBe("sig");
+  });
+
+  test("installTracker() of an unknown id throws", async () => {
+    const { provider } = setup({ [REG_A]: trackerIndex([trackerEntry()]) });
+    await expect(provider.installTracker(REG_A, "ghost")).rejects.toThrow(/not found/);
+  });
+
+  test("updateTracker() re-pins to the newer published version", async () => {
+    const indexes = { [REG_A]: trackerIndex([trackerEntry({ version: "1.0.0" })]) };
+    const { provider, installedTrackers } = setup(indexes);
+    await provider.installTracker(REG_A, "anilist");
+    expect((await installedTrackers.get("anilist"))?.version).toBe("1.0.0");
+
+    indexes[REG_A] = trackerIndex([trackerEntry({ version: "1.3.0" })]); // registry publishes a new version
+    const result = await provider.updateTracker("anilist");
+    expect(result.version).toBe("1.3.0");
+    expect((await installedTrackers.get("anilist"))?.version).toBe("1.3.0");
+  });
+
+  test("uninstallTracker() removes the record and fires onChange", async () => {
+    const { provider, installedTrackers } = setup({ [REG_A]: trackerIndex([trackerEntry()]) });
+    await provider.installTracker(REG_A, "anilist");
+    let changed = 0;
+    provider.onChange = () => (changed += 1);
+    await provider.uninstallTracker("anilist");
+    expect(await installedTrackers.get("anilist")).toBeNull();
+    expect(changed).toBe(1);
+  });
+
+  test("checkTrackerUpdates() reports newer versions and persists the annotation", async () => {
+    const indexes = { [REG_A]: trackerIndex([trackerEntry({ version: "1.0.0" })]) };
+    const { provider, installedTrackers } = setup(indexes);
+    await provider.installTracker(REG_A, "anilist");
+
+    indexes[REG_A] = trackerIndex([trackerEntry({ version: "2.0.0" })]);
+    // A fresh provider so the memoized index doesn't shadow the new version.
+    const p2 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed: new MemInstalledStore(),
+      installedTrackers,
+      fetcher: fakeFetcher(indexes),
+    });
+    const updates = await p2.checkTrackerUpdates();
+    expect(updates).toEqual([{ id: "anilist", installedVersion: "1.0.0", availableVersion: "2.0.0" }]);
+    expect((await installedTrackers.get("anilist"))?.availableVersion).toBe("2.0.0");
+  });
+
+  test("checkTrackerUpdates() silently re-pins a same-version hash drift instead of leaving it wedged", async () => {
+    // Mirrors checkUpdates()'s real incident (see its test above) — a registry republishes different
+    // bytes at the SAME version, and a device already pinned to the earlier sha256 self-heals instead
+    // of failing SHA-256 verification forever.
+    const indexes = { [REG_A]: trackerIndex([trackerEntry({ version: "1.0.0", sha256: "a".repeat(64) })]) };
+    const { provider, installedTrackers } = setup(indexes);
+    await provider.installTracker(REG_A, "anilist");
+    expect((await installedTrackers.get("anilist"))?.sha256).toBe("a".repeat(64));
+
+    indexes[REG_A] = trackerIndex([
+      trackerEntry({ version: "1.0.0", sha256: "b".repeat(64), url: "https://reg-a.example/trackers/anilist-v2.js" }),
+    ]);
+    const p2 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed: new MemInstalledStore(),
+      installedTrackers,
+      fetcher: fakeFetcher(indexes),
+    });
+    let changed = 0;
+    p2.onChange = () => (changed += 1);
+    const updates = await p2.checkTrackerUpdates();
+
+    expect(updates).toEqual([]); // not a version bump, so not reported as a user-facing "update"
+    expect(changed).toBe(1); // but the drop-cache/refetch side effect still fires, so it self-heals
+    const rec = await installedTrackers.get("anilist");
+    expect(rec?.sha256).toBe("b".repeat(64));
+    expect(rec?.url).toBe("https://reg-a.example/trackers/anilist-v2.js");
+    expect(rec?.version).toBe("1.0.0");
+    expect(rec?.availableVersion).toBeUndefined();
+    expect(rec?.discontinued).toBeUndefined();
+  });
+
+  test("checkTrackerUpdates() marks a tracker dropped from the index as discontinued (kept installed)", async () => {
+    const indexes: Record<string, RegistryIndex> = { [REG_A]: trackerIndex([trackerEntry()]) };
+    const { provider, installedTrackers } = setup(indexes);
+    await provider.installTracker(REG_A, "anilist");
+
+    indexes[REG_A] = trackerIndex([]); // tracker removed from the registry
+    const p2 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed: new MemInstalledStore(),
+      installedTrackers,
+      fetcher: fakeFetcher(indexes),
+    });
+    const updates = await p2.checkTrackerUpdates();
+    expect(updates).toEqual([]); // discontinued is not an "update"
+    const rec = await installedTrackers.get("anilist");
+    expect(rec).not.toBeNull(); // still installed → keeps working from its pinned bundle
+    expect(rec?.discontinued).toBe(true);
+  });
+
+  test("checkTrackerUpdates() fires onChange only when it persists an annotation change", async () => {
+    const installedTrackers = new MemInstalledTrackerStore();
+    await installedTrackers.add(trackerRecordFor({ version: "1.0.0" }));
+
+    const p1 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed: new MemInstalledStore(),
+      installedTrackers,
+      fetcher: fakeFetcher({ [REG_A]: trackerIndex([trackerEntry({ version: "2.0.0" })]) }),
+    });
+    let changed1 = 0;
+    p1.onChange = () => (changed1 += 1);
+    await p1.checkTrackerUpdates();
+    expect(changed1).toBe(1);
+    expect((await installedTrackers.get("anilist"))?.availableVersion).toBe("2.0.0");
+
+    // A second check over the already-recorded state changes nothing → onChange must NOT fire.
+    const p2 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed: new MemInstalledStore(),
+      installedTrackers,
+      fetcher: fakeFetcher({ [REG_A]: trackerIndex([trackerEntry({ version: "2.0.0" })]) }),
+    });
+    let changed2 = 0;
+    p2.onChange = () => (changed2 += 1);
+    await p2.checkTrackerUpdates();
+    expect(changed2).toBe(0);
+  });
+
+  test("remove() keeps installed trackers (they stay pinned)", async () => {
+    const { provider, installedTrackers } = setup({ [REG_A]: trackerIndex([trackerEntry()]) });
+    await provider.add(REG_A);
+    await provider.installTracker(REG_A, "anilist");
+    await provider.remove(REG_A);
+    expect(await provider.list()).toHaveLength(0);
+    expect(await installedTrackers.get("anilist")).not.toBeNull();
   });
 });

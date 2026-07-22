@@ -36,6 +36,7 @@ export {
   RegistryBundleSource,
   MultiRegistryBundleSource,
   ManifestBundleSource,
+  ManifestTrackerBundleSource,
   MemoryBundleCache,
   entryToInfo,
   type BundleCache,
@@ -43,6 +44,7 @@ export {
   type RegistryBundleSourceOptions,
   type MultiRegistryBundleSourceOptions,
   type ManifestBundleSourceOptions,
+  type ManifestTrackerBundleSourceOptions,
   type RegistryFetcher,
 } from "./registry-bundle-source.ts";
 export type {
@@ -63,6 +65,8 @@ export type {
   InstalledBridge,
   InstalledBridgeRecord,
   InstalledStore,
+  InstalledTrackerRecord,
+  InstalledTrackerStore,
   NativeBridgeRuntime,
   NativeTrackerRuntime,
   PageFetcher,
@@ -70,7 +74,7 @@ export type {
   RegistryProvider,
   SavedRegistryStore,
   SettingsStore,
-  TrackerBundles,
+  TrackerBundleSource,
   TrackerInitResult,
   TrackerProvider,
   TrackerSummary,

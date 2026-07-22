@@ -5,27 +5,35 @@
  * discontinuation — all driven through the **same** `@comical/host-server` router endpoints the
  * remote server exposes, so the app's existing registry UI works unchanged on device.
  *
- * It implements host-server's Node-free `RegistryProvider` interface over two injected AsyncStorage
- * stores (the saved-registry list + the installed-bridge manifest) and the injected registry
- * fetcher. Unlike `RegistryManager` it caches nothing to disk: an install writes a pinned
- * `InstalledBridgeRecord` (version + bundle url/sha256/signature) that `ManifestBundleSource` later
- * resolves. `remove` leaves installed records intact — a pinned bridge keeps working after its
- * registry is removed (the app just stops seeing updates for it).
+ * It implements host-server's Node-free `RegistryProvider` interface over injected AsyncStorage
+ * stores (the saved-registry list + the installed-bridge and installed-tracker manifests) and the
+ * injected registry fetcher. Unlike `RegistryManager` it caches nothing to disk: an install writes
+ * a pinned `InstalledBridgeRecord`/`InstalledTrackerRecord` (version + bundle url/sha256/signature)
+ * that `ManifestBundleSource`/`ManifestTrackerBundleSource` later resolve. `remove` leaves installed
+ * records intact — a pinned bridge/tracker keeps working after its registry is removed (the app
+ * just stops seeing updates for it).
  *
- * Trackers are not yet supported on-device (there's no embedded tracker runtime), so the tracker
- * methods are inert — browse returns nothing, install throws. The router's tracker-registry routes
- * therefore surface as empty rather than erroring.
+ * Trackers are installed exactly like bridges — registry-backed, not a static app-bundled map (see
+ * `TrackerBundleSource` in `types.ts`). The tracker methods below mirror the bridge methods above
+ * 1:1, operating on `index.trackers` and `deps.installedTrackers` instead.
  */
 import type { AvailableBridge, AvailableTracker, InstallResult } from "@comical/registry/available";
 import type { RegistryIndex, SavedRegistry } from "@comical/registry/schema";
 import { registryDisplayName, resolveRegistryUrl } from "@comical/registry/url";
 import type { RegistryProvider, RegistryUpdate } from "@comical/host-server/registry-provider";
 import { entryToInfo, type RegistryFetcher } from "./registry-bundle-source.ts";
-import type { InstalledBridgeRecord, InstalledStore, SavedRegistryStore } from "./types.ts";
+import type {
+  InstalledBridgeRecord,
+  InstalledStore,
+  InstalledTrackerRecord,
+  InstalledTrackerStore,
+  SavedRegistryStore,
+} from "./types.ts";
 
 export interface EmbeddedRegistryProviderDeps {
   registries: SavedRegistryStore;
   installed: InstalledStore;
+  installedTrackers: InstalledTrackerStore;
   fetcher: RegistryFetcher;
 }
 
@@ -224,25 +232,114 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     return updates;
   }
 
-  // ── Trackers (not yet supported on-device) ──────────────────────────────────────
+  // ── Trackers (mirrors the bridge methods above 1:1) ─────────────────────────────
 
-  async browseTrackers(_rawUrl: string): Promise<AvailableTracker[]> {
-    return [];
+  async browseTrackers(rawUrl: string): Promise<AvailableTracker[]> {
+    const url = resolveRegistryUrl(rawUrl);
+    const index = await this.fetchAndCache(url);
+    const installed = await this.deps.installedTrackers.all();
+    const map = new Map(installed.map((t) => [t.id, t]));
+    return (index.trackers ?? []).map((entry) => {
+      const local = map.get(entry.id);
+      return {
+        entry,
+        registryUrl: url,
+        installedVersion: local?.version ?? null,
+        updateAvailable: !!local && isNewer(entry.version, local.version),
+      };
+    });
   }
+
   async browseAllTrackers(): Promise<AvailableTracker[]> {
-    return [];
+    const registries = await this.list();
+    const out: AvailableTracker[] = [];
+    for (const reg of registries) {
+      try {
+        out.push(...(await this.browseTrackers(reg.url)));
+      } catch {
+        // A failing registry doesn't block the others.
+      }
+    }
+    return out;
   }
-  async installTracker(_registryUrl: string, _trackerId: string): Promise<InstallResult> {
-    throw new Error("trackers are not supported on-device yet");
+
+  async installTracker(registryUrl: string, trackerId: string): Promise<InstallResult> {
+    const url = resolveRegistryUrl(registryUrl);
+    const index = await this.fetchAndCache(url);
+    const entry = (index.trackers ?? []).find((t) => t.id === trackerId);
+    if (!entry) throw new Error(`tracker "${trackerId}" not found in registry ${url}`);
+
+    const record: InstalledTrackerRecord = {
+      id: entry.id,
+      registryUrl: url,
+      version: entry.version,
+      contractVersion: entry.contractVersion,
+      url: entry.url,
+      sha256: entry.sha256,
+      ...(entry.signature !== undefined ? { signature: entry.signature } : {}),
+      ...(index.publicKey !== undefined ? { publicKey: index.publicKey } : {}),
+    };
+    await this.deps.installedTrackers.add(record); // upsert — installing over an existing version re-pins it
+    this.onChange?.();
+    return { id: entry.id, version: entry.version, bundlePath: "" };
   }
-  async updateTracker(_trackerId: string): Promise<InstallResult> {
-    throw new Error("trackers are not supported on-device yet");
+
+  async updateTracker(trackerId: string): Promise<InstallResult> {
+    const current = await this.deps.installedTrackers.get(trackerId);
+    if (!current) throw new Error(`tracker "${trackerId}" is not installed`);
+    this.indexCache.delete(current.registryUrl); // force a refetch so a just-published version is seen
+    return this.installTracker(current.registryUrl, trackerId);
   }
-  async uninstallTracker(_trackerId: string): Promise<void> {
-    /* nothing installed — no-op */
+
+  async uninstallTracker(trackerId: string): Promise<void> {
+    await this.deps.installedTrackers.remove(trackerId);
+    this.onChange?.();
   }
+
+  /** Tracker equivalent of `checkUpdates` — see its doc comment for the full rationale. */
   async checkTrackerUpdates(): Promise<RegistryUpdate[]> {
-    return [];
+    const installed = await this.deps.installedTrackers.all();
+    const updates: RegistryUpdate[] = [];
+    let persisted = false;
+    for (const rec of installed) {
+      let index: RegistryIndex;
+      try {
+        index = await this.fetchAndCache(rec.registryUrl);
+      } catch {
+        continue; // offline / registry unavailable — leave the record's annotations as they were
+      }
+      const entry = (index.trackers ?? []).find((t) => t.id === rec.id);
+      const discontinued = !entry;
+      const availableVersion = entry && isNewer(entry.version, rec.version) ? entry.version : undefined;
+
+      // Same same-version-hash-drift self-heal as checkUpdates — see its comment for the incident.
+      if (entry && !availableVersion && !discontinued && entry.sha256 !== rec.sha256) {
+        const { availableVersion: _av, discontinued: _dc, ...base } = rec;
+        await this.deps.installedTrackers.add({
+          ...base,
+          url: entry.url,
+          sha256: entry.sha256,
+          ...(entry.signature !== undefined ? { signature: entry.signature } : {}),
+        });
+        persisted = true;
+        continue;
+      }
+
+      if ((rec.availableVersion ?? undefined) !== availableVersion || Boolean(rec.discontinued) !== discontinued) {
+        const { availableVersion: _av, discontinued: _dc, ...base } = rec;
+        await this.deps.installedTrackers.add({
+          ...base,
+          ...(availableVersion !== undefined ? { availableVersion } : {}),
+          ...(discontinued ? { discontinued: true } : {}),
+        });
+        persisted = true;
+      }
+      if (availableVersion) {
+        updates.push({ id: rec.id, installedVersion: rec.version, availableVersion });
+      }
+    }
+    if (persisted) this.onChange?.();
+    return updates;
   }
 }
 

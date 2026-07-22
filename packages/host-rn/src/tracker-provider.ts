@@ -1,18 +1,16 @@
 /**
  * The in-process `TrackerProvider` an embedder hands to `@comical/host-server`'s `createRouter` —
- * parallel to `provider.ts`'s `EmbeddedBridgeProvider`.
- *
- * Unlike bridges (registry-installed, dynamic), v1 trackers are STATICALLY bundled into the app
- * build (`TrackerBundles`, a plain id → code map — see its doc comment in `types.ts`) — the
- * `bundles` map's keys ARE the "installed" tracker id set; there is no registry-install flow yet.
+ * parallel to `provider.ts`'s `EmbeddedBridgeProvider`. Trackers are registry-installed exactly
+ * like bridges (`TrackerBundleSource` — see its doc comment in `types.ts`); this class holds no
+ * static bundle map.
  *
  * `get(id)` lazily loads a tracker's code into the native engine (`initTracker`) — resolving its
- * user settings from the `SettingsStore` — then returns a proxy tracker whose methods marshal back
- * to that native context. On load it also captures the tracker's setting descriptors (via
- * `getSettings`, when advertised), so `missingRequired`/`list` report `configured` faithfully —
- * mirroring how the server's `TrackerManager` derives the same `TrackerSummary` shape. Loaded
- * proxies + descriptors are cached; a settings change or explicit `invalidate` drops the cache (and
- * the native context) via `invalidate`/`refresh`.
+ * bundle from the `TrackerBundleSource`, its user settings from the `SettingsStore` — then returns
+ * a proxy tracker whose methods marshal back to that native context. On load it also captures the
+ * tracker's setting descriptors (via `getSettings`, when advertised), so `missingRequired`/`list`
+ * report `configured` faithfully — mirroring how the server's `TrackerManager` derives the same
+ * `TrackerSummary` shape. Loaded proxies + descriptors are cached; a settings change or explicit
+ * `invalidate` drops the cache (and the native context) via `invalidate`/`refresh`.
  *
  * Every proxy call drains + persists a refreshed OAuth token blob (see `ProxyTrackerHooks.afterCall`
  * and `NativeTrackerRuntime.drainTrackerSettingsPatch`) — the on-device equivalent of
@@ -27,7 +25,7 @@ import { buildProxyTracker } from "./tracker-proxy.ts";
 import type {
   NativeTrackerRuntime,
   SettingsStore,
-  TrackerBundles,
+  TrackerBundleSource,
   TrackerInitResult,
   TrackerProvider,
   TrackerSummary,
@@ -35,11 +33,17 @@ import type {
 
 export interface EmbeddedTrackerProviderDeps {
   native: NativeTrackerRuntime;
-  /** Static id → bundle source code for the trackers built into the app (see `TrackerBundles`). */
-  bundles: TrackerBundles;
+  bundles: TrackerBundleSource;
   settings: SettingsStore;
   /** Optional GatedNetworkOptions overrides forwarded to loadTracker (rate limits, etc.). */
   networkJson?: string;
+  /**
+   * Best-effort refresh of the installed trackers' update/discontinuation annotations, run at the
+   * start of `list()` — mirrors `EmbeddedProviderDeps.refreshUpdates`. Wired to
+   * `EmbeddedRegistryProvider.checkTrackerUpdates`; errors are swallowed so an offline registry
+   * never breaks the tracker list.
+   */
+  refreshUpdates?: () => Promise<void>;
 }
 
 interface LoadedEntry {
@@ -49,6 +53,8 @@ interface LoadedEntry {
 
 export class EmbeddedTrackerProvider implements TrackerProvider {
   private readonly loaded = new Map<string, LoadedEntry>();
+  /** In-flight background update check, so overlapping `list()` calls don't stack duplicate checks. */
+  private updateCheckInFlight: Promise<void> | undefined;
 
   constructor(private readonly deps: EmbeddedTrackerProviderDeps) {}
 
@@ -72,9 +78,10 @@ export class EmbeddedTrackerProvider implements TrackerProvider {
     const existing = this.loaded.get(id);
     if (existing) return existing;
 
-    const code = this.deps.bundles[id];
-    if (!code) throw new Error(`tracker not found: ${id}`);
-    const stored = await this.deps.settings.get(id);
+    const [code, stored] = await Promise.all([
+      this.deps.bundles.resolveBundle(id),
+      this.deps.settings.get(id),
+    ]);
 
     const init = JSON.parse(
       await this.deps.native.initTracker(id, code, JSON.stringify(stored), this.deps.networkJson),
@@ -127,8 +134,12 @@ export class EmbeddedTrackerProvider implements TrackerProvider {
   }
 
   async list(): Promise<TrackerSummary[]> {
+    // Keep the (networked) update check off the list's critical path, mirroring
+    // EmbeddedBridgeProvider.list() — see runUpdateCheck.
+    this.runUpdateCheck();
+
     const results: TrackerSummary[] = [];
-    for (const id of Object.keys(this.deps.bundles)) {
+    for (const id of await this.deps.bundles.ids()) {
       try {
         results.push(await this.summarize(id));
       } catch {
@@ -137,6 +148,18 @@ export class EmbeddedTrackerProvider implements TrackerProvider {
       }
     }
     return results;
+  }
+
+  /** Run the (networked) update check off the list's critical path, at most one at a time — see
+   *  EmbeddedBridgeProvider.runUpdateCheck for the full rationale. */
+  private runUpdateCheck(): void {
+    if (!this.deps.refreshUpdates || this.updateCheckInFlight) return;
+    this.updateCheckInFlight = this.deps
+      .refreshUpdates()
+      .catch(() => {})
+      .finally(() => {
+        this.updateCheckInFlight = undefined;
+      });
   }
 
   async get(id: string): Promise<LoadedTracker> {

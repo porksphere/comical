@@ -222,9 +222,49 @@ export interface TrackerInitResult {
 }
 
 /**
- * Static id → bundle source code for the trackers built into the app. v1 install model: trackers
- * ship in the app bundle rather than being registry-installed like bridges (comical-trackers'
- * `index.json` isn't fully published yet) — this is the natural seam to swap for a dynamic
- * `BundleSource`-style flow once it is.
+ * A *pinned* installed-tracker record — the tracker equivalent of `InstalledBridgeRecord`. No
+ * `info` snapshot: unlike bridge browse lists (which need cheap metadata to avoid a bundle load),
+ * `EmbeddedTrackerProvider.list()` always loads the tracker natively regardless (no listing-only
+ * optimization exists for trackers server-side either — see `TrackerProvider`), so there's no use
+ * for a cached `TrackerInfo` here.
  */
-export type TrackerBundles = Record<string, string>;
+export interface InstalledTrackerRecord {
+  id: string;
+  /** The resolved `index.json` URL this tracker was installed from. */
+  registryUrl: string;
+  version: string;
+  contractVersion: string;
+  /** Absolute URL of the pinned CJS bundle. */
+  url: string;
+  sha256: string;
+  signature?: string;
+  /** The registry's Ed25519 public key at install time (for re-verifying a signed bundle). */
+  publicKey?: string;
+  availableVersion?: string;
+  discontinued?: boolean;
+}
+
+/**
+ * Persistence for the on-device installed-tracker manifest (AsyncStorage-backed in an app). `add`
+ * is an upsert — it replaces any existing record with the same `id`.
+ */
+export interface InstalledTrackerStore {
+  all(): Promise<InstalledTrackerRecord[]>;
+  get(id: string): Promise<InstalledTrackerRecord | null>;
+  add(record: InstalledTrackerRecord): Promise<void>;
+  remove(id: string): Promise<void>;
+}
+
+/**
+ * Supplies installed tracker ids + their bundle code — the tracker equivalent of `BundleSource`,
+ * deliberately simpler (ids only, no metadata) since no listing-without-a-load optimization exists
+ * for trackers. `ManifestTrackerBundleSource` (registry-bundle-source.ts) is the standard
+ * implementation: reads the pinned manifest for `ids()`, downloads + verifies + caches for
+ * `resolveBundle()` — the same install model bridges use, not a static app-bundled map.
+ */
+export interface TrackerBundleSource {
+  /** Ids of all installed trackers — cheap, no bundle load required. */
+  ids(): Promise<string[]>;
+  /** The bundle source code for a tracker id; throws with "not found" for an unknown id. */
+  resolveBundle(id: string): Promise<string>;
+}
