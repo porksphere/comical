@@ -170,7 +170,15 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
   let embeddedLibrary: EmbeddedLibrary | undefined;
   if (config.libraryStore) {
     const library = new Library(config.libraryStore);
-    const runtime = new ComicalRuntime({ bridges: bridgeProvider, library });
+    // Pass the tracker provider through so the runtime-backed tracker routes (`/trackers/:id/search`,
+    // `/trackers/:id/sync`) work on-device — without it `ComicalRuntime` throws "no trackers
+    // configured", even though the separate TrackerManager makes the list/settings/connect routes
+    // work. Mirrors host-server/server.ts, which passes `trackers: trackerManager`.
+    const runtime = new ComicalRuntime({
+      bridges: bridgeProvider,
+      library,
+      ...(trackerProvider ? { trackers: trackerProvider } : {}),
+    });
     embeddedLibrary = { library, runtime };
   }
 

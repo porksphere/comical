@@ -8,6 +8,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import { createRouter } from "@comical/host-server/router";
+import { InMemoryLibraryStore, Library } from "@comical/library";
+import { ComicalRuntime } from "@comical/runtime";
 import { createEmbeddedTransport } from "../src/transport.ts";
 import type { BridgeProvider, CreateRouter, TrackerProvider, TrackerSummary } from "../src/types.ts";
 
@@ -149,5 +151,59 @@ describe("embedded transport — on-device trackers", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { authUrl: string };
     expect(body.authUrl).toContain(encodeURIComponent("http://localhost:3100/oauth/callback"));
+  });
+});
+
+// `/trackers/:id/search` (and `/sync`) resolve through `ComicalRuntime.searchTracker`, NOT the router's
+// TrackerManager — the route mounts whenever a TrackerProvider is present, but the runtime must carry
+// its OWN tracker provider or it throws "no trackers configured". install.ts builds that runtime, and
+// once omitted the trackers wiring there (search silently 400'd on-device while list/settings/connect
+// worked). These lock that the runtime must be trackers-aware for search to resolve.
+describe("embedded transport — runtime-backed tracker search", () => {
+  // A runtime TrackerProvider whose loaded tracker supports search — enough for `searchTracker`.
+  const searchRuntimeTrackers = {
+    list: async () => [{ info: { id: "anilist", capabilities: ["search"] } }],
+    get: async (id: string) => {
+      if (id !== "anilist") throw new Error(`tracker not found: ${id}`);
+      return {
+        info: { id: "anilist", name: "AniList", version: "1.0.0", contractVersion: "1.0.0", capabilities: ["search"] },
+        search: async (query: string, page: number) => ({
+          items: [{ externalId: 42, title: `match: ${query}` }],
+          page,
+          hasNextPage: false,
+        }),
+      };
+    },
+  };
+
+  /** Wire the transport the way install.ts does: a runtime (optionally trackers-aware) behind the
+   *  library pair, plus a TrackerProvider so the `/trackers*` routes actually mount. */
+  const makeTransport = (runtimeTrackers?: unknown) => {
+    const library = new Library(new InMemoryLibraryStore());
+    const runtime = new ComicalRuntime({
+      bridges: stubBridgeProvider as never,
+      library,
+      ...(runtimeTrackers ? { trackers: runtimeTrackers as never } : {}),
+    });
+    return createEmbeddedTransport(
+      stubBridgeProvider, makeCreate(), undefined, { library, runtime },
+      undefined, undefined, undefined, stubTrackerProvider,
+    );
+  };
+
+  test("resolves search when the runtime carries a tracker provider", async () => {
+    const t = makeTransport(searchRuntimeTrackers);
+    const res = await t("/trackers/anilist/search?q=blame");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: { externalId: number; title: string }[] };
+    expect(body.items[0]?.title).toBe("match: blame");
+  });
+
+  test("400s with 'no trackers configured' when the runtime lacks a tracker provider", async () => {
+    const t = makeTransport(); // runtime built without trackers — the pre-fix install.ts wiring
+    const res = await t("/trackers/anilist/search?q=blame");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("no trackers configured");
   });
 });
