@@ -222,11 +222,26 @@ export interface TrackerInitResult {
 }
 
 /**
- * A *pinned* installed-tracker record — the tracker equivalent of `InstalledBridgeRecord`. No
- * `info` snapshot: unlike bridge browse lists (which need cheap metadata to avoid a bundle load),
- * `EmbeddedTrackerProvider.list()` always loads the tracker natively regardless (no listing-only
- * optimization exists for trackers server-side either — see `TrackerProvider`), so there's no use
- * for a cached `TrackerInfo` here.
+ * An installed tracker's cheap metadata — the `info` a registry index carries, so listing needs no
+ * native load and a bundle-load failure can still surface the tracker. The tracker equivalent of
+ * `InstalledBridge`; no `source` field because every on-device tracker is registry-installed.
+ */
+export interface InstalledTracker {
+  info: TrackerInfo;
+  availableVersion?: string;
+  /** True when the tracker's registry no longer lists it (dropped from the index). */
+  discontinued?: boolean;
+}
+
+/**
+ * A *pinned* installed-tracker record — the tracker equivalent of `InstalledBridgeRecord`. Like it,
+ * it freezes an `info` snapshot so `installed()` can list the tracker with no index fetch — and, the
+ * reason it matters more for trackers than bridges, so `EmbeddedTrackerProvider.list()` can still
+ * surface the tracker (as an uninstallable row) when its bundle can't be loaded on a cold start.
+ * iOS reclaims the bundle cache under `Paths.cache`, so an offline relaunch would otherwise drop the
+ * tracker entirely — the native load throws and the list's per-tracker catch swallows it. With a
+ * cached `info` the row survives. `url`/`sha256`/`signature`/`publicKey` re-download + verify the
+ * bundle; `availableVersion`/`discontinued` are annotations refreshed by `checkTrackerUpdates`.
  */
 export interface InstalledTrackerRecord {
   id: string;
@@ -234,6 +249,7 @@ export interface InstalledTrackerRecord {
   registryUrl: string;
   version: string;
   contractVersion: string;
+  info: TrackerInfo;
   /** Absolute URL of the pinned CJS bundle. */
   url: string;
   sha256: string;
@@ -256,15 +272,16 @@ export interface InstalledTrackerStore {
 }
 
 /**
- * Supplies installed tracker ids + their bundle code — the tracker equivalent of `BundleSource`,
- * deliberately simpler (ids only, no metadata) since no listing-without-a-load optimization exists
- * for trackers. `ManifestTrackerBundleSource` (registry-bundle-source.ts) is the standard
- * implementation: reads the pinned manifest for `ids()`, downloads + verifies + caches for
- * `resolveBundle()` — the same install model bridges use, not a static app-bundled map.
+ * Supplies installed trackers + their bundle code — the tracker equivalent of `BundleSource`.
+ * `ManifestTrackerBundleSource` (registry-bundle-source.ts) is the standard implementation: reads
+ * the pinned manifest (each record carries an `info` snapshot) for `installed()`, downloads +
+ * verifies + caches for `resolveBundle()` — the same install model bridges use, not a static
+ * app-bundled map. `installed()` returns metadata so `EmbeddedTrackerProvider.list()` can list a
+ * tracker (and keep it uninstallable) even when its bundle fails to load.
  */
 export interface TrackerBundleSource {
-  /** Ids of all installed trackers — cheap, no bundle load required. */
-  ids(): Promise<string[]>;
+  /** All installed trackers with their pinned metadata — cheap, no bundle load required. */
+  installed(): Promise<InstalledTracker[]>;
   /** The bundle source code for a tracker id; throws with "not found" for an unknown id. */
   resolveBundle(id: string): Promise<string>;
 }

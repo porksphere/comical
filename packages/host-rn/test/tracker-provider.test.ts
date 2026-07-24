@@ -13,6 +13,7 @@
  * back to the app's `SettingsStore` (see `tracker-provider.ts`'s doc comment).
  */
 import { describe, expect, test } from "bun:test";
+import type { TrackerInfo } from "@comical/contract";
 import { loadTracker, type LoadedTracker } from "@comical/core";
 import { EmbeddedTrackerProvider } from "../src/tracker-provider.ts";
 import type { NativeTrackerRuntime, SettingsStore, TrackerBundleSource } from "../src/types.ts";
@@ -27,7 +28,7 @@ function makeHost(settings: Record<string, unknown>): unknown {
   };
 }
 
-const TRACKER_INFO = {
+const TRACKER_INFO: TrackerInfo = {
   id: "anilist",
   name: "AniList",
   version: "1.0.0",
@@ -44,7 +45,7 @@ const TRACKER_BUNDLE = `module.exports = { default: (host) => ({
 }) };`;
 
 // A second tracker that starts unconfigured (required "token" not yet set).
-const CFG_INFO = { ...TRACKER_INFO, id: "cfg" };
+const CFG_INFO: TrackerInfo = { ...TRACKER_INFO, id: "cfg" };
 const CFG_BUNDLE = `module.exports = { default: (host) => ({
   info: ${JSON.stringify(CFG_INFO)},
   getSettings: () => [{ type: "string", key: "token", label: "Token", required: true }],
@@ -53,21 +54,25 @@ const CFG_BUNDLE = `module.exports = { default: (host) => ({
 
 /** A `TrackerBundleSource` test double over a static map — trackers are registry-installed on-device
  *  (see `ManifestTrackerBundleSource`), but this file exercises the provider in isolation, so a tiny
- *  in-memory source stands in the same way `provider.test.ts`'s bundle fixtures do for bridges. */
-function bundleSourceOf(map: Record<string, string>): TrackerBundleSource {
+ *  in-memory source stands in the same way `provider.test.ts`'s bundle fixtures do for bridges.
+ *  `installed()` surfaces each entry's pinned `info` (no bundle load), mirroring the manifest source. */
+function bundleSourceOf(map: Record<string, { code: string; info: TrackerInfo }>): TrackerBundleSource {
   return {
-    async ids() {
-      return Object.keys(map);
+    async installed() {
+      return Object.values(map).map((m) => ({ info: m.info }));
     },
     async resolveBundle(id) {
-      const code = map[id];
+      const code = map[id]?.code;
       if (!code) throw new Error(`tracker not found: ${id}`);
       return code;
     },
   };
 }
 
-const bundles: TrackerBundleSource = bundleSourceOf({ anilist: TRACKER_BUNDLE, cfg: CFG_BUNDLE });
+const bundles: TrackerBundleSource = bundleSourceOf({
+  anilist: { code: TRACKER_BUNDLE, info: TRACKER_INFO },
+  cfg: { code: CFG_BUNDLE, info: CFG_INFO },
+});
 
 function memorySettings(): SettingsStore {
   const map = new Map<string, Record<string, never>>();
@@ -122,6 +127,32 @@ describe("EmbeddedTrackerProvider", () => {
     // Every on-device tracker is registry-installed, so it's uninstallable.
     expect(byId.anilist?.source).toBe("registry");
     expect(byId.cfg?.source).toBe("registry");
+  });
+
+  test("list() surfaces a tracker whose bundle can't load from its pinned info (offline fallback)", async () => {
+    // The real bug: iOS purges the bundle cache under Paths.cache, so an offline relaunch can't load
+    // the tracker — and it used to silently vanish (looking like it "uninstalled itself"). The pinned
+    // `info` from installed() must keep the row present + uninstallable.
+    const failing: TrackerBundleSource = {
+      async installed() {
+        return [{ info: TRACKER_INFO }];
+      },
+      async resolveBundle() {
+        throw new Error("offline: bundle cache purged");
+      },
+    };
+    const provider = new EmbeddedTrackerProvider({
+      native: makeFakeNative(),
+      bundles: failing,
+      settings: memorySettings(),
+    });
+
+    const list = await provider.list();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.info.id).toBe("anilist");
+    expect(list[0]?.source).toBe("registry"); // still uninstallable — the whole point
+    expect(list[0]?.configured).toBe(false); // no descriptors without the bundle
+    expect(list[0]?.settings).toEqual([]);
   });
 
   test("get() returns a proxy tracker whose methods marshal through native, seeing stored settings", async () => {

@@ -21,7 +21,7 @@ import type { AvailableBridge, AvailableTracker, InstallResult } from "@comical/
 import type { RegistryIndex, SavedRegistry } from "@comical/registry/schema";
 import { registryDisplayName, resolveRegistryUrl } from "@comical/registry/url";
 import type { RegistryProvider, RegistryUpdate } from "@comical/host-server/registry-provider";
-import { entryToInfo, type RegistryFetcher } from "./registry-bundle-source.ts";
+import { entryToInfo, entryToTrackerInfo, type RegistryFetcher } from "./registry-bundle-source.ts";
 import type {
   InstalledBridgeRecord,
   InstalledStore,
@@ -274,6 +274,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
       registryUrl: url,
       version: entry.version,
       contractVersion: entry.contractVersion,
+      info: entryToTrackerInfo(entry),
       url: entry.url,
       sha256: entry.sha256,
       ...(entry.signature !== undefined ? { signature: entry.signature } : {}),
@@ -317,6 +318,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
         const { availableVersion: _av, discontinued: _dc, ...base } = rec;
         await this.deps.installedTrackers.add({
           ...base,
+          info: entryToTrackerInfo(entry),
           url: entry.url,
           sha256: entry.sha256,
           ...(entry.signature !== undefined ? { signature: entry.signature } : {}),

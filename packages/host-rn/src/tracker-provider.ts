@@ -23,6 +23,7 @@ import { redactSettingSecrets, resolveSettings } from "@comical/core/settings";
 import { methodsForTracker } from "./tracker-capabilities.ts";
 import { buildProxyTracker } from "./tracker-proxy.ts";
 import type {
+  InstalledTracker,
   NativeTrackerRuntime,
   SettingsStore,
   TrackerBundleSource,
@@ -143,12 +144,17 @@ export class EmbeddedTrackerProvider implements TrackerProvider {
     this.runUpdateCheck();
 
     const results: TrackerSummary[] = [];
-    for (const id of await this.deps.bundles.ids()) {
+    for (const t of await this.deps.bundles.installed()) {
       try {
-        results.push(await this.summarize(id));
+        results.push(await this.summarize(t.info.id));
       } catch {
-        // A tracker bundle that fails to load (bad code, contract-version mismatch, …) is skipped —
-        // mirrors TrackerManager.list()'s per-tracker try/catch.
+        // The bundle can't be loaded right now — iOS purged the cache under `Paths.cache` and we're
+        // offline, corrupt bytes, a native init failure. Rather than silently drop the tracker (its
+        // pinned install record still exists, so vanishing looks like it "uninstalled itself"), fall
+        // back to the record's cached `info` so the row stays visible AND uninstallable. Unlike the
+        // server's TrackerManager.list() — which skips a failed load — an on-device tracker with no
+        // running server would otherwise disappear until it happens to be online at launch.
+        results.push(recordFallbackSummary(t));
       }
     }
     return results;
@@ -192,4 +198,24 @@ export class EmbeddedTrackerProvider implements TrackerProvider {
     for (const id of this.loaded.keys()) this.deps.native.disposeTracker(id);
     this.loaded.clear();
   }
+}
+
+/**
+ * A `TrackerSummary` built purely from a pinned `InstalledTracker` record — used by `list()` when the
+ * tracker's bundle can't be loaded (offline cold start after the iOS cache was reclaimed, corrupt
+ * bytes, native init failure). Without the bundle we can't read the tracker's setting descriptors, so
+ * we report no settings and `configured: false` (conservative — the real state returns as soon as the
+ * bundle loads again). `source: "registry"` keeps the row uninstallable, which is the whole point:
+ * the tracker stays visible so the user can still remove it.
+ */
+function recordFallbackSummary(t: InstalledTracker): TrackerSummary {
+  return {
+    info: t.info,
+    settings: [],
+    values: {},
+    secretsSet: [],
+    configured: false,
+    missingRequired: [],
+    source: "registry",
+  };
 }

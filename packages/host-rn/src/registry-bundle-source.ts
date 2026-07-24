@@ -11,13 +11,14 @@
  * wires `@comical/registry/fetcher`'s real functions (whose verify.ts is pure WebCrypto — on-device
  * it needs a `crypto.subtle` polyfill; see `installWebCryptoShim`).
  */
-import type { BridgeInfo } from "@comical/contract";
+import type { BridgeInfo, TrackerInfo } from "@comical/contract";
 import type { BundleEntryLike, DownloadResult } from "@comical/registry/fetcher";
-import type { RegistryBridgeEntry, RegistryIndex } from "@comical/registry/schema";
+import type { RegistryBridgeEntry, RegistryIndex, RegistryTrackerEntry } from "@comical/registry/schema";
 import type {
   BundleSource,
   InstalledBridge,
   InstalledStore,
+  InstalledTracker,
   InstalledTrackerStore,
   TrackerBundleSource,
 } from "./types.ts";
@@ -73,6 +74,19 @@ export function entryToInfo(e: RegistryBridgeEntry): BridgeInfo {
     capabilities: e.capabilities as BridgeInfo["capabilities"],
     ...(e.iconUrl !== undefined ? { iconUrl: e.iconUrl } : {}),
     ...(e.assetProxy !== undefined ? { assetProxy: e.assetProxy } : {}),
+  };
+}
+
+/** Tracker equivalent of `entryToInfo` — the `TrackerInfo` snapshot pinned into an installed record,
+ *  so a tracker can be listed (and stays uninstallable) without loading its bundle. The registry
+ *  entry carries no `rateLimit`, so it's omitted (optional, and irrelevant to a listing-only view). */
+export function entryToTrackerInfo(e: RegistryTrackerEntry): TrackerInfo {
+  return {
+    id: e.id,
+    name: e.name,
+    version: e.version,
+    contractVersion: e.contractVersion,
+    capabilities: e.capabilities as TrackerInfo["capabilities"],
   };
 }
 
@@ -251,10 +265,10 @@ export interface ManifestTrackerBundleSourceOptions {
 
 /**
  * A `TrackerBundleSource` backed by the on-device *installed* manifest — the tracker equivalent of
- * `ManifestBundleSource`. `ids()` reads pinned `InstalledTrackerRecord`s with no network;
- * `resolveBundle` re-downloads + verifies the record's pinned bundle and caches it by `sha256`.
- * Per-tracker install/update/uninstall is driven separately by `EmbeddedRegistryProvider`, which
- * writes the manifest this reads.
+ * `ManifestBundleSource`. `installed()` reads pinned `InstalledTrackerRecord`s (with their `info`
+ * snapshot + annotations) with no network; `resolveBundle` re-downloads + verifies the record's
+ * pinned bundle and caches it by `sha256`. Per-tracker install/update/uninstall is driven separately
+ * by `EmbeddedRegistryProvider`, which writes the manifest this reads.
  */
 export class ManifestTrackerBundleSource implements TrackerBundleSource {
   private readonly cache: BundleCache;
@@ -263,9 +277,17 @@ export class ManifestTrackerBundleSource implements TrackerBundleSource {
     this.cache = opts.cache ?? new MemoryBundleCache();
   }
 
-  async ids(): Promise<string[]> {
+  async installed(): Promise<InstalledTracker[]> {
     const records = await this.opts.installed.all();
-    return records.map((r) => r.id);
+    return records.map((r) => ({
+      // `info` was added to the record after trackers first shipped, so a record pinned by an older
+      // build may lack it. Synthesize a minimal `TrackerInfo` from the record's own fields in that
+      // case, so the tracker still lists (and stays uninstallable) rather than crashing on
+      // `undefined.id`; a successful bundle load / the next install refreshes it to the real info.
+      info: r.info ?? { id: r.id, name: r.id, version: r.version, contractVersion: r.contractVersion, capabilities: [] },
+      ...(r.availableVersion !== undefined ? { availableVersion: r.availableVersion } : {}),
+      ...(r.discontinued ? { discontinued: true } : {}),
+    }));
   }
 
   async resolveBundle(id: string): Promise<string> {

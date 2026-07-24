@@ -1,6 +1,6 @@
 /**
- * The on-device install model: `ManifestBundleSource`/`ManifestTrackerBundleSource` (installed()/
- * ids() read the pinned manifest, no index fetch; resolveBundle re-downloads + verifies the pinned
+ * The on-device install model: `ManifestBundleSource`/`ManifestTrackerBundleSource` (installed()
+ * reads the pinned manifest, no index fetch; resolveBundle re-downloads + verifies the pinned
  * bundle) and `EmbeddedRegistryProvider` (browse/install/update/uninstall/checkUpdates over injected
  * stores + fetcher, incl. discontinuation — bridges and trackers mirror each other 1:1).
  */
@@ -11,6 +11,7 @@ import type { RegistryBridgeEntry, RegistryIndex, RegistryTrackerEntry, SavedReg
 import { EmbeddedRegistryProvider } from "../src/registry-provider.ts";
 import {
   entryToInfo,
+  entryToTrackerInfo,
   ManifestBundleSource,
   ManifestTrackerBundleSource,
   type RegistryFetcher,
@@ -154,6 +155,7 @@ function trackerRecordFor(over: Partial<InstalledTrackerRecord> = {}): Installed
     registryUrl: REG_A,
     version: e.version,
     contractVersion: e.contractVersion,
+    info: entryToTrackerInfo(e),
     url: e.url,
     sha256: e.sha256,
     ...over,
@@ -240,16 +242,19 @@ describe("ManifestTrackerBundleSource", () => {
     globalThis.fetch = realFetch;
   });
 
-  test("ids() reads the manifest with no index fetch", async () => {
+  test("installed() reads the manifest (info + annotations) with no index fetch", async () => {
     const store = new MemInstalledTrackerStore();
-    await store.add(trackerRecordFor());
+    await store.add(trackerRecordFor({ availableVersion: "1.1.0", discontinued: true }));
     let fetched = false;
     const src = new ManifestTrackerBundleSource({
       installed: store,
       fetcher: { downloadBundle: async () => ((fetched = true), { text: TRACKER_BUNDLE }) },
     });
-    expect(await src.ids()).toEqual(["anilist"]);
-    expect(fetched).toBe(false); // no network to list
+    const listed = await src.installed();
+    expect(listed.map((t) => t.info.id)).toEqual(["anilist"]);
+    expect(listed[0]?.availableVersion).toBe("1.1.0");
+    expect(listed[0]?.discontinued).toBe(true);
+    expect(fetched).toBe(false); // no network to list — the pinned info snapshot is enough
   });
 
   test("resolveBundle downloads + verifies the pinned bundle, then serves from cache", async () => {
@@ -537,6 +542,9 @@ describe("EmbeddedRegistryProvider", () => {
     expect(rec?.version).toBe("1.2.0");
     expect(rec?.url).toBe(TRACKER_BUNDLE_URL);
     expect(rec?.signature).toBe("sig");
+    // The pinned info snapshot is captured so list() can surface the tracker without a bundle load.
+    expect(rec?.info.id).toBe("anilist");
+    expect(rec?.info.version).toBe("1.2.0");
   });
 
   test("installTracker() of an unknown id throws", async () => {
