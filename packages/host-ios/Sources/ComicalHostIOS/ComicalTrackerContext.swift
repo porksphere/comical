@@ -169,7 +169,15 @@ public final class ComicalTrackerContext {
     /// (the Expo native module) is expected to persist a non-nil result back through the app's
     /// settings store; this context has no other channel to write durable state.
     public func drainSettingsPatch() -> String? {
-        return js.evaluateScript("comical_drain_tracker_patch()")?.toString()
+        // `comical_drain_tracker_patch()` returns a JSON string OR JS `null` when nothing refreshed.
+        // Guard the null/undefined case explicitly: `JSValue.toString()` on a JS null yields the
+        // literal string "null", not Swift `nil`, which would break this method's documented `nil`
+        // contract and make the RN side (`EmbeddedTrackerProvider.drainAndPersist`) parse "null" →
+        // destructure null → throw "cannot read property 'key' of null".
+        guard let value = js.evaluateScript("comical_drain_tracker_patch()"),
+              !value.isNull, !value.isUndefined
+        else { return nil }
+        return value.toString()
     }
 
     // MARK: - Native callback injection

@@ -283,6 +283,28 @@ describe("EmbeddedTrackerProvider", () => {
     expect(initCount).toBe(1); // never invalidated -> still cached
   });
 
+  test("tolerates a native drain that returns the literal string 'null' (iOS JSC toString of a JS null)", async () => {
+    // Regression: on iOS `ComicalTrackerContext.drainSettingsPatch()` runs `JSValue.toString()` on
+    // `comical_drain_tracker_patch()`'s result, which for a JS `null` (nothing refreshed) is the
+    // literal string "null" — NOT Swift nil. `drainAndPersist` used to `JSON.parse` that to `null`
+    // and destructure it, throwing "cannot read property 'key' of null" AFTER an otherwise-successful
+    // call. Search paid the price: every `/trackers/:id/search` result was discarded as a failure.
+    const settings = memorySettings();
+    await settings.set("anilist", { token: "t1" });
+    const base = makeFakeNative();
+    const native: NativeTrackerRuntime = {
+      ...base,
+      // Mimic the JSC boundary: a JS null stringified to "null" rather than a real null.
+      drainTrackerSettingsPatch: async () => "null",
+    };
+    const provider = new EmbeddedTrackerProvider({ native, bundles, settings });
+
+    const tracker = await provider.get("anilist");
+    // The afterCall drain must NOT throw and must leave settings untouched (there was no real patch).
+    await expect(tracker.getLibrary!(1)).resolves.toBeDefined();
+    expect(await settings.get("anilist")).toEqual({ token: "t1" });
+  });
+
   test("list() returns without awaiting the (networked) update check, running it in the background", async () => {
     let refreshCalls = 0;
     let releaseRefresh!: () => void;

@@ -67,8 +67,17 @@ export class EmbeddedTrackerProvider implements TrackerProvider {
    */
   private async drainAndPersist(id: string): Promise<void> {
     const patchJson = await this.deps.native.drainTrackerSettingsPatch(id);
-    if (!patchJson) return;
-    const { key, blob } = JSON.parse(patchJson) as { key: string; blob: unknown };
+    // No pending patch is signalled by `null`. But a host whose native layer stringifies the JS
+    // `null`/`undefined` return of `comical_drain_tracker_patch()` (iOS `ComicalTrackerContext.
+    // drainSettingsPatch` does — `JSValue.toString()` on a JS null yields the literal "null") hands
+    // back the string "null"/"undefined" instead, which is truthy. Treat those as "nothing to
+    // persist" too — otherwise `JSON.parse("null")` is `null` and the destructure below throws
+    // "cannot read property 'key' of null" AFTER an otherwise-successful tracker call (e.g. search),
+    // surfacing that call as failed. Belt-and-braces: null-check the parsed value as well.
+    if (!patchJson || patchJson === "null" || patchJson === "undefined") return;
+    const parsed = JSON.parse(patchJson) as { key: string; blob: unknown } | null;
+    if (!parsed) return;
+    const { key, blob } = parsed;
     const current = await this.deps.settings.get(id);
     await this.deps.settings.set(id, { ...current, [key]: JSON.stringify(blob) });
     this.loaded.delete(id);
