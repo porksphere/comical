@@ -646,3 +646,56 @@ describe("backgroundSync — tracker gate", () => {
     expect(pulls).toBe(1);
   });
 });
+
+// ── searchTracker — the "link tracker" UI flow ────────────────────────────────
+// Directly exercises the method the tracker-link search calls. Its "no trackers configured" guard
+// is the exact error the on-device runtime once threw (see host-rn's install-trackers.test.ts): a
+// runtime built without a tracker provider, so a passing runtime-layer test here plus the install-
+// layer test there fence the bug from both ends.
+
+describe("searchTracker", () => {
+  test("returns a search-capable tracker's results", async () => {
+    const tracker = mockTracker("anilist", {
+      capabilities: ["search"],
+      searchResults: [{ externalId: 42, title: "Blame!" }],
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(mockBridge({ id: "s1", title: "x" })),
+      library: makeLib(),
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    const res = await runtime.searchTracker("anilist", "blame");
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0]).toMatchObject({ externalId: 42, title: "Blame!" });
+  });
+
+  test("throws 'no trackers configured' when the runtime has no tracker provider", async () => {
+    // The literal on-device regression: list/settings/connect went through the router's
+    // TrackerManager, but search routes through this runtime, which was built trackers-unaware.
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(mockBridge({ id: "s1", title: "x" })),
+      library: makeLib(),
+    });
+    await expect(runtime.searchTracker("anilist", "blame")).rejects.toThrow(/no trackers configured/);
+  });
+
+  test("throws when the tracker lacks the search capability", async () => {
+    const tracker = mockTracker("anilist", { capabilities: ["library-sync"] });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(mockBridge({ id: "s1", title: "x" })),
+      library: makeLib(),
+      trackers: mockTrackerProvider([tracker]),
+    });
+    await expect(runtime.searchTracker("anilist", "blame")).rejects.toThrow(/does not support search/);
+  });
+
+  test("propagates an unknown tracker id from the provider", async () => {
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(mockBridge({ id: "s1", title: "x" })),
+      library: makeLib(),
+      trackers: mockTrackerProvider([mockTracker("anilist", { capabilities: ["search"] })]),
+    });
+    await expect(runtime.searchTracker("mal", "blame")).rejects.toThrow(/not found/);
+  });
+});
