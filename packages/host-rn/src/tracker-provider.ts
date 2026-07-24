@@ -130,6 +130,10 @@ export class EmbeddedTrackerProvider implements TrackerProvider {
       secretsSet,
       configured: missingRequired.length === 0,
       missingRequired,
+      // On-device every tracker comes from the registry-download bundle source (there's no
+      // server-built "local" tracker here), so all are uninstallable — mirrors how
+      // EmbeddedBridgeProvider forwards each installed bridge's `source`.
+      source: "registry",
     };
   }
 

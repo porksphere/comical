@@ -14,6 +14,10 @@ export interface TrackerSummary {
   secretsSet: string[];
   configured: boolean;
   missingRequired: string[];
+  /** Where the tracker came from — `registry` ones can be uninstalled (DELETE /trackers/:id), a
+   *  `local` (server-built) one can't. Mirrors `BridgeSummary.source`; drives the Trackers list's
+   *  swipe-to-uninstall gate. */
+  source: "local" | "registry";
 }
 
 /** The tracker-manager methods `createRouter` calls. `TrackerManager` satisfies this structurally. */

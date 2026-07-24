@@ -36,6 +36,7 @@ const TRACKER_SUMMARY: TrackerSummary = {
   secretsSet: ["apiKey"],
   configured: true,
   missingRequired: [],
+  source: "registry",
 };
 
 const mockManager = {
@@ -81,6 +82,7 @@ describe("GET /trackers", () => {
     expect(list).toHaveLength(1);
     expect(list[0]!.info.id).toBe("mock-tracker");
     expect(list[0]!.configured).toBe(true);
+    expect(list[0]!.source).toBe("registry");
   });
 });
 

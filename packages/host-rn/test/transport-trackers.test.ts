@@ -38,6 +38,7 @@ const TRACKER_SUMMARY: TrackerSummary = {
   secretsSet: [],
   configured: true,
   missingRequired: [],
+  source: "registry",
 };
 
 const stubTrackerProvider: TrackerProvider = {
@@ -72,6 +73,7 @@ const OAUTH_TRACKER_SUMMARY: TrackerSummary = {
   secretsSet: [],
   configured: false,
   missingRequired: [],
+  source: "registry",
 };
 
 const oauthTrackerProvider: TrackerProvider = {

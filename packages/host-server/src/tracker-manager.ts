@@ -131,7 +131,7 @@ export class TrackerManager {
     return tracker;
   }
 
-  private async summarize(id: string): Promise<TrackerSummary> {
+  private async summarize(id: string, source: "local" | "registry"): Promise<TrackerSummary> {
     const tracker = await this.get(id);
     const settings = tracker.getSettings?.() ?? [];
     const stored = (await this.opts.settings.get(id)) as Record<string, SettingValue>;
@@ -145,24 +145,24 @@ export class TrackerManager {
       if (secretKeys.has(k)) { if (v !== undefined && v !== "") secretsSet.push(k); }
       else values[k] = v;
     }
-    return { info: tracker.info, settings: redactSettingSecrets(settings), values, secretsSet, configured: missingRequired.length === 0, missingRequired };
+    return { info: tracker.info, settings: redactSettingSecrets(settings), values, secretsSet, configured: missingRequired.length === 0, missingRequired, source };
   }
 
   async list(): Promise<TrackerSummary[]> {
     const results: TrackerSummary[] = [];
     const localIds = new Set(this.discover().map((d) => d.id));
 
-    // Local trackers.
+    // Local trackers (server-built — not uninstallable).
     for (const d of this.discover()) {
-      try { results.push(await this.summarize(d.id)); } catch { /* skip */ }
+      try { results.push(await this.summarize(d.id, "local")); } catch { /* skip */ }
     }
 
-    // Registry-installed trackers not present in a local dir.
+    // Registry-installed trackers not present in a local dir (uninstallable).
     if (this.opts.registry) {
       const installed = await this.opts.registry.allInstalledTrackers();
       for (const t of installed) {
         if (localIds.has(t.id)) continue;
-        try { results.push(await this.summarize(t.id)); } catch { /* skip */ }
+        try { results.push(await this.summarize(t.id, "registry")); } catch { /* skip */ }
       }
     }
 

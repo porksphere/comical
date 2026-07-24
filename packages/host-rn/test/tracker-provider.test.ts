@@ -119,6 +119,9 @@ describe("EmbeddedTrackerProvider", () => {
     expect(byId.anilist?.missingRequired).toEqual([]);
     expect(byId.cfg?.configured).toBe(false);
     expect(byId.cfg?.missingRequired).toEqual(["token"]);
+    // Every on-device tracker is registry-installed, so it's uninstallable.
+    expect(byId.anilist?.source).toBe("registry");
+    expect(byId.cfg?.source).toBe("registry");
   });
 
   test("get() returns a proxy tracker whose methods marshal through native, seeing stored settings", async () => {
