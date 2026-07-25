@@ -455,6 +455,9 @@ export class ComicalRuntime {
       try {
         const tracker = await this.trackers.get(link.trackerId);
         if (!tracker.info.capabilities.includes("status-sync") || !tracker.updateEntry) continue;
+        // Nothing new to say — re-reading an old chapter, or a re-mark at the same number. See
+        // `chaptersRead` on TrackerLink: it's the watermark of what the tracker is known to hold.
+        if (chaptersRead <= (link.chaptersRead ?? 0)) continue;
         await this.pushToTracker(tracker, link.externalId, chaptersRead);
         await this.lib.updateTrackerLink(key, link.trackerId, {
           chaptersRead,
@@ -516,11 +519,18 @@ export class ComicalRuntime {
 
     // Build a lookup: externalId → linked entry for all existing links of this tracker.
     const allEntries = await lib.getLibrary();
-    const linkIndex = new Map<string, { key: string; bridgeId: string; seriesId: string }>();
+    const linkIndex = new Map<string, { key: string; bridgeId: string; seriesId: string; watermark: number }>();
     for (const entry of allEntries) {
       const ek = entryKey(entry.bridgeId, entry.seriesId);
       const link = await lib.getTrackerLink(ek, trackerId);
-      if (link) linkIndex.set(String(link.externalId), { key: ek, bridgeId: entry.bridgeId, seriesId: entry.seriesId });
+      if (link) {
+        linkIndex.set(String(link.externalId), {
+          key: ek,
+          bridgeId: entry.bridgeId,
+          seriesId: entry.seriesId,
+          watermark: link.chaptersRead ?? 0,
+        });
+      }
     }
 
     let page = 1;
@@ -566,6 +576,14 @@ export class ComicalRuntime {
    * on one side is far more likely to be a stale/never-synced copy than a deliberate rewind, and
    * clobbering a higher count would silently lose reading history the user can't recover.
    *
+   * "Local ahead" is measured against the link's WATERMARK, not against what the tracker echoes back.
+   * A tracker may store our number lossily — AniList and MAL both take an integer, so chapter 12.5
+   * lands as 12 — and against the echo local would read as ahead forever, re-pushing on every sync
+   * and never once reporting "already in sync". The watermark records what we know reached the
+   * tracker, so the comparison settles regardless of what the service did to the value. This is the
+   * generic form of the problem: it costs the trackers nothing to declare and holds for any future
+   * one that rounds, clamps, or otherwise reshapes what it's given.
+   *
    * Capability-adaptive: a tracker with only `library-sync` still pulls, one with only `status-sync`
    * still pushes. Finding the remote entry pages through `tracker.getLibrary` (the contract has no
    * single-entry lookup); that cost is acceptable for an infrequent, user-initiated action. When the
@@ -605,9 +623,11 @@ export class ComicalRuntime {
       }
     }
     const remoteRead = remote?.chaptersRead ?? 0;
+    const watermark = link.chaptersRead ?? 0;
 
-    // Local is further along — push it up. (Also the path when the tracker has no entry yet.)
-    if (canPush && localRead > remoteRead) {
+    // Local is further along than BOTH what the tracker reports and what it's known to hold — push it
+    // up. (Also the path when the tracker has no entry yet.)
+    if (canPush && localRead > remoteRead && localRead > watermark) {
       // Same bounded retry as the implicit push — here the error isn't swallowed, it's thrown at the
       // user who pressed the button, so it's worth being sure it's real before reporting it.
       await this.pushToTracker(tracker, link.externalId, localRead);
@@ -615,14 +635,27 @@ export class ComicalRuntime {
       return { updated: true, readSynced: 0, pushed: true, chaptersRead: localRead };
     }
 
-    // Tracker is at or ahead of local — apply it locally (shared with the bulk pull).
+    // Not pushing — apply the tracker's state locally (shared with the bulk pull).
     if (remote) {
-      const readSynced = await this.applyTrackerItem({ key, bridgeId, seriesId }, remote, trackerId);
-      return { updated: true, readSynced, pushed: false, chaptersRead: remoteRead };
+      const readSynced = await this.applyTrackerItem({ key, bridgeId, seriesId, watermark }, remote, trackerId);
+      // Which number to report as "where you both are". When local reads ahead of the echo but not of
+      // the watermark, the tracker DOES hold this progress and is merely reporting it back coarsely
+      // (12.5 → 12), so the local number is the honest answer. Otherwise the tracker's is the one that
+      // moved — including for a pull-only tracker, where local really is ahead and staying that way.
+      const settledLossy = localRead > remoteRead && localRead <= watermark;
+      return { updated: true, readSynced, pushed: false, chaptersRead: settledLossy ? localRead : remoteRead };
     }
 
-    // Pull-only tracker with nothing on its list for this link, and nothing local to push.
-    return { updated: false, readSynced: 0, pushed: false, chaptersRead: localRead };
+    // Nothing on the tracker's list to apply — a pull-only tracker that doesn't list this link, or a
+    // push-only tracker, which has no list at all. `updated` separates "settled at a count the
+    // tracker already holds" from "neither side has anything yet": the difference between reporting
+    // "already in sync" and "nothing to sync".
+    return {
+      updated: localRead > 0 && localRead <= watermark,
+      readSynced: 0,
+      pushed: false,
+      chaptersRead: localRead,
+    };
   }
 
   /**
@@ -630,16 +663,23 @@ export class ComicalRuntime {
    * status/chaptersRead, then reconcile the tracker's read progress into local chapter-read flags.
    * Shared by the bulk (`syncFromTracker`) and scoped (`syncEntryWithTracker`) pull paths.
    * Returns how many chapters were newly marked read.
+   *
+   * `match.watermark` is the link's current `chaptersRead`, passed in by both callers because both
+   * already hold the link (re-reading it here would cost a store round-trip per entry in the bulk
+   * pull). The write keeps the higher of the two: a pull must never drag the watermark down to a
+   * lossy echo of what we pushed, or the next sync would see local as ahead again and re-push.
    */
   private async applyTrackerItem(
-    match: { key: string; bridgeId: string; seriesId: string },
+    match: { key: string; bridgeId: string; seriesId: string; watermark: number },
     item: TrackerLibraryEntry,
     trackerId: string,
   ): Promise<number> {
     const lib = this.requireLibrary();
     await lib.updateTrackerLink(match.key, trackerId, {
       status: item.status,
-      ...(item.chaptersRead !== undefined && { chaptersRead: item.chaptersRead }),
+      ...(item.chaptersRead !== undefined && {
+        chaptersRead: Math.max(item.chaptersRead, match.watermark),
+      }),
       lastSyncAt: Date.now(),
     });
     if (item.chaptersRead !== undefined && item.chaptersRead > 0) {

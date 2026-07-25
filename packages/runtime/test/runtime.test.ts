@@ -307,6 +307,26 @@ describe("syncEntryToTrackers", () => {
     expect(updateCalls.at(-1)!.chaptersRead).toBe(2.5);
   });
 
+  test("does not re-push a count the tracker is already known to hold", async () => {
+    const lib = makeLib();
+    const bridge = mockBridge({ id: "s1", title: "Series", externalIds: { anilist: 111 } });
+    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([mockTracker("anilist", { updateCalls })]),
+    });
+
+    await runtime.addToLibrary("test", "s1");
+    await runtime.markRead("test", "s1", "c2", true, "Ch 2", 2);
+    await runtime.markRead("test", "s1", "c1", true, "Ch 1", 1); // re-reading an earlier chapter
+    await runtime.markRead("test", "s1", "c2", true, "Ch 2", 2); // and re-marking the same one
+
+    // Only the first read moved the high-water mark, so only it reached the tracker — the other two
+    // would have been identical writes burning a rate-limited slot on every page turn.
+    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 2 }]);
+  });
+
   test("a failing push is reported to the log instead of being swallowed, and never fails the read", async () => {
     const lib = makeLib();
     const bridge = mockBridge({ id: "s1", title: "Series", externalIds: { anilist: 111 } });
@@ -722,6 +742,75 @@ describe("syncEntryWithTracker", () => {
 
     expect(res).toEqual({ updated: true, readSynced: 1, pushed: false, chaptersRead: 1 });
     expect(calledPages).toEqual([1, 2]);
+  });
+
+  // The reason "local ahead" is measured against the link's watermark and not against what the
+  // tracker reports back. AniList's `progress` and MAL's `num_chapters_read` are integers, so a
+  // decimal chapter comes back truncated — forever lower than local, if you compare against it.
+  test("an integer-only tracker's truncated echo does not cause a repeat push", async () => {
+    const lib = makeLib();
+    const chapters = [ch("c12", 12), ch("c12.5", 12.5)];
+    const bridge = syncBridge({ details: { id: "s1", title: "Series", externalIds: { anilist: 111 } }, chapters });
+    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    // Stores whatever it's given as an integer and reports that back, exactly like AniList.
+    const entries: TrackerLibraryEntry[] = [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 0 }];
+    const tracker: Tracker = {
+      info: { ...TRACKER_INFO, id: "anilist", capabilities: ["library-sync", "status-sync"] },
+      async updateEntry(externalId, update) {
+        updateCalls.push({ externalId, ...(update.chaptersRead !== undefined && { chaptersRead: update.chaptersRead }) });
+        entries[0]!.chaptersRead = Math.floor(update.chaptersRead ?? 0);
+      },
+      async getLibrary() {
+        return { items: entries, page: 1, hasNextPage: false };
+      },
+    };
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await lib.markRead("test:s1", "c12", true, "Ch 12", 12);
+    await lib.markRead("test:s1", "c12.5", true, "Ch 12.5", 12.5);
+
+    const first = await runtime.syncEntryWithTracker("test", "s1", "anilist");
+    expect(first).toEqual({ updated: true, readSynced: 0, pushed: true, chaptersRead: 12.5 });
+    expect(entries[0]!.chaptersRead).toBe(12); // the tracker truncated it
+
+    // Pressing Sync again: the tracker still says 12, but the watermark says it has 12.5, so this
+    // settles instead of pushing the same value a second (and third, and fourth) time.
+    const second = await runtime.syncEntryWithTracker("test", "s1", "anilist");
+    expect(second).toEqual({ updated: true, readSynced: 0, pushed: false, chaptersRead: 12.5 });
+    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 12.5 }]);
+  });
+
+  test("a pull does not lower the watermark to the tracker's truncated echo", async () => {
+    const lib = makeLib();
+    const bridge = syncBridge({
+      details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
+      chapters: [ch("c12", 12), ch("c12.5", 12.5)],
+    });
+    const tracker = mockTracker("anilist", {
+      capabilities: ["library-sync", "status-sync"],
+      libraryEntries: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 12 }],
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await lib.markRead("test:s1", "c12.5", true, "Ch 12.5", 12.5);
+    await runtime.syncEntryWithTracker("test", "s1", "anilist"); // pushes 12.5, watermark := 12.5
+
+    // The bulk pull sees the tracker's 12. Writing that to the link would undo the watermark and
+    // make the very next sync push 12.5 all over again.
+    await runtime.syncFromTracker("anilist");
+
+    const [link] = await lib.listTrackerLinks("test:s1");
+    expect(link).toMatchObject({ chaptersRead: 12.5 });
   });
 });
 

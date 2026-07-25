@@ -229,6 +229,16 @@ export const trackerLinkSchema = z.object({
   trackerId: z.string().min(1),
   externalId: z.union([z.string().min(1), z.number().int().positive()]),
   status: z.enum(["reading", "completed", "on_hold", "dropped", "planning", "rereading"]).optional(),
+  /**
+   * Monotonic WATERMARK: the highest chapter number the tracker is known to hold — either because we
+   * pushed it or because a pull reported it. Never lowered, mirroring the fact that a pull only ever
+   * marks chapters read and never un-marks them.
+   *
+   * It exists because the tracker's own reported progress is a lossy echo and cannot be compared
+   * against local progress directly: AniList's `progress` and MAL's `num_chapters_read` are integers,
+   * so a decimal chapter 12.5 comes back as 12 forever. Comparing local-vs-echo makes local look
+   * permanently "ahead" and re-pushes on every sync; comparing local-vs-watermark settles.
+   */
   chaptersRead: z.number().optional(),
   lastSyncAt: z.number().int().optional(),
 });
