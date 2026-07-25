@@ -12,7 +12,7 @@
  *   - importBridgeFavorites: paginate getFavorites, dedupe, bulk-add to library.
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
-import type { Chapter, PagedResults, SeriesInfo, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
+import type { Chapter, LogCapability, PagedResults, SeriesInfo, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
 // node:vm-backed default evaluator) so `@comical/runtime`'s types stay consumable by non-Node
 // hosts — e.g. comical-app's embedded runtime typing `RouterOptions.runtime`. See @comical/core.
@@ -86,17 +86,27 @@ export interface RuntimeOptions {
   library?: Library;
   /** Optional — methods that require trackers throw if omitted. */
   trackers?: TrackerProvider;
+  /**
+   * Optional host log. Best-effort background work (tracker pushes, bridge read-sync) deliberately
+   * swallows its errors so a failing side-effect never fails the user's action — but swallowing them
+   * SILENTLY made a broken tracker push indistinguishable from a working one (an expired OAuth token
+   * failed invisibly, forever). Anything caught on those paths is reported here instead, so a host
+   * can surface it (comical-app routes this into Settings → Diagnostics).
+   */
+  log?: LogCapability;
 }
 
 export class ComicalRuntime {
   private readonly bridges: BridgeProvider;
   private readonly lib: Library | undefined;
   private readonly trackers: TrackerProvider | undefined;
+  private readonly log: LogCapability | undefined;
 
   constructor(opts: RuntimeOptions) {
     this.bridges = opts.bridges;
     this.lib = opts.library;
     this.trackers = opts.trackers;
+    this.log = opts.log;
   }
 
   // ── addToLibrary ──────────────────────────────────────────────────────────────
@@ -428,7 +438,15 @@ export class ComicalRuntime {
           chaptersRead,
           lastSyncAt: Date.now(),
         });
-      } catch { /* per-tracker best-effort */ }
+      } catch (err) {
+        // Per-tracker best-effort: a failing push must never fail the read that triggered it. But it
+        // IS reported now — this catch used to be silent, which is how an expired AniList token could
+        // drop every push indefinitely with no symptom anywhere in the app.
+        this.log?.warn(
+          `tracker push failed: ${link.trackerId} ${key} (chaptersRead ${chaptersRead}):`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
     }
   }
 
@@ -483,40 +501,83 @@ export class ComicalRuntime {
   }
 
   /**
-   * Pull a single library entry's link from a tracker: pages through `tracker.getLibrary` (the
-   * contract has no single-entry lookup) looking for the linked `externalId`, applying it the same
-   * way `syncFromTracker` does for a bulk pull. For a manual, per-row "Sync" action, so the paging
-   * cost (worst case: the tracker's whole list) is acceptable — infrequent and user-initiated.
-   * Returns `updated: false` (not an error) when the tracker's list doesn't contain this entry yet.
+   * TWO-WAY sync for a single library entry's tracker link — the manual, per-row "Sync" action.
+   *
+   * This used to be `syncEntryFromTracker`, a PULL: it applied the tracker's state locally and never
+   * called `updateEntry`, so pressing "Sync" could not update the user's AniList account — while
+   * still stamping `lastSyncAt`, which made the row read "synced just now" and looked like it had.
+   * Pushing only ever happened implicitly via `syncEntryToTrackers` after a read.
+   *
+   * Now whichever side has read FURTHER wins, and the other is brought up to it:
+   *   - local ahead  → push `chaptersRead` to the tracker (`updateEntry`)
+   *   - tracker ahead → apply it locally (same path as the bulk pull, marking chapters read)
+   *   - equal        → nothing to move; the link is still re-stamped
+   *
+   * Highest-wins is chosen over last-writer-wins because read progress is monotonic: a lower number
+   * on one side is far more likely to be a stale/never-synced copy than a deliberate rewind, and
+   * clobbering a higher count would silently lose reading history the user can't recover.
+   *
+   * Capability-adaptive: a tracker with only `library-sync` still pulls, one with only `status-sync`
+   * still pushes. Finding the remote entry pages through `tracker.getLibrary` (the contract has no
+   * single-entry lookup); that cost is acceptable for an infrequent, user-initiated action. When the
+   * tracker's list has no entry for this link, remote counts as 0 — so a local count pushes and
+   * CREATES it there (`SaveMediaListEntry` upserts), instead of the old `updated: false` no-op.
    */
-  async syncEntryFromTracker(bridgeId: string, seriesId: string, trackerId: string): Promise<{ updated: boolean; readSynced: number }> {
+  async syncEntryWithTracker(
+    bridgeId: string,
+    seriesId: string,
+    trackerId: string,
+  ): Promise<{ updated: boolean; readSynced: number; pushed: boolean; chaptersRead: number }> {
     const lib = this.requireLibrary();
     if (!this.trackers) throw new Error("ComicalRuntime: no trackers configured");
     const key = entryKey(bridgeId, seriesId);
     const link = await lib.getTrackerLink(key, trackerId);
     if (!link) throw new Error(`no ${trackerId} link for this entry`);
     const tracker = await this.trackers.get(trackerId);
-    if (!tracker.info.capabilities.includes("library-sync") || !tracker.getLibrary) {
-      throw new Error(`tracker "${trackerId}" does not support library-sync`);
+
+    const canPull = tracker.info.capabilities.includes("library-sync") && !!tracker.getLibrary;
+    const canPush = tracker.info.capabilities.includes("status-sync") && !!tracker.updateEntry;
+    if (!canPull && !canPush) {
+      throw new Error(`tracker "${trackerId}" supports neither library-sync nor status-sync`);
     }
-    let page = 1;
-    while (true) {
-      const result = await tracker.getLibrary(page);
-      const item = result.items.find((i) => String(i.externalId) === String(link.externalId));
-      if (item) {
-        const readSynced = await this.applyTrackerItem({ key, bridgeId, seriesId }, item, trackerId);
-        return { updated: true, readSynced };
+
+    const localRead = await lib.maxReadChapterNumber(key);
+
+    // Locate this link's entry in the tracker's list (pull-capable trackers only).
+    let remote: TrackerLibraryEntry | undefined;
+    if (canPull) {
+      let page = 1;
+      while (true) {
+        const result = await tracker.getLibrary!(page);
+        const item = result.items.find((i) => String(i.externalId) === String(link.externalId));
+        if (item) { remote = item; break; }
+        if (!result.hasNextPage) break;
+        page++;
       }
-      if (!result.hasNextPage) break;
-      page++;
     }
-    return { updated: false, readSynced: 0 };
+    const remoteRead = remote?.chaptersRead ?? 0;
+
+    // Local is further along — push it up. (Also the path when the tracker has no entry yet.)
+    if (canPush && localRead > remoteRead) {
+      await tracker.updateEntry!(link.externalId, { chaptersRead: localRead });
+      await lib.updateTrackerLink(key, trackerId, { chaptersRead: localRead, lastSyncAt: Date.now() });
+      return { updated: true, readSynced: 0, pushed: true, chaptersRead: localRead };
+    }
+
+    // Tracker is at or ahead of local — apply it locally (shared with the bulk pull).
+    if (remote) {
+      const readSynced = await this.applyTrackerItem({ key, bridgeId, seriesId }, remote, trackerId);
+      return { updated: true, readSynced, pushed: false, chaptersRead: remoteRead };
+    }
+
+    // Pull-only tracker with nothing on its list for this link, and nothing local to push.
+    return { updated: false, readSynced: 0, pushed: false, chaptersRead: localRead };
   }
 
   /**
    * Apply one tracker library item to a matched, already-linked entry: update the link's
    * status/chaptersRead, then reconcile the tracker's read progress into local chapter-read flags.
-   * Shared by the bulk (`syncFromTracker`) and scoped (`syncEntryFromTracker`) pull paths.
+   * Shared by the bulk (`syncFromTracker`) and scoped (`syncEntryWithTracker`) pull paths.
    * Returns how many chapters were newly marked read.
    */
   private async applyTrackerItem(

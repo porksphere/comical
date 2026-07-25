@@ -87,6 +87,9 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
       bridges: manager,
       library: lib,
       ...(trackerManager ? { trackers: trackerManager } : {}),
+      // So a best-effort tracker push that fails (expired token, network) shows up in the server log
+      // instead of vanishing — it's fire-and-forget, nothing else would ever report it.
+      log: console,
     });
     // Guaranteed-offline covers for library entries, under the library's own dir.
     routerOpts.covers = { blobs: new FileBlobStore(join(dir, "covers")), fetchPage: pageFetcher };

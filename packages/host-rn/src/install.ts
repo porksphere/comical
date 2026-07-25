@@ -10,6 +10,7 @@
  * a no-op when the native engine is unavailable (web, or before the native module ships), so calling
  * it unconditionally at startup is safe — the app simply stays remote.
  */
+import type { LogCapability } from "@comical/contract";
 import { createRouterPageResolver, DownloadEngine, Downloads } from "@comical/downloads";
 import { Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
@@ -87,6 +88,11 @@ export interface EmbeddedRuntimeConfig {
   networkJson?: string;
   /** Fired after an install/update/uninstall so the embedder can refetch data screens (epoch bump). */
   onRegistryChange?: () => void;
+  /** Optional sink for the embedded runtime's own diagnostics — currently the best-effort tracker
+   *  pushes that happen after a read. Those are fire-and-forget by design, so without this a failing
+   *  push (expired token, offline) is invisible on-device: nothing in the UI would ever report it.
+   *  Defaults to `console`; pass the app's diagnostics logger to surface it in-app instead. */
+  log?: LogCapability;
 }
 
 let provider: EmbeddedBridgeProvider | null = null;
@@ -178,6 +184,7 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
       bridges: bridgeProvider,
       library,
       ...(trackerProvider ? { trackers: trackerProvider } : {}),
+      log: config.log ?? console,
     });
     embeddedLibrary = { library, runtime };
   }

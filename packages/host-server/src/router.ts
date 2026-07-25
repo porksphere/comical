@@ -936,12 +936,13 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ ok: true });
     });
 
-    // Pull-sync one entry's link from its tracker (manual "Sync" action on a single row) — the
-    // scoped counterpart to POST /trackers/:id/sync, which resyncs the tracker's whole library.
+    // Two-way sync of one entry's link with its tracker (manual "Sync" action on a single row):
+    // whichever side has read further wins — see `syncEntryWithTracker`. The scoped counterpart to
+    // POST /trackers/:id/sync, which is still a whole-library PULL.
     app.post("/library/entries/:bridgeId/:seriesId/tracker-links/:trackerId/sync", async (c) => {
       try {
         return c.json(
-          await runtime!.syncEntryFromTracker(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("trackerId")),
+          await runtime!.syncEntryWithTracker(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("trackerId")),
         );
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
