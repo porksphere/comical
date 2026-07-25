@@ -336,6 +336,59 @@ describe("syncEntryToTrackers", () => {
     expect(String(warns[0]![1])).toContain("invalid or expired access token");
   });
 
+  test("retries a transient push failure and succeeds without reporting anything", async () => {
+    const lib = makeLib();
+    const bridge = mockBridge({ id: "s1", title: "Series", externalIds: { anilist: 111 } });
+    const warns: unknown[][] = [];
+    let attempts = 0;
+    const tracker: Tracker = {
+      ...mockTracker("anilist"),
+      async updateEntry() {
+        attempts++;
+        if (attempts < 3) throw new Error("network request failed");
+      },
+    };
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+      log: { debug() {}, info() {}, warn: (...args) => { warns.push(args); }, error() {} },
+    });
+
+    await runtime.addToLibrary("test", "s1");
+    await lib.syncChapters("test:s1", [{ id: "c1", name: "Ch 1", number: 1 }]);
+    await runtime.markRead("test", "s1", "c1", true, "Ch 1");
+
+    expect(attempts).toBe(3);
+    expect(warns).toHaveLength(0);
+    const [link] = await lib.listTrackerLinks("test:s1");
+    expect(link).toMatchObject({ chaptersRead: 1 });
+  });
+
+  test("gives up immediately on an auth failure — retrying a dead token just burns rate limit", async () => {
+    const lib = makeLib();
+    const bridge = mockBridge({ id: "s1", title: "Series", externalIds: { anilist: 111 } });
+    let attempts = 0;
+    const tracker: Tracker = {
+      ...mockTracker("anilist"),
+      async updateEntry() {
+        attempts++;
+        throw new Error("AniList: invalid or expired access token");
+      },
+    };
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1");
+    await lib.syncChapters("test:s1", [{ id: "c1", name: "Ch 1", number: 1 }]);
+    await runtime.markRead("test", "s1", "c1", true, "Ch 1");
+
+    expect(attempts).toBe(1);
+  });
+
   test("a push failure leaves the link's lastSyncAt unstamped (not a false 'synced just now')", async () => {
     const lib = makeLib();
     const bridge = mockBridge({ id: "s1", title: "Series", externalIds: { anilist: 111 } });

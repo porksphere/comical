@@ -71,6 +71,28 @@ export interface BackgroundSyncResult {
   partial: boolean;
 }
 
+/**
+ * Bounded retry for a tracker push. The implicit push runs on the read path (`markRead` awaits it),
+ * so the worst case a failing tracker can add to a page turn is the sum of these delays — enough to
+ * ride out a blip, not enough to make the read feel stuck.
+ */
+const PUSH_ATTEMPTS = 3;
+const PUSH_RETRY_DELAY_MS = [300, 900];
+
+const delay = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+
+const errMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Is this failure worth another attempt? A rejected credential or a refused request won't fix itself
+ * in a second, and each retry burns a rate-limited slot on an already-unhappy tracker — so those are
+ * reported immediately instead. Matched on the message because the contract's tracker interface has
+ * no typed error channel: a tracker bundle can only throw.
+ */
+function isPermanentPushFailure(err: unknown): boolean {
+  return /\b401\b|\b403\b|expired|unauthor|forbidden|invalid.*token|token.*invalid/i.test(errMessage(err));
+}
+
 export interface BridgeProvider {
   get(id: string): Promise<LoadedBridge>;
 }
@@ -433,7 +455,7 @@ export class ComicalRuntime {
       try {
         const tracker = await this.trackers.get(link.trackerId);
         if (!tracker.info.capabilities.includes("status-sync") || !tracker.updateEntry) continue;
-        await tracker.updateEntry(link.externalId, { chaptersRead });
+        await this.pushToTracker(tracker, link.externalId, chaptersRead);
         await this.lib.updateTrackerLink(key, link.trackerId, {
           chaptersRead,
           lastSyncAt: Date.now(),
@@ -444,8 +466,35 @@ export class ComicalRuntime {
         // drop every push indefinitely with no symptom anywhere in the app.
         this.log?.warn(
           `tracker push failed: ${link.trackerId} ${key} (chaptersRead ${chaptersRead}):`,
-          err instanceof Error ? err.message : String(err),
+          errMessage(err),
         );
+      }
+    }
+  }
+
+  /**
+   * `updateEntry` with a short bounded retry, so one dropped request doesn't lose the push until the
+   * next read. Gives up immediately on a failure that retrying can't fix (see
+   * `isPermanentPushFailure`) and rethrows the last error with the attempt count folded in — the
+   * difference between "1 attempt" and "3 attempts" is the difference between a dead token and a
+   * flaky network, which is the first thing you want to know from the log.
+   */
+  private async pushToTracker(
+    tracker: { updateEntry?: (externalId: string | number, update: { chaptersRead: number }) => Promise<void> },
+    externalId: string | number,
+    chaptersRead: number,
+  ): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await tracker.updateEntry!(externalId, { chaptersRead });
+        return;
+      } catch (err) {
+        if (attempt >= PUSH_ATTEMPTS || isPermanentPushFailure(err)) {
+          throw attempt === 1
+            ? err
+            : new Error(`${errMessage(err)} (after ${attempt} attempts)`, { cause: err });
+        }
+        await delay(PUSH_RETRY_DELAY_MS[attempt - 1] ?? PUSH_RETRY_DELAY_MS.at(-1)!);
       }
     }
   }
@@ -559,7 +608,9 @@ export class ComicalRuntime {
 
     // Local is further along — push it up. (Also the path when the tracker has no entry yet.)
     if (canPush && localRead > remoteRead) {
-      await tracker.updateEntry!(link.externalId, { chaptersRead: localRead });
+      // Same bounded retry as the implicit push — here the error isn't swallowed, it's thrown at the
+      // user who pressed the button, so it's worth being sure it's real before reporting it.
+      await this.pushToTracker(tracker, link.externalId, localRead);
       await lib.updateTrackerLink(key, trackerId, { chaptersRead: localRead, lastSyncAt: Date.now() });
       return { updated: true, readSynced: 0, pushed: true, chaptersRead: localRead };
     }
