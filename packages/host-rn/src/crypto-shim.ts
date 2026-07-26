@@ -2,9 +2,10 @@
  * Minimal WebCrypto polyfill for Hermes, covering exactly what the reused host-server stack uses that
  * Hermes doesn't provide natively:
  *
- *  - `crypto.subtle.digest("SHA-256", …)` (always) plus `importKey`/`verify` for Ed25519 (only when a
- *    registry signs its index) — used by `@comical/registry`'s `verify.ts` to verify downloaded bridge
- *    bundles. Backed by pure-JS `@noble/*` (no native module / extra build step).
+ *  - `crypto.subtle.digest("SHA-256"/"SHA-512", …)` (always) plus `importKey`/`verify` for Ed25519
+ *    (only when a registry signs its index) — used by `@comical/registry`'s `verify.ts` to verify
+ *    downloaded bridge bundles. Backed by pure-JS `@noble/*` (no native module / extra build step).
+ *    SHA-512 is reached only indirectly, via noble's own hash provider — see `hashFor` below.
  *  - `crypto.randomUUID()` — used by `@comical/library` to mint list/group ids. Built on
  *    `crypto.getRandomValues`, which the host app must supply on native (e.g. via
  *    `react-native-get-random-values`); a clear error is thrown if it's absent rather than silently
@@ -14,7 +15,7 @@
  * a no-op where the real thing already exists (web, or a future native WebCrypto).
  */
 import { verifyAsync } from "@noble/ed25519";
-import { sha256 } from "@noble/hashes/sha2.js";
+import { sha256, sha512 } from "@noble/hashes/sha2.js";
 
 interface OpaqueKey {
   _raw: Uint8Array;
@@ -23,6 +24,22 @@ interface OpaqueKey {
 function toBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array {
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+}
+
+/**
+ * Resolve `digest`'s algorithm argument to a hash. SHA-512 is not optional here even though nothing
+ * in Comical asks for it directly: `@noble/ed25519`'s default async hash provider is itself
+ * `crypto.subtle.digest("SHA-512", …)`, so every `subtle.verify` below re-enters this shim. Ignoring
+ * the argument and always hashing SHA-256 made noble reject its own hash provider's output
+ * (`"digest" expected Uint8Array of length 64, got length=32`) — signature verification could never
+ * succeed on a device using this shim.
+ */
+function hashFor(algorithm: unknown): (msg: Uint8Array) => Uint8Array {
+  const name = typeof algorithm === "string" ? algorithm : (algorithm as { name?: unknown } | null)?.name;
+  const upper = typeof name === "string" ? name.toUpperCase() : "";
+  if (upper === "SHA-256") return sha256;
+  if (upper === "SHA-512") return sha512;
+  throw new Error(`crypto.subtle.digest shim: unsupported algorithm "${String(name)}" (SHA-256 and SHA-512 only)`);
 }
 
 /** RFC 4122 v4 UUID from 16 random bytes (mutates `bytes` to set the version/variant nibbles). */
@@ -74,8 +91,8 @@ function installSubtle(cryptoObj: CryptoGlobal): void {
   if (cryptoObj.subtle?.digest) return; // real WebCrypto subtle present — leave it alone
 
   const subtle = {
-    async digest(_algorithm: unknown, data: ArrayBuffer | ArrayBufferView): Promise<ArrayBuffer> {
-      const digest = sha256(toBytes(data)); // fresh 32-byte Uint8Array (offset 0)
+    async digest(algorithm: unknown, data: ArrayBuffer | ArrayBufferView): Promise<ArrayBuffer> {
+      const digest = hashFor(algorithm)(toBytes(data)); // fresh Uint8Array (offset 0)
       return digest.buffer as ArrayBuffer;
     },
     async importKey(
