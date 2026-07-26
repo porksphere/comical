@@ -12,6 +12,7 @@ import {
   manifestSchema,
   type SavedRegistry,
 } from "./schema.ts";
+import { registryDisplayName } from "./url.ts";
 
 const EMPTY: Manifest = { registries: [], installed: [], installedTrackers: [] };
 
@@ -59,6 +60,58 @@ export class ManifestStore {
 
   async getRegistry(url: string): Promise<SavedRegistry | undefined> {
     return (await this.read()).registries.find((r) => r.url === url);
+  }
+
+  /**
+   * Repoint a saved registry — and every bridge/tracker installed from it — at a new URL.
+   *
+   * The URL is the manifest's primary key, so this is a remove+add rather than an upsert
+   * (`addRegistry` keys by url and would leave the old row stranded), and `registryUrl` has to move
+   * on every installed record or they all orphan (`isOrphaned` compares against the saved list).
+   * Both halves land in a single `write`, so an interrupted migration cannot half-apply — the
+   * device-side equivalent, which writes each store separately, has to order its writes instead.
+   *
+   * Idempotent: a no-op when `oldUrl` isn't saved, and collapses onto any row already at `newUrl`.
+   */
+  async rebindRegistry(oldUrl: string, newUrl: string): Promise<void> {
+    if (oldUrl === newUrl) return;
+    const m = await this.read();
+    const existing = m.registries.find((r) => r.url === oldUrl);
+    if (!existing) return;
+
+    const moved: SavedRegistry = { ...existing, url: newUrl, name: registryDisplayName(newUrl) };
+    // The move has happened — any pending prompts about it are now resolved.
+    delete moved.pendingMove;
+    delete moved.pendingAdoption;
+
+    m.registries = m.registries.filter((r) => r.url !== oldUrl && r.url !== newUrl);
+    m.registries.push(moved);
+    for (const b of m.installed) if (b.registryUrl === oldUrl) b.registryUrl = newUrl;
+    for (const t of m.installedTrackers) if (t.registryUrl === oldUrl) t.registryUrl = newUrl;
+    await this.write(m);
+  }
+
+  /** Record (or clear, with `undefined`) an unverified `movedTo` claim awaiting user confirmation. */
+  async setPendingMove(url: string, target: string | undefined): Promise<void> {
+    const m = await this.read();
+    const reg = m.registries.find((r) => r.url === url);
+    if (!reg) return;
+    if ((reg.pendingMove ?? undefined) === target) return; // no-op — don't rewrite the file
+    if (target) reg.pendingMove = target;
+    else delete reg.pendingMove;
+    await this.write(m);
+  }
+
+  /** Record the set of unverified `movedFrom` claims this registry makes (empty clears it). */
+  async setPendingAdoption(url: string, candidates: string[]): Promise<void> {
+    const m = await this.read();
+    const reg = m.registries.find((r) => r.url === url);
+    if (!reg) return;
+    const next = candidates.length ? candidates : undefined;
+    if (JSON.stringify(reg.pendingAdoption ?? undefined) === JSON.stringify(next)) return;
+    if (next) reg.pendingAdoption = next;
+    else delete reg.pendingAdoption;
+    await this.write(m);
   }
 
   async updateLastFetched(url: string): Promise<void> {

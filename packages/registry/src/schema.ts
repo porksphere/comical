@@ -80,6 +80,23 @@ export const registryIndexSchema = z.object({
    * Present when the operator signs bridge entries; absent for checksum-only registries.
    */
   publicKey: z.string().optional(),
+  /**
+   * Set by an operator who has moved this registry: the canonical URL it now lives at. Clients
+   * follow it and repoint the saved registry (plus everything installed from it), so a planned
+   * migration needs no user action — but only the *old* host can assert this, so it requires the
+   * old URL to keep serving. Pair it with `movedFrom` on the new index for the case where it can't.
+   */
+  movedTo: z.string().url().optional(),
+  /**
+   * URLs this registry previously lived at, asserted by the *new* host. Lets a user who manually
+   * re-adds a moved registry adopt their existing installs instead of stranding them — the recovery
+   * path when the old host is gone entirely and `movedTo` was never reachable.
+   *
+   * Unlike `movedTo` this is an unauthenticated claim by an arbitrary publisher (anyone can say they
+   * succeed anyone), so clients only honour it on an explicit user-initiated add, and only
+   * automatically when the new index's key matches the fingerprint pinned for the old URL.
+   */
+  movedFrom: z.array(z.string().url()).optional(),
   bridges: z.array(registryBridgeEntrySchema),
   trackers: z.array(registryTrackerEntrySchema).optional(),
 });
@@ -99,6 +116,18 @@ export const savedRegistrySchema = z.object({
   lastFetched: z.string().optional(),
   /** Whether this registry requires signature verification. Default: false. */
   requireSignature: z.boolean().default(false),
+  /**
+   * A `movedTo` claim from this registry's index that could NOT be verified by key continuity
+   * (unsigned registry, or a different key). Held here for the UI to surface as a one-tap confirm
+   * rather than followed silently — an expired domain or a compromised repo could otherwise redirect
+   * every user to a hostile registry.
+   */
+  pendingMove: z.string().url().optional(),
+  /**
+   * Saved-registry URLs this one claims to succeed (its index's `movedFrom`) that could not be
+   * verified by key continuity. The UI offers adoption per entry, naming what would be rebound.
+   */
+  pendingAdoption: z.array(z.string().url()).optional(),
 });
 export type SavedRegistry = z.infer<typeof savedRegistrySchema>;
 

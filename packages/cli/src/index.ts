@@ -60,7 +60,7 @@ Usage:
   comical registry update <bridgeId>             update an installed bridge
   comical registry uninstall <bridgeId>          uninstall a registry bridge
   comical registry updates                       check for available updates
-  comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR] [--trackers-dir DIR] [--nsfw true|false] [--display-name NAME]   generate index.json
+  comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR] [--trackers-dir DIR] [--nsfw true|false] [--display-name NAME] [--moved-to URL] [--moved-from URL]   generate index.json
   comical registry keygen --out FILE             generate an Ed25519 keypair
 
 Options:
@@ -79,6 +79,8 @@ Options:
   --trackers-dir DIR  Trackers dir to publish from (tracker repos)
   --nsfw true|false   \`registry publish\`: only publish bridges with this \`nsfw\` rating (default: all)
   --display-name NAME \`registry publish\`: operator label for the registry (e.g. "SFW"), shown next to its name
+  --moved-to URL      \`registry publish\`: this registry has moved — forward clients to URL
+  --moved-from URL    \`registry publish\`: URL this registry used to live at (repeatable)
   --key FILE          Path to private key file for \`registry publish\`
   --query Q           Search query for the \`evaluate\` probe
   --strict            \`evaluate\`: treat warnings as failures (non-zero exit)
@@ -133,6 +135,8 @@ async function main(): Promise<number> {
       "bridges-dir": { type: "string" },
       "trackers-dir": { type: "string" },
       "display-name": { type: "string" },
+      "moved-to": { type: "string" },
+      "moved-from": { type: "string", multiple: true },
       nsfw: { type: "string" },
       out: { type: "string" },
       key: { type: "string" },
@@ -273,6 +277,8 @@ async function main(): Promise<number> {
       if (values["bridges-dir"]) pubOpts.bridgesDir = values["bridges-dir"];
       if (values["trackers-dir"]) pubOpts.trackersDir = values["trackers-dir"];
       if (values["display-name"]) pubOpts.displayName = values["display-name"];
+      if (values["moved-to"]) pubOpts.movedTo = values["moved-to"];
+      if (values["moved-from"]?.length) pubOpts.movedFrom = values["moved-from"];
       if (values.nsfw !== undefined) {
         if (values.nsfw !== "true" && values.nsfw !== "false") {
           throw new Error(`--nsfw must be "true" or "false" (got "${values.nsfw}")`);
@@ -489,6 +495,10 @@ interface PublishOpts {
   /** Optional operator label written to the index's `displayName` (e.g. "SFW"), shown by clients
    *  next to the registry's derived name. Omit to leave it unset. */
   displayName?: string;
+  /** Publish this index as a forwarding note: the canonical URL the registry now lives at. */
+  movedTo?: string;
+  /** URLs this registry previously lived at, so re-adding clients can adopt existing installs. */
+  movedFrom?: string[];
   /**
    * When set, only publish bridges whose `info.nsfw` matches this value — `true` for an
    * NSFW-only registry, `false` for an SFW-only one. Omit to publish every bridge (default).
@@ -497,7 +507,7 @@ interface PublishOpts {
   nsfwFilter?: boolean;
 }
 
-async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersDir, displayName, nsfwFilter }: PublishOpts): Promise<void> {
+async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersDir, displayName, nsfwFilter, movedTo, movedFrom }: PublishOpts): Promise<void> {
   const { mkdirSync, readFileSync, copyFileSync } = await import("node:fs");
   const { join: pjoin } = await import("node:path");
 
@@ -595,6 +605,8 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
   };
   if (trackerEntries.length > 0) index.trackers = trackerEntries;
   if (publicKey) index.publicKey = publicKey;
+  if (movedTo) index.movedTo = movedTo;
+  if (movedFrom?.length) index.movedFrom = movedFrom;
 
   const indexPath = pjoin(outDir, "index.json");
   await writeFile(indexPath, JSON.stringify(index, null, 2), "utf8");
@@ -603,6 +615,8 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
   if (trackerEntries.length) console.log(`  ${trackerEntries.length} tracker(s) published`);
   if (publicKey) console.log(`  Signed with key: ${publicKey.slice(0, 20)}…`);
   else console.log("  Unsigned (no --key provided) — users trust via HTTPS");
+  if (movedTo) console.log(`  Forwarding clients to: ${movedTo}`);
+  if (movedFrom?.length) console.log(`  Claiming succession from: ${movedFrom.join(", ")}`);
 }
 
 main()
