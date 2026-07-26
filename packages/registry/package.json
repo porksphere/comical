@@ -10,7 +10,8 @@
     "./schema": "./src/schema.ts",
     "./available": "./src/available.ts",
     "./url": "./src/url.ts",
-    "./moves": "./src/moves.ts"
+    "./moves": "./src/moves.ts",
+    "./conflicts": "./src/conflicts.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {

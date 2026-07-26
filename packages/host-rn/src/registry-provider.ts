@@ -18,6 +18,7 @@
  * 1:1, operating on `index.trackers` and `deps.installedTrackers` instead.
  */
 import type { AvailableBridge, AvailableTracker, InstallResult } from "@comical/registry/available";
+import { assertInstallableFrom } from "@comical/registry/conflicts";
 import { MAX_MOVE_HOPS, MoveError, assertSameRegistry, hasKeyContinuity } from "@comical/registry/moves";
 import type { RegistryBridgeEntry, RegistryIndex, RegistryTrackerEntry, SavedRegistry } from "@comical/registry/schema";
 import { registryDisplayName, resolveRegistryUrl } from "@comical/registry/url";
@@ -156,6 +157,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     const { url, index } = await this.resolveIndex(resolveRegistryUrl(registryUrl));
     const entry = index.bridges.find((b) => b.id === bridgeId);
     if (!entry) throw new Error(`bridge "${bridgeId}" not found in registry ${url}`);
+    assertInstallableFrom("bridge", bridgeId, url, await this.deps.installed.get(bridgeId));
 
     const record: InstalledBridgeRecord = {
       id: entry.id,
@@ -287,6 +289,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     const { url, index } = await this.resolveIndex(resolveRegistryUrl(registryUrl));
     const entry = (index.trackers ?? []).find((t) => t.id === trackerId);
     if (!entry) throw new Error(`tracker "${trackerId}" not found in registry ${url}`);
+    assertInstallableFrom("tracker", trackerId, url, await this.deps.installedTrackers.get(trackerId));
 
     const record: InstalledTrackerRecord = {
       id: entry.id,

@@ -14,6 +14,7 @@
  */
 import { writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import { assertInstallableFrom } from "./conflicts.ts";
 import { downloadBundle, fetchIndex } from "./fetcher.ts";
 import { ManifestStore } from "./manifest.ts";
 import { MAX_MOVE_HOPS, MoveError, assertSameRegistry, hasKeyContinuity } from "./moves.ts";
@@ -121,6 +122,9 @@ export class RegistryManager {
     const { url, index } = await this.resolveIndex(resolveRegistryUrl(registryUrl));
     const entry = index.bridges.find((b) => b.id === bridgeId);
     if (!entry) throw new Error(`bridge "${bridgeId}" not found in registry ${url}`);
+    // Before the download, not after: refusing early means we never fetch (or cache) a bundle we
+    // were never going to be allowed to install.
+    assertInstallableFrom("bridge", bridgeId, url, await this.opts.manifest.getInstalled(bridgeId));
 
     const registry = await this.opts.manifest.getRegistry(url);
 
@@ -254,6 +258,7 @@ export class RegistryManager {
     const { url, index } = await this.resolveIndex(resolveRegistryUrl(registryUrl));
     const entry = (index.trackers ?? []).find((t) => t.id === trackerId);
     if (!entry) throw new Error(`tracker "${trackerId}" not found in registry ${url}`);
+    assertInstallableFrom("tracker", trackerId, url, await this.opts.manifest.getInstalledTracker(trackerId));
 
     const registry = await this.opts.manifest.getRegistry(url);
     const dlOpts: Parameters<typeof downloadBundle>[1] = {

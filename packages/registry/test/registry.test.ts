@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import {
   FetchError,
+  InstallConflictError,
   ManifestStore,
   RegistryManager,
   VerificationError,
@@ -180,6 +181,11 @@ describe("fetchIndex + RegistryManager", () => {
   let bundleHash: string;
 
   beforeAll(async () => {
+    // The per-test manifests below live under a fixed DATA_DIR, and the fixture registry's URL
+    // changes every run (port 0). Left behind, a previous run's manifest is an install of the same
+    // id from a *different* registry — which `assertInstallableFrom` now refuses, correctly. Start
+    // from a clean directory so each run is self-contained rather than order- and history-dependent.
+    rmSync(DATA_DIR, { recursive: true, force: true });
     bundleBytes = new Uint8Array(readFileSync(BUNDLE_PATH) as Buffer);
     bundleHash = await sha256Hex(bundleBytes);
 
@@ -271,6 +277,51 @@ describe("fetchIndex + RegistryManager", () => {
     await mgr.remove(registryUrl);
     expect(await mgr.isOrphaned("example")).toBe(true);
     expect(await mgr.resolveBundle("example")).toBeNull();
+  });
+
+  test("a second registry cannot overwrite an id installed from the first", async () => {
+    // Two registries offering the same id — no hostility required, ids are only unique within a
+    // registry. Installing the second used to upsert straight over the first's record: different
+    // bundle URL, sha256 and signing key under an unchanged id, with the library/history/progress
+    // keyed to that id silently following the new code. See src/conflicts.ts.
+    const manifest = new ManifestStore(join(DATA_DIR, "test-conflict"));
+    const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-conflict"), manifest });
+    await mgr.add(registryUrl);
+    await mgr.install(registryUrl, "example");
+
+    let otherIndexJson = "";
+    const other = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/index.json") return new Response(otherIndexJson, { headers: { "content-type": "application/json" } });
+        if (path === "/bridge.js") return new Response(bundleBytes);
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const otherUrl = `http://localhost:${other.port}/index.json`;
+      // Same id, same bytes, different host — the honest-collision shape.
+      otherIndexJson = JSON.stringify({
+        registryVersion: "1",
+        updated: new Date().toISOString(),
+        bridges: [{
+          id: "example", name: "Example Bridge", version: "0.1.0", contractVersion: "1.0.0",
+          languages: ["en"], nsfw: false, capabilities: ["search"],
+          url: `http://localhost:${other.port}/bridge.js`, sha256: bundleHash,
+        }],
+      });
+      await mgr.add(otherUrl);
+      await expect(mgr.install(otherUrl, "example")).rejects.toThrow(InstallConflictError);
+      // The first registry's record is untouched — not merely "an error was thrown".
+      const held = await manifest.getInstalled("example");
+      expect(held?.registryUrl).toBe(registryUrl);
+      // …and the rightful owner can still update/re-pin.
+      await mgr.install(registryUrl, "example");
+      expect((await manifest.getInstalled("example"))?.registryUrl).toBe(registryUrl);
+    } finally {
+      other.stop(true);
+    }
   });
 
   test("uninstall removes bridge from manifest", async () => {
