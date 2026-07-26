@@ -374,7 +374,11 @@ export const seriesListSchema = z.object({
   description: z.string().optional(),
   /** Presentation hint for hosts building a home view. See the schema doc above for semantics. */
   layout: z.enum(["carousel", "grid", "ranked", "hero"]).optional(),
-  /** Whether the host should surface this list prominently (e.g. on a home screen). */
+  /**
+   * Whether the host should surface this list prominently. On a home section that means the
+   * representative rail for the bridge; on a `page` list it means the page the host opens on —
+   * so a page-only bridge picks its own landing page instead of the host guessing.
+   */
   featured: z.boolean().optional(),
   /** Whether `getListItems` accepts a `query` (and filters/sort) to search within this list. */
   searchable: z.boolean().optional(),
