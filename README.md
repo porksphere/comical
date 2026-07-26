@@ -638,6 +638,17 @@ status table or badge across a repo of bridges.
 A registry is a static `index.json` + bridge bundle files on any static host (GitHub Pages,
 Cloudflare Pages, S3, self-hosted). The project operates no central registry.
 
+### Finding registries
+
+Community registries hosted on GitHub advertise themselves with the
+[`comical-registry`](https://github.com/topics/comical-registry) repository topic — that page lists
+every tagged registry, most-starred first. If you publish a registry in a GitHub repo, add the
+`comical-registry` topic (gear icon next to "About" on the repo page) so others can find it.
+Bridge *source* repos use the [`comical-bridge`](https://github.com/topics/comical-bridge) topic.
+
+Topics are self-applied and unverified — they are discovery, not endorsement. Trust is established
+per-registry when you add it (see the integrity + trust model below).
+
 ### Publishing a registry
 
 ```sh
