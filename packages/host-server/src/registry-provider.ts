@@ -33,4 +33,12 @@ export interface RegistryProvider {
   updateTracker(trackerId: string): Promise<InstallResult>;
   uninstallTracker(trackerId: string): Promise<void>;
   checkTrackerUpdates(): Promise<RegistryUpdate[]>;
+  /**
+   * Registry moves. A `movedTo`/`movedFrom` claim that can't be verified by key continuity is parked
+   * on the saved registry (`pendingMove` / `pendingAdoption`) rather than followed, because following
+   * one transfers update authority over everything installed from it. These are the client's answer.
+   */
+  confirmMove(rawUrl: string): Promise<string>;
+  dismissMove(rawUrl: string): Promise<void>;
+  confirmAdoption(newRawUrl: string, oldRawUrl: string): Promise<void>;
 }

@@ -16,6 +16,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { downloadBundle, fetchIndex } from "./fetcher.ts";
 import { ManifestStore } from "./manifest.ts";
+import { MAX_MOVE_HOPS, MoveError, assertSameRegistry, hasKeyContinuity } from "./moves.ts";
 import type { InstalledBridge, InstalledTracker, RegistryIndex, SavedRegistry } from "./schema.ts";
 import { resolveRegistryUrl, registryDisplayName } from "./url.ts";
 import { publicKeyFingerprint } from "./verify.ts";
@@ -29,14 +30,6 @@ export interface RegistryManagerOptions {
   cacheDir: string;
   manifest: ManifestStore;
 }
-
-/** A registry move that was refused because it doesn't look like the same registry. */
-export class MoveError extends Error {
-  override readonly name = "MoveError";
-}
-
-/** Hard cap on `movedTo` hops followed in one resolution, so a chain can't run away. */
-const MAX_MOVE_HOPS = 3;
 
 /** An index fetch after following any `movedTo` pointers. */
 interface ResolvedIndex {
@@ -377,36 +370,18 @@ export class RegistryManager {
     await this.opts.manifest.setPendingAdoption(newUrl, remaining);
   }
 
-  /**
-   * Guard against a "move" that isn't one. Bridge ids are the key for *everything* the user owns —
-   * settings, credentials, library entries (`entryKey(bridgeId, seriesId)`), history — so a move must
-   * preserve them. If a registry has installs and the target index shares none of their ids, this is
-   * a different registry wearing the name, and rebinding would silently mark every install
-   * discontinued while the "new" ones look uninstalled. A *partial* overlap is normal (a publisher
-   * dropping a bridge) and allowed.
-   */
+  /** `assertSameRegistry` over the ids installed from `oldUrl` — see moves.ts for the rationale. */
   private async assertSameRegistry(oldUrl: string, newUrl: string, index: RegistryIndex): Promise<void> {
-    const bridgeIds = await this.opts.manifest.bridgesFromRegistry(oldUrl);
-    const trackerIds = await this.opts.manifest.trackersFromRegistry(oldUrl);
-    if (bridgeIds.length === 0 && trackerIds.length === 0) return; // nothing at stake
-    const offered = new Set<string>([
-      ...index.bridges.map((b) => b.id),
-      ...(index.trackers ?? []).map((t) => t.id),
-    ]);
-    const kept = [...bridgeIds, ...trackerIds].filter((id) => offered.has(id));
-    if (kept.length === 0) {
-      throw new MoveError(
-        `refusing to move ${oldUrl} → ${newUrl}: none of the ${bridgeIds.length + trackerIds.length} ` +
-          `installed id(s) appear in the target index, so this is not the same registry`,
-      );
-    }
+    assertSameRegistry(oldUrl, newUrl, [
+      ...(await this.opts.manifest.bridgesFromRegistry(oldUrl)),
+      ...(await this.opts.manifest.trackersFromRegistry(oldUrl)),
+    ], index);
   }
 
   /** True when `index` is signed by the same key already pinned for `url` — proof of succession. */
   private async hasKeyContinuity(url: string, index: RegistryIndex): Promise<boolean> {
     const saved = await this.opts.manifest.getRegistry(url);
-    if (!saved?.publicKeyFingerprint || !index.publicKey) return false;
-    return (await publicKeyFingerprint(index.publicKey)) === saved.publicKeyFingerprint;
+    return hasKeyContinuity(saved?.publicKeyFingerprint, index);
   }
 
   /**

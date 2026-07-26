@@ -18,8 +18,10 @@
  * 1:1, operating on `index.trackers` and `deps.installedTrackers` instead.
  */
 import type { AvailableBridge, AvailableTracker, InstallResult } from "@comical/registry/available";
-import type { RegistryIndex, SavedRegistry } from "@comical/registry/schema";
+import { MAX_MOVE_HOPS, MoveError, assertSameRegistry, hasKeyContinuity } from "@comical/registry/moves";
+import type { RegistryBridgeEntry, RegistryIndex, RegistryTrackerEntry, SavedRegistry } from "@comical/registry/schema";
 import { registryDisplayName, resolveRegistryUrl } from "@comical/registry/url";
+import { publicKeyFingerprint } from "@comical/registry/verify";
 import type { RegistryProvider, RegistryUpdate } from "@comical/host-server/registry-provider";
 import { entryToInfo, entryToTrackerInfo, type RegistryFetcher } from "./registry-bundle-source.ts";
 import type {
@@ -29,6 +31,15 @@ import type {
   InstalledTrackerStore,
   SavedRegistryStore,
 } from "./types.ts";
+
+/** An index fetch after following any `movedTo` pointers. */
+interface ResolvedIndex {
+  /** The URL the index was ultimately read from — the canonical one after a followed move. */
+  url: string;
+  index: RegistryIndex;
+  /** True when a move was claimed but held for user confirmation, so `index` may be a stub. */
+  pendingMove?: boolean;
+}
 
 export interface EmbeddedRegistryProviderDeps {
   registries: SavedRegistryStore;
@@ -81,18 +92,25 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
   }
 
   async add(rawUrl: string, opts: { requireSignature?: boolean } = {}): Promise<SavedRegistry> {
-    const url = resolveRegistryUrl(rawUrl);
     // Validate it's reachable + a well-formed index before saving, and capture the operator's label.
-    const index = await this.fetchAndCache(url);
+    // A `movedTo` here is asserted by the host the user just chose to trust, so it's followed —
+    // adding a moved registry lands you at the registry, not at its forwarding note.
+    const { url, index } = await this.resolveIndex(resolveRegistryUrl(rawUrl), { trustMove: true });
+    const fingerprint = index.publicKey ? await publicKeyFingerprint(index.publicKey) : undefined;
     const registry: SavedRegistry = {
       url,
       name: registryDisplayName(url),
       lastFetched: new Date().toISOString(),
       requireSignature: opts.requireSignature ?? false,
+      // Pinning the key at add time is what later lets a `movedTo`/`movedFrom` claim be verified as
+      // coming from the same operator instead of needing the user to vouch for it.
+      ...(fingerprint ? { publicKeyFingerprint: fingerprint } : {}),
       ...(index.displayName ? { displayName: index.displayName } : {}),
     };
     await this.deps.registries.add(registry);
-    return registry;
+    // Only now that it's saved can predecessor claims be matched against the user's other registries.
+    await this.adoptPredecessors(url, index);
+    return (await this.deps.registries.get(url)) ?? registry;
   }
 
   async remove(rawUrl: string): Promise<void> {
@@ -105,8 +123,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
   // ── Browsing ──────────────────────────────────────────────────────────────────
 
   async browse(rawUrl: string): Promise<AvailableBridge[]> {
-    const url = resolveRegistryUrl(rawUrl);
-    const index = await this.fetchAndCache(url);
+    const { url, index } = await this.resolveIndex(resolveRegistryUrl(rawUrl));
     const installed = await this.deps.installed.all();
     const map = new Map(installed.map((b) => [b.id, b]));
     return index.bridges.map((entry) => {
@@ -136,8 +153,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
   // ── Install / update / uninstall ────────────────────────────────────────────────
 
   async install(registryUrl: string, bridgeId: string): Promise<InstallResult> {
-    const url = resolveRegistryUrl(registryUrl);
-    const index = await this.fetchAndCache(url);
+    const { url, index } = await this.resolveIndex(resolveRegistryUrl(registryUrl));
     const entry = index.bridges.find((b) => b.id === bridgeId);
     if (!entry) throw new Error(`bridge "${bridgeId}" not found in registry ${url}`);
 
@@ -182,7 +198,12 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     for (const rec of installed) {
       let index: RegistryIndex;
       try {
-        index = await this.fetchAndCache(rec.registryUrl);
+        const resolved = await this.resolveIndex(rec.registryUrl);
+        // A held move means this index is a forwarding note, possibly an empty stub. Evaluating
+        // against it would mark every bridge from this registry `discontinued` — the exact scare
+        // a planned migration is supposed to avoid.
+        if (resolved.pendingMove) continue;
+        index = resolved.index;
       } catch {
         continue; // offline / registry unavailable — leave the record's annotations as they were
       }
@@ -235,8 +256,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
   // ── Trackers (mirrors the bridge methods above 1:1) ─────────────────────────────
 
   async browseTrackers(rawUrl: string): Promise<AvailableTracker[]> {
-    const url = resolveRegistryUrl(rawUrl);
-    const index = await this.fetchAndCache(url);
+    const { url, index } = await this.resolveIndex(resolveRegistryUrl(rawUrl));
     const installed = await this.deps.installedTrackers.all();
     const map = new Map(installed.map((t) => [t.id, t]));
     return (index.trackers ?? []).map((entry) => {
@@ -264,8 +284,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
   }
 
   async installTracker(registryUrl: string, trackerId: string): Promise<InstallResult> {
-    const url = resolveRegistryUrl(registryUrl);
-    const index = await this.fetchAndCache(url);
+    const { url, index } = await this.resolveIndex(resolveRegistryUrl(registryUrl));
     const entry = (index.trackers ?? []).find((t) => t.id === trackerId);
     if (!entry) throw new Error(`tracker "${trackerId}" not found in registry ${url}`);
 
@@ -305,7 +324,9 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     for (const rec of installed) {
       let index: RegistryIndex;
       try {
-        index = await this.fetchAndCache(rec.registryUrl);
+        const resolved = await this.resolveIndex(rec.registryUrl);
+        if (resolved.pendingMove) continue; // see checkUpdates
+        index = resolved.index;
       } catch {
         continue; // offline / registry unavailable — leave the record's annotations as they were
       }
@@ -343,6 +364,199 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     if (persisted) this.onChange?.();
     return updates;
   }
+
+  // ── Moves / migration (mirrors RegistryManager's; see @comical/registry/moves) ───
+
+  /**
+   * Confirm a `movedTo` that couldn't be verified by key continuity — the user's explicit "yes, this
+   * is the same registry". Rebinds the saved registry and everything installed from it.
+   */
+  async confirmMove(rawUrl: string): Promise<string> {
+    const url = resolveRegistryUrl(rawUrl);
+    const saved = await this.deps.registries.get(url);
+    const target = saved?.pendingMove;
+    if (!target) throw new MoveError(`registry ${url} has no pending move to confirm`);
+    const index = await this.fetchAndCache(target);
+    await this.assertSameRegistry(url, target, index);
+    await this.rebind(url, target, index);
+    return target;
+  }
+
+  /** Drop an unverified move claim without following it. */
+  async dismissMove(rawUrl: string): Promise<void> {
+    const url = resolveRegistryUrl(rawUrl);
+    const saved = await this.deps.registries.get(url);
+    if (!saved?.pendingMove) return;
+    const { pendingMove: _pm, ...rest } = saved;
+    await this.deps.registries.add(rest);
+  }
+
+  /**
+   * Confirm one unverified `movedFrom` adoption: `oldRawUrl`'s installs become `newRawUrl`'s.
+   * Only offered for URLs the new registry actually named, so a stale prompt can't be replayed.
+   */
+  async confirmAdoption(newRawUrl: string, oldRawUrl: string): Promise<void> {
+    const newUrl = resolveRegistryUrl(newRawUrl);
+    const oldUrl = resolveRegistryUrl(oldRawUrl);
+    const saved = await this.deps.registries.get(newUrl);
+    if (!saved?.pendingAdoption?.includes(oldUrl)) {
+      throw new MoveError(`registry ${newUrl} does not claim ${oldUrl} as a predecessor`);
+    }
+    const index = await this.fetchAndCache(newUrl);
+    await this.assertSameRegistry(oldUrl, newUrl, index);
+    await this.rebind(oldUrl, newUrl, index);
+    // `rebind` cleared the flags on the row it moved; re-record any remaining candidates.
+    await this.setPendingAdoption(newUrl, saved.pendingAdoption.filter((u) => u !== oldUrl));
+  }
+
+  /** `assertSameRegistry` over the ids installed from `oldUrl`. */
+  private async assertSameRegistry(oldUrl: string, newUrl: string, index: RegistryIndex): Promise<void> {
+    const installedIds = [
+      ...(await this.deps.installed.all()).filter((b) => b.registryUrl === oldUrl).map((b) => b.id),
+      ...(await this.deps.installedTrackers.all()).filter((t) => t.registryUrl === oldUrl).map((t) => t.id),
+    ];
+    assertSameRegistry(oldUrl, newUrl, installedIds, index);
+  }
+
+  /**
+   * Repoint a saved registry — and every bridge/tracker installed from it — at `newUrl`.
+   *
+   * The server writes one manifest file, so its rebind is atomic. Here the saved-registry list and
+   * the two installed manifests are separate AsyncStorage documents, so the *order* is the safety
+   * property: the new registry row lands first, then the installs move, then the old row goes. An
+   * interrupt at any point leaves both URLs saved with installs on one side or the other — never an
+   * install pointing at a registry that isn't in the list.
+   *
+   * Device-only wrinkle: each record pins the *absolute bundle URL* it was installed from, on the
+   * old host — which may be exactly what stopped serving. Where the target index offers the same id
+   * at the same sha256, the pin is refreshed to the new host: identical bytes by definition, so
+   * nothing about what's installed changes, but a later cache miss can still re-download.
+   */
+  private async rebind(oldUrl: string, newUrl: string, index: RegistryIndex): Promise<void> {
+    if (oldUrl === newUrl) return;
+    const existing = await this.deps.registries.get(oldUrl);
+    if (!existing) return;
+
+    const { pendingMove: _pm, pendingAdoption: _pa, ...base } = existing;
+    await this.deps.registries.add({ ...base, url: newUrl, name: registryDisplayName(newUrl) });
+
+    for (const rec of await this.deps.installed.all()) {
+      if (rec.registryUrl !== oldUrl) continue;
+      const entry = index.bridges.find((b) => b.id === rec.id && b.sha256 === rec.sha256);
+      await this.deps.installed.add({ ...repin(rec, entry, index), registryUrl: newUrl });
+    }
+    for (const rec of await this.deps.installedTrackers.all()) {
+      if (rec.registryUrl !== oldUrl) continue;
+      const entry = (index.trackers ?? []).find((t) => t.id === rec.id && t.sha256 === rec.sha256);
+      await this.deps.installedTrackers.add({ ...repin(rec, entry, index), registryUrl: newUrl });
+    }
+
+    await this.deps.registries.remove(oldUrl);
+    this.indexCache.delete(oldUrl);
+    this.onChange?.();
+  }
+
+  /** Record (or clear, with an empty list) the unverified `movedFrom` claims a registry makes. */
+  private async setPendingAdoption(url: string, candidates: string[]): Promise<void> {
+    const saved = await this.deps.registries.get(url);
+    if (!saved) return;
+    const next = candidates.length ? candidates : undefined;
+    if (JSON.stringify(saved.pendingAdoption ?? undefined) === JSON.stringify(next)) return;
+    const { pendingAdoption: _pa, ...base } = saved;
+    await this.deps.registries.add(next ? { ...base, pendingAdoption: next } : base);
+  }
+
+  /** Record an unverified `movedTo` claim for the UI to surface as a one-tap confirm. */
+  private async setPendingMove(url: string, target: string): Promise<void> {
+    const saved = await this.deps.registries.get(url);
+    if (!saved || saved.pendingMove === target) return;
+    await this.deps.registries.add({ ...saved, pendingMove: target });
+  }
+
+  /**
+   * Fetch an index, following `movedTo` pointers.
+   *
+   * `trustMove` is the whole trust model in one flag. On a user-initiated add the pointer comes from
+   * the very host the user just chose to trust, so it's followed. On background paths (browse,
+   * install, update checks) it's followed only with key continuity — otherwise an expired domain or
+   * a compromised repo could redirect every device to a hostile registry — and is otherwise parked
+   * as `pendingMove` for the UI to confirm.
+   */
+  private async resolveIndex(startUrl: string, opts: { trustMove?: boolean } = {}): Promise<ResolvedIndex> {
+    let url = startUrl;
+    let index = await this.fetchAndCache(url);
+    const seen = new Set<string>([url]);
+
+    for (let hop = 0; index.movedTo && hop < MAX_MOVE_HOPS; hop++) {
+      const target = resolveRegistryUrl(index.movedTo);
+      if (seen.has(target)) break; // cycle (incl. self-reference) — stay put
+      seen.add(target);
+
+      const trusted = opts.trustMove || (await this.keyContinuity(url, index));
+      if (!trusted) {
+        await this.setPendingMove(url, target);
+        return { url, index, pendingMove: true };
+      }
+
+      const next = await this.fetchAndCache(target);
+      await this.assertSameRegistry(url, target, next);
+      await this.rebind(url, target, next);
+      url = target;
+      index = next;
+    }
+    return { url, index };
+  }
+
+  /**
+   * Honour a new index's `movedFrom` claims against the user's saved registries. Verified claims
+   * (same key) are adopted immediately; the rest are parked on the new registry for the UI to offer,
+   * because this is an unauthenticated assertion by an arbitrary publisher — adopting it silently
+   * would hand update authority over installed bridges to whoever asked loudest.
+   */
+  private async adoptPredecessors(newUrl: string, index: RegistryIndex): Promise<void> {
+    const claims = (index.movedFrom ?? []).map(resolveRegistryUrl).filter((u) => u !== newUrl);
+    if (claims.length === 0) return;
+
+    const pending: string[] = [];
+    for (const oldUrl of claims) {
+      if (!(await this.deps.registries.get(oldUrl))) continue; // not one of ours — ignore
+      try {
+        await this.assertSameRegistry(oldUrl, newUrl, index);
+      } catch {
+        continue; // shares no installed ids — not a successor, don't even offer it
+      }
+      if (await this.keyContinuity(oldUrl, index)) await this.rebind(oldUrl, newUrl, index);
+      else pending.push(oldUrl);
+    }
+    await this.setPendingAdoption(newUrl, pending);
+  }
+
+  /** True when `index` is signed by the same key already pinned for `url`. */
+  private async keyContinuity(url: string, index: RegistryIndex): Promise<boolean> {
+    const saved = await this.deps.registries.get(url);
+    return hasKeyContinuity(saved?.publicKeyFingerprint, index);
+  }
+}
+
+/**
+ * Refresh a record's pinned bundle location from `entry` (already matched on id **and** sha256, so
+ * the bytes are identical). Signature and key are replaced wholesale — a successor may have re-signed
+ * the same hash with a different key, and an unsigned successor must clear both rather than leave a
+ * signature with nothing to check it against.
+ */
+function repin<T extends { url: string; signature?: string; publicKey?: string }>(
+  rec: T,
+  entry: RegistryBridgeEntry | RegistryTrackerEntry | undefined,
+  index: RegistryIndex,
+): T {
+  if (!entry) return rec;
+  const { signature: _sig, publicKey: _pk, ...base } = rec;
+  return {
+    ...base,
+    url: entry.url,
+    ...(entry.signature !== undefined ? { signature: entry.signature } : {}),
+    ...(index.publicKey !== undefined ? { publicKey: index.publicKey } : {}),
+  } as T;
 }
 
 /** Semver-style "is a newer than b?" — compares major.minor.patch numerically (mirrors manager.ts). */

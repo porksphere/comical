@@ -1491,6 +1491,43 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json(await reg.checkUpdates());
     });
 
+    // ── Registry moves ──────────────────────────────────────────────────────
+    // A move claim the client couldn't verify by key continuity surfaces as `pendingMove` /
+    // `pendingAdoption` on the saved registry (see GET /registries). These apply the user's answer.
+
+    // Follow a held `movedTo`: repoint the registry and everything installed from it.
+    app.post("/registries/:encodedUrl/confirm-move", async (c) => {
+      const url = decodeURIComponent(c.req.param("encodedUrl"));
+      try {
+        const movedTo = await reg.confirmMove(url);
+        manager.refresh();
+        return c.json({ url: movedTo });
+      } catch (e) {
+        return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    });
+
+    // Drop a held `movedTo` without following it.
+    app.post("/registries/:encodedUrl/dismiss-move", async (c) => {
+      await reg.dismissMove(decodeURIComponent(c.req.param("encodedUrl")));
+      return c.json({ ok: true });
+    });
+
+    // Accept one of a registry's `movedFrom` claims: adopt that predecessor's installs.
+    app.post("/registries/:encodedUrl/adopt", async (c) => {
+      const url = decodeURIComponent(c.req.param("encodedUrl"));
+      let body: { url?: string };
+      try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON" }, 400); }
+      if (!body.url) return c.json({ error: "url is required" }, 400);
+      try {
+        await reg.confirmAdoption(url, body.url);
+        manager.refresh();
+        return c.json({ ok: true });
+      } catch (e) {
+        return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+    });
+
     // ── Tracker registry endpoints ──────────────────────────────────────────
 
     // Browse all trackers across all added registries.
