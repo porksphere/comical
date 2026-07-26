@@ -82,3 +82,9 @@ The browser UI is the **`comical-app` repo's react-native-web build** — a cros
 host-server over HTTP (or runs the reused router in-process via `@comical/host-rn`). Run the full
 dev stack with `bun run dev` from the workspace root. (The old standalone `comical-web` browser
 client is deprecated/archived.)
+
+`comical-app` does **not** consume this checkout — it pins this repo as a git submodule at
+`external/comical`. A commit here reaches the app only once that pointer moves, so a change in
+`core` / `contract` / `runtime` / `library` / `registry` / `host-rn` isn't finished until it's
+pushed here **and** the submodule bump is committed in `comical-app`. (Server-only changes —
+`host-server`, CLI, sandbox — don't need it.) See the workspace `CLAUDE.md` for the exact steps.
