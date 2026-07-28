@@ -5,7 +5,7 @@
  * Identity is the cross-bridge pair `(bridgeId, seriesId)`, encoded via `entryKey`. The library is
  * fully independent of any bridge's backend `favorites`: adding here never touches a bridge.
  */
-import type { Chapter, SeriesInfo } from "@comical/contract";
+import type { Chapter, SeriesInfo, SeriesStatus } from "@comical/contract";
 import {
   cachedChaptersSchema,
   cachedSeriesDetailSchema,
@@ -48,6 +48,16 @@ export interface AddSeriesResult {
     matchedKey: string;
     sharedId: { service: string; value: number | string };
   };
+}
+
+/** Whether an entry is finished, and the evidence for it. See {@link Library.getEntryCompletion}. */
+export interface EntryCompletion {
+  /** No known logical chapter `(number, language)` is missing a read copy. False when nothing is synced. */
+  fullyRead: boolean;
+  /** Publication status from the cached series detail; "unknown" when nothing is cached. */
+  seriesStatus: SeriesStatus;
+  /** The series will gain no more chapters ("completed" or "cancelled"). */
+  seriesFinished: boolean;
 }
 
 export interface LibraryOptions {
@@ -291,12 +301,7 @@ export class Library {
 
   private async toView(entry: LibraryEntry): Promise<LibraryEntryView> {
     const progress = await this.store.listProgress(entryKey(entry.bridgeId, entry.seriesId));
-    // Collapse to logical chapters `(number, language)`: a logical chapter is unread when no
-    // scanlation-group copy of it has been read.
-    const readLogical = new Set(progress.filter((p) => p.read).map((p) => logicalChapterKey(p, p.chapterId)));
-    const knownLogical = new Set((entry.knownChapters ?? []).map((c) => logicalChapterKey(c, c.id)));
-    const unreadCount = [...knownLogical].filter((k) => !readLogical.has(k)).length;
-    return { ...entry, unreadCount };
+    return { ...entry, unreadCount: unreadLogicalCount(entry, progress) };
   }
 
   // ── New-chapter detection ────────────────────────────────────────────────────
@@ -450,6 +455,33 @@ export class Library {
     const read = (await this.store.listProgress(key)).filter((p) => p.read);
     const numbers = read.map((p) => p.number).filter((n): n is number => n !== undefined);
     return numbers.length > 0 ? Math.max(...numbers) : read.length;
+  }
+
+  /**
+   * Has the user finished this series — every known chapter read, and the series itself over?
+   * The local half of deciding whether to tell a tracker `status: "completed"`.
+   *
+   * Deliberately counts CHAPTERS, never chapter numbers: a source whose numbering stops below the
+   * tracker's chapter count (BLAME! numbers its logs 1–65 plus extras 3.5 and 7.5 — 67 chapters,
+   * highest number 65, against AniList's count of 66) is finished all the same, and comparing
+   * numbers would never say so.
+   *
+   * `fullyRead` alone is not enough to report completion: catching up on an ongoing series is not
+   * finishing it, hence `seriesFinished`. And an entry with no synced chapter list trivially has
+   * "0 unread" — a favourites import seeds exactly that — so a synced, non-empty `knownChapters` is
+   * required before `fullyRead` can be true at all.
+   */
+  async getEntryCompletion(key: string): Promise<EntryCompletion> {
+    const seriesStatus = (await this.getCachedDetail(key))?.info.status ?? "unknown";
+    // "hiatus" can resume, and "unknown" is what bridges that don't report status map to — neither
+    // is evidence the series is over. Those entries complete via the tracker's own chapter count.
+    const seriesFinished = seriesStatus === "completed" || seriesStatus === "cancelled";
+    const entry = await this.store.getEntry(key);
+    if (!entry || entry.chaptersSyncedAt === undefined || (entry.knownChapters ?? []).length === 0) {
+      return { fullyRead: false, seriesStatus, seriesFinished };
+    }
+    const progress = await this.store.listProgress(key);
+    return { fullyRead: unreadLogicalCount(entry, progress) === 0, seriesStatus, seriesFinished };
   }
 
   async getProgress(key: string): Promise<ChapterProgress[]> {
@@ -881,6 +913,17 @@ export class Library {
  */
 function logicalChapterKey(c: { number?: number | undefined; languageCode?: string | undefined }, id: string): string {
   return c.number !== undefined ? `n:${c.number}:${c.languageCode ?? ""}` : `i:${id}`;
+}
+
+/**
+ * Known logical chapters `(number, language)` with no read copy in any scanlation group. Shared by
+ * the library view's `unreadCount` and by `getEntryCompletion`, so "0 unread" can never mean two
+ * different things depending on which one asked.
+ */
+function unreadLogicalCount(entry: LibraryEntry, progress: ChapterProgress[]): number {
+  const readLogical = new Set(progress.filter((p) => p.read).map((p) => logicalChapterKey(p, p.chapterId)));
+  const knownLogical = new Set((entry.knownChapters ?? []).map((c) => logicalChapterKey(c, c.id)));
+  return [...knownLogical].filter((k) => !readLogical.has(k)).length;
 }
 
 /**

@@ -1,7 +1,8 @@
 /** ComicalRuntime — auto-tracker-linking, title-search suggestions, and read-sync. */
 import { describe, expect, test } from "bun:test";
-import type { Bridge, BridgeInfo, Chapter, SeriesInfo, Tracker, TrackerInfo, TrackerLibraryEntry } from "@comical/contract";
-import { entryKey, InMemoryLibraryStore, Library } from "@comical/library";
+import type { Bridge, BridgeInfo, Chapter, SeriesInfo, Tracker, TrackerEntryUpdate, TrackerInfo, TrackerLibraryEntry } from "@comical/contract";
+import { trackerEntryUpdateSchema } from "@comical/contract";
+import { entryKey, InMemoryLibraryStore, Library, type TrackerLink } from "@comical/library";
 import { ComicalRuntime, type BridgeProvider, type TrackerProvider } from "@comical/runtime";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -57,13 +58,23 @@ function mockBridgeProvider(bridge: Bridge): BridgeProvider {
   return { get: async () => bridge };
 }
 
+/**
+ * One captured `updateEntry` call — the WHOLE payload, not just `chaptersRead`. Status, dates and
+ * progress now travel together in a single push, and asserting on the merged object is what proves
+ * a status-only push carries no progress (and vice versa).
+ */
+type PushCall = { externalId: string | number } & TrackerEntryUpdate;
+
+/** Today as `YYYY-MM-DD`, matching the runtime's own local-time stamp. */
+const TODAY = new Date().toLocaleDateString("sv-SE");
+
 /** A minimal tracker with controllable search results, push capture, and a pullable library list. */
 function mockTracker(
   id: string,
   opts: {
     capabilities?: TrackerInfo["capabilities"];
     searchResults?: Array<{ externalId: number; title: string }>;
-    updateCalls?: Array<{ externalId: string | number; chaptersRead?: number }>;
+    updateCalls?: PushCall[];
     libraryEntries?: TrackerLibraryEntry[];
   } = {},
 ): Tracker {
@@ -78,7 +89,7 @@ function mockTracker(
       };
     },
     async updateEntry(externalId, update) {
-      opts.updateCalls?.push({ externalId, ...(update.chaptersRead !== undefined && { chaptersRead: update.chaptersRead }) });
+      opts.updateCalls?.push({ externalId, ...update });
     },
     async getLibrary(page) {
       void page;
@@ -256,7 +267,7 @@ describe("syncEntryToTrackers", () => {
   test("pushes chaptersRead to linked tracker after markRead", async () => {
     const lib = makeLib();
     const bridge = mockBridge({ id: "s1", title: "Series", externalIds: { anilist: 111 } });
-    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const updateCalls: PushCall[] = [];
     const tracker = mockTracker("anilist", { updateCalls });
     const runtime = new ComicalRuntime({
       bridges: mockBridgeProvider(bridge),
@@ -293,7 +304,7 @@ describe("syncEntryToTrackers", () => {
   test("pushes the highest read chapter NUMBER, not a count", async () => {
     const lib = makeLib();
     const bridge = mockBridge({ id: "s1", title: "Series", externalIds: { anilist: 111 } });
-    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const updateCalls: PushCall[] = [];
     const runtime = new ComicalRuntime({
       bridges: mockBridgeProvider(bridge),
       library: lib,
@@ -310,7 +321,7 @@ describe("syncEntryToTrackers", () => {
   test("does not re-push a count the tracker is already known to hold", async () => {
     const lib = makeLib();
     const bridge = mockBridge({ id: "s1", title: "Series", externalIds: { anilist: 111 } });
-    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const updateCalls: PushCall[] = [];
     const runtime = new ComicalRuntime({
       bridges: mockBridgeProvider(bridge),
       library: lib,
@@ -323,8 +334,10 @@ describe("syncEntryToTrackers", () => {
     await runtime.markRead("test", "s1", "c2", true, "Ch 2", 2); // and re-marking the same one
 
     // Only the first read moved the high-water mark, so only it reached the tracker — the other two
-    // would have been identical writes burning a rate-limited slot on every page turn.
-    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 2 }]);
+    // would have been identical writes burning a rate-limited slot on every page turn. That first
+    // push also carries "reading": a link with no known status has never been seen on the service,
+    // so the read that creates it is the start of reading.
+    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 2, status: "reading", startedAt: TODAY }]);
   });
 
   test("a failing push is reported to the log instead of being swallowed, and never fails the read", async () => {
@@ -431,6 +444,329 @@ describe("syncEntryToTrackers", () => {
   });
 });
 
+// ── Status sync: completion, reading/rereading, dates, clamping ───────────────
+
+describe("syncEntryToTrackers — status", () => {
+  /**
+   * A linked, chapter-synced entry ready for status assertions. `status` is the bridge's publication
+   * status (trigger B's input, cached at add time); `link` patches the tracker link the way a pull
+   * would have — the only way `totalChapters` or a service-side status ever gets there.
+   */
+  async function setup(opts: {
+    chapters: Chapter[];
+    status?: SeriesInfo["status"];
+    link?: Partial<TrackerLink>;
+    read?: Chapter[];
+  }) {
+    const lib = makeLib();
+    const updateCalls: PushCall[] = [];
+    const bridge = syncBridge({
+      details: {
+        id: "s1",
+        title: "Series",
+        externalIds: { anilist: 111 },
+        ...(opts.status && { status: opts.status }),
+      },
+      chapters: opts.chapters,
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([mockTracker("anilist", { updateCalls })]),
+    });
+    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111, caches the detail + chapters
+    if (opts.link) await lib.updateTrackerLink("test:s1", "anilist", opts.link);
+    // Seeded through the library, not the runtime, so the pushes under test are the only ones.
+    for (const c of opts.read ?? []) await lib.markRead("test:s1", c.id, true, c.name, c.number);
+    return { lib, runtime, updateCalls };
+  }
+
+  const CH = [ch("c1", 1), ch("c2", 2), ch("c3", 3)];
+
+  test("trigger B: a fully-read COMPLETED series completes even when progress didn't move", async () => {
+    // The reported bug. The watermark already holds 3, so there is no progress to report — and the
+    // old push was progress-only, which is exactly why the tracker sat on "Reading" forever.
+    const { lib, runtime, updateCalls } = await setup({
+      chapters: CH,
+      status: "completed",
+      link: { chaptersRead: 3 },
+      read: CH,
+    });
+
+    await runtime.markRead("test", "s1", "c3", true, "Ch 3", 3);
+
+    expect(updateCalls).toEqual([{ externalId: 111, status: "completed", finishedAt: TODAY }]);
+    const link = await lib.getTrackerLink("test:s1", "anilist");
+    expect(link).toMatchObject({ status: "completed", chaptersRead: 3 });
+    expect(link!.completedPushedAt).toBeGreaterThan(0);
+  });
+
+  test("a status-only push never drags the watermark down to local progress", async () => {
+    // A pull had raised the watermark to 70 (the tracker holds more than this source publishes).
+    // Writing `chaptersRead` unconditionally would reset it to 3 and re-push forever.
+    const { lib, runtime, updateCalls } = await setup({
+      chapters: CH,
+      status: "completed",
+      link: { chaptersRead: 70 },
+      read: CH,
+    });
+
+    await runtime.markRead("test", "s1", "c3", true, "Ch 3", 3);
+
+    expect(updateCalls[0]).not.toHaveProperty("chaptersRead");
+    expect((await lib.getTrackerLink("test:s1", "anilist"))!.chaptersRead).toBe(70);
+  });
+
+  test("trigger A: reaching the tracker's own total completes a series the bridge calls unknown", async () => {
+    // No usable publication status, so trigger B can never fire — this is the Mihon/Aidoku rule.
+    const { runtime, updateCalls } = await setup({
+      chapters: [ch("c20", 20)],
+      link: { totalChapters: 20, status: "reading" },
+    });
+
+    await runtime.markRead("test", "s1", "c20", true, "Ch 20", 20);
+
+    expect(updateCalls).toEqual([
+      { externalId: 111, chaptersRead: 20, status: "completed", finishedAt: TODAY },
+    ]);
+  });
+
+  test("progress is clamped to the tracker's total, and the clamped value settles", async () => {
+    const { lib, runtime, updateCalls } = await setup({
+      chapters: [ch("c70", 70)],
+      link: { totalChapters: 66, status: "reading" },
+    });
+
+    await runtime.markRead("test", "s1", "c70", true, "Ch 70", 70);
+    expect(updateCalls.at(-1)).toMatchObject({ chaptersRead: 66 });
+    expect((await lib.getTrackerLink("test:s1", "anilist"))!.chaptersRead).toBe(66);
+
+    // Comparing the CLAMPED value against the watermark is what stops this repeating: local (70) is
+    // permanently "ahead" of a total of 66, so an unclamped comparison would re-push on every read.
+    await runtime.syncEntryToTrackers("test", "s1");
+    expect(updateCalls).toHaveLength(1);
+  });
+
+  test("completion is pushed exactly once", async () => {
+    const { runtime, updateCalls } = await setup({
+      chapters: CH,
+      status: "completed",
+      link: { chaptersRead: 3 },
+      read: CH,
+    });
+
+    await runtime.syncEntryToTrackers("test", "s1");
+    await runtime.syncEntryToTrackers("test", "s1");
+    await runtime.syncEntryToTrackers("test", "s1");
+
+    expect(updateCalls).toHaveLength(1);
+  });
+
+  test("a status the user set themselves is never overwritten with 'completed'", async () => {
+    // Someone deliberately dropped a series they'd finished reading. Inferring "already pushed" from
+    // `link.status` would fail here, because a pull overwrites that field with the service's truth —
+    // so the sentinel is `completedPushedAt`, which records only what WE sent.
+    const { lib, runtime, updateCalls } = await setup({
+      chapters: CH,
+      status: "completed",
+      link: { chaptersRead: 3, completedPushedAt: 1_000 },
+      read: CH,
+    });
+
+    await runtime.syncEntryToTrackers("test", "s1");
+    // …and still nothing after a pull rewrites the link's status to the user's own choice.
+    await lib.updateTrackerLink("test:s1", "anilist", { status: "dropped" });
+    await runtime.syncEntryToTrackers("test", "s1");
+
+    expect(updateCalls).toEqual([]);
+  });
+
+  test("a fully-read ONGOING series moves progress and stays 'reading'", async () => {
+    const { runtime, updateCalls } = await setup({
+      chapters: CH,
+      status: "ongoing",
+      link: { status: "reading" },
+      read: [CH[0]!, CH[1]!],
+    });
+
+    await runtime.markRead("test", "s1", "c3", true, "Ch 3", 3);
+
+    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 3 }]);
+  });
+
+  test("a PLANNING link flips to reading, with a start date", async () => {
+    const { runtime, updateCalls } = await setup({ chapters: CH, link: { status: "planning" } });
+
+    await runtime.markRead("test", "s1", "c1", true, "Ch 1", 1);
+
+    expect(updateCalls).toEqual([
+      { externalId: 111, chaptersRead: 1, status: "reading", startedAt: TODAY },
+    ]);
+  });
+
+  test("an ON_HOLD link keeps its status — resuming a paused series is the user's call", async () => {
+    const { runtime, updateCalls } = await setup({ chapters: CH, link: { status: "on_hold" } });
+
+    await runtime.markRead("test", "s1", "c1", true, "Ch 1", 1);
+
+    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 1 }]);
+  });
+
+  test("reading a series the tracker already holds as completed is a re-read", async () => {
+    const { runtime, updateCalls } = await setup({
+      chapters: CH,
+      link: { status: "completed", chaptersRead: 3, completedPushedAt: 1_000 },
+    });
+
+    await runtime.markRead("test", "s1", "c1", true, "Ch 1", 1);
+    // Nothing yet: progress (1) is below the watermark (3), so there's no new information.
+    expect(updateCalls).toEqual([]);
+
+    await runtime.markRead("test", "s1", "c4", true, "Ch 4", 4);
+    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 4, status: "rereading" }]);
+  });
+
+  test("an in-progress re-read is left alone", async () => {
+    const { runtime, updateCalls } = await setup({
+      chapters: CH,
+      link: { status: "rereading", chaptersRead: 1 },
+    });
+
+    await runtime.markRead("test", "s1", "c2", true, "Ch 2", 2);
+
+    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 2 }]);
+  });
+
+  test("every pushed payload is a valid TrackerEntryUpdate", async () => {
+    const { runtime, updateCalls } = await setup({
+      chapters: CH,
+      status: "completed",
+      link: { status: "planning" },
+      read: [CH[0]!, CH[1]!],
+    });
+
+    await runtime.markRead("test", "s1", "c3", true, "Ch 3", 3);
+
+    expect(updateCalls).toHaveLength(1);
+    for (const { externalId, ...update } of updateCalls) {
+      void externalId;
+      expect(() => trackerEntryUpdateSchema.parse(update)).not.toThrow();
+    }
+    // Completion wins over the planning→reading transition: one status, and it's the finished one.
+    expect(updateCalls[0]).toMatchObject({ status: "completed", finishedAt: TODAY });
+    expect(updateCalls[0]).not.toHaveProperty("startedAt");
+  });
+
+  test("a failed completion push leaves completedPushedAt unset so the next sync retries", async () => {
+    const lib = makeLib();
+    const bridge = syncBridge({
+      details: { id: "s1", title: "Series", externalIds: { anilist: 111 }, status: "completed" },
+      chapters: CH,
+    });
+    let fail = true;
+    const calls: PushCall[] = [];
+    const base = mockTracker("anilist", { updateCalls: calls });
+    const tracker: Tracker = {
+      ...base,
+      async updateEntry(externalId, update) {
+        if (fail) throw new Error("AniList: invalid or expired access token");
+        return base.updateEntry!(externalId, update);
+      },
+    };
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1");
+    await lib.updateTrackerLink("test:s1", "anilist", { chaptersRead: 3 });
+    for (const c of CH) await lib.markRead("test:s1", c.id, true, c.name, c.number);
+
+    await runtime.syncEntryToTrackers("test", "s1");
+    expect((await lib.getTrackerLink("test:s1", "anilist"))!.completedPushedAt).toBeUndefined();
+
+    fail = false;
+    await runtime.syncEntryToTrackers("test", "s1");
+    expect(calls).toEqual([{ externalId: 111, status: "completed", finishedAt: TODAY }]);
+    expect((await lib.getTrackerLink("test:s1", "anilist"))!.completedPushedAt).toBeGreaterThan(0);
+  });
+
+  test("a pull mirrors the tracker's own chapter count onto the link", async () => {
+    const lib = makeLib();
+    const bridge = syncBridge({
+      details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
+      chapters: CH,
+    });
+    const tracker = mockTracker("anilist", {
+      capabilities: ["library-sync", "status-sync"],
+      libraryEntries: [
+        { externalId: 111, title: "Series", status: "reading", chaptersRead: 2, totalChapters: 66 },
+      ],
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1");
+    await runtime.syncFromTracker("anilist");
+
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({
+      status: "reading",
+      chaptersRead: 2,
+      totalChapters: 66,
+    });
+  });
+});
+
+// ── markActivityRead ─────────────────────────────────────────────────────────
+
+describe("markActivityRead", () => {
+  /** A library + runtime whose entry has two detected activity chapters, one already read. */
+  async function withFeed(tracker: Tracker, lib = makeLib()) {
+    const bridge = syncBridge({
+      details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
+      chapters: [ch("c1", 1)],
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+    await runtime.addToLibrary("test", "s1"); // baseline sync — no activity yet
+    await lib.syncChapters("test:s1", [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
+    return { lib, runtime };
+  }
+
+  test("clearing a series' feed pushes the new progress to its tracker", async () => {
+    // Previously the one way to mark chapters read that never reached a tracker: the route called
+    // the library directly, bypassing the runtime.
+    const updateCalls: PushCall[] = [];
+    const { lib, runtime } = await withFeed(mockTracker("anilist", { updateCalls }));
+
+    const { marked } = await runtime.markActivityRead("test", "s1");
+
+    expect(marked).toBe(2);
+    expect(updateCalls).toEqual([
+      { externalId: 111, chaptersRead: 3, status: "reading", startedAt: TODAY },
+    ]);
+    const read = new Set((await lib.getProgress("test:s1")).filter((p) => p.read).map((p) => p.chapterId));
+    expect(read).toEqual(new Set(["c2", "c3"]));
+  });
+
+  test("a tracker failure never fails the mark", async () => {
+    const tracker: Tracker = {
+      ...mockTracker("anilist"),
+      async updateEntry() { throw new Error("AniList: invalid or expired access token"); },
+    };
+    const { runtime } = await withFeed(tracker);
+
+    expect(await runtime.markActivityRead("test", "s1")).toEqual({ marked: 2 });
+  });
+});
+
 // ── backgroundSync — automatic, safe tracker pull ─────────────────────────────
 
 describe("backgroundSync — tracker read-pull", () => {
@@ -522,7 +858,7 @@ describe("syncEntryWithTracker", () => {
     const lib = makeLib();
     const chapters = [ch("c1", 1), ch("c2", 2), ch("c3", 3)];
     const bridge = syncBridge({ details: { id: "s1", title: "Series", externalIds: { anilist: 111 } }, chapters });
-    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const updateCalls: PushCall[] = [];
     const tracker = mockTracker("anilist", {
       capabilities: ["library-sync", "status-sync"],
       updateCalls,
@@ -553,7 +889,7 @@ describe("syncEntryWithTracker", () => {
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
       chapters: [ch("c1", 1), ch("c2", 2)],
     });
-    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const updateCalls: PushCall[] = [];
     const tracker = mockTracker("anilist", {
       capabilities: ["library-sync", "status-sync"],
       updateCalls,
@@ -571,7 +907,8 @@ describe("syncEntryWithTracker", () => {
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
     expect(res).toEqual({ updated: true, readSynced: 0, pushed: true, chaptersRead: 2 });
-    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 2 }]);
+    // The tracker has no entry at all, so this push creates one — hence "reading" and a start date.
+    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 2, status: "reading", startedAt: TODAY }]);
   });
 
   test("neither side moves when both are level: no push, nothing newly read", async () => {
@@ -580,7 +917,7 @@ describe("syncEntryWithTracker", () => {
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
       chapters: [ch("c1", 1), ch("c2", 2)],
     });
-    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const updateCalls: PushCall[] = [];
     const tracker = mockTracker("anilist", {
       capabilities: ["library-sync", "status-sync"],
       updateCalls,
@@ -608,7 +945,7 @@ describe("syncEntryWithTracker", () => {
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
       chapters: [ch("c1", 1), ch("c2", 2)],
     });
-    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const updateCalls: PushCall[] = [];
     let libraryCalls = 0;
     const base = mockTracker("anilist", { capabilities: ["status-sync"], updateCalls });
     const tracker: Tracker = {
@@ -627,7 +964,8 @@ describe("syncEntryWithTracker", () => {
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
     expect(res).toEqual({ updated: true, readSynced: 0, pushed: true, chaptersRead: 2 });
-    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 2 }]);
+    // No pull means no known status either, so this is still the "first read" transition.
+    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 2, status: "reading", startedAt: TODAY }]);
     expect(libraryCalls).toBe(0);
   });
 
@@ -637,7 +975,7 @@ describe("syncEntryWithTracker", () => {
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
       chapters: [ch("c1", 1), ch("c2", 2), ch("c3", 3)],
     });
-    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const updateCalls: PushCall[] = [];
     const tracker = mockTracker("anilist", {
       capabilities: ["library-sync"],
       updateCalls,
@@ -751,7 +1089,7 @@ describe("syncEntryWithTracker", () => {
     const lib = makeLib();
     const chapters = [ch("c12", 12), ch("c12.5", 12.5)];
     const bridge = syncBridge({ details: { id: "s1", title: "Series", externalIds: { anilist: 111 } }, chapters });
-    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const updateCalls: PushCall[] = [];
     // Stores whatever it's given as an integer and reports that back, exactly like AniList.
     const entries: TrackerLibraryEntry[] = [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 0 }];
     const tracker: Tracker = {
@@ -811,6 +1149,47 @@ describe("syncEntryWithTracker", () => {
 
     const [link] = await lib.listTrackerLinks("test:s1");
     expect(link).toMatchObject({ chaptersRead: 12.5 });
+  });
+
+  test("repairs a stuck finished series: pushes the status alone, sending no progress", async () => {
+    // The already-broken entry from the bug report. Everything is read and the watermark is level
+    // with local progress, so there is nothing left for a read to trigger — the Sync button has to be
+    // able to fix it, which it can only do if a push no longer requires progress to have moved.
+    const lib = makeLib();
+    const chapters = [ch("c1", 1), ch("c2", 2), ch("c3", 3)];
+    const bridge = syncBridge({
+      details: { id: "s1", title: "Series", externalIds: { anilist: 111 }, status: "completed" },
+      chapters,
+    });
+    const updateCalls: PushCall[] = [];
+    const tracker = mockTracker("anilist", {
+      capabilities: ["library-sync", "status-sync"],
+      updateCalls,
+      libraryEntries: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 3 }],
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1");
+    for (const c of chapters) await lib.markRead("test:s1", c.id, true, c.name, c.number);
+    await lib.updateTrackerLink("test:s1", "anilist", { chaptersRead: 3 });
+
+    const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
+
+    expect(updateCalls).toEqual([{ externalId: 111, status: "completed", finishedAt: TODAY }]);
+    expect(res).toMatchObject({ updated: true, pushed: true });
+    // The just-pushed status survives the pulled item, which still says "reading" (it predates us).
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({
+      status: "completed",
+      chaptersRead: 3,
+    });
+
+    // And it doesn't repeat.
+    await runtime.syncEntryWithTracker("test", "s1", "anilist");
+    expect(updateCalls).toHaveLength(1);
   });
 });
 

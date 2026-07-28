@@ -12,7 +12,8 @@
  *   - importBridgeFavorites: paginate getFavorites, dedupe, bulk-add to library.
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
-import type { Chapter, LogCapability, PagedResults, SeriesInfo, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
+import type { Chapter, LogCapability, PagedResults, SeriesInfo, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
+import { trackerEntryUpdateSchema } from "@comical/contract";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
 // node:vm-backed default evaluator) so `@comical/runtime`'s types stay consumable by non-Node
 // hosts — e.g. comical-app's embedded runtime typing `RouterOptions.runtime`. See @comical/core.
@@ -91,6 +92,74 @@ const errMessage = (err: unknown) => (err instanceof Error ? err.message : Strin
  */
 function isPermanentPushFailure(err: unknown): boolean {
   return /\b401\b|\b403\b|expired|unauthor|forbidden|invalid.*token|token.*invalid/i.test(errMessage(err));
+}
+
+/** Today as `YYYY-MM-DD` in local time — trackers record reading dates, not instants. */
+function today(now = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/**
+ * What (if anything) to tell a tracker about one link, and what to record locally once it lands.
+ * Returns undefined when there is nothing new to say.
+ *
+ * Pure and synchronous so the transition rules — the part that's easy to get subtly wrong — are
+ * readable and testable in one place, without a store or a tracker in the way.
+ *
+ * ## Progress
+ * Clamped to the tracker's own chapter count: it will not accept more than it thinks exists, and a
+ * local number above the total would otherwise re-push forever (the watermark could never catch up).
+ * The clamped value is what's compared against the watermark AND what's recorded as the new one.
+ *
+ * ## Completion — two triggers, deliberately
+ * `reachedTotal` is the rule Mihon and Aidoku both use: progress has reached the tracker's own
+ * chapter count. It's the only one available when a bridge doesn't report publication status.
+ * `finishedLocally` is every known chapter read on a series that's over. It's the only one that
+ * fires when a source's numbering ends BELOW the tracker's count — BLAME! numbers its logs 1–65
+ * plus extras 3.5/7.5 against AniList's count of 66, so `reachedTotal` can never be true for it.
+ * Neither subsumes the other.
+ *
+ * Completion is one-shot, gated on `completedPushedAt` rather than on `status`: a pull overwrites
+ * `status` with the tracker's own truth, so a user who deliberately drops a finished series would
+ * otherwise have "completed" re-pushed over it on every background sync.
+ */
+export function decideTrackerPush(
+  link: TrackerLink,
+  maxRead: number,
+  finishedLocally: boolean,
+  now = new Date(),
+): { update: TrackerEntryUpdate; link: Partial<TrackerLink> } | undefined {
+  const total = link.totalChapters;
+  const chaptersRead = total !== undefined ? Math.min(maxRead, total) : maxRead;
+  const advanced = chaptersRead > (link.chaptersRead ?? 0);
+
+  const reachedTotal = total !== undefined && Math.floor(maxRead) >= total;
+  const sendCompleted = (reachedTotal || finishedLocally) && link.completedPushedAt === undefined;
+  // Reading a series the tracker already holds as finished is a re-read. A link already in
+  // "rereading" matches nothing below, which is how an existing re-read survives untouched.
+  const sendRereading = !sendCompleted && advanced && link.status === "completed";
+  const sendReading =
+    !sendCompleted && !sendRereading && advanced && (link.status === undefined || link.status === "planning");
+
+  if (!advanced && !sendCompleted) return undefined;
+
+  return {
+    update: {
+      ...(advanced && { chaptersRead }),
+      ...(sendCompleted && { status: "completed" as const, finishedAt: today(now) }),
+      ...(sendRereading && { status: "rereading" as const }),
+      ...(sendReading && { status: "reading" as const, startedAt: today(now) }),
+    },
+    link: {
+      // NOT unconditional: on a status-only push `chaptersRead` is at or below the watermark, and
+      // writing it would drag the watermark below what a pull had raised it to.
+      ...(advanced && { chaptersRead }),
+      ...(sendCompleted && { status: "completed" as const, completedPushedAt: now.getTime() }),
+      ...(sendRereading && { status: "rereading" as const }),
+      ...(sendReading && { status: "reading" as const }),
+    },
+  };
 }
 
 export interface BridgeProvider {
@@ -277,6 +346,22 @@ export class ComicalRuntime {
     await this.syncEntryToTrackers(bridgeId, seriesId).catch(() => {});
   }
 
+  /**
+   * Mark a series' whole activity feed read (the feed row's "Mark read" swipe), then sync trackers.
+   *
+   * The library method alone is a read-state write like any other, and hosts were calling it
+   * directly — which made clearing a series' feed the one way to mark chapters read that never
+   * reached a tracker. No bridge read-sync push here, deliberately: `Library.markActivityRead`
+   * doesn't touch the resume pointer or history either, because dismissing a feed row isn't reading.
+   */
+  async markActivityRead(bridgeId: string, seriesId: string): Promise<{ marked: number }> {
+    const result = await this.requireLibrary().markActivityRead(bridgeId, seriesId);
+    // Unconditional, like `markRead`: even a zero-marked call is a chance to heal a link that's
+    // behind for some other reason (a failed earlier push, a completion never sent).
+    await this.syncEntryToTrackers(bridgeId, seriesId).catch(() => {});
+    return result;
+  }
+
   // ── Favorites import ──────────────────────────────────────────────────────────
 
   /** Paginate bridge favorites and bulk-add any that aren't already in the library. */
@@ -438,6 +523,8 @@ export class ComicalRuntime {
    * Push the current read-state for one library entry to all linked trackers.
    * Best-effort: errors per-tracker are swallowed, nothing throws.
    * Called automatically after markRead / setProgress / markReadUpTo when trackers are configured.
+   *
+   * Pushes STATUS as well as progress. See {@link decideTrackerPush} for which transitions fire.
    */
   async syncEntryToTrackers(bridgeId: string, seriesId: string): Promise<void> {
     if (!this.lib || !this.trackers) return;
@@ -449,30 +536,42 @@ export class ComicalRuntime {
     // `chaptersRead` is the HIGHEST read chapter number (the contract's definition), not a count —
     // counting breaks on decimal or out-of-order numbering. Skip pushing 0 so we never clobber a
     // tracker's progress with "nothing read".
-    const chaptersRead = await this.lib.maxReadChapterNumber(key);
-    if (chaptersRead <= 0) return;
+    const maxRead = await this.lib.maxReadChapterNumber(key);
+    if (maxRead <= 0) return;
+    // The local completion signal costs two document reads, so only ask when some link could still
+    // act on it. Once every link has been told, this is never computed again.
+    const finishedLocally = links.some((l) => l.completedPushedAt === undefined)
+      ? await this.isFinishedLocally(key)
+      : false;
+
     for (const link of links) {
+      const decision = decideTrackerPush(link, maxRead, finishedLocally);
       try {
         const tracker = await this.trackers.get(link.trackerId);
         if (!tracker.info.capabilities.includes("status-sync") || !tracker.updateEntry) continue;
-        // Nothing new to say — re-reading an old chapter, or a re-mark at the same number. See
-        // `chaptersRead` on TrackerLink: it's the watermark of what the tracker is known to hold.
-        if (chaptersRead <= (link.chaptersRead ?? 0)) continue;
-        await this.pushToTracker(tracker, link.externalId, chaptersRead);
-        await this.lib.updateTrackerLink(key, link.trackerId, {
-          chaptersRead,
-          lastSyncAt: Date.now(),
-        });
+        if (!decision) continue;
+        await this.pushToTracker(tracker, link.externalId, decision.update);
+        await this.lib.updateTrackerLink(key, link.trackerId, { ...decision.link, lastSyncAt: Date.now() });
       } catch (err) {
         // Per-tracker best-effort: a failing push must never fail the read that triggered it. But it
         // IS reported now — this catch used to be silent, which is how an expired AniList token could
         // drop every push indefinitely with no symptom anywhere in the app.
         this.log?.warn(
-          `tracker push failed: ${link.trackerId} ${key} (chaptersRead ${chaptersRead}):`,
+          `tracker push failed: ${link.trackerId} ${key} (${JSON.stringify(decision?.update ?? {})}):`,
           errMessage(err),
         );
       }
     }
+  }
+
+  /**
+   * Has the user finished this series, judged locally? Every known chapter read AND the series over.
+   * One half of the completion decision; the other is the tracker's own chapter count, which catches
+   * the entries this can't (see {@link decideTrackerPush}).
+   */
+  private async isFinishedLocally(key: string): Promise<boolean> {
+    const { fullyRead, seriesFinished } = await this.requireLibrary().getEntryCompletion(key);
+    return fullyRead && seriesFinished;
   }
 
   /**
@@ -483,13 +582,16 @@ export class ComicalRuntime {
    * flaky network, which is the first thing you want to know from the log.
    */
   private async pushToTracker(
-    tracker: { updateEntry?: (externalId: string | number, update: { chaptersRead: number }) => Promise<void> },
+    tracker: { updateEntry?: (externalId: string | number, update: TrackerEntryUpdate) => Promise<void> },
     externalId: string | number,
-    chaptersRead: number,
+    update: TrackerEntryUpdate,
   ): Promise<void> {
+    // Validate at the boundary, like every other contract-shaped value handed to a bundle: a
+    // malformed date would be rejected by the service with an opaque error three layers away.
+    const parsed = trackerEntryUpdateSchema.parse(update);
     for (let attempt = 1; ; attempt++) {
       try {
-        await tracker.updateEntry!(externalId, { chaptersRead });
+        await tracker.updateEntry!(externalId, parsed);
         return;
       } catch (err) {
         if (attempt >= PUSH_ATTEMPTS || isPermanentPushFailure(err)) {
@@ -625,25 +727,46 @@ export class ComicalRuntime {
     const remoteRead = remote?.chaptersRead ?? 0;
     const watermark = link.chaptersRead ?? 0;
 
-    // Local is further along than BOTH what the tracker reports and what it's known to hold — push it
-    // up. (Also the path when the tracker has no entry yet.)
-    if (canPush && localRead > remoteRead && localRead > watermark) {
+    // Decide against the FRESHEST view of the link: the pull we just did knows the tracker's real
+    // status and chapter count, and folding `remoteRead` into the watermark is what makes a push
+    // require local to be ahead of both the echo and what the tracker is known to hold.
+    const effective: TrackerLink = {
+      ...link,
+      ...(remote?.status !== undefined && { status: remote.status }),
+      ...(remote?.totalChapters !== undefined && { totalChapters: remote.totalChapters }),
+      chaptersRead: Math.max(watermark, remoteRead),
+    };
+    const finishedLocally = link.completedPushedAt === undefined ? await this.isFinishedLocally(key) : false;
+    const decision = canPush ? decideTrackerPush(effective, localRead, finishedLocally) : undefined;
+
+    if (decision) {
       // Same bounded retry as the implicit push — here the error isn't swallowed, it's thrown at the
       // user who pressed the button, so it's worth being sure it's real before reporting it.
-      await this.pushToTracker(tracker, link.externalId, localRead);
-      await lib.updateTrackerLink(key, trackerId, { chaptersRead: localRead, lastSyncAt: Date.now() });
-      return { updated: true, readSynced: 0, pushed: true, chaptersRead: localRead };
+      await this.pushToTracker(tracker, link.externalId, decision.update);
+      const pushed = decision.update.chaptersRead;
+      if (pushed !== undefined) {
+        await lib.updateTrackerLink(key, trackerId, { ...decision.link, lastSyncAt: Date.now() });
+        return { updated: true, readSynced: 0, pushed: true, chaptersRead: pushed };
+      }
+      // Status-only (the finished-series repair, where progress has nothing new to say). Fall through
+      // to apply the tracker's state, but let what we just pushed win over the now-stale pulled status.
     }
 
-    // Not pushing — apply the tracker's state locally (shared with the bulk pull).
+    // Apply the tracker's state locally (shared with the bulk pull).
     if (remote) {
-      const readSynced = await this.applyTrackerItem({ key, bridgeId, seriesId, watermark }, remote, trackerId);
+      const readSynced = await this.applyTrackerItem(
+        { key, bridgeId, seriesId, watermark }, remote, trackerId, decision?.link,
+      );
       // Which number to report as "where you both are". When local reads ahead of the echo but not of
       // the watermark, the tracker DOES hold this progress and is merely reporting it back coarsely
       // (12.5 → 12), so the local number is the honest answer. Otherwise the tracker's is the one that
       // moved — including for a pull-only tracker, where local really is ahead and staying that way.
       const settledLossy = localRead > remoteRead && localRead <= watermark;
-      return { updated: true, readSynced, pushed: false, chaptersRead: settledLossy ? localRead : remoteRead };
+      return { updated: true, readSynced, pushed: !!decision, chaptersRead: settledLossy ? localRead : remoteRead };
+    }
+    if (decision) {
+      await lib.updateTrackerLink(key, trackerId, { ...decision.link, lastSyncAt: Date.now() });
+      return { updated: true, readSynced: 0, pushed: true, chaptersRead: localRead };
     }
 
     // Nothing on the tracker's list to apply — a pull-only tracker that doesn't list this link, or a
@@ -668,11 +791,16 @@ export class ComicalRuntime {
    * already hold the link (re-reading it here would cost a store round-trip per entry in the bulk
    * pull). The write keeps the higher of the two: a pull must never drag the watermark down to a
    * lossy echo of what we pushed, or the next sync would see local as ahead again and re-push.
+   *
+   * `overrides` wins over `item`. It exists for the one caller that PUSHES before applying: the
+   * pulled item predates that push, so its `status` is stale and would otherwise clobber the status
+   * we just successfully sent.
    */
   private async applyTrackerItem(
     match: { key: string; bridgeId: string; seriesId: string; watermark: number },
     item: TrackerLibraryEntry,
     trackerId: string,
+    overrides?: Partial<TrackerLink>,
   ): Promise<number> {
     const lib = this.requireLibrary();
     await lib.updateTrackerLink(match.key, trackerId, {
@@ -680,6 +808,10 @@ export class ComicalRuntime {
       ...(item.chaptersRead !== undefined && {
         chaptersRead: Math.max(item.chaptersRead, match.watermark),
       }),
+      // The only place the tracker's own chapter count enters local state. Until a pull has run,
+      // pushes are unclamped and can only complete via the local signal.
+      ...(item.totalChapters !== undefined && { totalChapters: item.totalChapters }),
+      ...overrides,
       lastSyncAt: Date.now(),
     });
     if (item.chaptersRead !== undefined && item.chaptersRead > 0) {

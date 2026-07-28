@@ -240,6 +240,21 @@ export const trackerLinkSchema = z.object({
    * permanently "ahead" and re-pushes on every sync; comparing local-vs-watermark settles.
    */
   chaptersRead: z.number().optional(),
+  /**
+   * The tracker's own chapter count for this media, mirrored from the last pull. Drives two things
+   * the local chapter list can't: deciding the series is finished (progress reached the total), and
+   * clamping what we push, so a tracker is never told about more chapters than it believes exist.
+   */
+  totalChapters: z.number().int().positive().optional(),
+  /**
+   * When we successfully told this tracker the series is FINISHED, epoch ms.
+   *
+   * Deliberately separate from `status`, which a pull overwrites with the tracker's own truth (see
+   * `applyTrackerItem`). If completion were inferred from `status`, a user who deliberately set a
+   * fully-read series to "dropped" on the service would have "completed" re-pushed over it on every
+   * background sync. This records only what WE sent, so the push happens exactly once.
+   */
+  completedPushedAt: z.number().int().optional(),
   lastSyncAt: z.number().int().optional(),
 });
 export type TrackerLink = z.infer<typeof trackerLinkSchema>;

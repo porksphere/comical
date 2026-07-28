@@ -253,6 +253,108 @@ describe("reconcileRead (external pull)", () => {
   });
 });
 
+describe("getEntryCompletion", () => {
+  /** Add the series, sync `chapters`, cache a detail with `status`, and mark `read` chapters read. */
+  async function seed(opts: { chapters: Chapter[]; status?: string; read?: Chapter[] }) {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, opts.chapters);
+    if (opts.status) {
+      await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", status: opts.status as never });
+    }
+    for (const c of opts.read ?? []) await lib.markRead(KEY, c.id, true, c.name, c.number);
+    return lib;
+  }
+
+  test("the BLAME! shape: fractional extras don't stop a fully-read completed series", async () => {
+    // The reported bug's exact data: 67 rows numbered 1–65 plus 3.5 and 7.5, all read. The highest
+    // read NUMBER is 65 while the tracker's own total is 66, so any number-based completion check
+    // fails here. Completion is decided by unread count, which is 0.
+    const chapters = [
+      ...Array.from({ length: 65 }, (_, i) => ch(`c${i + 1}`, i + 1)),
+      ch("c3_5", 3.5),
+      ch("c7_5", 7.5),
+    ];
+    const lib = await seed({ chapters, status: "completed", read: chapters });
+
+    expect(await lib.maxReadChapterNumber(KEY)).toBe(65);
+    expect(await lib.getEntryCompletion(KEY)).toEqual({
+      fullyRead: true,
+      seriesStatus: "completed",
+      seriesFinished: true,
+    });
+  });
+
+  test("fully read but still ongoing is caught up, not finished", async () => {
+    const chapters = [ch("c1", 1), ch("c2", 2)];
+    const lib = await seed({ chapters, status: "ongoing", read: chapters });
+    expect(await lib.getEntryCompletion(KEY)).toEqual({
+      fullyRead: true,
+      seriesStatus: "ongoing",
+      seriesFinished: false,
+    });
+  });
+
+  test("hiatus is not finished — a paused series can resume", async () => {
+    const chapters = [ch("c1", 1)];
+    const lib = await seed({ chapters, status: "hiatus", read: chapters });
+    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: true, seriesFinished: false });
+  });
+
+  test("cancelled counts as finished — it will gain no more chapters", async () => {
+    const chapters = [ch("c1", 1)];
+    const lib = await seed({ chapters, status: "cancelled", read: chapters });
+    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: true, seriesFinished: true });
+  });
+
+  test("one unread chapter is not fully read", async () => {
+    const chapters = [ch("c1", 1), ch("c2", 2)];
+    const lib = await seed({ chapters, status: "completed", read: [chapters[0]!] });
+    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: false, seriesFinished: true });
+  });
+
+  test("no cached detail reads as unknown status, never finished", async () => {
+    const chapters = [ch("c1", 1)];
+    const lib = await seed({ chapters, read: chapters });
+    expect(await lib.getEntryCompletion(KEY)).toEqual({
+      fullyRead: true,
+      seriesStatus: "unknown",
+      seriesFinished: false,
+    });
+  });
+
+  test("an entry with no synced chapters is NOT fully read, even though 0 are unread", async () => {
+    // The dangerous false positive: a favourites import seeds an entry with an empty chapter list,
+    // which would otherwise read as "nothing left to read" the instant it's added.
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", status: "completed" });
+    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: false, seriesFinished: true });
+
+    // An explicit sync of an empty list is still not evidence of a finished read.
+    await lib.syncChapters(KEY, []);
+    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: false });
+  });
+
+  test("two scanlation copies of one chapter count as read when either is read", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [chg("a5", 5, "GroupA", "en"), chg("b5", 5, "GroupB", "en")]);
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", status: "completed" });
+    await lib.markRead(KEY, "a5", true, "Ch 5", 5);
+    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: true, seriesFinished: true });
+  });
+
+  test("a series not in the library resolves rather than throwing", async () => {
+    const lib = makeLibrary();
+    expect(await lib.getEntryCompletion(KEY)).toEqual({
+      fullyRead: false,
+      seriesStatus: "unknown",
+      seriesFinished: false,
+    });
+  });
+});
+
 describe("new-chapter detection", () => {
   test("first sync establishes a baseline (no 'added'); later syncs report new chapters", async () => {
     const lib = makeLibrary();
