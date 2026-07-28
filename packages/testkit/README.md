@@ -117,23 +117,45 @@ report.metrics?.bytes;      // { min, max, avg, median, total }
 report.metrics?.dimensions; // { avgWidth, avgHeight, maxWidth, maxHeight }
 ```
 
-### 4. Tolerate flaky / blocked sites (don't go red on Cloudflare)
+### 4. Audit a whole registry repo on a schedule (`runBridgeAudit`)
 
-Against real backends, some sites Cloudflare-wall or rate-limit datacenter (CI runner) IPs even
-though they work from a phone. `evaluateBridge` already downgrades a **transient** throw to `warn`
-(via `isTransientError`) so a blocked capability reads ⚠, not ✗ — a real parse/logic error still
-`fail`s. For a per-bridge "known flaky, tolerate even hard failures" policy, keep a small config in
-your own repo and decide the run's exit code from the report:
+`evaluateBridge` grades one bridge. `runBridgeAudit` grades **every bridge a registry repo
+publishes** and renders the two documents such a repo keeps: a compact summary table (spliced into
+the README between `<!-- BRIDGE-STATUS:START -->` / `:END` markers by `applyStatusBlock`) and a
+standalone per-check detail document.
+
+It stays free of `node:*` and of any host adapter — you supply `readBundle` (wherever your built
+bundles live) and `createCapabilities` (whichever host you run on), and get markdown back. Writing
+files is yours to do.
 
 ```ts
-const flaky = new Set(["some-source", "other-source"]); // bridge ids known to block runner IPs
-const hardFail = report.summary.verdict === "fail" && !flaky.has(report.bridgeId);
-process.exit(hardFail ? 1 : 0);
+import { runBridgeAudit, applyStatusBlock, defaultAssetFetcher } from "@comical/testkit";
+import { createBunHost } from "@comical/host-bun";
+
+const result = await runBridgeAudit({
+  bridges: {
+    "my-bridge":    { searchQuery: "spy" },
+    "other-bridge": { searchQuery: "the", settings: { adult: "true" },
+                      flaky: "Cloudflare challenges datacenter IPs" },
+  },
+  readBundle: (id) => readFileSync(`.build/${id}/dist/bridge.js`, "utf8"),
+  createCapabilities: (id, settings) => createBunHost({ bridgeId: id, settings }),
+  fetchAsset: defaultAssetFetcher,
+  onProgress: (id) => process.stderr.write(`auditing ${id}…\n`),
+});
+
+writeFileSync("README.md", applyStatusBlock(readFileSync("README.md", "utf8"), result.summaryMarkdown));
+writeFileSync("AUDIT.md", result.detailsMarkdown);
+process.exit(result.hardFailures.length > 0 ? 1 : 0);
 ```
 
-A complete, working example of a live nightly audit — loading built bundles, measuring covers,
-rendering a status table into a README, and tagging flaky bridges — lives in the **`comical-bridges`**
-repo as `audit.ts` + `audit.config.ts`. It's the canonical reference for pattern 3 + 4.
+**Tolerating flaky / blocked sites (don't go red on Cloudflare).** Against real backends, some sites
+Cloudflare-wall or rate-limit datacenter (CI runner) IPs even though they work from a phone.
+`evaluateBridge` already downgrades a **transient** throw to `warn` (via `isTransientError`) so a
+blocked capability reads ⚠, not ✗ — a real parse/logic error still `fail`s. A bridge that can't pass
+from CI *at all* gets `flaky: "<reason>"` in its config: it shows ⚠ even for a hard failure, the
+reason is printed in both documents, and it never lands in `hardFailures`. Only a real failure on a
+non-flaky bridge fails the run.
 
 ### 5. Record once, replay forever (cassettes)
 

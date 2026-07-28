@@ -61,6 +61,7 @@ Usage:
   comical registry uninstall <bridgeId>          uninstall a registry bridge
   comical registry updates                       check for available updates
   comical registry publish --base-url URL --out DIR [--key FILE] [--bridges-dir DIR] [--trackers-dir DIR] [--nsfw true|false] [--display-name NAME] [--moved-to URL] [--moved-from URL]   generate index.json
+  comical registry publish --tombstone --moved-to URL --out DIR                          leave a forwarding index at a URL the registry moved away from
   comical registry keygen --out FILE             generate an Ed25519 keypair
 
 Options:
@@ -81,6 +82,7 @@ Options:
   --display-name NAME \`registry publish\`: operator label for the registry (e.g. "SFW"), shown next to its name
   --moved-to URL      \`registry publish\`: this registry has moved — forward clients to URL
   --moved-from URL    \`registry publish\`: URL this registry used to live at (repeatable)
+  --tombstone         \`registry publish\`: emit ONLY the \`--moved-to\` forwarding note — no bridges, no bundles
   --key FILE          Path to private key file for \`registry publish\`
   --query Q           Search query for the \`evaluate\` probe
   --strict            \`evaluate\`: treat warnings as failures (non-zero exit)
@@ -137,6 +139,7 @@ async function main(): Promise<number> {
       "display-name": { type: "string" },
       "moved-to": { type: "string" },
       "moved-from": { type: "string", multiple: true },
+      tombstone: { type: "boolean" },
       nsfw: { type: "string" },
       out: { type: "string" },
       key: { type: "string" },
@@ -270,9 +273,15 @@ async function main(): Promise<number> {
     }
 
     if (sub === "publish") {
-      const baseUrl = requireArg(values["base-url"], "base-url");
       const outDir = requireArg(values.out, "out");
+      const tombstone = values.tombstone === true;
+      if (tombstone && !values["moved-to"]) {
+        throw new Error("--tombstone needs --moved-to <url>: a forwarding index with nowhere to forward is a dead end");
+      }
+      // A tombstone emits no bundles, so it has no URLs to build and needs no --base-url.
+      const baseUrl = tombstone ? (values["base-url"] ?? "") : requireArg(values["base-url"], "base-url");
       const pubOpts: PublishOpts = { baseUrl, outDir };
+      if (tombstone) pubOpts.tombstone = true;
       if (values.key) pubOpts.keyFile = values.key;
       if (values["bridges-dir"]) pubOpts.bridgesDir = values["bridges-dir"];
       if (values["trackers-dir"]) pubOpts.trackersDir = values["trackers-dir"];
@@ -497,6 +506,12 @@ interface PublishOpts {
   displayName?: string;
   /** Publish this index as a forwarding note: the canonical URL the registry now lives at. */
   movedTo?: string;
+  /**
+   * Publish **only** the forwarding note — no bridges, no trackers, no bundles copied. This is the
+   * index you leave behind at a URL a registry has moved *away* from, so clients that still hold the
+   * old URL are redirected instead of stranded. Requires `movedTo`; `baseUrl` is unused.
+   */
+  tombstone?: boolean;
   /** URLs this registry previously lived at, so re-adding clients can adopt existing installs. */
   movedFrom?: string[];
   /**
@@ -507,7 +522,7 @@ interface PublishOpts {
   nsfwFilter?: boolean;
 }
 
-async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersDir, displayName, nsfwFilter, movedTo, movedFrom }: PublishOpts): Promise<void> {
+async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersDir, displayName, nsfwFilter, movedTo, movedFrom, tombstone }: PublishOpts): Promise<void> {
   const { mkdirSync, readFileSync, copyFileSync } = await import("node:fs");
   const { join: pjoin } = await import("node:path");
 
@@ -525,9 +540,13 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
   // ── Bridges ──────────────────────────────────────────────────────────────
   // Only use the monorepo default when --bridges-dir is not given AND no --trackers-dir was
   // provided either (tracker-only repos must not accidentally include the monorepo's bridges).
-  const effectiveBridgesDir = bridgesDir ?? (trackersDir ? undefined : BRIDGES_DIR);
+  // A tombstone discovers nothing at all: it publishes the forwarding note and nothing else, so it
+  // must not pick up the monorepo's bridges (or anything else) by default.
+  const effectiveBridgesDir = tombstone ? undefined : (bridgesDir ?? (trackersDir ? undefined : BRIDGES_DIR));
   const discovered = effectiveBridgesDir ? discoverBridges(effectiveBridgesDir) : [];
-  if (discovered.length === 0 && !trackersDir) throw new Error("no built bridges found — run the build first");
+  if (discovered.length === 0 && !trackersDir && !tombstone) {
+    throw new Error("no built bridges found — run the build first");
+  }
   const bridges = filterBridgesByNsfw(discovered, nsfwFilter);
 
   const bridgeEntries = [];
@@ -565,7 +584,7 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
 
   // ── Trackers ─────────────────────────────────────────────────────────────
   const trackerEntries = [];
-  if (trackersDir) {
+  if (trackersDir && !tombstone) {
     const trackers = discoverTrackers(trackersDir);
     if (trackers.length === 0) throw new Error(`no built trackers found in ${trackersDir} — run the build first`);
     for (const t of trackers) {
@@ -611,6 +630,19 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
   const indexPath = pjoin(outDir, "index.json");
   await writeFile(indexPath, JSON.stringify(index, null, 2), "utf8");
   console.log(`\n✓ index.json written → ${indexPath}`);
+  if (tombstone) {
+    console.log("  Tombstone — forwarding note only, no bridges or bundles published");
+    // Key continuity is checked against the *forwarding* index, not the target: a client follows a
+    // move without asking only when the index carrying `movedTo` is still signed by the key it
+    // pinned for that URL. An unsigned tombstone is therefore not a silent no-op — it downgrades
+    // every client's migration into a manual "this registry claims it moved, accept?" prompt.
+    if (!publicKey) {
+      console.warn(
+        "  ! Unsigned tombstone: clients that pinned a key for this URL cannot verify the move and\n" +
+          "    will hold it for manual confirmation. Pass --key to sign it with the same key as before.",
+      );
+    }
+  }
   if (bridgeEntries.length) console.log(`  ${bridgeEntries.length} bridge(s) published`);
   if (trackerEntries.length) console.log(`  ${trackerEntries.length} tracker(s) published`);
   if (publicKey) console.log(`  Signed with key: ${publicKey.slice(0, 20)}…`);

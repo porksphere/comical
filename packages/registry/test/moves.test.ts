@@ -213,6 +213,24 @@ describe("movedTo — unverifiable claims are held, not followed", () => {
     await expect(mgr.confirmMove(url)).rejects.toBeInstanceOf(MoveError);
   });
 
+  test("a signed registry that forwards with an UNSIGNED stub is held, not followed", async () => {
+    // The trap for an operator publishing a forwarding index by hand: the registry was signed, but
+    // the stub left behind at the old URL drops the key. Continuity is checked against the stub
+    // itself, so there is now nothing to check it against — and a planned migration silently
+    // degrades into a manual confirm on every client. Pinned here so it stays a deliberate choice.
+    const oldUrl = await publish("dk-old", { bridges: [{ id: "example" }], key: keyA });
+    const { manifest, mgr } = mgrFor("dk");
+    await mgr.add(oldUrl);
+    await mgr.install(oldUrl, "example");
+
+    const newUrl = await publish("dk-new", { bridges: [{ id: "example", version: "0.2.0" }], key: keyA });
+    await publish("dk-old", { bridges: [], movedTo: newUrl }); // same operator, key omitted
+
+    await mgrFor("dk", manifest).mgr.browse(oldUrl);
+    expect((await manifest.getRegistry(oldUrl))?.pendingMove).toBe(newUrl);
+    expect((await manifest.getInstalled("example"))?.registryUrl).toBe(oldUrl);
+  });
+
   test("a move signed by a DIFFERENT key is held, not followed", async () => {
     const oldUrl = await publish("km-old", { bridges: [{ id: "example" }], key: keyA });
     const { manifest, mgr } = mgrFor("km");

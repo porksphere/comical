@@ -36,6 +36,8 @@ the user is authorized to use.
 - [Writing a bridge](#writing-a-bridge)
 - [Registry](#registry)
   - [Publishing a registry](#publishing-a-registry)
+  - [Splitting one repo into several registries](#splitting-one-repo-into-several-registries)
+  - [Moving a registry](#moving-a-registry)
   - [Adding a registry](#adding-a-registry)
 - [Testing](#testing)
 - [Development](#development)
@@ -690,6 +692,65 @@ The published `index.json` shape:
 }
 ```
 
+### Splitting one repo into several registries
+
+`--nsfw true|false` publishes only the bridges with that rating, and `--display-name` labels the
+result. Run `publish` once per rating from the same build output and you get two independent
+registries a user can add separately — someone who adds only the SFW one is never even offered the
+others:
+
+```sh
+comical registry publish --bridges-dir ./.build --nsfw false \
+  --base-url https://me.github.io/my-bridges/sfw  --out ./sfw  --display-name SFW  --key registry.key.json
+comical registry publish --bridges-dir ./.build --nsfw true \
+  --base-url https://me.github.io/my-bridges/nsfw --out ./nsfw --display-name NSFW --key registry.key.json
+```
+
+Each bundle belongs to exactly one rating (its own `info.nsfw`), so nothing is duplicated.
+
+### Moving a registry
+
+A registry's URL is the identity every install is bound to — settings, credentials, library entries
+and update authority all hang off it. Moving hosts, renaming a repo, or splitting one repo into two
+therefore needs the index to say so, or every installed bridge is stranded. Two fields do it, from
+opposite ends:
+
+| Field | Asserted by | Use when |
+|---|---|---|
+| `movedTo` | the **old** host | the old URL can keep serving — clients are forwarded automatically |
+| `movedFrom` | the **new** host | the old host is gone — a user who re-adds by hand adopts their installs |
+
+Publish both. The new home claims its predecessor, and the old URL is replaced by a **tombstone** —
+an index with no bridges that exists only to forward:
+
+```sh
+# The new home, claiming succession from the URL it used to live at.
+comical registry publish --bridges-dir ./.build \
+  --base-url https://me.github.io/new-home --out ./dist \
+  --moved-from https://me.github.io/old-home/index.json \
+  --key registry.key.json
+
+# What stays behind at the old URL.
+comical registry publish --tombstone \
+  --moved-to https://me.github.io/new-home/index.json --out ./old-home \
+  --key registry.key.json
+```
+
+**Sign the tombstone with the same key as before.** Key continuity is checked against the index
+carrying `movedTo` — the tombstone itself — because that is the only cryptographic proof the same
+operator still controls the old URL. With it, clients follow the move silently. Without it (unsigned,
+or a *new* key), the move is held as `pendingMove` and every user has to confirm a "this registry
+says it moved" prompt; `--tombstone` warns when you publish one unsigned. The same rule governs
+`movedFrom`: a matching key adopts the predecessor's installs automatically, otherwise the client
+offers it as `pendingAdoption` — anyone can claim to succeed anyone, so an unverified claim never
+takes effect on its own.
+
+Two more guards apply on top: a move is refused outright if none of the ids installed from the old
+URL appear in the target index (that's a different registry wearing the name, not a move — a
+*partial* overlap is fine, publishers drop bridges), and `movedTo` chains stop after
+`MAX_MOVE_HOPS` (3) with cycles detected, so a broken or hostile index can't turn every fetch into a
+crawl.
+
 ### Adding a registry
 
 Via the CLI:
@@ -719,6 +780,7 @@ curl http://localhost:3100/registry/updates
 - Ed25519 signature verification is optional — present when the registry operator has generated a keypair. Trust is established when you add the registry (HTTPS identity + the registry operator's identity on GitHub).
 - Updates are **always manual**. `checkUpdates()` / `GET /registry/updates` reports available versions; nothing installs without explicit user action.
 - Removing a registry **orphans** its installed bridges (they are blocked from loading). Re-add the registry or reinstall the bridges to restore them.
+- A registry that claims to have moved (`movedTo` / `movedFrom`) is followed automatically **only** under key continuity; otherwise the claim is held for explicit user confirmation. See [Moving a registry](#moving-a-registry).
 
 ---
 

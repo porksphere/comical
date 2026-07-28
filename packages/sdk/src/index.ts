@@ -7,3 +7,4 @@ export * from "./bridge-base.ts";
 export * from "./tracker-base.ts";
 export * from "./settings.ts";
 export * from "./base64.ts";
+export * from "./lang.ts";
