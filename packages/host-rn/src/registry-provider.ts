@@ -18,6 +18,7 @@
  * 1:1, operating on `index.trackers` and `deps.installedTrackers` instead.
  */
 import type { AvailableBridge, AvailableTracker, InstallResult } from "@comical/registry/available";
+import { assertContractCompatible, isEntryCompatible } from "@comical/registry/compat";
 import { assertInstallableFrom } from "@comical/registry/conflicts";
 import { MAX_MOVE_HOPS, MoveError, assertSameRegistry, hasKeyContinuity } from "@comical/registry/moves";
 import type { RegistryBridgeEntry, RegistryIndex, RegistryTrackerEntry, SavedRegistry } from "@comical/registry/schema";
@@ -129,11 +130,13 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     const map = new Map(installed.map((b) => [b.id, b]));
     return index.bridges.map((entry) => {
       const local = map.get(entry.id);
+      const compatible = isEntryCompatible(entry.contractVersion);
       return {
         entry,
         registryUrl: url,
         installedVersion: local?.version ?? null,
-        updateAvailable: !!local && isNewer(entry.version, local.version),
+        updateAvailable: compatible && !!local && isNewer(entry.version, local.version),
+        compatible,
       };
     });
   }
@@ -158,6 +161,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     const entry = index.bridges.find((b) => b.id === bridgeId);
     if (!entry) throw new Error(`bridge "${bridgeId}" not found in registry ${url}`);
     assertInstallableFrom("bridge", bridgeId, url, await this.deps.installed.get(bridgeId));
+    assertContractCompatible("bridge", bridgeId, entry.contractVersion);
 
     const record: InstalledBridgeRecord = {
       id: entry.id,
@@ -211,7 +215,13 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
       }
       const entry = index.bridges.find((b) => b.id === rec.id);
       const discontinued = !entry;
-      const availableVersion = entry && isNewer(entry.version, rec.version) ? entry.version : undefined;
+      // `hasNewer` and `availableVersion` differ on exactly one case: a newer version this build
+      // can't load. It isn't offered — taking it would swap a working bridge for one the loader
+      // refuses — but it must still count as "newer" below, or the hash-drift self-heal would read
+      // it as a same-version republish and re-pin the record onto the unloadable bundle.
+      const hasNewer = !!entry && isNewer(entry.version, rec.version);
+      const availableVersion =
+        hasNewer && isEntryCompatible(entry!.contractVersion) ? entry!.version : undefined;
 
       // A registry can (by operator mistake) republish different bytes at the SAME version — see
       // `assertVersionImmutable` in @comical/registry, which now guards new publishes against this.
@@ -219,7 +229,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
       // on every reload, with no version bump to ever surface as an "update available": silently
       // re-pin to the registry's current url/sha256/signature/info for this version so the next load
       // recovers instead of staying wedged forever.
-      if (entry && !availableVersion && !discontinued && entry.sha256 !== rec.sha256) {
+      if (entry && !hasNewer && !discontinued && entry.sha256 !== rec.sha256) {
         const { availableVersion: _av, discontinued: _dc, ...base } = rec;
         await this.deps.installed.add({
           ...base,
@@ -263,11 +273,13 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     const map = new Map(installed.map((t) => [t.id, t]));
     return (index.trackers ?? []).map((entry) => {
       const local = map.get(entry.id);
+      const compatible = isEntryCompatible(entry.contractVersion);
       return {
         entry,
         registryUrl: url,
         installedVersion: local?.version ?? null,
-        updateAvailable: !!local && isNewer(entry.version, local.version),
+        updateAvailable: compatible && !!local && isNewer(entry.version, local.version),
+        compatible,
       };
     });
   }
@@ -290,6 +302,7 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     const entry = (index.trackers ?? []).find((t) => t.id === trackerId);
     if (!entry) throw new Error(`tracker "${trackerId}" not found in registry ${url}`);
     assertInstallableFrom("tracker", trackerId, url, await this.deps.installedTrackers.get(trackerId));
+    assertContractCompatible("tracker", trackerId, entry.contractVersion);
 
     const record: InstalledTrackerRecord = {
       id: entry.id,
@@ -335,10 +348,13 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
       }
       const entry = (index.trackers ?? []).find((t) => t.id === rec.id);
       const discontinued = !entry;
-      const availableVersion = entry && isNewer(entry.version, rec.version) ? entry.version : undefined;
+      // See checkUpdates for why an incompatible newer version still counts as `hasNewer`.
+      const hasNewer = !!entry && isNewer(entry.version, rec.version);
+      const availableVersion =
+        hasNewer && isEntryCompatible(entry!.contractVersion) ? entry!.version : undefined;
 
       // Same same-version-hash-drift self-heal as checkUpdates — see its comment for the incident.
-      if (entry && !availableVersion && !discontinued && entry.sha256 !== rec.sha256) {
+      if (entry && !hasNewer && !discontinued && entry.sha256 !== rec.sha256) {
         const { availableVersion: _av, discontinued: _dc, ...base } = rec;
         await this.deps.installedTrackers.add({
           ...base,

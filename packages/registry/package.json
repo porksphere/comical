@@ -11,7 +11,8 @@
     "./available": "./src/available.ts",
     "./url": "./src/url.ts",
     "./moves": "./src/moves.ts",
-    "./conflicts": "./src/conflicts.ts"
+    "./conflicts": "./src/conflicts.ts",
+    "./compat": "./src/compat.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {

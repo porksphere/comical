@@ -14,6 +14,7 @@
  */
 import { writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import { assertContractCompatible, isEntryCompatible } from "./compat.ts";
 import { assertInstallableFrom } from "./conflicts.ts";
 import { downloadBundle, fetchIndex } from "./fetcher.ts";
 import { ManifestStore } from "./manifest.ts";
@@ -94,11 +95,13 @@ export class RegistryManager {
 
     return index.bridges.map((entry) => {
       const local = installedMap.get(entry.id);
+      const compatible = isEntryCompatible(entry.contractVersion);
       return {
         entry,
         registryUrl: url,
         installedVersion: local?.version ?? null,
-        updateAvailable: !!local && isNewer(entry.version, local.version),
+        updateAvailable: compatible && !!local && isNewer(entry.version, local.version),
+        compatible,
       };
     });
   }
@@ -123,8 +126,10 @@ export class RegistryManager {
     const entry = index.bridges.find((b) => b.id === bridgeId);
     if (!entry) throw new Error(`bridge "${bridgeId}" not found in registry ${url}`);
     // Before the download, not after: refusing early means we never fetch (or cache) a bundle we
-    // were never going to be allowed to install.
+    // were never going to be allowed to install — whether that's a conflicting publisher or a
+    // contract this build can't honour, which the loader would reject at evaluation time anyway.
     assertInstallableFrom("bridge", bridgeId, url, await this.opts.manifest.getInstalled(bridgeId));
+    assertContractCompatible("bridge", bridgeId, entry.contractVersion);
 
     const registry = await this.opts.manifest.getRegistry(url);
 
@@ -189,7 +194,9 @@ export class RegistryManager {
         // against it would report the bridge missing rather than moved.
         if (pendingMove) continue;
         const entry = index.bridges.find((b) => b.id === bridge.id);
-        if (entry && isNewer(entry.version, bridge.version)) {
+        // An update this build can't load isn't an update — taking it would swap a working bridge
+        // for one the loader refuses, and the badge would be the only thing that ever hinted at it.
+        if (entry && isNewer(entry.version, bridge.version) && isEntryCompatible(entry.contractVersion)) {
           updates.push({
             id: bridge.id,
             installedVersion: bridge.version,
@@ -232,11 +239,13 @@ export class RegistryManager {
 
     return (index.trackers ?? []).map((entry) => {
       const local = installedMap.get(entry.id);
+      const compatible = isEntryCompatible(entry.contractVersion);
       return {
         entry,
         registryUrl: url,
         installedVersion: local?.version ?? null,
-        updateAvailable: !!local && isNewer(entry.version, local.version),
+        updateAvailable: compatible && !!local && isNewer(entry.version, local.version),
+        compatible,
       };
     });
   }
@@ -259,6 +268,7 @@ export class RegistryManager {
     const entry = (index.trackers ?? []).find((t) => t.id === trackerId);
     if (!entry) throw new Error(`tracker "${trackerId}" not found in registry ${url}`);
     assertInstallableFrom("tracker", trackerId, url, await this.opts.manifest.getInstalledTracker(trackerId));
+    assertContractCompatible("tracker", trackerId, entry.contractVersion);
 
     const registry = await this.opts.manifest.getRegistry(url);
     const dlOpts: Parameters<typeof downloadBundle>[1] = {
@@ -309,7 +319,8 @@ export class RegistryManager {
         const { index, pendingMove } = await this.resolveIndex(tracker.registryUrl);
         if (pendingMove) continue; // see checkUpdates
         const entry = (index.trackers ?? []).find((t) => t.id === tracker.id);
-        if (entry && isNewer(entry.version, tracker.version)) {
+        // See checkUpdates — an unloadable version is not offered.
+        if (entry && isNewer(entry.version, tracker.version) && isEntryCompatible(entry.contractVersion)) {
           updates.push({ id: tracker.id, installedVersion: tracker.version, availableVersion: entry.version });
         }
       } catch { /* offline */ }
