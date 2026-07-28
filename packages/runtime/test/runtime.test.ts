@@ -1191,6 +1191,52 @@ describe("syncEntryWithTracker", () => {
     await runtime.syncEntryWithTracker("test", "s1", "anilist");
     expect(updateCalls).toHaveLength(1);
   });
+
+  test("the pull's own chapter total drives trigger A here, clamping what it pushes", async () => {
+    // The manual path builds its decision from the item it just pulled, not from the link — so a
+    // total the link has never seen still completes the entry on the very first sync. The bridge
+    // calls the series "unknown", so trigger B cannot be what fires.
+    const lib = makeLib();
+    const chapters = [ch("c1", 1), ch("c2", 2), ch("c3", 3), ch("c4", 4)];
+    const bridge = syncBridge({
+      details: { id: "s1", title: "Series", externalIds: { anilist: 111 }, status: "unknown" },
+      chapters,
+    });
+    const updateCalls: PushCall[] = [];
+    const tracker = mockTracker("anilist", {
+      capabilities: ["library-sync", "status-sync"],
+      updateCalls,
+      // AniList numbers this series 1–3; the source has a fourth chapter it doesn't know about.
+      libraryEntries: [
+        { externalId: 111, title: "Series", status: "reading", chaptersRead: 1, totalChapters: 3 },
+      ],
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1");
+    for (const c of chapters) await lib.markRead("test:s1", c.id, true, c.name, c.number);
+
+    const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
+
+    // 3, not the local 4 — never claim more chapters than the service thinks exist.
+    expect(updateCalls).toEqual([
+      { externalId: 111, chaptersRead: 3, status: "completed", finishedAt: TODAY },
+    ]);
+    expect(res).toMatchObject({ updated: true, pushed: true, chaptersRead: 3 });
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({
+      chaptersRead: 3,
+      totalChapters: 3,
+      status: "completed",
+    });
+
+    // The clamped value settles: local is still "ahead" at 4 forever, and that must not re-push.
+    await runtime.syncEntryWithTracker("test", "s1", "anilist");
+    expect(updateCalls).toHaveLength(1);
+  });
 });
 
 // ── backgroundSync — re-link pass ─────────────────────────────────────────────

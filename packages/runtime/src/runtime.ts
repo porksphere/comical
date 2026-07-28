@@ -788,7 +788,14 @@ export class ComicalRuntime {
       await this.pushToTracker(tracker, link.externalId, decision.update);
       const pushed = decision.update.chaptersRead;
       if (pushed !== undefined) {
-        await lib.updateTrackerLink(key, trackerId, { ...decision.link, lastSyncAt: Date.now() });
+        await lib.updateTrackerLink(key, trackerId, {
+          // Mirror the total even though this branch skips `applyTrackerItem` — it's the only thing
+          // the implicit read push (which never pulls) has to clamp against, so dropping it here
+          // would let the next local read push straight past the service's own chapter count.
+          ...(remote?.totalChapters !== undefined && { totalChapters: remote.totalChapters }),
+          ...decision.link,
+          lastSyncAt: Date.now(),
+        });
         return { updated: true, readSynced: 0, pushed: true, chaptersRead: pushed };
       }
       // Status-only (the finished-series repair, where progress has nothing new to say). Fall through
