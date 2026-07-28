@@ -1318,6 +1318,88 @@ describe("backgroundSync — staleness window", () => {
   });
 });
 
+describe("backgroundSync — series-detail refresh", () => {
+  /** A bridge whose publication status can change between syncs, counting detail fetches. */
+  function statusBridge(status: () => SeriesInfo["status"]) {
+    let detailCalls = 0;
+    const bridge: Bridge = {
+      info: BRIDGE_INFO,
+      async getSeriesDetails() {
+        detailCalls++;
+        return { id: "s1", title: "Series", status: status() };
+      },
+      async getChapters() { return [ch("c1", 1)]; },
+    };
+    return { bridge, calls: () => detailCalls };
+  }
+
+  test("re-fetches an ongoing series' detail once the cache goes stale, catching that it finished", async () => {
+    // Without this, a series added while ongoing is never *known* to have finished unless the user
+    // opens its page — so its tracker sits on "Reading" indefinitely.
+    const lib = makeLib();
+    let status: SeriesInfo["status"] = "ongoing";
+    const { bridge, calls } = statusBridge(() => status);
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+
+    await runtime.addToLibrary("test", "s1");
+    expect(calls()).toBe(1);
+
+    // Inside the window, the cached answer stands — this is the common path, and re-fetching here
+    // would double every background sync's request count.
+    await runtime.backgroundSync({ force: true });
+    expect(calls()).toBe(1);
+
+    // Now treat the cache as stale (a zero window makes any cached age qualify).
+    status = "completed";
+    await runtime.backgroundSync({ force: true, detailStaleMs: 0 });
+
+    expect(calls()).toBe(2);
+    expect((await lib.getCachedDetail("test:s1"))?.info.status).toBe("completed");
+  });
+
+  test("a terminal status is never re-fetched — 'completed' cannot go stale", async () => {
+    const lib = makeLib();
+    const { bridge, calls } = statusBridge(() => "completed");
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+
+    await runtime.addToLibrary("test", "s1");
+    await runtime.backgroundSync({ force: true, detailStaleMs: 0 });
+
+    expect(calls()).toBe(1);
+  });
+
+  test("an entry with no cached detail gets one, whatever the window says", async () => {
+    const lib = makeLib();
+    const { bridge, calls } = statusBridge(() => "ongoing");
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+
+    // Seeded straight into the library (a favourites import), so nothing was ever cached.
+    await lib.addSeries({ bridgeId: "test", seriesId: "s1", title: "Series" });
+    expect(await lib.getCachedDetail("test:s1")).toBeUndefined();
+
+    await runtime.backgroundSync();
+
+    expect(calls()).toBe(1);
+    expect((await lib.getCachedDetail("test:s1"))?.info.status).toBe("ongoing");
+  });
+
+  test("a failing detail fetch never aborts the entry's sync", async () => {
+    const lib = makeLib();
+    const bridge: Bridge = {
+      info: BRIDGE_INFO,
+      async getSeriesDetails() { throw new Error("source down"); },
+      async getChapters() { return [ch("c1", 1), ch("c2", 2)]; },
+    };
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await lib.addSeries({ bridgeId: "test", seriesId: "s1", title: "Series" });
+
+    const res = await runtime.backgroundSync();
+
+    expect(res).toMatchObject({ updated: 1 });
+    expect((await lib.getEntry("test:s1"))?.knownChapters).toHaveLength(2);
+  });
+});
+
 describe("backgroundSync — bounded concurrency", () => {
   test("at most `concurrency` entries sync in parallel", async () => {
     const lib = makeLib();

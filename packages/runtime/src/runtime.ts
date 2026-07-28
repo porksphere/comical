@@ -55,6 +55,12 @@ export interface BackgroundSyncOptions {
   concurrency?: number;
   /** Wall-clock budget: stop starting new entries once exceeded (short OS background windows). */
   budgetMs?: number;
+  /**
+   * How old a *non-terminal* cached series detail may be before it's re-fetched. Default 7 days.
+   * Separate from `staleMs` because this governs publication status (which changes on the order of
+   * months), not the chapter list.
+   */
+  detailStaleMs?: number;
   /** Run the whole-list tracker pull at the end. Default true; quick background runs pass false. */
   trackers?: boolean;
 }
@@ -409,7 +415,14 @@ export class ComicalRuntime {
    */
   async backgroundSync(opts: BackgroundSyncOptions = {}): Promise<BackgroundSyncResult> {
     const lib = this.requireLibrary();
-    const { force = false, staleMs = 6 * 60 * 60 * 1000, concurrency = 4, budgetMs, trackers = true } = opts;
+    const {
+      force = false,
+      staleMs = 6 * 60 * 60 * 1000,
+      concurrency = 4,
+      budgetMs,
+      detailStaleMs,
+      trackers = true,
+    } = opts;
     const startedAt = Date.now();
 
     const entries = await lib.getLibrary();
@@ -431,7 +444,7 @@ export class ComicalRuntime {
           return;
         }
         const entry = candidates[next++]!;
-        await this.syncOneEntry(entry, counters);
+        await this.syncOneEntry(entry, counters, detailStaleMs);
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => worker()));
@@ -466,6 +479,7 @@ export class ComicalRuntime {
   private async syncOneEntry(
     entry: LibraryEntryView,
     counters: { updated: number; newChapters: number; readSynced: number },
+    detailStaleMs?: number,
   ): Promise<void> {
     const lib = this.requireLibrary();
     try {
@@ -483,6 +497,8 @@ export class ComicalRuntime {
 
       // Wire up any tracker configured after this entry was added (externalId already known).
       await this.relinkEntry(entry.bridgeId, entry.seriesId, entry.externalIds);
+
+      await this.refreshStaleDetail(bridge, entry.seriesId, key, detailStaleMs).catch(() => {});
 
       // Union-merge the bridge's read state — read flags only, resume untouched.
       if (bridge.getReadChapters) {
@@ -502,6 +518,33 @@ export class ComicalRuntime {
     } catch {
       // continue — one bad bridge or deleted series should not abort the sync
     }
+  }
+
+  /**
+   * Re-cache a series' detail when its publication status could have gone stale.
+   *
+   * The cached detail is otherwise written only at add-time and when the user opens the series page,
+   * so a series added while *ongoing* that later finishes would never be detected as complete until
+   * someone visited it — leaving the tracker on "Reading" indefinitely.
+   *
+   * Refreshed only when the cache is **absent, or non-terminal and older than the window**:
+   * "completed"/"cancelled" is a terminal answer that can't go stale, and gating on it keeps this off
+   * the common path instead of doubling every background sync's request count.
+   */
+  private async refreshStaleDetail(
+    bridge: LoadedBridge,
+    seriesId: string,
+    key: string,
+    staleMs: number = 7 * 24 * 60 * 60 * 1000,
+  ): Promise<void> {
+    if (!bridge.getSeriesDetails) return;
+    const lib = this.requireLibrary();
+    const cached = await lib.getCachedDetail(key);
+    if (cached) {
+      const terminal = cached.info.status === "completed" || cached.info.status === "cancelled";
+      if (terminal || Date.now() - cached.cachedAt < staleMs) return;
+    }
+    await lib.cacheSeriesDetail(key, await bridge.getSeriesDetails(seriesId));
   }
 
   // ── Tracker sync ─────────────────────────────────────────────────────────────
