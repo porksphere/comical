@@ -1239,6 +1239,107 @@ describe("syncEntryWithTracker", () => {
   });
 });
 
+// ── linkTracker — reconcile on link ──────────────────────────────────────────
+
+describe("linkTracker", () => {
+  /** A bridge with no external ids, so nothing auto-links and the explicit call is what's tested. */
+  const unlinkedBridge = () =>
+    syncBridge({
+      details: { id: "s1", title: "Series" },
+      chapters: [ch("c1", 1), ch("c2", 2), ch("c3", 3)],
+    });
+
+  test("pulls a tracker that's ahead rather than overwriting it with local progress", async () => {
+    // The whole reason this is a two-way sync: you've read 3 on the service and 1 here, and linking
+    // must not report 1. Linking is exactly when the two sides are furthest apart.
+    const lib = makeLib();
+    const updateCalls: PushCall[] = [];
+    const tracker = mockTracker("anilist", {
+      capabilities: ["library-sync", "status-sync"],
+      updateCalls,
+      libraryEntries: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 3 }],
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(unlinkedBridge()),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1");
+    expect(await lib.listTrackerLinks("test:s1")).toHaveLength(0);
+    await lib.markRead("test:s1", "c1", true, "Ch 1", 1);
+
+    await runtime.linkTracker("test", "s1", "anilist", 111);
+
+    expect(updateCalls).toEqual([]);
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 3, status: "reading" });
+    // And the tracker's progress is reconciled into local read state, not just recorded on the link.
+    const read = new Set((await lib.getProgress("test:s1")).filter((p) => p.read).map((p) => p.chapterId));
+    expect(read).toEqual(new Set(["c1", "c2", "c3"]));
+  });
+
+  test("pushes local progress when the newly-linked tracker is behind", async () => {
+    // The gap this closes: linking a series you'd already read left the tracker stale until the
+    // next read happened to trigger a push.
+    const lib = makeLib();
+    const updateCalls: PushCall[] = [];
+    const tracker = mockTracker("anilist", {
+      capabilities: ["library-sync", "status-sync"],
+      updateCalls,
+      libraryEntries: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 1, totalChapters: 3 }],
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(unlinkedBridge()),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.addToLibrary("test", "s1");
+    for (const c of [ch("c1", 1), ch("c2", 2), ch("c3", 3)]) {
+      await lib.markRead("test:s1", c.id, true, c.name, c.number);
+    }
+
+    await runtime.linkTracker("test", "s1", "anilist", 111);
+
+    // Reaches the service's total on the way, so it completes in the same push.
+    expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 3, status: "completed", finishedAt: TODAY }]);
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 3, totalChapters: 3 });
+  });
+
+  test("a tracker that's down still leaves the link — the sync is the bonus, not the point", async () => {
+    const lib = makeLib();
+    const broken: Tracker = {
+      info: { ...TRACKER_INFO, id: "anilist", capabilities: ["library-sync", "status-sync"] },
+      async getLibrary() { throw new Error("service down"); },
+      async updateEntry() { throw new Error("service down"); },
+    };
+    const warnings: string[] = [];
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(unlinkedBridge()),
+      library: lib,
+      trackers: mockTrackerProvider([broken]),
+      log: { info() {}, warn: (msg: string) => { warnings.push(msg); }, error() {}, debug() {} },
+    });
+
+    await runtime.addToLibrary("test", "s1");
+    await runtime.linkTracker("test", "s1", "anilist", 111);
+
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ externalId: 111 });
+    expect(warnings.join(" ")).toContain("tracker link sync failed");
+  });
+
+  test("links fine on a runtime with no trackers configured at all", async () => {
+    // The link is library state; it predates any tracker being reachable, or even present.
+    const lib = makeLib();
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(unlinkedBridge()), library: lib });
+
+    await runtime.addToLibrary("test", "s1");
+    await runtime.linkTracker("test", "s1", "anilist", 111);
+
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ externalId: 111 });
+  });
+});
+
 // ── backgroundSync — re-link pass ─────────────────────────────────────────────
 
 describe("backgroundSync — re-link", () => {

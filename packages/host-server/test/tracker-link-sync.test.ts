@@ -123,21 +123,19 @@ describe("POST /library/entries/:bridgeId/:seriesId/tracker-links/:trackerId/syn
     expect(await res.json()).toEqual({ updated: false, readSynced: 0, pushed: false, chaptersRead: 0 });
   });
 
-  // Linking AFTER reading is what leaves local genuinely ahead: no implicit push has run for this
-  // link yet, so its watermark is unset and the manual Sync is the first thing to reach the tracker.
-  test("pushes the local read count to a push-only tracker when local is ahead", async () => {
+  // Linking AFTER reading is what leaves local genuinely ahead — and the link itself reconciles the
+  // two sides, so a push-only tracker is current before the user ever presses Sync.
+  test("linking a series you've already read pushes the local count straight away", async () => {
     await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "sync-2", title: "Pushed" });
     await send("PUT", "/library/entries/demo/sync-2/progress/c4", { read: true, chapterName: "Ch 4", number: 4 });
-    await send("POST", "/library/entries/demo/sync-2/tracker-links", { trackerId: "mal", externalId: 222 });
     malUpdates.length = 0;
 
-    const res = await send("POST", "/library/entries/demo/sync-2/tracker-links/mal/sync");
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ updated: true, readSynced: 0, pushed: true, chaptersRead: 4 });
+    await send("POST", "/library/entries/demo/sync-2/tracker-links", { trackerId: "mal", externalId: 222 });
+
     expect(malUpdates).toEqual([{ externalId: 222, chaptersRead: 4 }]);
   });
 
-  // ...and pressing Sync again must not re-send the same count. The push above set the link's
+  // ...and pressing Sync afterwards must not re-send the same count. The link's push set its
   // watermark to 4, which is what "local is ahead" is measured against.
   test("does not re-push when the tracker already holds the local count", async () => {
     malUpdates.length = 0;

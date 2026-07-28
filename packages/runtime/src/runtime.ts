@@ -549,9 +549,26 @@ export class ComicalRuntime {
 
   // ── Tracker sync ─────────────────────────────────────────────────────────────
 
-  /** Link a library entry to a tracker (e.g. after the user selects from a search result). */
+  /**
+   * Link a library entry to a tracker (e.g. after the user selects from a search result), then
+   * reconcile the two sides once.
+   *
+   * TWO-WAY on purpose, not a push. A fresh link has no `chaptersRead`, so a push would treat any
+   * local progress as an advance and overwrite a service that is further along — link a series you
+   * read 40 chapters of on AniList and have 3 of locally, and a push would report 3. The two-way
+   * path pulls first and only pushes when local genuinely leads. It also lands `totalChapters` on
+   * the link, which is what the completion trigger and the progress clamp read.
+   *
+   * Best-effort: a tracker that's unreachable, unlistable or push-only must not fail the link
+   * itself — the next background sync reconciles it instead.
+   */
   async linkTracker(bridgeId: string, seriesId: string, trackerId: string, externalId: string | number): Promise<void> {
     await this.requireLibrary().linkTracker(entryKey(bridgeId, seriesId), trackerId, externalId);
+    try {
+      await this.syncEntryWithTracker(bridgeId, seriesId, trackerId);
+    } catch (err) {
+      this.log?.warn(`tracker link sync failed: ${trackerId} ${entryKey(bridgeId, seriesId)}:`, errMessage(err));
+    }
   }
 
   async unlinkTracker(bridgeId: string, seriesId: string, trackerId: string): Promise<void> {
