@@ -37,20 +37,38 @@ export const trackerInfoSchema = z.object({
 });
 export type TrackerInfo = z.infer<typeof trackerInfoSchema>;
 
-export interface TrackerEntryUpdate {
-  status?: TrackerStatus;
+/**
+ * A calendar date, `YYYY-MM-DD`. Tracking services record reading start/finish as a DATE, not an
+ * instant — AniList stores a fuzzy `{year, month, day}` and MAL a plain `YYYY-MM-DD` string — so a
+ * date string is the lossless shape here. Epoch ms would force every tracker to pick a timezone.
+ */
+export const trackerDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
+
+export const trackerEntryUpdateSchema = z.object({
+  status: trackerStatusSchema.optional(),
   /** Decimal chapter number read (matches `Chapter.number`). */
-  chaptersRead?: number;
+  chaptersRead: z.number().optional(),
   /** 0–100 normalized score; tracker converts to its own scale internally. */
-  score?: number;
-  notes?: string;
-}
+  score: z.number().optional(),
+  notes: z.string().optional(),
+  /** Date reading started. Sent once, on the transition into "reading". */
+  startedAt: trackerDateSchema.optional(),
+  /** Date reading finished. Sent once, on the transition into "completed". */
+  finishedAt: trackerDateSchema.optional(),
+});
+export type TrackerEntryUpdate = z.infer<typeof trackerEntryUpdateSchema>;
 
 export const trackerLibraryEntrySchema = z.object({
   externalId: z.union([z.string().min(1), z.number().int().positive()]),
   title: z.string().min(1),
   status: trackerStatusSchema,
   chaptersRead: z.number().optional(),
+  /**
+   * The service's OWN chapter count for this media, when it publishes one. The host uses it both to
+   * decide a series is finished (progress has reached the total) and to clamp what it pushes — a
+   * tracker is never told about more chapters than it believes exist.
+   */
+  totalChapters: z.number().int().positive().optional(),
   thumbnailUrl: z.string().url().optional(),
 });
 export type TrackerLibraryEntry = z.infer<typeof trackerLibraryEntrySchema>;
