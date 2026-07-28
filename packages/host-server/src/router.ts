@@ -912,8 +912,16 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     });
     // Mark one series' feed chapters read (the row's "mark read" action) — union mark-read that
     // leaves the resume pointer/history alone, unlike the per-chapter progress PUT.
+    //
+    // Routed through the runtime so it reaches trackers, like every other read-state route. The
+    // `runtime ? … : lib` fallback (rather than the `runtime!` those routes use) is deliberate: this
+    // route predates the runtime requirement, so a library-only host must keep its 200.
     app.post("/library/activity/:bridgeId/:seriesId/read", async (c) =>
-      withLibraryEntry(c, () => lib.markActivityRead(c.req.param("bridgeId"), c.req.param("seriesId"))),
+      withLibraryEntry(c, () =>
+        runtime
+          ? runtime.markActivityRead(c.req.param("bridgeId"), c.req.param("seriesId"))
+          : lib.markActivityRead(c.req.param("bridgeId"), c.req.param("seriesId")),
+      ),
     );
 
     // Tracker links — per-entry associations to external tracker services

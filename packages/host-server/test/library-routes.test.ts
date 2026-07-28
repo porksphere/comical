@@ -5,6 +5,7 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { Tracker } from "@comical/contract";
 import { Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
 import { BridgeManager } from "../src/bridge-manager.ts";
@@ -234,6 +235,77 @@ describe("sync + activity-count params", () => {
     expect(plain.status).toBe(200);
     const plainBody = (await plain.json()) as { skipped: number };
     expect(plainBody.skipped).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("activity mark-read reaches trackers", () => {
+  /** A server whose runtime has a linked tracker, so the route's push is observable. */
+  function makeServer(opts: { withRuntime: boolean }) {
+    const dir = join(DATA_DIR, opts.withRuntime ? "act-tracker" : "act-no-runtime");
+    const manager = new BridgeManager({
+      bridgesDir: BRIDGES_DIR,
+      dataDir: DATA_DIR,
+      settings: new SettingsStore(DATA_DIR),
+    });
+    const library = new Library(new FileLibraryStore(join(dir, "library")));
+    const updateCalls: Array<{ externalId: string | number; chaptersRead?: number }> = [];
+    const tracker: Tracker = {
+      info: {
+        id: "anilist",
+        name: "AniList",
+        version: "0.0.0",
+        contractVersion: "1.0.0",
+        capabilities: ["status-sync"],
+      },
+      async updateEntry(externalId, update) {
+        updateCalls.push({ externalId, ...(update.chaptersRead !== undefined && { chaptersRead: update.chaptersRead }) });
+      },
+    };
+    const trackers = {
+      get: async () => tracker,
+      list: async () => [{ info: { id: "anilist", capabilities: tracker.info.capabilities } }],
+    };
+    const runtime = new ComicalRuntime({ bridges: manager, library, trackers });
+    const srv = Bun.serve({
+      port: 0,
+      fetch: createRouter(manager, { library, ...(opts.withRuntime && { runtime }) }).fetch,
+    });
+    return { library, updateCalls, url: `http://localhost:${srv.port}`, stop: () => srv.stop(true) };
+  }
+
+  test("clearing a series' feed pushes its progress to the linked tracker", async () => {
+    const srv = makeServer({ withRuntime: true });
+    try {
+      await srv.library.addSeries({ bridgeId: "demo", seriesId: "trk-1", title: "Tracked" });
+      await srv.library.linkTracker("demo:trk-1", "anilist", 111);
+      await srv.library.syncChapters("demo:trk-1", [chapters[0]!]);
+      await srv.library.syncChapters("demo:trk-1", chapters); // c2, c3 land in the feed
+
+      const res = await fetch(`${srv.url}/library/activity/demo/trk-1/read`, { method: "POST" });
+
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { marked: number }).marked).toBe(2);
+      // The bug: this route used to call the library directly, so this array stayed empty.
+      expect(srv.updateCalls).toEqual([{ externalId: 111, chaptersRead: 3 }]);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test("a library-only host (no runtime) still returns 200 on the route", async () => {
+    const srv = makeServer({ withRuntime: false });
+    try {
+      await srv.library.addSeries({ bridgeId: "demo", seriesId: "trk-2", title: "Untracked" });
+      await srv.library.syncChapters("demo:trk-2", [chapters[0]!]);
+      await srv.library.syncChapters("demo:trk-2", chapters);
+
+      const res = await fetch(`${srv.url}/library/activity/demo/trk-2/read`, { method: "POST" });
+
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { marked: number }).marked).toBe(2);
+    } finally {
+      srv.stop();
+    }
   });
 });
 
