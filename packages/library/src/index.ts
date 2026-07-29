@@ -4,6 +4,7 @@
  * in-memory store. Durable stores (filesystem/IndexedDB/SQLite) implement `LibraryStore` per platform.
  */
 export * from "./models.ts";
+export * from "./match.ts";
 export * from "./store.ts";
 export * from "./memory-store.ts";
 export * from "./library.ts";

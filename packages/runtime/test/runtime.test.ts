@@ -1660,3 +1660,181 @@ describe("searchTracker", () => {
     await expect(runtime.searchTracker("mal", "blame")).rejects.toThrow(/not found/);
   });
 });
+
+// ── Favorites import ─────────────────────────────────────────────────────────
+
+/** A bridge whose favorites are served from a fixed list, paged `perPage` at a time. */
+function favoritesBridge(favorites: Array<{ id: string; title: string; thumbnailUrl?: string }>, perPage = 100): Bridge {
+  return {
+    info: { ...BRIDGE_INFO, capabilities: ["favorites"] },
+    async getSeriesDetails() { return { id: "x", title: "x" }; },
+    async getFavorites(page: number) {
+      const start = (page - 1) * perPage;
+      const items = favorites.slice(start, start + perPage);
+      return { items, page, hasNextPage: start + perPage < favorites.length };
+    },
+  };
+}
+
+/** A bridge that claims favorites but pages forever — the runaway `hasNextPage` the cap guards. */
+function endlessFavoritesBridge(): Bridge {
+  return {
+    info: { ...BRIDGE_INFO, capabilities: ["favorites"] },
+    async getSeriesDetails() { return { id: "x", title: "x" }; },
+    async getFavorites(page: number) {
+      return { items: [{ id: `s${page}`, title: `Series ${page}` }], page, hasNextPage: true };
+    },
+  };
+}
+
+function favoritesRuntime(bridge: Bridge, library: Library) {
+  return new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library });
+}
+
+describe("previewBridgeFavoritesImport", () => {
+  test("classifies each favorite as new / in-library / duplicate", async () => {
+    const lib = makeLib();
+    // Already here from THIS bridge → in-library. Already here from ANOTHER bridge → duplicate.
+    await lib.addSeries({ bridgeId: "test", seriesId: "s2", title: "Second" });
+    await lib.addSeries({ bridgeId: "other", seriesId: "x9", title: "third!" });
+
+    const runtime = favoritesRuntime(
+      favoritesBridge([
+        { id: "s1", title: "First", thumbnailUrl: "http://x/1.jpg" },
+        { id: "s2", title: "Second" },
+        { id: "s3", title: "Third" },
+      ]),
+      lib,
+    );
+
+    const preview = await runtime.previewBridgeFavoritesImport("test");
+    expect(preview.truncated).toBe(false);
+    expect(preview.items.map((i) => i.status)).toEqual(["new", "in-library", "duplicate"]);
+    expect(preview.items[0]!.thumbnailUrl).toBe("http://x/1.jpg");
+    expect(preview.items[2]!.matches).toEqual([
+      { key: entryKey("other", "x9"), bridgeId: "other", seriesId: "x9", title: "third!" },
+    ]);
+  });
+
+  test("a same-bridge title twin is NOT a duplicate — it is a different series", async () => {
+    const lib = makeLib();
+    await lib.addSeries({ bridgeId: "test", seriesId: "already", title: "Twin" });
+
+    const runtime = favoritesRuntime(favoritesBridge([{ id: "fresh", title: "Twin" }]), lib);
+    const preview = await runtime.previewBridgeFavoritesImport("test");
+    expect(preview.items[0]!.status).toBe("new");
+    expect(preview.items[0]!.matches).toBeUndefined();
+  });
+
+  test("reports every matching source when a title exists on several bridges", async () => {
+    const lib = makeLib();
+    await lib.addSeries({ bridgeId: "a", seriesId: "1", title: "Shared Title" });
+    await lib.addSeries({ bridgeId: "b", seriesId: "2", title: "shared-title" });
+
+    const runtime = favoritesRuntime(favoritesBridge([{ id: "c1", title: "SHARED TITLE" }]), lib);
+    const preview = await runtime.previewBridgeFavoritesImport("test");
+    expect(preview.items[0]!.status).toBe("duplicate");
+    expect(preview.items[0]!.matches?.map((m) => m.bridgeId).sort()).toEqual(["a", "b"]);
+  });
+
+  test("walks every page, and flags truncation when the page cap stops it", async () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({ id: `s${i}`, title: `Series ${i}` }));
+    const paged = await favoritesRuntime(favoritesBridge(many, 10), makeLib()).previewBridgeFavoritesImport("test");
+    expect(paged.items).toHaveLength(25);
+    expect(paged.truncated).toBe(false);
+
+    const runaway = await favoritesRuntime(endlessFavoritesBridge(), makeLib()).previewBridgeFavoritesImport("test");
+    expect(runaway.truncated).toBe(true);
+    expect(runaway.items).toHaveLength(50); // MAX_FAVORITE_PAGES, one item per page
+  });
+
+  test("writes nothing to the library", async () => {
+    const lib = makeLib();
+    await favoritesRuntime(favoritesBridge([{ id: "s1", title: "First" }]), lib).previewBridgeFavoritesImport("test");
+    expect(await lib.getLibrary()).toHaveLength(0);
+  });
+
+  test("throws when the bridge has no favorites", async () => {
+    const runtime = favoritesRuntime(mockBridge({ id: "s1", title: "x" }), makeLib());
+    await expect(runtime.previewBridgeFavoritesImport("test")).rejects.toThrow(/does not support favorites/);
+  });
+});
+
+describe("importBridgeFavorites", () => {
+  test("with no selection, imports every favorite not already present", async () => {
+    const lib = makeLib();
+    await lib.addSeries({ bridgeId: "test", seriesId: "s2", title: "Second" });
+    const runtime = favoritesRuntime(
+      favoritesBridge([{ id: "s1", title: "First" }, { id: "s2", title: "Second" }, { id: "s3", title: "Third" }], 2),
+      lib,
+    );
+
+    expect(await runtime.importBridgeFavorites("test")).toEqual({ imported: 2, skipped: 1, linked: 0 });
+    expect(await lib.getLibrary()).toHaveLength(3);
+  });
+
+  test("with a selection, imports exactly those — and never re-fetches favorites", async () => {
+    const lib = makeLib();
+    let fetches = 0;
+    const bridge: Bridge = {
+      info: { ...BRIDGE_INFO, capabilities: ["favorites"] },
+      async getSeriesDetails() { return { id: "x", title: "x" }; },
+      async getFavorites(page: number) {
+        fetches++;
+        return { items: [{ id: "s1", title: "First" }], page, hasNextPage: false };
+      },
+    };
+
+    const result = await favoritesRuntime(bridge, lib).importBridgeFavorites("test", [
+      { seriesId: "s1", title: "First", thumbnailUrl: "http://x/1.jpg" },
+    ]);
+    expect(result).toEqual({ imported: 1, skipped: 0, linked: 0 });
+    expect(fetches).toBe(0);
+    expect((await lib.getEntry(entryKey("test", "s1")))?.thumbnailUrl).toBe("http://x/1.jpg");
+  });
+
+  test("linkTo groups the new source with the existing entry, which stays primary", async () => {
+    const lib = makeLib();
+    await lib.addSeries({ bridgeId: "other", seriesId: "x9", title: "Shared" });
+    const existingKey = entryKey("other", "x9");
+
+    const result = await favoritesRuntime(favoritesBridge([]), lib).importBridgeFavorites("test", [
+      { seriesId: "s1", title: "Shared", linkTo: existingKey },
+    ]);
+    expect(result).toEqual({ imported: 1, skipped: 0, linked: 1 });
+
+    const group = await lib.getGroup(entryKey("test", "s1"));
+    expect(group?.primaryKey).toBe(existingKey);
+    expect(group?.memberKeys.sort()).toEqual([existingKey, entryKey("test", "s1")].sort());
+  });
+
+  test("a link target removed since the preview still leaves the import committed", async () => {
+    const lib = makeLib();
+    const result = await favoritesRuntime(favoritesBridge([]), lib).importBridgeFavorites("test", [
+      { seriesId: "s1", title: "Shared", linkTo: entryKey("other", "gone") },
+    ]);
+    expect(result).toEqual({ imported: 1, skipped: 0, linked: 0 });
+    expect(await lib.isInLibrary(entryKey("test", "s1"))).toBe(true);
+  });
+
+  test("skips a selected series that is already in the library", async () => {
+    const lib = makeLib();
+    await lib.addSeries({ bridgeId: "test", seriesId: "s1", title: "First" });
+    const result = await favoritesRuntime(favoritesBridge([]), lib).importBridgeFavorites("test", [
+      { seriesId: "s1", title: "First" },
+    ]);
+    expect(result).toEqual({ imported: 0, skipped: 1, linked: 0 });
+  });
+
+  test("an empty selection imports nothing (and does NOT fall back to importing everything)", async () => {
+    const lib = makeLib();
+    const runtime = favoritesRuntime(favoritesBridge([{ id: "s1", title: "First" }]), lib);
+    expect(await runtime.importBridgeFavorites("test", [])).toEqual({ imported: 0, skipped: 0, linked: 0 });
+    expect(await lib.getLibrary()).toHaveLength(0);
+  });
+
+  test("throws when the bridge has no favorites and no selection was given", async () => {
+    const runtime = favoritesRuntime(mockBridge({ id: "s1", title: "x" }), makeLib());
+    await expect(runtime.importBridgeFavorites("test")).rejects.toThrow(/does not support favorites/);
+  });
+});

@@ -18,7 +18,7 @@ import { entryKey, type Library } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
-import type { ComicalRuntime } from "@comical/runtime";
+import type { ComicalRuntime, FavoritesImportItem } from "@comical/runtime";
 import type { BridgeProvider } from "./bridge-provider.ts";
 import type { RegistryProvider } from "./registry-provider.ts";
 import { TagLabelCache } from "./tag-label-cache.ts";
@@ -729,11 +729,28 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ ok: true });
     });
 
-    // Import from bridge favorites — fetches all pages and bulk-adds to library
+    // Import from bridge favorites — read-only classification of every favorite against the library
+    // ("new" / already here from this bridge / another source for something already here), so a
+    // client can show the list for confirmation before anything is written.
+    app.get("/library/import/bridges/:id/favorites/preview", (c) =>
+      withContentBridge(c, async (bridge) => {
+        if (!bridge.getFavorites) return c.json({ error: "bridge does not support favorites" }, 400);
+        return c.json(await runtime!.previewBridgeFavoritesImport(c.req.param("id")));
+      }),
+    );
+
+    // Import from bridge favorites. With an `items` body the client is importing exactly what the
+    // user confirmed from the preview above (favorites are not re-fetched); without one this fetches
+    // all pages and bulk-adds everything not already present.
     app.post("/library/import/bridges/:id/favorites", (c) =>
       withContentBridge(c, async (bridge) => {
         if (!bridge.getFavorites) return c.json({ error: "bridge does not support favorites" }, 400);
-        return c.json(await runtime!.importBridgeFavorites(c.req.param("id")));
+        const b = await body<{ items?: FavoritesImportItem[] }>(c);
+        if (b?.items !== undefined && !Array.isArray(b.items)) {
+          return c.json({ error: "items must be an array" }, 400);
+        }
+        const items = b?.items?.filter((i) => i && typeof i.seriesId === "string" && typeof i.title === "string");
+        return c.json(await runtime!.importBridgeFavorites(c.req.param("id"), items));
       }),
     );
 

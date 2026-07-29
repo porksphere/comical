@@ -6,6 +6,7 @@
  * fully independent of any bridge's backend `favorites`: adding here never touches a bridge.
  */
 import type { Chapter, SeriesInfo, SeriesStatus } from "@comical/contract";
+import { normalizeTitle } from "./match.ts";
 import {
   cachedChaptersSchema,
   cachedSeriesDetailSchema,
@@ -140,13 +141,7 @@ export class Library {
     if (!existing && snap.externalIds) {
       const match = await this.findExternalIdMatch(key, snap.externalIds);
       if (match) {
-        const matchedEntry = await this.store.getEntry(match.matchedKey);
-        if (matchedEntry?.seriesGroupId) {
-          await this.joinGroup(matchedEntry.seriesGroupId, key);
-        } else {
-          // Existing entry is primary (it was added first); new entry joins.
-          await this.createGroup([match.matchedKey, key], match.matchedKey);
-        }
+        await this.linkEntries(match.matchedKey, key);
         autoLinked = match;
       }
     }
@@ -722,6 +717,44 @@ export class Library {
       if (e) await this.store.putEntry({ ...e, seriesGroupId: group.id, updatedAt: this.now() });
     }
     return group;
+  }
+
+  /**
+   * Link a newly-added entry to one already in the library: join the existing entry's group if it
+   * has one, else create a two-member group with the EXISTING entry as primary. It was there first,
+   * so it's the one carrying progress — the newcomer must never hijack the reading source.
+   *
+   * Both the external-id auto-link in {@link addSeries} and the user-confirmed title match in a
+   * favorites import go through here, so "linking" means exactly one thing. No-op when both keys
+   * are already in the same group (or are the same key).
+   */
+  async linkEntries(existingKey: string, newKey: string): Promise<void> {
+    if (existingKey === newKey) return;
+    const existing = await this.store.getEntry(existingKey);
+    if (!existing) throw new Error(`entry not in library: ${existingKey}`);
+    if (existing.seriesGroupId) {
+      await this.joinGroup(existing.seriesGroupId, newKey);
+    } else {
+      await this.createGroup([existingKey, newKey], existingKey);
+    }
+  }
+
+  /**
+   * Every library entry bucketed by {@link normalizeTitle} — the index for spotting the same work
+   * already present from another bridge. Built in one pass so a caller classifying a whole favorites
+   * list scans the library once rather than once per candidate. Entries whose title normalizes to
+   * nothing (punctuation only) are omitted rather than bucketed together under "".
+   */
+  async titleIndex(): Promise<Map<string, LibraryEntry[]>> {
+    const index = new Map<string, LibraryEntry[]>();
+    for (const entry of await this.store.listEntries()) {
+      const key = normalizeTitle(entry.title);
+      if (!key) continue;
+      const bucket = index.get(key);
+      if (bucket) bucket.push(entry);
+      else index.set(key, [entry]);
+    }
+    return index;
   }
 
   /** Add an entry to an existing group. */

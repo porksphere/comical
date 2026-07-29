@@ -9,10 +9,12 @@
  *     only need a bridgeId + seriesId — no separate getSeriesDetails call required.
  *   - markRead / setProgress / markReadUpTo: write library state first, then fire bridge read-sync
  *     if the bridge declares the "read-sync" capability (best-effort — bridge errors are swallowed).
- *   - importBridgeFavorites: paginate getFavorites, dedupe, bulk-add to library.
+ *   - previewBridgeFavoritesImport / importBridgeFavorites: paginate getFavorites, classify each
+ *     against the library (already present / another source for something already present / new),
+ *     then bulk-add the caller's selection, grouping in any confirmed cross-bridge duplicates.
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
-import type { Chapter, LogCapability, PagedResults, SeriesInfo, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
+import type { Chapter, LogCapability, PagedResults, SeriesEntry, SeriesInfo, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
 import { trackerEntryUpdateSchema } from "@comical/contract";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
 // node:vm-backed default evaluator) so `@comical/runtime`'s types stay consumable by non-Node
@@ -21,12 +23,47 @@ import type { LoadedBridge } from "@comical/core/loader";
 import type { LoadedTracker } from "@comical/core/tracker-loader";
 import {
   entryKey,
+  normalizeTitle,
   type AddSeriesResult,
   type Library,
+  type LibraryEntry,
   type LibraryEntryView,
   type SeriesSnapshot,
   type TrackerLink,
 } from "@comical/library";
+
+/** Page cap for a favorites walk, mirroring the router's `isFavorite` fallback scan. A favorites
+ *  list this long is a runaway `hasNextPage`, not a real account. */
+const MAX_FAVORITE_PAGES = 50;
+
+/** One favorite, classified against the library. See {@link ComicalRuntime.previewBridgeFavoritesImport}. */
+export interface FavoritesImportCandidate {
+  seriesId: string;
+  title: string;
+  thumbnailUrl?: string;
+  /**
+   * `"in-library"` — already added FROM THIS BRIDGE, so there's nothing to import.
+   * `"duplicate"` — a normalized-title match on ANOTHER bridge: importing adds a second source for
+   * a series the user already has. `"new"` — no match anywhere.
+   */
+  status: "new" | "in-library" | "duplicate";
+  /** Present for `"duplicate"` — every matching library entry (a title can match more than one). */
+  matches?: Array<{ key: string; bridgeId: string; seriesId: string; title: string }>;
+}
+
+export interface FavoritesImportPreview {
+  items: FavoritesImportCandidate[];
+  /** True when the page cap stopped the walk, so `items` is not the whole favorites list. */
+  truncated: boolean;
+}
+
+/** One series to import. `linkTo` is the `entryKey` of an existing entry it's another source for. */
+export interface FavoritesImportItem {
+  seriesId: string;
+  title: string;
+  thumbnailUrl?: string;
+  linkTo?: string;
+}
 
 /** Extends AddSeriesResult with tracker suggestions when no externalId match was found. */
 export interface RuntimeAddResult extends AddSeriesResult {
@@ -370,29 +407,120 @@ export class ComicalRuntime {
 
   // ── Favorites import ──────────────────────────────────────────────────────────
 
-  /** Paginate bridge favorites and bulk-add any that aren't already in the library. */
-  async importBridgeFavorites(bridgeId: string): Promise<{ imported: number; skipped: number }> {
+  /**
+   * Page a bridge's favorites and classify each against the library, WITHOUT writing anything —
+   * the list a host shows for confirmation before importing.
+   *
+   * Classification is deliberately done here rather than in each client: every host would otherwise
+   * re-implement the same title matching, and the rules would drift. See {@link normalizeTitle} for
+   * why cross-bridge matching is title-based (a favorites payload is `SeriesEntry` — no externalIds
+   * to auto-link on) and why it errs toward missing matches.
+   */
+  async previewBridgeFavoritesImport(bridgeId: string): Promise<FavoritesImportPreview> {
     const lib = this.requireLibrary();
     const bridge = await this.bridges.get(bridgeId);
     if (!bridge.getFavorites) throw new Error(`bridge "${bridgeId}" does not support favorites`);
 
+    const byTitle = await lib.titleIndex();
+    const items: FavoritesImportCandidate[] = [];
+    let truncated = false;
     let page = 1;
-    let imported = 0;
-    let skipped = 0;
     while (true) {
       const result = await bridge.getFavorites(page);
       for (const entry of result.items) {
-        const existing = await lib.getEntry(entryKey(bridgeId, entry.id));
-        if (existing) { skipped++; continue; }
-        const snap: SeriesSnapshot = { bridgeId, seriesId: entry.id, title: entry.title };
-        if (entry.thumbnailUrl !== undefined) snap.thumbnailUrl = entry.thumbnailUrl;
-        await lib.addSeries(snap);
-        imported++;
+        items.push(await this.classifyFavorite(lib, byTitle, bridgeId, entry));
       }
       if (!result.hasNextPage) break;
+      if (page >= MAX_FAVORITE_PAGES) { truncated = true; break; }
       page++;
     }
-    return { imported, skipped };
+    return { items, truncated };
+  }
+
+  private async classifyFavorite(
+    lib: Library,
+    byTitle: Map<string, LibraryEntry[]>,
+    bridgeId: string,
+    entry: SeriesEntry,
+  ): Promise<FavoritesImportCandidate> {
+    const candidate: FavoritesImportCandidate = { seriesId: entry.id, title: entry.title, status: "new" };
+    if (entry.thumbnailUrl !== undefined) candidate.thumbnailUrl = entry.thumbnailUrl;
+
+    if (await lib.getEntry(entryKey(bridgeId, entry.id))) {
+      candidate.status = "in-library";
+      return candidate;
+    }
+    // Only OTHER bridges count as an overlap — a same-bridge title twin is a different series with a
+    // similar name, not another source for this one.
+    const matches = (byTitle.get(normalizeTitle(entry.title)) ?? []).filter((e) => e.bridgeId !== bridgeId);
+    if (matches.length > 0) {
+      candidate.status = "duplicate";
+      candidate.matches = matches.map((e) => ({
+        key: entryKey(e.bridgeId, e.seriesId),
+        bridgeId: e.bridgeId,
+        seriesId: e.seriesId,
+        title: e.title,
+      }));
+    }
+    return candidate;
+  }
+
+  /**
+   * Add favorites to the library.
+   *
+   * With a `selection` the caller is importing exactly what the user confirmed in a preview, so the
+   * favorites are NOT re-fetched — the entries come straight off the wire. An item's `linkTo` is the
+   * `entryKey` of an existing library entry it's another source for; it gets grouped in (existing
+   * entry stays primary — see {@link Library.linkEntries}).
+   *
+   * Without a `selection` this keeps the original behavior: page everything and add whatever isn't
+   * already in the library, no cross-bridge linking.
+   */
+  async importBridgeFavorites(
+    bridgeId: string,
+    selection?: FavoritesImportItem[],
+  ): Promise<{ imported: number; skipped: number; linked: number }> {
+    const lib = this.requireLibrary();
+    const items = selection ?? (await this.collectAllFavorites(bridgeId));
+
+    let imported = 0;
+    let skipped = 0;
+    let linked = 0;
+    for (const item of items) {
+      const key = entryKey(bridgeId, item.seriesId);
+      if (await lib.getEntry(key)) { skipped++; continue; }
+      const snap: SeriesSnapshot = { bridgeId, seriesId: item.seriesId, title: item.title };
+      if (item.thumbnailUrl !== undefined) snap.thumbnailUrl = item.thumbnailUrl;
+      await lib.addSeries(snap);
+      imported++;
+      if (item.linkTo) {
+        // Best-effort: a link target the user removed between preview and confirm must not lose the
+        // import that already succeeded.
+        try { await lib.linkEntries(item.linkTo, key); linked++; } catch { /* target gone */ }
+      }
+    }
+    return { imported, skipped, linked };
+  }
+
+  /** Every favorite the bridge will hand over, flattened — the no-selection import path. */
+  private async collectAllFavorites(bridgeId: string): Promise<FavoritesImportItem[]> {
+    const bridge = await this.bridges.get(bridgeId);
+    if (!bridge.getFavorites) throw new Error(`bridge "${bridgeId}" does not support favorites`);
+    const items: FavoritesImportItem[] = [];
+    let page = 1;
+    while (true) {
+      const result = await bridge.getFavorites(page);
+      for (const entry of result.items) {
+        items.push({
+          seriesId: entry.id,
+          title: entry.title,
+          ...(entry.thumbnailUrl !== undefined && { thumbnailUrl: entry.thumbnailUrl }),
+        });
+      }
+      if (!result.hasNextPage || page >= MAX_FAVORITE_PAGES) break;
+      page++;
+    }
+    return items;
   }
 
   // ── Background sync ───────────────────────────────────────────────────────────

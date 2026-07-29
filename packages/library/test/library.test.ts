@@ -1,7 +1,7 @@
 /** The Library domain service over the in-memory store: collection, read state, sync, lists. */
 import { describe, expect, test } from "bun:test";
 import type { Chapter } from "@comical/contract";
-import { entryKey, InMemoryLibraryStore, Library } from "../src/index.ts";
+import { entryKey, InMemoryLibraryStore, Library, normalizeTitle } from "../src/index.ts";
 
 const SERIES = { bridgeId: "demo", seriesId: "s1", title: "Series One" };
 const KEY = entryKey(SERIES.bridgeId, SERIES.seriesId);
@@ -821,6 +821,91 @@ describe("series grouping via generic externalIds", () => {
     await lib.addSeries({ ...SERIES, externalIds: { mal: 1 } });
     const r2 = await lib.addSeries({ bridgeId: "alt", seriesId: "s2", title: "Other", externalIds: { mal: 2 } });
     expect(r2.autoLinked).toBeUndefined();
+  });
+});
+
+describe("title matching (normalizeTitle / titleIndex)", () => {
+  test("case, punctuation, whitespace and diacritics all fold away", () => {
+    expect(normalizeTitle("Chainsaw-Man!")).toBe(normalizeTitle("Chainsaw Man"));
+    expect(normalizeTitle("  SPY×FAMILY  ")).toBe(normalizeTitle("Spy x Family"));
+    expect(normalizeTitle("Pokémon")).toBe(normalizeTitle("Pokemon"));
+  });
+
+  test("distinguishing suffixes are NOT stripped — a false merge is worse than a miss", () => {
+    expect(normalizeTitle("Berserk (2016)")).not.toBe(normalizeTitle("Berserk"));
+    expect(normalizeTitle("Fruits Basket: Another")).not.toBe(normalizeTitle("Fruits Basket"));
+  });
+
+  test("fullwidth forms fold to their halfwidth equivalents", () => {
+    expect(normalizeTitle("Ｃｈａｉｎｓａｗ　Ｍａｎ")).toBe(normalizeTitle("Chainsaw Man"));
+  });
+
+  test("non-latin scripts keep their characters — including dakuten", () => {
+    expect(normalizeTitle("「ベルセルク」")).toBe("ベルセルク");
+    // The NFKD decomposition would otherwise strip the voiced-sound marks and merge these.
+    expect(normalizeTitle("ベルセルク")).not.toBe(normalizeTitle("ヘルセルク"));
+    expect(normalizeTitle("パンプン")).not.toBe(normalizeTitle("ハンフン"));
+  });
+
+  test("a title with no alphanumeric content yields no key", () => {
+    expect(normalizeTitle("!!! ---")).toBe("");
+  });
+
+  test("titleIndex buckets entries across bridges and omits keyless titles", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries({ bridgeId: "a", seriesId: "1", title: "Chainsaw Man" });
+    await lib.addSeries({ bridgeId: "b", seriesId: "2", title: "chainsaw-man" });
+    await lib.addSeries({ bridgeId: "a", seriesId: "3", title: "Berserk" });
+    await lib.addSeries({ bridgeId: "a", seriesId: "4", title: "???" });
+
+    const index = await lib.titleIndex();
+    expect(index.get(normalizeTitle("Chainsaw Man"))?.map((e) => e.bridgeId).sort()).toEqual(["a", "b"]);
+    expect(index.get(normalizeTitle("Berserk"))).toHaveLength(1);
+    expect(index.has("")).toBe(false);
+  });
+});
+
+describe("linkEntries", () => {
+  const A = { bridgeId: "a", seriesId: "1", title: "Shared" };
+  const B = { bridgeId: "b", seriesId: "2", title: "Shared" };
+  const C = { bridgeId: "c", seriesId: "3", title: "Shared" };
+  const kA = entryKey(A.bridgeId, A.seriesId);
+  const kB = entryKey(B.bridgeId, B.seriesId);
+  const kC = entryKey(C.bridgeId, C.seriesId);
+
+  test("creates a group with the EXISTING entry as primary", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(A);
+    await lib.addSeries(B);
+    await lib.linkEntries(kA, kB);
+
+    const group = await lib.getGroup(kB);
+    expect(group?.primaryKey).toBe(kA);
+    expect(group?.memberKeys.sort()).toEqual([kA, kB].sort());
+    // Both entries carry the back-pointer.
+    expect((await lib.getEntry(kA))?.seriesGroupId).toBe(group!.id);
+  });
+
+  test("a third source joins the existing group rather than starting a new one", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(A);
+    await lib.addSeries(B);
+    await lib.addSeries(C);
+    await lib.linkEntries(kA, kB);
+    await lib.linkEntries(kA, kC);
+
+    expect(await lib.listGroups()).toHaveLength(1);
+    const group = await lib.getGroup(kC);
+    expect(group?.memberKeys.sort()).toEqual([kA, kB, kC].sort());
+    expect(group?.primaryKey).toBe(kA);
+  });
+
+  test("linking a key to itself is a no-op; an unknown target throws", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(A);
+    await lib.linkEntries(kA, kA);
+    expect(await lib.listGroups()).toHaveLength(0);
+    await expect(lib.linkEntries("nope:1", kA)).rejects.toThrow("entry not in library");
   });
 });
 
