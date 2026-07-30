@@ -246,6 +246,39 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
     expect((await transport("/bridges/cfg/search?q=x")).status).toBe(200);
   });
 
+  test("concurrent get() calls for the same id share one in-flight load (no duplicate native init)", async () => {
+    // Without the `loading` map, two callers racing past the `loaded.get(id)` check (e.g. Browse
+    // prefetching a source while Settings reads its descriptors) would both call native.initBridge
+    // for the same id, and whichever settled last would silently win.
+    let initCount = 0;
+    const base = makeFakeNative();
+    const native: NativeBridgeRuntime = {
+      ...base,
+      initBridge: (...args) => {
+        initCount++;
+        return base.initBridge(...args);
+      },
+    };
+    const provider = new EmbeddedBridgeProvider({ native, bundles, settings: memorySettings() });
+    const [a, b] = await Promise.all([provider.get("cfg"), provider.get("cfg")]);
+    expect(initCount).toBe(1);
+    expect(a).toBe(b); // same cached entry, not two independently-built proxies
+  });
+
+  test("updateSettings serializes concurrent writes for the same id so neither is lost", async () => {
+    // A plain get-merge-set composed across two `await`s is a lost-update race: two concurrent
+    // updateSettings calls for the same id can both read the pre-write value before either set()
+    // lands, so whichever set() lands last silently discards the other's change. KeyedQueue closes
+    // this by serializing the whole get-merge-set-invalidate body per id.
+    const settings = memorySettings();
+    const provider = new EmbeddedBridgeProvider({ native: makeFakeNative(), bundles, settings });
+    await Promise.all([
+      provider.updateSettings("cfg", { baseUrl: "https://a.example" }),
+      provider.updateSettings("cfg", { extra: "x" }),
+    ]);
+    expect(await settings.get("cfg")).toEqual({ baseUrl: "https://a.example", extra: "x" });
+  });
+
   test("GET /bridges/:id returns a settings-bearing bridge's descriptors (getSettings stays sync)", async () => {
     // The bridge-settings screen hits GET /bridges/:id, where the router reads `bridge.getSettings()`
     // synchronously and immediately `.filter()`s the result. A settings-bearing bridge implements

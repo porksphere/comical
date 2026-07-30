@@ -53,6 +53,10 @@ export interface EmbeddedRegistryProviderDeps {
 export class EmbeddedRegistryProvider implements RegistryProvider {
   /** Per-session index memo (mirrors `RegistryManager.fetchAndCache`); cleared per-url on update. */
   private readonly indexCache = new Map<string, RegistryIndex>();
+  /** In-flight `fetchAndCache(url)` calls, keyed by url — de-dupes concurrent callers (bridge list +
+   *  tracker list + the background update check can all miss a cold cache for the same registry at
+   *  once) so they share one network fetch instead of each firing their own. */
+  private readonly fetching = new Map<string, Promise<RegistryIndex>>();
 
   /**
    * Fired after any install/update/uninstall so the embedder can tear down cached bridge state and
@@ -65,10 +69,22 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
   private async fetchAndCache(url: string): Promise<RegistryIndex> {
     const cached = this.indexCache.get(url);
     if (cached) return cached;
-    const index = await this.deps.fetcher.fetchIndex(url);
-    this.indexCache.set(url, index);
-    await this.reconcileDisplayName(url, index);
-    return index;
+
+    const inFlight = this.fetching.get(url);
+    if (inFlight) return inFlight;
+
+    const promise = (async () => {
+      const index = await this.deps.fetcher.fetchIndex(url);
+      this.indexCache.set(url, index);
+      await this.reconcileDisplayName(url, index);
+      return index;
+    })();
+    this.fetching.set(url, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.fetching.get(url) === promise) this.fetching.delete(url);
+    }
   }
 
   /**

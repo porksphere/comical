@@ -199,6 +199,57 @@ describe("EmbeddedTrackerProvider", () => {
     expect(initCount).toBe(2);
   });
 
+  test("concurrent get() calls for the same id share one in-flight load (no duplicate native init)", async () => {
+    let initCount = 0;
+    const base = makeFakeNative();
+    const native: NativeTrackerRuntime = {
+      ...base,
+      initTracker: (...args) => {
+        initCount++;
+        return base.initTracker(...args);
+      },
+    };
+    const provider = new EmbeddedTrackerProvider({ native, bundles, settings: memorySettings() });
+    const [a, b] = await Promise.all([provider.get("anilist"), provider.get("anilist")]);
+    expect(initCount).toBe(1);
+    expect(a).toBe(b);
+  });
+
+  test("updateSettings serializes concurrent writes for the same id so neither is lost", async () => {
+    const settings = memorySettings();
+    const provider = new EmbeddedTrackerProvider({ native: makeFakeNative(), bundles, settings });
+    await Promise.all([
+      provider.updateSettings("cfg", { token: "t1" }),
+      provider.updateSettings("cfg", { extra: "x" }),
+    ]);
+    expect(await settings.get("cfg")).toEqual({ token: "t1", extra: "x" });
+  });
+
+  test("a background token drain never interleaves with a concurrent updateSettings for the same id", async () => {
+    // The scenario KeyedQueue exists for: a user edits settings (get-merge-set) while a call in
+    // flight for the same tracker triggers `drainAndPersist` (also get-merge-set) for a refreshed
+    // OAuth token. Composed without serialization, whichever set() lands last wins outright,
+    // silently discarding either the user's edit or the refreshed token.
+    const settings = memorySettings();
+    await settings.set("anilist", { token: "t1" });
+    let drained = 0;
+    const base = makeFakeNative(() => {
+      drained++;
+      return drained === 1 ? { key: "token", blob: { access: "t2", refresh: "r2" } } : null;
+    });
+    const provider = new EmbeddedTrackerProvider({ native: base, bundles, settings });
+
+    const tracker = await provider.get("anilist");
+    await Promise.all([
+      tracker.getLibrary!(1), // triggers afterCall -> drainAndPersist, refreshing "token"
+      provider.updateSettings("anilist", { extra: "x" }),
+    ]);
+
+    const stored = await settings.get("anilist");
+    expect(stored.extra).toBe("x"); // the concurrent settings edit survived
+    expect(stored.token).toBe(JSON.stringify({ access: "t2", refresh: "r2" })); // so did the drained token
+  });
+
   test("invalidate() disposes the native context and drops the cache; a repeat call is a no-op", async () => {
     const settings = memorySettings();
     await settings.set("anilist", { token: "t1" });

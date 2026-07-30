@@ -20,6 +20,7 @@
 import type { SettingDescriptor, SettingValue } from "@comical/contract";
 import type { LoadedTracker } from "@comical/core/tracker-loader";
 import { redactSettingSecrets, resolveSettings } from "@comical/core/settings";
+import { KeyedQueue } from "./keyed-queue.ts";
 import { methodsForTracker } from "./tracker-capabilities.ts";
 import { buildProxyTracker } from "./tracker-proxy.ts";
 import type {
@@ -54,8 +55,17 @@ interface LoadedEntry {
 
 export class EmbeddedTrackerProvider implements TrackerProvider {
   private readonly loaded = new Map<string, LoadedEntry>();
+  /** In-flight `load(id)` calls, keyed by id — see `load`'s doc comment. */
+  private readonly loading = new Map<string, Promise<LoadedEntry>>();
+  /** Bumped by `invalidate`/`refresh`/`drainAndPersist` so a load already in flight can tell it was
+   *  invalidated out from under it (see `doLoad`). */
+  private readonly epoch = new Map<string, number>();
   /** In-flight background update check, so overlapping `list()` calls don't stack duplicate checks. */
   private updateCheckInFlight: Promise<void> | undefined;
+  /** Serializes `updateSettings` and `drainAndPersist`'s get-merge-set per id, so a user's settings
+   *  edit and a background OAuth-token drain for the same tracker can't interleave and drop one's
+   *  write (a lost-update race — see KeyedQueue). */
+  private readonly settingsQueue = new KeyedQueue();
 
   constructor(private readonly deps: EmbeddedTrackerProviderDeps) {}
 
@@ -78,39 +88,75 @@ export class EmbeddedTrackerProvider implements TrackerProvider {
     const parsed = JSON.parse(patchJson) as { key: string; blob: unknown } | null;
     if (!parsed) return;
     const { key, blob } = parsed;
-    const current = await this.deps.settings.get(id);
-    await this.deps.settings.set(id, { ...current, [key]: JSON.stringify(blob) });
-    this.loaded.delete(id);
+    await this.settingsQueue.run(id, async () => {
+      const current = await this.deps.settings.get(id);
+      await this.deps.settings.set(id, { ...current, [key]: JSON.stringify(blob) });
+      // Bump first: a load concurrently in flight for this id (see `doLoad`) must see its snapshot as
+      // stale, the same as an explicit `invalidate`, or it could re-cache the pre-refresh token.
+      this.epoch.set(id, (this.epoch.get(id) ?? 0) + 1);
+      this.loaded.delete(id);
+    });
   }
 
-  /** Load the bundle into the native engine, capturing its info, methods, and setting descriptors. */
+  /**
+   * Load the bundle into the native engine, capturing its info, methods, and setting descriptors.
+   * Concurrent callers for the same id must share ONE in-flight load — without the `loading` map,
+   * both would race past the `loaded.get(id)` check and both call `native.initTracker` for the same
+   * id, and whichever settled last would silently win. `doLoad` does the actual work; this just
+   * de-dupes concurrent entry.
+   */
   private async load(id: string): Promise<LoadedEntry> {
     const existing = this.loaded.get(id);
     if (existing) return existing;
 
-    const [code, stored] = await Promise.all([
-      this.deps.bundles.resolveBundle(id),
-      this.deps.settings.get(id),
-    ]);
+    const inFlight = this.loading.get(id);
+    if (inFlight) return inFlight;
 
-    const init = JSON.parse(
-      await this.deps.native.initTracker(id, code, JSON.stringify(stored), this.deps.networkJson),
-    ) as TrackerInitResult;
-    // Same defensive normalization as EmbeddedBridgeProvider — native reports info verbatim, never
-    // re-validated against the contract schema. Guard against a tracker that omits `capabilities`.
-    if (!Array.isArray(init.info.capabilities)) init.info.capabilities = [];
-    const methods = init.methods ?? methodsForTracker(init.info);
-
-    let descriptors: SettingDescriptor[] = [];
-    if (methods.includes("getSettings")) {
-      descriptors = JSON.parse(await this.deps.native.callTracker(id, "getSettings", "[]")) as SettingDescriptor[];
+    const promise = this.doLoad(id);
+    this.loading.set(id, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.loading.get(id) === promise) this.loading.delete(id);
     }
-    const tracker = buildProxyTracker(id, init.info, descriptors, methods, this.deps.native, {
-      afterCall: () => this.drainAndPersist(id),
-    });
-    const entry: LoadedEntry = { tracker, descriptors };
-    this.loaded.set(id, entry);
-    return entry;
+  }
+
+  private async doLoad(id: string): Promise<LoadedEntry> {
+    for (;;) {
+      const startEpoch = this.epoch.get(id) ?? 0;
+      const [code, stored] = await Promise.all([
+        this.deps.bundles.resolveBundle(id),
+        this.deps.settings.get(id),
+      ]);
+
+      const init = JSON.parse(
+        await this.deps.native.initTracker(id, code, JSON.stringify(stored), this.deps.networkJson),
+      ) as TrackerInitResult;
+      // Same defensive normalization as EmbeddedBridgeProvider — native reports info verbatim, never
+      // re-validated against the contract schema. Guard against a tracker that omits `capabilities`.
+      if (!Array.isArray(init.info.capabilities)) init.info.capabilities = [];
+      const methods = init.methods ?? methodsForTracker(init.info);
+
+      let descriptors: SettingDescriptor[] = [];
+      if (methods.includes("getSettings")) {
+        descriptors = JSON.parse(await this.deps.native.callTracker(id, "getSettings", "[]")) as SettingDescriptor[];
+      }
+
+      if ((this.epoch.get(id) ?? 0) !== startEpoch) {
+        // `invalidate`/`refresh`/`updateSettings`/a token drain fired while this load was building —
+        // the native context just constructed above used a settings snapshot that's already stale.
+        // Dispose it (never cache it) and rebuild from whatever's current now.
+        this.deps.native.disposeTracker(id);
+        continue;
+      }
+
+      const tracker = buildProxyTracker(id, init.info, descriptors, methods, this.deps.native, {
+        afterCall: () => this.drainAndPersist(id),
+      });
+      const entry: LoadedEntry = { tracker, descriptors };
+      this.loaded.set(id, entry);
+      return entry;
+    }
   }
 
   /** Mirrors `TrackerManager.summarize()`: settings descriptors redacted of the OAuth exchange
@@ -193,17 +239,27 @@ export class EmbeddedTrackerProvider implements TrackerProvider {
     id: string,
     patch: Record<string, SettingValue>,
   ): Promise<Record<string, SettingValue>> {
-    const merged = { ...(await this.deps.settings.get(id)), ...patch };
-    await this.deps.settings.set(id, merged);
-    this.invalidate(id); // next load() reloads the native context with the new settings
-    return merged;
+    return this.settingsQueue.run(id, async () => {
+      const merged = { ...(await this.deps.settings.get(id)), ...patch };
+      await this.deps.settings.set(id, merged);
+      this.invalidate(id); // next load() reloads the native context with the new settings
+      return merged;
+    });
   }
 
   invalidate(id: string): void {
+    // Bump unconditionally, even with nothing cached yet — a load can be in flight for `id` right
+    // now (see `doLoad`), and it needs to notice this invalidation when it finishes.
+    this.epoch.set(id, (this.epoch.get(id) ?? 0) + 1);
     if (this.loaded.delete(id)) this.deps.native.disposeTracker(id);
   }
 
   refresh(): void {
+    // Bump every cached AND in-flight id — a load can be mid-flight for an id that isn't in `loaded`
+    // yet, and it still needs to discard its stale result (see `doLoad`).
+    for (const id of new Set([...this.loaded.keys(), ...this.loading.keys()])) {
+      this.epoch.set(id, (this.epoch.get(id) ?? 0) + 1);
+    }
     for (const id of this.loaded.keys()) this.deps.native.disposeTracker(id);
     this.loaded.clear();
   }

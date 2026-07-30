@@ -15,6 +15,7 @@
 import type { SettingDescriptor, SettingValue } from "@comical/contract";
 import type { LoadedBridge } from "@comical/core/loader";
 import { methodsForBridge } from "./capabilities.ts";
+import { KeyedQueue } from "./keyed-queue.ts";
 import { buildProxyBridge } from "./proxy-bridge.ts";
 import type {
   BridgeProvider,
@@ -64,8 +65,16 @@ interface LoadedEntry {
 export class EmbeddedBridgeProvider implements BridgeProvider {
   private readonly loaded = new Map<string, LoadedEntry>();
   private readonly installedCache = new Map<string, InstalledBridge>();
+  /** In-flight `load(id)` calls, keyed by id — see `load`'s doc comment. */
+  private readonly loading = new Map<string, Promise<LoadedEntry>>();
+  /** Bumped by `invalidate`/`refresh` so a load already in flight can tell it was invalidated out from
+   *  under it (see `doLoad`). */
+  private readonly epoch = new Map<string, number>();
   /** In-flight background update check, so overlapping `list()` calls don't stack duplicate checks. */
   private updateCheckInFlight: Promise<void> | undefined;
+  /** Serializes `updateSettings`'s get-merge-set per id, so two concurrent settings writes for the
+   *  same bridge can't interleave and drop one's changes (a lost-update race — see KeyedQueue). */
+  private readonly settingsQueue = new KeyedQueue();
 
   constructor(private readonly deps: EmbeddedProviderDeps) {}
 
@@ -78,35 +87,67 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
     return found;
   }
 
-  /** Load the bundle into the native engine, capturing its info, methods, and setting descriptors. */
+  /**
+   * Load the bundle into the native engine, capturing its info, methods, and setting descriptors.
+   * Concurrent callers for the same id (e.g. Browse prefetching a source while Settings reads its
+   * descriptors) must share ONE in-flight load — without the `loading` map, both would race past the
+   * `loaded.get(id)` check, both call `native.initBridge` for the same id, and whichever settled last
+   * would silently win. `doLoad` does the actual work; this just de-dupes concurrent entry.
+   */
   private async load(id: string): Promise<LoadedEntry> {
     const existing = this.loaded.get(id);
     if (existing) return existing;
 
-    await this.installedFor(id); // throws "not found" for an unknown id before touching native
-    const [code, stored] = await Promise.all([
-      this.deps.bundles.resolveBundle(id),
-      this.deps.settings.get(id),
-    ]);
-    const init = JSON.parse(
-      await this.deps.native.initBridge(id, code, JSON.stringify(stored), this.deps.networkJson),
-    ) as InitResult;
-    // The native engine returns the bridge's *self-reported* info verbatim — unlike the remote path
-    // it's never re-validated against the contract schema, so a bridge that omits these arrays would
-    // otherwise flow all the way to the settings UI and throw "undefined is not a function" on the
-    // first `.join`/`.includes`. Normalize at the boundary so every consumer sees real arrays.
-    if (!Array.isArray(init.info.capabilities)) init.info.capabilities = [];
-    if (!Array.isArray(init.info.languages)) init.info.languages = [];
-    const methods = init.methods ?? methodsForBridge(init.info);
+    const inFlight = this.loading.get(id);
+    if (inFlight) return inFlight;
 
-    let descriptors: SettingDescriptor[] = [];
-    if (methods.includes("getSettings")) {
-      descriptors = JSON.parse(await this.deps.native.callBridge(id, "getSettings", "[]")) as SettingDescriptor[];
+    const promise = this.doLoad(id);
+    this.loading.set(id, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.loading.get(id) === promise) this.loading.delete(id);
     }
-    const bridge = buildProxyBridge(id, init.info, descriptors, methods, this.deps.native);
-    const entry: LoadedEntry = { bridge, descriptors };
-    this.loaded.set(id, entry);
-    return entry;
+  }
+
+  private async doLoad(id: string): Promise<LoadedEntry> {
+    for (;;) {
+      const startEpoch = this.epoch.get(id) ?? 0;
+      await this.installedFor(id); // throws "not found" for an unknown id before touching native
+      const [code, stored] = await Promise.all([
+        this.deps.bundles.resolveBundle(id),
+        this.deps.settings.get(id),
+      ]);
+      const init = JSON.parse(
+        await this.deps.native.initBridge(id, code, JSON.stringify(stored), this.deps.networkJson),
+      ) as InitResult;
+      // The native engine returns the bridge's *self-reported* info verbatim — unlike the remote path
+      // it's never re-validated against the contract schema, so a bridge that omits these arrays would
+      // otherwise flow all the way to the settings UI and throw "undefined is not a function" on the
+      // first `.join`/`.includes`. Normalize at the boundary so every consumer sees real arrays.
+      if (!Array.isArray(init.info.capabilities)) init.info.capabilities = [];
+      if (!Array.isArray(init.info.languages)) init.info.languages = [];
+      const methods = init.methods ?? methodsForBridge(init.info);
+
+      let descriptors: SettingDescriptor[] = [];
+      if (methods.includes("getSettings")) {
+        descriptors = JSON.parse(await this.deps.native.callBridge(id, "getSettings", "[]")) as SettingDescriptor[];
+      }
+
+      if ((this.epoch.get(id) ?? 0) !== startEpoch) {
+        // `invalidate`/`refresh`/`updateSettings` fired while this load was building — the native
+        // context just constructed above used a settings snapshot that's already stale. Dispose it
+        // (never cache it) and rebuild from whatever's current now, rather than handing a caller a
+        // bridge configured with the settings they just changed away from.
+        this.deps.native.disposeBridge(id);
+        continue;
+      }
+
+      const bridge = buildProxyBridge(id, init.info, descriptors, methods, this.deps.native);
+      const entry: LoadedEntry = { bridge, descriptors };
+      this.loaded.set(id, entry);
+      return entry;
+    }
   }
 
   async list(): Promise<BridgeSummary[]> {
@@ -193,17 +234,27 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
     id: string,
     values: Record<string, SettingValue>,
   ): Promise<Record<string, SettingValue>> {
-    const merged = { ...(await this.deps.settings.get(id)), ...values };
-    await this.deps.settings.set(id, merged);
-    this.invalidate(id); // next load() reloads the native context with the new settings
-    return merged;
+    return this.settingsQueue.run(id, async () => {
+      const merged = { ...(await this.deps.settings.get(id)), ...values };
+      await this.deps.settings.set(id, merged);
+      this.invalidate(id); // next load() reloads the native context with the new settings
+      return merged;
+    });
   }
 
   invalidate(id: string): void {
+    // Bump unconditionally, even with nothing cached yet — a load can be in flight for `id` right
+    // now (see `doLoad`), and it needs to notice this invalidation when it finishes.
+    this.epoch.set(id, (this.epoch.get(id) ?? 0) + 1);
     if (this.loaded.delete(id)) this.deps.native.disposeBridge(id);
   }
 
   refresh(): void {
+    // Bump every cached AND in-flight id — a load can be mid-flight for an id that isn't in `loaded`
+    // yet, and it still needs to discard its stale result (see `doLoad`).
+    for (const id of new Set([...this.loaded.keys(), ...this.loading.keys()])) {
+      this.epoch.set(id, (this.epoch.get(id) ?? 0) + 1);
+    }
     for (const id of this.loaded.keys()) this.deps.native.disposeBridge(id);
     this.loaded.clear();
     this.installedCache.clear();
