@@ -4,6 +4,7 @@
  *   _native_storage_get/set/delete/keys(key?, value?, (err, valueJSON?) => …)
  *   _native_storage_secure_get/set/delete/keys(...)   — same shapes, Keychain-backed
  *   _native_log(level, msg)
+ *   _native_get_default_user_agent()                  → string (sync, optional)
  * This wraps them into core's HostCapabilities (promise-based).
  */
 import type {
@@ -28,6 +29,8 @@ interface CallbackNatives {
   _native_storage_secure_set: (key: string, value: string, cb: Callback) => void;
   _native_storage_secure_delete: (key: string, cb: Callback) => void;
   _native_storage_secure_keys: (cb: Callback) => void;
+  /** Sync, not callback-based — a native harness built before this capability existed just omits it. */
+  _native_get_default_user_agent?: () => string;
 }
 
 function makeCallbackStore(
@@ -83,5 +86,8 @@ export function makeCallbackHost(settings: ResolvedSettings): HostCapabilities {
     },
     log: makeNativeLog(N._native_log),
     settings,
+    ...(N._native_get_default_user_agent && {
+      getDefaultUserAgent: () => N._native_get_default_user_agent!(),
+    }),
   };
 }

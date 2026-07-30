@@ -6,7 +6,7 @@
  */
 import { join } from "node:path";
 import type { HostCapabilities, LogCapability, ResolvedSettings } from "@comical/contract";
-import { createBunNetwork } from "./network.ts";
+import { createBunNetwork, DEFAULT_USER_AGENT } from "./network.ts";
 import { asStorageCapability, FileStorage, MemoryStorage } from "./storage.ts";
 
 export interface BunHostOptions {
@@ -39,11 +39,14 @@ export function createBunHost(opts: BunHostOptions): HostCapabilities {
       : new MemoryStorage(),
   );
 
+  const userAgent = opts.userAgent ?? DEFAULT_USER_AGENT;
+
   return {
     network,
     storage,
     log: opts.log ?? consoleLog,
     settings: opts.settings ?? {},
     ...(opts.hostUrl !== undefined && { hostUrl: opts.hostUrl }),
+    getDefaultUserAgent: () => userAgent,
   };
 }

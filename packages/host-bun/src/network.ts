@@ -6,7 +6,7 @@
  */
 import type { HttpRequest, HttpResponse, NetworkCapability } from "@comical/contract";
 
-const DEFAULT_USER_AGENT =
+export const DEFAULT_USER_AGENT =
   "Comical/0.0 (+https://github.com/comical) bridge-runtime";
 
 export interface BunNetworkOptions {

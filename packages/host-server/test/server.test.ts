@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { FixtureBackend } from "@comical/testkit";
+import { DEFAULT_USER_AGENT } from "@comical/host-bun";
 import { BridgeManager } from "../src/bridge-manager.ts";
 import { createRouter } from "../src/router.ts";
 import { SettingsStore } from "../src/settings-store.ts";
@@ -225,6 +226,44 @@ describe("GET /img-proxy", () => {
     const body = await res.text();
     expect(body).toContain("<svg");
     expect(body.length).toBeGreaterThan(0);
+  });
+
+  test("sends the host's own DEFAULT_USER_AGENT upstream — no drift from what a bridge's network sees", async () => {
+    let seenUA: string | null = null;
+    const cdn = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        seenUA = req.headers.get("User-Agent");
+        return new Response("bytes", { headers: { "Content-Type": "image/png" } });
+      },
+    });
+    const cdnHost = "127.0.0.1";
+    const proxyMgr = {
+      list: async () => [
+        {
+          info: {
+            id: "prox", name: "Prox", version: "1.0.0", contractVersion: "2.0.0",
+            languages: ["en"], nsfw: false, capabilities: [],
+            assetProxy: { hosts: [cdnHost] },
+          },
+          settings: [], configured: true, missingRequired: [], source: "registry" as const,
+        },
+      ],
+      get: async (id: string) => { throw new Error(`not found: ${id}`); },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+
+    const srv = Bun.serve({ port: 0, fetch: createRouter(proxyMgr).fetch });
+    try {
+      const declared = `http://${cdnHost}:${cdn.port}/asset.png`;
+      const res = await fetch(`http://localhost:${srv.port}/img-proxy?url=${encodeURIComponent(declared)}`);
+      expect(res.status).toBe(200);
+      expect(seenUA as string | null).toBe(DEFAULT_USER_AGENT);
+    } finally {
+      srv.stop(true);
+      cdn.stop(true);
+    }
   });
 
   test("allowlist is derived from a loaded bridge's assetProxy (declared host proxied + Referer forwarded, others 403)", async () => {

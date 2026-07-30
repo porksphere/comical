@@ -280,6 +280,10 @@ class ComicalTrackerContext private constructor(
         js.asyncFunction("_native_storage_secure_keys") { _ ->
             JSONArray(readSecureStorage().keys.toList()).toString()
         }
+
+        js.function("_native_get_default_user_agent") { _ ->
+            System.getProperty("http.agent") ?: ""
+        }
     }
 
     /**

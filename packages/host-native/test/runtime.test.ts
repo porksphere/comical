@@ -29,6 +29,7 @@ const NATIVE_GLOBALS = [
   "_native_storage_secure_set",
   "_native_storage_secure_delete",
   "_native_storage_secure_keys",
+  "_native_get_default_user_agent",
   "comical_init",
   "comical_call",
   "comical_bridge",
@@ -196,6 +197,43 @@ describe("host-native runtime (Android / async adapter)", () => {
     expect(res.items[0].title).toBe("none");
   });
 
+  test("getDefaultUserAgent surfaces the native platform UA when the harness provides it", async () => {
+    installNativeEval();
+    installAsyncNatives();
+    g._native_get_default_user_agent = () => "Android-Native/1.0";
+    installComicalHarness(makeAsyncHost);
+
+    const code = `module.exports = { default: (host) => ({
+      info: { id: "u", name: "U", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] },
+      getSeriesDetails: async (id) => ({ id, title: host.getDefaultUserAgent ? host.getDefaultUserAgent() : "absent" }),
+      getChapters: async () => [],
+      getChapterPages: async () => [],
+      getSearchResults: async () => ({ items: [] }),
+    }) };`;
+    g.comical_init(code, "{}");
+
+    const res = JSON.parse(await g.comical_call("getSeriesDetails", JSON.stringify(["x"])));
+    expect(res.title).toBe("Android-Native/1.0");
+  });
+
+  test("getDefaultUserAgent is absent when an older native harness doesn't provide it", async () => {
+    installNativeEval();
+    installAsyncNatives(); // no _native_get_default_user_agent registered
+    installComicalHarness(makeAsyncHost);
+
+    const code = `module.exports = { default: (host) => ({
+      info: { id: "u", name: "U", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] },
+      getSeriesDetails: async (id) => ({ id, title: host.getDefaultUserAgent ? "present" : "absent" }),
+      getChapters: async () => [],
+      getChapterPages: async () => [],
+      getSearchResults: async () => ({ items: [] }),
+    }) };`;
+    g.comical_init(code, "{}");
+
+    const res = JSON.parse(await g.comical_call("getSeriesDetails", JSON.stringify(["x"])));
+    expect(res.title).toBe("absent");
+  });
+
   test("enforces settings validation at init (invalid enum throws)", () => {
     installNativeEval();
     installAsyncNatives();
@@ -238,6 +276,25 @@ describe("host-native runtime (iOS / callback adapter)", () => {
     const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify([{ text: "" }])));
     expect(res.items.length).toBe(3);
     expect(spread(res.items)).toBeGreaterThanOrEqual(140);
+  });
+
+  test("getDefaultUserAgent surfaces the native platform UA when the harness provides it", async () => {
+    installNativeEval();
+    installCallbackNatives();
+    g._native_get_default_user_agent = () => "iOS-Native/1.0";
+    installComicalHarness(makeCallbackHost);
+
+    const code = `module.exports = { default: (host) => ({
+      info: { id: "u", name: "U", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] },
+      getSeriesDetails: async (id) => ({ id, title: host.getDefaultUserAgent ? host.getDefaultUserAgent() : "absent" }),
+      getChapters: async () => [],
+      getChapterPages: async () => [],
+      getSearchResults: async () => ({ items: [] }),
+    }) };`;
+    g.comical_init(code, "{}");
+
+    const res = JSON.parse(await g.comical_call("getSeriesDetails", JSON.stringify(["x"])));
+    expect(res.title).toBe("iOS-Native/1.0");
   });
 });
 

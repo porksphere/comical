@@ -289,6 +289,10 @@ public final class ComicalTrackerContext {
         js.setObject(nativeSecureSet,  forKeyedSubscript: "_native_storage_secure_set"    as NSString)
         js.setObject(nativeSecureDel,  forKeyedSubscript: "_native_storage_secure_delete" as NSString)
         js.setObject(nativeSecureKeys, forKeyedSubscript: "_native_storage_secure_keys"   as NSString)
+
+        // The platform's real UA — sync (not callback-based), read once at host construction.
+        let nativeUserAgent: @convention(block) () -> String = { Self.defaultUserAgent }
+        js.setObject(nativeUserAgent, forKeyedSubscript: "_native_get_default_user_agent" as NSString)
     }
 
     // MARK: - Separate-context bundle evaluator  ⚠️ UNVERIFIED (device test pending)
@@ -630,6 +634,15 @@ public final class ComicalTrackerContext {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let items = result as? [[String: Any]] else { return [] }
         return items.compactMap { $0[kSecAttrAccount as String] as? String }
+    }
+
+    /// See `ComicalBridgeContext.defaultUserAgent` for detail — keep the two in lockstep.
+    private static var defaultUserAgent: String {
+        let info = Bundle.main.infoDictionary
+        let appName = (info?["CFBundleName"] as? String) ?? "Comical"
+        let appVersion = (info?["CFBundleShortVersionString"] as? String) ?? "0.0"
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        return "\(appName)/\(appVersion) (iOS; \(os))"
     }
 
     // MARK: - Utilities

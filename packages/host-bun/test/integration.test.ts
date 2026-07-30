@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { loadBridge } from "@comical/core";
 import { FixtureBackend } from "@comical/testkit";
 import {
+  DEFAULT_USER_AGENT,
   FileStorage,
   MemoryStorage,
   asStorageCapability,
@@ -103,5 +104,32 @@ describe("storage", () => {
     const host = createBunHost({ bridgeId: "example" });
     await host.storage.secure.set("k", "v");
     expect(await host.storage.secure.get("k")).toBe("v");
+  });
+});
+
+describe("getDefaultUserAgent", () => {
+  test("defaults to DEFAULT_USER_AGENT, honors an override", () => {
+    expect(createBunHost({ bridgeId: "example" }).getDefaultUserAgent?.()).toBe(DEFAULT_USER_AGENT);
+    expect(
+      createBunHost({ bridgeId: "example", userAgent: "Custom/1.0" }).getDefaultUserAgent?.(),
+    ).toBe("Custom/1.0");
+  });
+
+  test("matches the User-Agent header the host's own network actually sends — no drift", async () => {
+    let seenUA: string | null = null;
+    const srv = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        seenUA = req.headers.get("user-agent");
+        return new Response("ok");
+      },
+    });
+    try {
+      const host = createBunHost({ bridgeId: "example" });
+      await host.network.request({ url: `http://localhost:${srv.port}/` });
+      expect(seenUA as string | null).toBe(host.getDefaultUserAgent!());
+    } finally {
+      srv.stop(true);
+    }
   });
 });

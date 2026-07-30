@@ -42,6 +42,11 @@ export abstract class TrackerBase<
     return this.host.storage;
   }
 
+  /** The host's real platform User-Agent, when it has one to give — undefined otherwise. */
+  protected get userAgent(): string | undefined {
+    return this.host.getDefaultUserAgent?.();
+  }
+
   protected setting<K extends keyof TSettings>(key: K): TSettings[K] | undefined {
     return this.host.settings[key as string] as TSettings[K] | undefined;
   }

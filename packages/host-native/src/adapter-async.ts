@@ -7,6 +7,7 @@
  *   await _native_storage_keys()                              → keysJSON
  *   await _native_storage_secure_get/set/delete/keys(...)     → same shapes, Keystore-backed
  *   _native_log(level, msg)
+ *   _native_get_default_user_agent()                          → string (sync, optional)
  * This wraps them into core's HostCapabilities.
  */
 import type {
@@ -29,6 +30,8 @@ interface AsyncNatives {
   _native_storage_secure_set: (key: string, value: string) => Promise<unknown>;
   _native_storage_secure_delete: (key: string) => Promise<unknown>;
   _native_storage_secure_keys: () => Promise<string>;
+  /** Sync, not async — a native harness built before this capability existed just omits it. */
+  _native_get_default_user_agent?: () => string;
 }
 
 function makeAsyncStore(
@@ -73,5 +76,8 @@ export function makeAsyncHost(settings: ResolvedSettings): HostCapabilities {
     },
     log: makeNativeLog(N._native_log),
     settings,
+    ...(N._native_get_default_user_agent && {
+      getDefaultUserAgent: () => N._native_get_default_user_agent!(),
+    }),
   };
 }

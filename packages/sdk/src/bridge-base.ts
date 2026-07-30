@@ -55,6 +55,16 @@ export abstract class BridgeBase<
     return this.host.storage;
   }
 
+  /**
+   * The host's real platform User-Agent, when it has one to give — undefined if the host doesn't
+   * report one, in which case a bridge should fall back to its own hardcoded default rather than
+   * omitting the header. Kept in sync with what the host's own requests send (e.g. `/img-proxy`),
+   * avoiding the drift that gets a source 403ing.
+   */
+  protected get userAgent(): string | undefined {
+    return this.host.getDefaultUserAgent?.();
+  }
+
   /** Read a user-supplied setting; returns undefined if unset. */
   protected setting<K extends keyof TSettings & string>(key: K): TSettings[K] | undefined {
     return this.host.settings[key] as TSettings[K] | undefined;

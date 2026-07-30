@@ -19,6 +19,8 @@ export interface MockHostOptions {
   handle: (req: HttpRequest) => HttpResponse | Promise<HttpResponse>;
   settings?: Record<string, string | boolean>;
   log?: LogCapability;
+  /** Omit to simulate a host that reports no platform UA (bridge falls back to its own default). */
+  userAgent?: string;
 }
 
 export function mockHost(opts: MockHostOptions): HostCapabilities {
@@ -44,6 +46,7 @@ export function mockHost(opts: MockHostOptions): HostCapabilities {
     },
     log: opts.log ?? silentLog,
     settings,
+    ...(opts.userAgent !== undefined && { getDefaultUserAgent: () => opts.userAgent as string }),
   };
 }
 

@@ -24,6 +24,7 @@ import type { BridgeProvider } from "./bridge-provider.ts";
 import type { RegistryProvider } from "./registry-provider.ts";
 import { TagLabelCache } from "./tag-label-cache.ts";
 import type { TrackerProvider } from "./tracker-provider.ts";
+import { DEFAULT_USER_AGENT } from "@comical/host-bun";
 
 export interface RouterOptions {
   /** CORS origin(s) allowed. Defaults to '*' for LAN use. */
@@ -222,7 +223,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
    *  would be silently empty. Reading bytes works on every host. */
   const proxyFetch = async (target: string, referer: string | undefined): Promise<Response> => {
     try {
-      const r = await fetch(target, referer ? { headers: { Referer: referer } } : undefined);
+      const headers: Record<string, string> = { "User-Agent": DEFAULT_USER_AGENT };
+      if (referer) headers.Referer = referer;
+      const r = await fetch(target, { headers });
       const bytes = await r.arrayBuffer();
       return new Response(bytes, {
         status: r.status,

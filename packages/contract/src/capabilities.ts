@@ -94,4 +94,11 @@ export interface HostCapabilities {
   /** Base URL of the host server (e.g. "http://localhost:3100"). Bridges may use this to
    *  construct server-side proxy URLs so the browser never fetches CDN assets directly. */
   hostUrl?: string;
+  /**
+   * The platform's real User-Agent string, when the host has one to give. A bundled bridge's own
+   * hardcoded UA goes stale and can drift from what the host's own requests send (e.g.
+   * `/img-proxy`) — exactly the mismatch that gets a source 403ing. Absent (not just empty) when
+   * the host has no meaningful platform UA to report; a bridge falls back to its own default.
+   */
+  getDefaultUserAgent?(): string;
 }
