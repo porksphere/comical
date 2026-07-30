@@ -241,7 +241,7 @@ describe("EmbeddedTrackerProvider", () => {
 
     const tracker = await provider.get("anilist");
     await Promise.all([
-      tracker.getLibrary!(1), // triggers afterCall -> drainAndPersist, refreshing "token"
+      tracker.getLibrary!(), // triggers afterCall -> drainAndPersist, refreshing "token"
       provider.updateSettings("anilist", { extra: "x" }),
     ]);
 
