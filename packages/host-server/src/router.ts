@@ -24,8 +24,6 @@ import type { BridgeProvider } from "./bridge-provider.ts";
 import type { RegistryProvider } from "./registry-provider.ts";
 import { TagLabelCache } from "./tag-label-cache.ts";
 import type { TrackerProvider } from "./tracker-provider.ts";
-import { DEFAULT_USER_AGENT } from "@comical/host-bun";
-
 export interface RouterOptions {
   /** CORS origin(s) allowed. Defaults to '*' for LAN use. */
   origin?: string;
@@ -66,6 +64,13 @@ export interface RouterOptions {
   trackers?: TrackerProvider;
   /** Base URL of this server, used as the OAuth callback redirect URI (e.g. "http://localhost:3100"). */
   callbackBaseUrl?: string;
+  /**
+   * User-Agent sent by `/img-proxy`'s upstream fetch. Passed in by the caller (rather than imported
+   * from a specific host adapter here) so this file stays free of Node-specific deps — comical-app's
+   * embedded runtime reuses `createRouter` in-process and must not pull in `@comical/host-bun`.
+   * Omit to send no explicit UA (the fetch implementation's own default).
+   */
+  userAgent?: string;
 }
 
 // ── OAuth callback state ──────────────────────────────────────────────────────
@@ -223,7 +228,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
    *  would be silently empty. Reading bytes works on every host. */
   const proxyFetch = async (target: string, referer: string | undefined): Promise<Response> => {
     try {
-      const headers: Record<string, string> = { "User-Agent": DEFAULT_USER_AGENT };
+      const headers: Record<string, string> = {};
+      if (opts.userAgent) headers["User-Agent"] = opts.userAgent;
       if (referer) headers.Referer = referer;
       const r = await fetch(target, { headers });
       const bytes = await r.arrayBuffer();

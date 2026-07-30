@@ -228,7 +228,51 @@ describe("GET /img-proxy", () => {
     expect(body.length).toBeGreaterThan(0);
   });
 
-  test("sends the host's own DEFAULT_USER_AGENT upstream — no drift from what a bridge's network sees", async () => {
+  test("forwards RouterOptions.userAgent upstream — no drift from what the caller's own host sends", async () => {
+    // router.ts takes the UA via RouterOptions rather than importing @comical/host-bun's default
+    // itself: this file is reused in-process by comical-app's embedded runtime, which must not pull
+    // in a Node-specific host adapter. `server.ts` wires DEFAULT_USER_AGENT through for the desktop
+    // deployment; this test exercises that same plumbing without needing the real server.ts.
+    let seenUA: string | null = null;
+    const cdn = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        seenUA = req.headers.get("User-Agent");
+        return new Response("bytes", { headers: { "Content-Type": "image/png" } });
+      },
+    });
+    const cdnHost = "127.0.0.1";
+    const proxyMgr = {
+      list: async () => [
+        {
+          info: {
+            id: "prox", name: "Prox", version: "1.0.0", contractVersion: "2.0.0",
+            languages: ["en"], nsfw: false, capabilities: [],
+            assetProxy: { hosts: [cdnHost] },
+          },
+          settings: [], configured: true, missingRequired: [], source: "registry" as const,
+        },
+      ],
+      get: async (id: string) => { throw new Error(`not found: ${id}`); },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+
+    const srv = Bun.serve({ port: 0, fetch: createRouter(proxyMgr, { userAgent: DEFAULT_USER_AGENT }).fetch });
+    try {
+      const declared = `http://${cdnHost}:${cdn.port}/asset.png`;
+      const res = await fetch(`http://localhost:${srv.port}/img-proxy?url=${encodeURIComponent(declared)}`);
+      expect(res.status).toBe(200);
+      expect(seenUA as string | null).toBe(DEFAULT_USER_AGENT);
+    } finally {
+      srv.stop(true);
+      cdn.stop(true);
+    }
+  });
+
+  test("doesn't override the User-Agent header when RouterOptions.userAgent isn't provided", async () => {
+    // No explicit override — whatever the runtime's own fetch sends by default goes through as-is
+    // (Bun's own "Bun/x.y.z", not our DEFAULT_USER_AGENT).
     let seenUA: string | null = null;
     const cdn = Bun.serve({
       port: 0,
@@ -259,7 +303,7 @@ describe("GET /img-proxy", () => {
       const declared = `http://${cdnHost}:${cdn.port}/asset.png`;
       const res = await fetch(`http://localhost:${srv.port}/img-proxy?url=${encodeURIComponent(declared)}`);
       expect(res.status).toBe(200);
-      expect(seenUA as string | null).toBe(DEFAULT_USER_AGENT);
+      expect(seenUA as string | null).not.toBe(DEFAULT_USER_AGENT);
     } finally {
       srv.stop(true);
       cdn.stop(true);

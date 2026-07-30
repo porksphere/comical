@@ -3,6 +3,7 @@
  */
 import { join } from "node:path";
 import { DownloadEngine, Downloads } from "@comical/downloads";
+import { DEFAULT_USER_AGENT } from "@comical/host-bun";
 import { Library } from "@comical/library";
 import { ManifestStore, RegistryManager } from "@comical/registry";
 import { ComicalRuntime } from "@comical/runtime";
@@ -56,7 +57,11 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
   });
 
   const port = opts.port ?? 3100;
-  const routerOpts: RouterOptions = { registry, callbackBaseUrl: `http://localhost:${port}` };
+  const routerOpts: RouterOptions = {
+    registry,
+    callbackBaseUrl: `http://localhost:${port}`,
+    userAgent: DEFAULT_USER_AGENT,
+  };
   if (opts.origin) routerOpts.origin = opts.origin;
   if (opts.token) routerOpts.token = opts.token;
 
