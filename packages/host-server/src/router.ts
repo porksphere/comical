@@ -8,8 +8,23 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
-import { bridgeSeriesStatusSchema, CURSOR_MAX_LENGTH, EXCLUDED_TAGS_KEY } from "@comical/contract";
-import type { Chapter, Cursor, FilterValue, ListRequest, SearchRequest, SettingValue } from "@comical/contract";
+import {
+  bridgeSeriesStatusSchema,
+  CONTENT_RATING_ORDER,
+  CURSOR_MAX_LENGTH,
+  EXCLUDED_TAGS_KEY,
+  MAX_CONTENT_RATING_KEY,
+} from "@comical/contract";
+import type {
+  Chapter,
+  ContentRating,
+  Cursor,
+  FilterValue,
+  ListRequest,
+  SearchRequest,
+  SeriesEntry,
+  SettingValue,
+} from "@comical/contract";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
 // node:vm-backed default evaluator) so this router can also be bundled into non-Node hosts
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
@@ -278,7 +293,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       const values: Record<string, SettingValue> = {};
       const secretsSet: string[] = [];
       for (const [k, v] of Object.entries(stored)) {
-        if (k === EXCLUDED_TAGS_KEY) continue; // reserved host-managed key, surfaced separately
+        if (k === EXCLUDED_TAGS_KEY || k === MAX_CONTENT_RATING_KEY) continue; // reserved host-managed keys, surfaced separately
         if (secretKeys.has(k)) { if (v !== undefined && v !== "") secretsSet.push(k); }
         else values[k] = v;
       }
@@ -295,6 +310,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         // Names folded in from the shared cache (resolving cold ids via the bridge once, then
         // cached). The client renders `excludedTagLabels[id] ?? id`; storage stays id-only.
         excludedTagLabels: await tagLabels.resolve(bridge, excludedTags),
+        // Reserved host-managed ceiling (capability "content-rating"); absent/null = no limit.
+        maxContentRating: readMaxContentRating(stored) ?? null,
       });
     });
   });
@@ -360,6 +377,37 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }
   });
 
+  /**
+   * Set (or clear) the bridge's persistent max content rating (reserved key, capability
+   * "content-rating"). Body: `{ rating: "everyone" | "mature" | "adult" | null }` — `null` clears
+   * the ceiling (no limit).
+   */
+  app.put("/bridges/:id/max-content-rating", async (c) => {
+    const id = c.req.param("id");
+    let body: { rating?: unknown };
+    try {
+      body = await c.req.json<{ rating?: unknown }>();
+    } catch {
+      return c.json({ error: "invalid JSON" }, 400);
+    }
+    const raw = body.rating;
+    if (raw !== null && raw !== "everyone" && raw !== "mature" && raw !== "adult") {
+      return c.json({ error: 'expected { rating: "everyone" | "mature" | "adult" | null }' }, 400);
+    }
+    // Stored as "" for "no limit" — SettingValue has no null variant, and readMaxContentRating
+    // already treats anything other than the three valid ratings as absent.
+    const rating: ContentRating | "" = raw === null ? "" : raw;
+    const manager = c.get("manager") as BridgeProvider;
+    try {
+      await manager.get(id); // surface 404 for an unknown bridge before persisting
+      const updated = await manager.updateSettings(id, { [MAX_CONTENT_RATING_KEY]: rating });
+      return c.json({ maxContentRating: readMaxContentRating(updated) ?? null });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
+    }
+  });
+
   // ── Content endpoints ────────────────────────────────────────────────────────
 
   /**
@@ -393,7 +441,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       if (sortKey) options.sort = { key: sortKey, ascending: c.req.query("dir") !== "desc" };
       const excluded = await excludedTagsFor(c, bridge);
       if (excluded.length) options.excludedTags = excluded;
-      return c.json(await bridge.getSearchResults(options));
+      const results = await bridge.getSearchResults(options);
+      await redactByContentRating(c, bridge, results.items);
+      return c.json(results);
     }),
   );
 
@@ -432,7 +482,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       if (sortKey) options.sort = { key: sortKey, ascending: c.req.query("dir") !== "desc" };
       const excluded = await excludedTagsFor(c, bridge);
       if (excluded.length) options.excludedTags = excluded;
-      return c.json(await bridge.getListItems(c.req.param("listId"), options));
+      const results = await bridge.getListItems(c.req.param("listId"), options);
+      await redactByContentRating(c, bridge, results.items);
+      return c.json(results);
     }),
   );
 
@@ -458,7 +510,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       if (!bridge.getFavorites) return c.json({ error: "not supported" }, 400);
       const cursor = cursorParam(c);
       if (typeof cursor === "object") return c.json({ error: "cursor too long" }, 400);
-      return c.json(await bridge.getFavorites(cursor ? { cursor } : {}));
+      const results = await bridge.getFavorites(cursor ? { cursor } : {});
+      await redactByContentRating(c, bridge, results.items);
+      return c.json(results);
     }),
   );
 
@@ -1694,6 +1748,41 @@ async function withDownloadsEntry(
 function readExcludedTags(stored: Record<string, SettingValue>): string[] {
   const v = stored[EXCLUDED_TAGS_KEY];
   return Array.isArray(v) ? v.filter((t): t is string => typeof t === "string") : [];
+}
+
+/** The persisted max content rating from a stored-settings map ("" or anything invalid = no limit). */
+function readMaxContentRating(stored: Record<string, SettingValue>): ContentRating | undefined {
+  const v = stored[MAX_CONTENT_RATING_KEY];
+  return v === "everyone" || v === "mature" || v === "adult" ? v : undefined;
+}
+
+/**
+ * Redact entries whose `contentRating` exceeds the user's configured per-bridge ceiling — entirely
+ * host-side, unlike `excludedTagsFor` (which the BRIDGE acts on): the rating already travels on the
+ * item itself, so no request-time injection or bridge cooperation is needed to enforce it. A no-op
+ * for bridges that don't advertise "content-rating" or have no ceiling configured. Mutates `items`
+ * in place, matching `SeriesEntry.excluded`'s existing redacted-placeholder shape (neutral title, no
+ * cover) used by tag exclusion.
+ */
+async function redactByContentRating(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  bridge: Awaited<ReturnType<BridgeProvider["get"]>>,
+  items: SeriesEntry[],
+): Promise<void> {
+  if (!bridge.info.capabilities?.includes("content-rating")) return;
+  const stored = await (c.get("manager") as BridgeProvider).storedSettings(bridge.info.id);
+  const max = readMaxContentRating(stored);
+  if (!max) return;
+  const ceiling = CONTENT_RATING_ORDER[max];
+  for (const item of items) {
+    if (item.contentRating && CONTENT_RATING_ORDER[item.contentRating] > ceiling) {
+      item.excluded = true;
+      item.title = "Hidden";
+      delete item.thumbnailUrl;
+      delete item.badges;
+    }
+  }
 }
 
 /**

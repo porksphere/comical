@@ -15,6 +15,22 @@ import { z } from "zod";
  */
 export const CURSOR_MAX_LENGTH = 4096;
 
+/**
+ * Per-item content rating, coarser than any single site's own scheme on purpose — every backend a
+ * bridge might wrap collapses onto one of these three tiers. Ordered `everyone < mature < adult`;
+ * see {@link CONTENT_RATING_ORDER} for a numeric comparison. See `MAX_CONTENT_RATING_KEY` and the
+ * `"content-rating"` bridge capability for how the host enforces a user's configured ceiling.
+ */
+export const contentRatingSchema = z.enum(["everyone", "mature", "adult"]);
+export type ContentRating = z.infer<typeof contentRatingSchema>;
+
+/** Numeric ordinal for {@link ContentRating}, for `rating > max` comparisons. */
+export const CONTENT_RATING_ORDER: Record<ContentRating, number> = {
+  everyone: 0,
+  mature: 1,
+  adult: 2,
+};
+
 /** Publication status of a series, normalized across backends. */
 export const seriesStatusSchema = z.enum([
   "unknown",
@@ -67,10 +83,18 @@ export const seriesEntrySchema = z.object({
    */
   badges: z.array(cardBadgeSchema).max(4).optional(),
   /**
-   * Set by a bridge (capability "exclude-tags") when this slot matched the user's persistent tag
-   * exclusions. The entry is a redacted placeholder: `title` carries no real name and
-   * `thumbnailUrl` is intentionally omitted so the host renders a blank card and never fetches a
-   * cover. Hosts unaware of this flag degrade gracefully to a coverless, neutrally-titled card.
+   * This item's content rating (capability "content-rating"). A bridge that serves everything from
+   * EVERYONE to ADULT out of one source fills this per entry so the host can enforce the user's
+   * configured ceiling — see `MAX_CONTENT_RATING_KEY`. Distinct from the bridge-level
+   * `BridgeInfo.nsfw` boolean, which can't express a mixed-rating source.
+   */
+  contentRating: contentRatingSchema.optional(),
+  /**
+   * Set by the host when this slot matched the user's persistent tag exclusions (capability
+   * "exclude-tags") OR exceeded their configured max content rating (capability "content-rating").
+   * The entry is a redacted placeholder: `title` carries no real name and `thumbnailUrl` is
+   * intentionally omitted so the host renders a blank card and never fetches a cover. Hosts unaware
+   * of this flag degrade gracefully to a coverless, neutrally-titled card.
    */
   excluded: z.boolean().optional(),
 });
@@ -202,6 +226,8 @@ export const seriesInfoSchema = z.object({
    * without fetching the full page list. Hosts render it as a metadata cell.
    */
   pageCount: z.number().int().positive().optional(),
+  /** This series' content rating (capability "content-rating"). See `seriesEntrySchema.contentRating`. */
+  contentRating: contentRatingSchema.optional(),
 });
 export type SeriesInfo = z.infer<typeof seriesInfoSchema>;
 
@@ -616,6 +642,17 @@ export const bridgeCapabilitySchema = z.enum([
    * `getSeriesDetails` response.
    */
   "related-series",
+  /**
+   * Reports a per-item {@link ContentRating} on `SeriesEntry`/`SeriesInfo` (field `contentRating`).
+   * `BridgeInfo.nsfw` is a single bridge-level flag — some backends serve everything from EVERYONE
+   * to ADULT out of one source, which a bridge-level boolean cannot express. A bridge
+   * advertising this fills `contentRating` on every entry/detail it emits; the host then compares it
+   * against the user's configured per-bridge ceiling ({@link MAX_CONTENT_RATING_KEY}) and redacts
+   * (same shape as `"exclude-tags"`: `SeriesEntry.excluded = true`, title/thumbnail blanked) anything
+   * over the limit — entirely host-side, since the rating already travels on the item itself and
+   * needs no bridge cooperation to enforce, unlike tag exclusion.
+   */
+  "content-rating",
 ]);
 export type BridgeCapability = z.infer<typeof bridgeCapabilitySchema>;
 
@@ -626,6 +663,15 @@ export type BridgeCapability = z.infer<typeof bridgeCapabilitySchema>;
  * advertising the `"exclude-tags"` capability — it is never passed as a bridge setting.
  */
 export const EXCLUDED_TAGS_KEY = "excludedTags" as const;
+
+/**
+ * Reserved per-bridge settings key under which the host persists the user's maximum allowed
+ * {@link ContentRating} (or absent = no limit). Host-managed like {@link EXCLUDED_TAGS_KEY}: bridges
+ * must NOT declare a `getSettings()` descriptor with this key. Only meaningful for bridges
+ * advertising `"content-rating"` — a bridge that never fills `contentRating` gives the host nothing
+ * to compare against, so the limit is stored but inert.
+ */
+export const MAX_CONTENT_RATING_KEY = "maxContentRating" as const;
 
 /**
  * Reading status values a bridge may report or receive when the bridge supports `"read-sync"`.

@@ -28,6 +28,9 @@ export const CAPABILITY_METHODS: Record<BridgeCapability, string[]> = {
   "related-series": ["getRelatedSeries"],
   // Host-injected into query options; the bridge exposes no dedicated method for it.
   "exclude-tags": [],
+  // Data-only: the bridge fills `contentRating` on entries/details it already returns from other
+  // methods; the host does the filtering. No dedicated method.
+  "content-rating": [],
   // The "direct" (chapterless) reader surface. Chaptered series use getChapters/getChapterPages,
   // added unconditionally below since they have no dedicated capability tag.
   direct: ["getSeriesPages", "resolvePage", "getPageThumbnail"],
