@@ -131,7 +131,7 @@ describe("host-native runtime (Android / async adapter)", () => {
     installAsyncNatives();
     installComicalHarness(makeAsyncHost);
 
-    const info = JSON.parse(g.comical_init(fanout(RATE_INFO), "{}") as string);
+    const info = JSON.parse((await g.comical_init(fanout(RATE_INFO), "{}")) as string);
     expect(info.id).toBe("t");
 
     const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify([{ text: "" }])));
@@ -152,7 +152,7 @@ describe("host-native runtime (Android / async adapter)", () => {
       addFavorite: async () => {},
       removeFavorite: async () => {},
     }) };`;
-    g.comical_init(code, "{}");
+    await g.comical_init(code, "{}");
 
     const raw = await g.comical_call("addFavorite", JSON.stringify(["series-1"]));
     expect(raw).toBe("null");
@@ -163,7 +163,7 @@ describe("host-native runtime (Android / async adapter)", () => {
     installNativeEval();
     installAsyncNatives();
     installComicalHarness(makeAsyncHost);
-    g.comical_init(fanout(RATE_INFO), "{}");
+    await g.comical_init(fanout(RATE_INFO), "{}");
 
     const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify([{ text: "" }])));
     // 3 requests, 1 in flight, ≥80ms apart → starts span ≥ ~160ms.
@@ -190,7 +190,7 @@ describe("host-native runtime (Android / async adapter)", () => {
         };
       },
     }) };`;
-    g.comical_init(code, "{}");
+    await g.comical_init(code, "{}");
 
     const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify([{ text: "" }])));
     expect(res.items[0].id).toBe("s3cr3t");
@@ -210,7 +210,7 @@ describe("host-native runtime (Android / async adapter)", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [] }),
     }) };`;
-    g.comical_init(code, "{}");
+    await g.comical_init(code, "{}");
 
     const res = JSON.parse(await g.comical_call("getSeriesDetails", JSON.stringify(["x"])));
     expect(res.title).toBe("Android-Native/1.0");
@@ -228,13 +228,13 @@ describe("host-native runtime (Android / async adapter)", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [] }),
     }) };`;
-    g.comical_init(code, "{}");
+    await g.comical_init(code, "{}");
 
     const res = JSON.parse(await g.comical_call("getSeriesDetails", JSON.stringify(["x"])));
     expect(res.title).toBe("absent");
   });
 
-  test("enforces settings validation at init (invalid enum throws)", () => {
+  test("enforces settings validation at init (invalid enum throws)", async () => {
     installNativeEval();
     installAsyncNatives();
     installComicalHarness(makeAsyncHost);
@@ -247,10 +247,10 @@ describe("host-native runtime (Android / async adapter)", () => {
       getChapterPages: async () => [],
       getSettings: () => [{ type: "enum", key: "mode", label: "Mode", options: [{ value: "a", label: "A" }, { value: "b", label: "B" }] }],
     }) };`;
-    expect(() => g.comical_init(code, JSON.stringify({ mode: "zzz" }))).toThrow();
+    await expect(g.comical_init(code, JSON.stringify({ mode: "zzz" }))).rejects.toThrow();
   });
 
-  test("rejects an incompatible contract version at init", () => {
+  test("rejects an incompatible contract version at init", async () => {
     installNativeEval();
     installAsyncNatives();
     installComicalHarness(makeAsyncHost);
@@ -262,7 +262,7 @@ describe("host-native runtime (Android / async adapter)", () => {
       getChapters: async () => [],
       getChapterPages: async () => [],
     }) };`;
-    expect(() => g.comical_init(code, "{}")).toThrow();
+    await expect(g.comical_init(code, "{}")).rejects.toThrow();
   });
 });
 
@@ -272,7 +272,7 @@ describe("host-native runtime (iOS / callback adapter)", () => {
     installCallbackNatives();
     installComicalHarness(makeCallbackHost);
 
-    JSON.parse(g.comical_init(fanout(RATE_INFO), "{}") as string);
+    JSON.parse((await g.comical_init(fanout(RATE_INFO), "{}")) as string);
     const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify([{ text: "" }])));
     expect(res.items.length).toBe(3);
     expect(spread(res.items)).toBeGreaterThanOrEqual(140);
@@ -291,7 +291,7 @@ describe("host-native runtime (iOS / callback adapter)", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [] }),
     }) };`;
-    g.comical_init(code, "{}");
+    await g.comical_init(code, "{}");
 
     const res = JSON.parse(await g.comical_call("getSeriesDetails", JSON.stringify(["x"])));
     expect(res.title).toBe("iOS-Native/1.0");

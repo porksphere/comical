@@ -128,9 +128,9 @@ class ComicalBridgeContext private constructor(
         Log.d(TAG, "load: harness evaluated (+${ms()}ms)")
 
         val initCall = if (networkOptionsJson != null)
-            "comical_init(__comical_bundle(), __comical_settings(), __comical_network())"
+            "await comical_init(__comical_bundle(), __comical_settings(), __comical_network())"
         else
-            "comical_init(__comical_bundle(), __comical_settings())"
+            "await comical_init(__comical_bundle(), __comical_settings())"
         js.evaluate<Any?>(initCall)
         Log.d(TAG, "load: comical_init done (+${ms()}ms)")
     }

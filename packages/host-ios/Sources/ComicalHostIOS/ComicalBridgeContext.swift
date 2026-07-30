@@ -13,7 +13,7 @@
  * (os.log) into context A; the bundled runtime wraps them into core's HostCapabilities.
  *
  * Usage:
- *   let ctx = try ComicalBridgeContext(bridgeBundle: bundleCode, settings: ["baseUrl": "https://…"])
+ *   let ctx = try await ComicalBridgeContext(bridgeBundle: bundleCode, settings: ["baseUrl": "https://…"])
  *   let info  = ctx.bridgeInfo                             // BridgeInfo (Decodable)
  *   let items = try await ctx.call("getSearchResults", args: ["naruto", 1])
  *
@@ -42,7 +42,7 @@ public final class ComicalBridgeContext {
     private let storageDir: URL
     private let log = Logger(subsystem: "dev.comical", category: "bridge")
 
-    public init(bridgeBundle: String, settings: [String: Any] = [:], dataDir: URL? = nil) throws {
+    public init(bridgeBundle: String, settings: [String: Any] = [:], dataDir: URL? = nil) async throws {
         guard let ctx = JSContext() else { throw ComicalError(message: "failed to create JSContext") }
         js = ctx
         storageDir = dataDir ?? FileManager.default.temporaryDirectory.appendingPathComponent("comical")
@@ -84,8 +84,32 @@ public final class ComicalBridgeContext {
         let settingsJSON = (try? JSONSerialization.data(withJSONObject: settings)).flatMap {
             String(data: $0, encoding: .utf8)
         } ?? "{}"
-        js.evaluateScript("comical_init(\(jsString(bridgeBundle)), \(jsString(settingsJSON)))")
-        try throwIfException()
+        try await awaitComicalInit(bridgeBundle: bridgeBundle, settingsJSON: settingsJSON)
+    }
+
+    /// Runs `comical_init` (now async: it awaits the bridge's optional `initialize()` hook) and
+    /// bridges its Promise back to a Swift continuation, mirroring `call`'s then/catch pattern.
+    private func awaitComicalInit(bridgeBundle: String, settingsJSON: String) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let script = "comical_init(\(jsString(bridgeBundle)), \(jsString(settingsJSON)))"
+            guard let promise = js.evaluateScript(script) else {
+                continuation.resume(throwing: ComicalError(message: "comical_init evaluation returned nil"))
+                return
+            }
+            if let exception = js.exception {
+                js.exception = nil
+                continuation.resume(throwing: ComicalError(message: exception.toString() ?? "unknown JS exception"))
+                return
+            }
+            let thenFn: @convention(block) (JSValue) -> Void = { _ in
+                continuation.resume(returning: ())
+            }
+            let catchFn: @convention(block) (JSValue) -> Void = { err in
+                continuation.resume(throwing: ComicalError(message: err.toString() ?? "bridge init error"))
+            }
+            promise.invokeMethod("then", withArguments: [JSValue(object: thenFn, in: self.js)!])
+                   .invokeMethod("catch", withArguments: [JSValue(object: catchFn, in: self.js)!])
+        }
     }
 
     // MARK: - Decoded bridge info

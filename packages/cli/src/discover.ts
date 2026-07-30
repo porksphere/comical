@@ -35,7 +35,7 @@ export function readBundle(bundlePath: string): string {
   return readFileSync(bundlePath, "utf8");
 }
 
-export function discoverBridges(bridgesDir: string | string[]): DiscoveredBridge[] {
+export async function discoverBridges(bridgesDir: string | string[]): Promise<DiscoveredBridge[]> {
   const roots = Array.isArray(bridgesDir) ? bridgesDir : [bridgesDir];
   const found: DiscoveredBridge[] = [];
   for (const root of roots) {
@@ -56,7 +56,7 @@ export function discoverBridges(bridgesDir: string | string[]): DiscoveredBridge
         continue; // not built yet
       }
       try {
-        const bridge = loadBridge({ code, capabilities: infoOnlyHost() });
+        const bridge = await loadBridge({ code, capabilities: infoOnlyHost() });
         found.push({ id: bridge.info.id, info: bridge.info, bundlePath, dir });
       } catch {
         // Skip bundles that fail to load (e.g. incompatible contract version).
@@ -78,8 +78,8 @@ export function filterBridgesByNsfw<T extends { info: Pick<BridgeInfo, "nsfw"> }
   return nsfwFilter === undefined ? bridges : bridges.filter((b) => b.info.nsfw === nsfwFilter);
 }
 
-export function resolveBridge(bridgesDir: string | string[], id: string): DiscoveredBridge {
-  const match = discoverBridges(bridgesDir).find((b) => b.id === id);
+export async function resolveBridge(bridgesDir: string | string[], id: string): Promise<DiscoveredBridge> {
+  const match = (await discoverBridges(bridgesDir)).find((b) => b.id === id);
   if (!match) {
     const dirs = Array.isArray(bridgesDir) ? bridgesDir.join(", ") : bridgesDir;
     throw new Error(`bridge "${id}" not found in ${dirs} (did you run \`bun run build\`?)`);

@@ -24,7 +24,7 @@ export type MakeHost = (settings: ResolvedSettings) => HostCapabilities;
 interface HarnessGlobal {
   comical_bridge?: LoadedBridge | null;
   /** networkJSON is an optional GatedNetworkOptions object (rate-limit overrides, etc). */
-  comical_init?: (code: string, settingsJSON?: string, networkJSON?: string) => string | null;
+  comical_init?: (code: string, settingsJSON?: string, networkJSON?: string) => Promise<string | null>;
   comical_call?: (method: string, argsJSON?: string) => Promise<string>;
 
   comical_tracker?: LoadedTracker | null;
@@ -57,14 +57,14 @@ export function installComicalHarness(makeHost: MakeHost): void {
   let tracker: LoadedTracker | null = null;
   let pendingTrackerPatch: { key: string; blob: OAuthTokenBlob } | null = null;
 
-  g.comical_init = (code, settingsJSON, networkJSON) => {
+  g.comical_init = async (code, settingsJSON, networkJSON) => {
     const settings = (settingsJSON ? JSON.parse(settingsJSON) : {}) as Record<string, SettingValue>;
     const network = networkJSON ? JSON.parse(networkJSON) : undefined;
     // The per-method call timeout schedules a setTimeout; on Android's quickjs-kt the JS event loop
     // won't return from `evaluate` until that (uncancelled) timer coroutine drains, so EVERY method
     // stalls for the full timeout. Hosts on such engines set `__comical_disable_call_timeout` — the
     // network layer (OkHttp/URLSession) still bounds request duration. JSC (iOS) keeps the timeout.
-    bridge = loadBridge({
+    bridge = await loadBridge({
       code,
       capabilities: makeHost(settings),
       evaluator,

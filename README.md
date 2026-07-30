@@ -861,7 +861,7 @@ bun run cli -- --help    # CLI help
 1. Create `packages/host-<name>/`.
 2. Implement `HostCapabilities` using your platform's HTTP/storage/log APIs.
 3. Implement `BundleEvaluator` using your platform's JS engine (JSC, QuickJS, V8, etc.).
-4. Pass your evaluator to `loadBridge({ ..., evaluator: yourEvaluator })`.
+4. Pass your evaluator to `await loadBridge({ ..., evaluator: yourEvaluator })`.
 5. Add a test that loads `example-bridge` and calls `runConformance`.
 
 ### Updating the contract

@@ -11,7 +11,7 @@ import { FixtureBackend, fixtureHost, runConformance } from "@comical/testkit";
 
 const BUNDLE = readFileSync(join(import.meta.dir, "..", "dist", "bridge.js"), "utf8");
 
-function load() {
+async function load() {
   const backend = new FixtureBackend();
   return loadBridge({
     code: BUNDLE,
@@ -22,7 +22,7 @@ function load() {
 
 describe("example-bridge", () => {
   test("cheerio parsing runs inside the sandbox (search returns entries)", async () => {
-    const bridge = load();
+    const bridge = await load();
     const results = await bridge.getSearchResults!({ text: "" });
     expect(results.items.length).toBeGreaterThan(0);
     expect(results.items[0]!.title).toBeTruthy();
@@ -30,13 +30,13 @@ describe("example-bridge", () => {
   });
 
   test("passes the full conformance suite", async () => {
-    const report = await runConformance(load(), { searchQuery: "" });
+    const report = await runConformance(await load(), { searchQuery: "" });
     expect(report.sampledSeriesId).toBeTruthy();
     expect(report.sampledChapterId).toBeTruthy();
   });
 
   test("search → details → chapters → pages snapshot", async () => {
-    const bridge = load();
+    const bridge = await load();
     const details = await bridge.getSeriesDetails("sherlock");
     expect({
       id: details.id,
@@ -56,7 +56,7 @@ describe("example-bridge", () => {
   });
 
   test("parses bridge-defined card badges from search/list results", async () => {
-    const bridge = load();
+    const bridge = await load();
     const results = await bridge.getSearchResults!({ text: "" });
     // Every fixture card carries a language badge anchored top-right.
     for (const item of results.items) {
@@ -73,7 +73,7 @@ describe("example-bridge", () => {
   });
 
   test("parses related-series rails into labeled, kinded groups", async () => {
-    const bridge = load();
+    const bridge = await load();
     const details = await bridge.getSeriesDetails("dracula");
     const groups = details.relatedSeriesGroups ?? [];
     expect(groups.length).toBe(2);
@@ -91,13 +91,13 @@ describe("example-bridge", () => {
   });
 
   test("omits relatedSeriesGroups when a series has no related rails", async () => {
-    const bridge = load();
+    const bridge = await load();
     const details = await bridge.getSeriesDetails("sherlock");
     expect(details.relatedSeriesGroups).toBeUndefined();
   });
 
   test("lists catalog + items (presentation-as-data)", async () => {
-    const bridge = load();
+    const bridge = await load();
     const lists = await bridge.getLists!();
     expect(lists.length).toBeGreaterThan(0);
     expect(lists[0]!.id).toBeTruthy();
@@ -110,7 +110,7 @@ describe("example-bridge", () => {
   });
 
   test("list items paginate by cursor: distinct pages, last page omits nextCursor", async () => {
-    const bridge = load();
+    const bridge = await load();
     const p1 = await bridge.getListItems!("latest");
     expect(p1.items.length).toBeGreaterThan(0);
     // More catalog remains, so the bridge hands back a token for the following page.
@@ -134,7 +134,7 @@ describe("example-bridge", () => {
   });
 
   test("a malformed cursor restarts the walk instead of throwing", async () => {
-    const bridge = load();
+    const bridge = await load();
     // A stale/corrupted cursor must not surface as an error mid-scroll — it degrades to page 1.
     const garbage = await bridge.getListItems!("latest", { cursor: "not-a-real-cursor" });
     const first = await bridge.getListItems!("latest");
@@ -142,7 +142,7 @@ describe("example-bridge", () => {
   });
 
   test("search within a list narrows that list's items", async () => {
-    const bridge = load();
+    const bridge = await load();
     const lists = await bridge.getLists!();
     const popular = lists.find((l) => l.id === "popular")!;
     expect(popular.searchable).toBe(true);
@@ -155,7 +155,7 @@ describe("example-bridge", () => {
   });
 
   test("filters narrow results; sort (separate) orders them", async () => {
-    const bridge = load();
+    const bridge = await load();
     const filters = await bridge.getFilters!();
     expect(filters.find((f) => f.key === "genre")?.type).toBe("multiselect");
     expect(filters.find((f) => f.key === "author")?.type).toBe("text");
@@ -176,7 +176,7 @@ describe("example-bridge", () => {
   });
 
   test("author filter returns only that author's series", async () => {
-    const bridge = load();
+    const bridge = await load();
     const all = await bridge.getSearchResults!({ text: "" });
 
     // Lewis Carroll only wrote Alice in the fixture catalog.
@@ -195,7 +195,7 @@ describe("example-bridge", () => {
   });
 
   test("author filter with no matches returns empty results", async () => {
-    const bridge = load();
+    const bridge = await load();
     const results = await bridge.getSearchResults!({ text: "", 
       filters: [{ key: "author", value: "Nonexistent Author XYZ" }],
     });
@@ -203,7 +203,7 @@ describe("example-bridge", () => {
   });
 
   test("ongoing filter narrows both search and list results to running series", async () => {
-    const bridge = load();
+    const bridge = await load();
     const filters = await bridge.getFilters!();
     expect(filters.find((f) => f.key === "ongoing")).toEqual({
       type: "toggle",
@@ -228,7 +228,7 @@ describe("example-bridge", () => {
 
   test("favorites: round-trip add → list → remove (authenticated)", async () => {
     const backend = new FixtureBackend();
-    const bridge = loadBridge({
+    const bridge = await loadBridge({
       code: BUNDLE,
       capabilities: fixtureHost(backend, { sessionToken: "demo" }),
       expectedId: "example",
@@ -244,13 +244,13 @@ describe("example-bridge", () => {
   });
 
   test("favorites require authentication (no sessionToken → throws)", async () => {
-    const bridge = load(); // load() wires baseUrl but no sessionToken
+    const bridge = await load(); // load() wires baseUrl but no sessionToken
     await expect(bridge.getFavorites!()).rejects.toThrow();
   });
 
   describe("checkForUpdates (batch update check)", () => {
     test("answers many series in one request, matching what getChapters would report", async () => {
-      const bridge = load();
+      const bridge = await load();
       const ids = ["sherlock", "dracula", "alice"];
       const revisions = await bridge.checkForUpdates!(ids);
 
@@ -265,7 +265,7 @@ describe("example-bridge", () => {
     });
 
     test("omits ids the backend doesn't know rather than guessing", async () => {
-      const bridge = load();
+      const bridge = await load();
       const revisions = await bridge.checkForUpdates!(["dracula", "no-such-series"]);
       expect(Object.keys(revisions)).toEqual(["dracula"]);
     });
@@ -283,7 +283,7 @@ describe("example-bridge", () => {
         },
       ];
       const backend = new FixtureBackend(catalog);
-      const bridge = loadBridge({ code: BUNDLE, capabilities: fixtureHost(backend), expectedId: "example" });
+      const bridge = await loadBridge({ code: BUNDLE, capabilities: fixtureHost(backend), expectedId: "example" });
 
       const before = await bridge.checkForUpdates!(["solo"]);
       expect(before.solo).toEqual({ latestChapterId: "solo-1", chapterCount: 1 });

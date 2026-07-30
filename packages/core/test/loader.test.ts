@@ -59,7 +59,7 @@ const GOOD_BRIDGE = bundle(`{
 
 describe("loadBridge", () => {
   test("loads a valid bridge and round-trips a search → details", async () => {
-    const b = loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
+    const b = await loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
     expect(b.info.id).toBe("smoke");
 
     const results = await b.getSearchResults!({ text: "naruto" });
@@ -70,8 +70,8 @@ describe("loadBridge", () => {
     expect(details.title).toContain(id);
   });
 
-  test("only present optional methods are exposed", () => {
-    const b = loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
+  test("only present optional methods are exposed", async () => {
+    const b = await loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
     expect(typeof b.getSettings).toBe("function");
     expect(b.getLists).toBeUndefined();
     expect(b.getTags).toBeUndefined();
@@ -86,7 +86,7 @@ describe("loadBridge", () => {
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
       getTags: async (q = "") => q ? [{ id: "1", label: q }] : [],
     }`);
-    const b = loadBridge({ code, capabilities: mockHost() });
+    const b = await loadBridge({ code, capabilities: mockHost() });
     const withQuery = await b.getTags!("romance");
     expect(withQuery).toHaveLength(1);
     expect(withQuery[0]!.label).toBe("romance");
@@ -103,7 +103,7 @@ describe("loadBridge", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
-    const b = loadBridge({ code: bad, capabilities: mockHost() });
+    const b = await loadBridge({ code: bad, capabilities: mockHost() });
     await expect(b.getSeriesDetails("x")).rejects.toBeInstanceOf(BridgeValidationError);
   });
 
@@ -115,12 +115,12 @@ describe("loadBridge", () => {
       getChapterPages: async () => [{ index: 0, imageUrl: "/bridges/smoke/series/x/page-image/abc123/42-1" }],
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
-    const b = loadBridge({ code, capabilities: mockHost() });
+    const b = await loadBridge({ code, capabilities: mockHost() });
     const pages = await b.getChapterPages!("m", "c");
     expect(pages[0]!.imageUrl).toBe("/bridges/smoke/series/x/page-image/abc123/42-1");
   });
 
-  test("rejects an incompatible contract version", () => {
+  test("rejects an incompatible contract version", async () => {
     const code = bundle(`{
       info: { ...${GOOD_INFO}, contractVersion: "3.0.0" },
       getSeriesDetails: async (id) => ({ id, title: "T" }),
@@ -128,17 +128,17 @@ describe("loadBridge", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
-    expect(() => loadBridge({ code, capabilities: mockHost() })).toThrow(BridgeContractError);
+    await expect(loadBridge({ code, capabilities: mockHost() })).rejects.toThrow(BridgeContractError);
   });
 
-  test("rejects an id mismatch against expectedId", () => {
-    expect(() =>
+  test("rejects an id mismatch against expectedId", async () => {
+    await expect(
       loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost(), expectedId: "other" }),
-    ).toThrow(BridgeContractError);
+    ).rejects.toThrow(BridgeContractError);
   });
 
-  test("a bundle without a default factory fails to load", () => {
-    expect(() => loadBridge({ code: `module.exports = {};`, capabilities: mockHost() })).toThrow(
+  test("a bundle without a default factory fails to load", async () => {
+    await expect(loadBridge({ code: `module.exports = {};`, capabilities: mockHost() })).rejects.toThrow(
       BridgeLoadError,
     );
   });
@@ -151,7 +151,7 @@ describe("loadBridge", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
-    const b = loadBridge({ code, capabilities: mockHost() });
+    const b = await loadBridge({ code, capabilities: mockHost() });
     await expect(b.getSeriesDetails("x")).rejects.toBeInstanceOf(BridgeRuntimeError);
   });
 
@@ -163,7 +163,7 @@ describe("loadBridge", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
-    const b = loadBridge({ code, capabilities: mockHost(), limits: { callTimeoutMs: 50 } });
+    const b = await loadBridge({ code, capabilities: mockHost(), limits: { callTimeoutMs: 50 } });
     await expect(b.getSeriesDetails("x")).rejects.toBeInstanceOf(BridgeTimeoutError);
   });
 
@@ -178,7 +178,7 @@ describe("loadBridge", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
-    const b = loadBridge({ code, capabilities: mockHost(), limits: { callTimeoutMs: 0 } });
+    const b = await loadBridge({ code, capabilities: mockHost(), limits: { callTimeoutMs: 0 } });
     // A method slower than the tiny timeout above would have rejected; with 0 it resolves.
     expect((await b.getSeriesDetails("x")).id).toBe("x");
   });
@@ -199,7 +199,7 @@ describe("checkForUpdates (batch update check)", () => {
     });
 
   test("passes the ids through and returns the revisions", async () => {
-    const b = withCheck(`Object.fromEntries(ids.map((id) => [id, { latestChapterId: "c-" + id, chapterCount: 3 }]))`);
+    const b = await withCheck(`Object.fromEntries(ids.map((id) => [id, { latestChapterId: "c-" + id, chapterCount: 3 }]))`);
     expect(await b.checkForUpdates!(["s1", "s2"])).toEqual({
       s1: { latestChapterId: "c-s1", chapterCount: 3 },
       s2: { latestChapterId: "c-s2", chapterCount: 3 },
@@ -207,7 +207,7 @@ describe("checkForUpdates (batch update check)", () => {
   });
 
   test("a series the bridge omits is simply absent — that's how it says \"don't know\"", async () => {
-    const b = withCheck(`({ s1: { chapterCount: 1 } })`);
+    const b = await withCheck(`({ s1: { chapterCount: 1 } })`);
     const res = await b.checkForUpdates!(["s1", "s2"]);
     expect(res.s1).toEqual({ chapterCount: 1 });
     expect("s2" in res).toBe(false);
@@ -215,22 +215,22 @@ describe("checkForUpdates (batch update check)", () => {
 
   test("answers for series that weren't asked about are dropped", async () => {
     // Left in, a stray key would apply one series' revision to an unrelated library entry.
-    const b = withCheck(`({ s1: { chapterCount: 1 }, "someone-elses-series": { chapterCount: 99 } })`);
+    const b = await withCheck(`({ s1: { chapterCount: 1 }, "someone-elses-series": { chapterCount: 99 } })`);
     expect(Object.keys(await b.checkForUpdates!(["s1"]))).toEqual(["s1"]);
   });
 
   test("a revision with no fields is rejected — it would read as a false \"unchanged\"", async () => {
-    const b = withCheck(`({ s1: {} })`);
+    const b = await withCheck(`({ s1: {} })`);
     await expect(b.checkForUpdates!(["s1"])).rejects.toBeInstanceOf(BridgeValidationError);
   });
 
   test("a malformed revision is rejected", async () => {
-    const b = withCheck(`({ s1: { chapterCount: "lots" } })`);
+    const b = await withCheck(`({ s1: { chapterCount: "lots" } })`);
     await expect(b.checkForUpdates!(["s1"])).rejects.toBeInstanceOf(BridgeValidationError);
   });
 
   test("an empty or oversized batch is rejected before the bridge is entered", async () => {
-    const b = withCheck(`({})`);
+    const b = await withCheck(`({})`);
     await expect(b.checkForUpdates!([])).rejects.toBeInstanceOf(BridgeValidationError);
     const tooMany = Array.from({ length: MAX_UPDATE_CHECK_BATCH + 1 }, (_, i) => `s${i}`);
     await expect(b.checkForUpdates!(tooMany)).rejects.toBeInstanceOf(BridgeValidationError);
@@ -240,12 +240,12 @@ describe("checkForUpdates (batch update check)", () => {
   });
 
   test("absent on a bridge that doesn't implement it, so the host can feature-detect", async () => {
-    const b = loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
+    const b = await loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
     expect(b.checkForUpdates).toBeUndefined();
   });
 
   test("a throwing batch check surfaces as a bridge runtime error for the caller to fall back on", async () => {
-    const b = withCheck(`(() => { throw new Error("bulk endpoint down"); })()`);
+    const b = await withCheck(`(() => { throw new Error("bulk endpoint down"); })()`);
     await expect(b.checkForUpdates!(["s1"])).rejects.toBeInstanceOf(BridgeRuntimeError);
   });
 });
@@ -262,7 +262,7 @@ describe("sandbox isolation", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
-    const b = loadBridge({ code, capabilities: mockHost() });
+    const b = await loadBridge({ code, capabilities: mockHost() });
     const details = await b.getSeriesDetails("x");
     expect(details.title).toBe("undefined,undefined,undefined,undefined");
   });
@@ -275,7 +275,7 @@ describe("sandbox isolation", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
-    const b = loadBridge({ code, capabilities: mockHost() });
+    const b = await loadBridge({ code, capabilities: mockHost() });
     await expect(b.getSeriesDetails("x")).rejects.toBeInstanceOf(BridgeRuntimeError);
   });
 
@@ -295,7 +295,7 @@ describe("sandbox isolation", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
     }`);
-    const b = loadBridge({ code, capabilities: host });
+    const b = await loadBridge({ code, capabilities: host });
     const details = await b.getSeriesDetails("abc");
     expect(details.title).toBe("pong");
     expect(seen?.url).toBe("https://backend.test/abc");
@@ -323,14 +323,14 @@ describe("sandbox isolation", () => {
   };
 
   test("applies the bridge's declared info.rateLimit", async () => {
-    const b = loadBridge({ code: FANOUT, capabilities: stampHost() });
+    const b = await loadBridge({ code: FANOUT, capabilities: stampHost() });
     const res = await b.getSearchResults!({ text: "" });
     // 3 requests, 1 in flight, ≥80ms apart → starts span ≥ ~160ms (allow scheduling slack).
     expect(startSpread(res.items)).toBeGreaterThanOrEqual(140);
   });
 
   test("an explicit host rate-limit overrides the declaration (per key)", async () => {
-    const b = loadBridge({
+    const b = await loadBridge({
       code: FANOUT,
       capabilities: stampHost(),
       network: { rateLimit: { maxConcurrent: 10, minIntervalMs: 0 } },
@@ -353,7 +353,7 @@ describe("sandbox isolation", () => {
   }`);
 
   test("excludedTags survives the search/list request boundary schema", async () => {
-    const b = loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
+    const b = await loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
 
     const search = await b.getSearchResults!({ text: "q", excludedTags: ["t1", "t2"] });
     expect(JSON.parse(search.items[0]!.title)).toEqual({ text: "q", excludedTags: ["t1", "t2"] });
@@ -363,14 +363,14 @@ describe("sandbox isolation", () => {
   });
 
   test("unknown request keys are still stripped at the boundary", async () => {
-    const b = loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
+    const b = await loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const search = await b.getSearchResults!({ text: "q", excludedTags: ["t1"], bogus: 1 } as any);
     expect(JSON.parse(search.items[0]!.title)).toEqual({ text: "q", excludedTags: ["t1"] });
   });
 
   test("a cursor is passed through to the bridge verbatim (the host never interprets it)", async () => {
-    const b = loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
+    const b = await loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
     const cursor = "offset:40|section:trending";
 
     expect(JSON.parse((await b.getSearchResults!({ text: "", cursor })).items[0]!.title).cursor).toBe(cursor);
@@ -378,7 +378,7 @@ describe("sandbox isolation", () => {
   });
 
   test("an unusable cursor is rejected at the boundary before the bridge runs", async () => {
-    const b = loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
+    const b = await loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
     const tooLong = "x".repeat(CURSOR_MAX_LENGTH + 1);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -397,7 +397,7 @@ describe("sandbox isolation", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [{ id: "x", title: "X" }], page: 1, hasNextPage: true }),
     }`);
-    const b = loadBridge({ code: legacy, capabilities: mockHost() });
+    const b = await loadBridge({ code: legacy, capabilities: mockHost() });
     const res = await b.getSearchResults!({ text: "" });
     // "hasNextPage: true" must not become an invented cursor — the host sees a terminal page.
     expect(res).toEqual({ items: [{ id: "x", title: "X" }] });
@@ -412,7 +412,7 @@ describe("sandbox isolation", () => {
       getChapterPages: async () => [],
       getSearchResults: async () => ({ items: [], nextCursor: "" }),
     }`);
-    const b = loadBridge({ code: bad, capabilities: mockHost() });
+    const b = await loadBridge({ code: bad, capabilities: mockHost() });
     await expect(b.getSearchResults!({ text: "" })).rejects.toThrow(/getSearchResults/);
   });
 });

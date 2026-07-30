@@ -52,8 +52,8 @@ module.exports = {
 final class ComicalBridgeContextTests: XCTestCase {
     var context: ComicalBridgeContext!
 
-    override func setUpWithError() throws {
-        context = try ComicalBridgeContext(
+    override func setUp() async throws {
+        context = try await ComicalBridgeContext(
             bridgeBundle: MINIMAL_BUNDLE,
             settings: ["baseUrl": "https://test.example"]
         )
@@ -110,7 +110,7 @@ final class ComicalBridgeContextTests: XCTestCase {
           getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
         }; } };
         """
-        let ctx = try ComicalBridgeContext(bridgeBundle: bundle)
+        let ctx = try await ComicalBridgeContext(bridgeBundle: bundle)
         let result = try await ctx.call("getSeriesDetails", args: ["x"])
         let dict = result as? [String: Any]
         XCTAssertEqual(dict?["title"] as? String, "example.test:8443|example.test|/api/favorites|https://example.test:8443")
@@ -128,7 +128,7 @@ final class ComicalBridgeContextTests: XCTestCase {
           getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
         }; } };
         """
-        let ctx = try ComicalBridgeContext(bridgeBundle: bundle)
+        let ctx = try await ComicalBridgeContext(bridgeBundle: bundle)
         let result = try await ctx.call("getSeriesDetails", args: ["x"])
         let dict = result as? [String: Any]
         XCTAssertEqual(dict?["title"] as? String, "undefined")
@@ -153,21 +153,24 @@ final class ComicalBridgeContextTests: XCTestCase {
           getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
         }; } };
         """
-        let ctx = try ComicalBridgeContext(bridgeBundle: bundle)
+        let ctx = try await ComicalBridgeContext(bridgeBundle: bundle)
         let result = try await ctx.call("getSeriesDetails", args: ["x"])
         let dict = result as? [String: Any]
         XCTAssertEqual(dict?["title"] as? String, "s3cr3t|undefined")
     }
 
-    func testInvalidBundleThrows() {
-        XCTAssertThrowsError(
-            try ComicalBridgeContext(bridgeBundle: "not a module at all }{")
-        )
+    func testInvalidBundleThrows() async {
+        do {
+            _ = try await ComicalBridgeContext(bridgeBundle: "not a module at all }{")
+            XCTFail("expected ComicalBridgeContext init to throw")
+        } catch {
+            // expected
+        }
     }
 
     // Core rejects a bridge that targets an incompatible contract version (enforced at load now
     // that the context routes through @comical/core).
-    func testIncompatibleContractVersionThrows() {
+    func testIncompatibleContractVersionThrows() async {
         let bundle = """
         module.exports = { default: function(host) { return {
           info: { id: "t", name: "T", version: "0", contractVersion: "999.0.0",
@@ -178,6 +181,11 @@ final class ComicalBridgeContextTests: XCTestCase {
           getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
         }; } };
         """
-        XCTAssertThrowsError(try ComicalBridgeContext(bridgeBundle: bundle))
+        do {
+            _ = try await ComicalBridgeContext(bridgeBundle: bundle)
+            XCTFail("expected ComicalBridgeContext init to throw")
+        } catch {
+            // expected
+        }
     }
 }

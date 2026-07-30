@@ -30,7 +30,7 @@ afterAll(() => server.stop());
 
 describe("host-bun integration (real HTTP)", () => {
   test("loads the bridge and fetches search results over HTTP", async () => {
-    const bridge = loadBridge({
+    const bridge = await loadBridge({
       code: BUNDLE,
       capabilities: createBunHost({ bridgeId: "example", settings: { baseUrl: server.url } }),
       expectedId: "example",

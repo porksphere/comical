@@ -109,7 +109,7 @@ export interface LoadBridgeOptions {
 /** A fully-wrapped bridge: same surface as `Bridge`, but timeout-bounded and output-validated. */
 export type LoadedBridge = Bridge;
 
-export function loadBridge(opts: LoadBridgeOptions): LoadedBridge {
+export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge> {
   const limits = { ...DEFAULT_LIMITS, ...opts.limits };
   const runtimeVersion = opts.runtimeContractVersion ?? CONTRACT_VERSION;
 
@@ -140,6 +140,16 @@ export function loadBridge(opts: LoadBridgeOptions): LoadedBridge {
     raw = factory(gated);
   } catch (cause) {
     throw new BridgeLoadError(`bridge factory threw: ${errorMessage(cause)}`);
+  }
+
+  // 3b. Run the bridge's optional async setup before anything else touches it.
+  if (raw.initialize) {
+    try {
+      await withTimeout(Promise.resolve().then(() => raw.initialize!()), limits.callTimeoutMs, "initialize");
+    } catch (cause) {
+      if (cause instanceof ComicalError) throw cause;
+      throw new BridgeLoadError(`bridge initialize() threw: ${errorMessage(cause)}`);
+    }
   }
 
   // 4. Validate self-description and contract compatibility.

@@ -49,13 +49,13 @@ describe("record / replay", () => {
 
     // Record: drive the bridge against the in-process backend through a recording network.
     const recording = recordingNetwork({ request: async (req) => backend.handle(req) }, entries);
-    const recorded = loadBridge({ code: BUNDLE, capabilities: host(recording), expectedId: "example" });
+    const recorded = await loadBridge({ code: BUNDLE, capabilities: host(recording), expectedId: "example" });
     await recorded.getSearchResults!({ text: "sherlock" });
     await recorded.getSeriesDetails("sherlock");
     expect(entries.length).toBe(2);
 
     // Replay: same calls, no backend — answered purely from the cassette.
-    const replayed = loadBridge({
+    const replayed = await loadBridge({
       code: BUNDLE,
       capabilities: host(replayNetwork({ entries })),
       expectedId: "example",
@@ -67,7 +67,7 @@ describe("record / replay", () => {
   });
 
   test("replay throws for a request not in the cassette", async () => {
-    const replayed = loadBridge({
+    const replayed = await loadBridge({
       code: BUNDLE,
       capabilities: host(replayNetwork({ entries: [] })),
       expectedId: "example",

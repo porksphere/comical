@@ -156,7 +156,7 @@ async function main(): Promise<number> {
   }
 
   if (command === "list") {
-    const bridges = discoverBridges(BRIDGES_DIR);
+    const bridges = await discoverBridges(BRIDGES_DIR);
     if (values.json) {
       print(true, bridges.map((b) => b.info));
     } else if (bridges.length === 0) {
@@ -304,7 +304,7 @@ async function main(): Promise<number> {
   // All other commands need a bridge.
   const bridgeId = values.bridge;
   if (!bridgeId) throw new Error("missing --bridge <id>");
-  const discovered = resolveBridge(BRIDGES_DIR, bridgeId);
+  const discovered = await resolveBridge(BRIDGES_DIR, bridgeId);
   const settings = parseSettings(values.set);
 
   // Optionally back the bridge with the built-in demo backend.
@@ -335,7 +335,7 @@ async function main(): Promise<number> {
       return host;
     };
 
-    const bridge: LoadedBridge = loadBridge({
+    const bridge: LoadedBridge = await loadBridge({
       code: readBundle(discovered.bundlePath),
       capabilities: makeHost(),
       expectedId: discovered.id,
@@ -543,7 +543,7 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
   // A tombstone discovers nothing at all: it publishes the forwarding note and nothing else, so it
   // must not pick up the monorepo's bridges (or anything else) by default.
   const effectiveBridgesDir = tombstone ? undefined : (bridgesDir ?? (trackersDir ? undefined : BRIDGES_DIR));
-  const discovered = effectiveBridgesDir ? discoverBridges(effectiveBridgesDir) : [];
+  const discovered = effectiveBridgesDir ? await discoverBridges(effectiveBridgesDir) : [];
   if (discovered.length === 0 && !trackersDir && !tombstone) {
     throw new Error("no built bridges found — run the build first");
   }

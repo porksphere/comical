@@ -137,7 +137,7 @@ async function auditOne(
     const capabilities = opts.createCapabilities(id, cfg.settings ?? {});
     // No `expectedId`: a published bundle carries its publisher-namespaced id (e.g. "acme.my-bridge")
     // while the audit keys off the build directory name, so we load whatever id the bundle declares.
-    const bridge = loadBridge({ code, capabilities });
+    const bridge = await loadBridge({ code, capabilities });
     report = await evaluateBridge(bridge, {
       searchQuery: cfg.searchQuery ?? "",
       ...(opts.fetchAsset ? { fetchAsset: opts.fetchAsset } : {}),

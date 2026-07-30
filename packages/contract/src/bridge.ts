@@ -58,6 +58,15 @@ export interface ListRequest extends RefinableRequest {
 export interface Bridge {
   readonly info: BridgeInfo;
 
+  /**
+   * Optional async setup, run once by the core right after the factory constructs this instance
+   * and before any other method is called. For work a constructor can't do — e.g. an async
+   * handshake, warming a token from storage — without every bridge author reinventing a
+   * do-this-before-first-call convention. Errors surface as a load failure, same as a bad
+   * `BridgeInfo`.
+   */
+  initialize?(): Promise<void>;
+
   // ---- Required read path ----
 
   /** Full detail for a series id previously emitted by this bridge. */

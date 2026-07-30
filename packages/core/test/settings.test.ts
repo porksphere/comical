@@ -149,18 +149,18 @@ describe("redactSettingSecrets", () => {
 
 describe("loader settings wiring", () => {
   test("declared defaults are applied and visible to the running bridge", async () => {
-    const b = loadBridge({ code: SETTINGS_BRIDGE, capabilities: mockHost({ baseUrl: "https://x" }) });
+    const b = await loadBridge({ code: SETTINGS_BRIDGE, capabilities: mockHost({ baseUrl: "https://x" }) });
     const details = await b.getSeriesDetails("m1");
     expect(details.title).toBe("40:number"); // default applied, typed as number
   });
 
-  test("a bridge missing a required setting still loads (discovery must work)", () => {
-    expect(() => loadBridge({ code: SETTINGS_BRIDGE, capabilities: mockHost({}) })).not.toThrow();
+  test("a bridge missing a required setting still loads (discovery must work)", async () => {
+    await loadBridge({ code: SETTINGS_BRIDGE, capabilities: mockHost({}) });
   });
 
-  test("an invalid present setting value throws BridgeSettingsError at load", () => {
-    expect(() =>
+  test("an invalid present setting value throws BridgeSettingsError at load", async () => {
+    await expect(
       loadBridge({ code: SETTINGS_BRIDGE, capabilities: mockHost({ baseUrl: "https://x", perPage: "notnum" }) }),
-    ).toThrow(BridgeSettingsError);
+    ).rejects.toThrow(BridgeSettingsError);
   });
 });

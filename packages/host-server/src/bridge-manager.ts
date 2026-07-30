@@ -61,8 +61,8 @@ export class BridgeManager implements BridgeProvider {
     return updated;
   }
 
-  private discover(): DiscoveredBridge[] {
-    if (!this.discovered) this.discovered = discoverBridges(this.opts.bridgesDir);
+  private async discover(): Promise<DiscoveredBridge[]> {
+    if (!this.discovered) this.discovered = await discoverBridges(this.opts.bridgesDir);
     return this.discovered;
   }
 
@@ -70,7 +70,7 @@ export class BridgeManager implements BridgeProvider {
     const results: BridgeSummary[] = [];
 
     // Local bridges.
-    for (const d of this.discover()) {
+    for (const d of await this.discover()) {
       const bridge = await this.get(d.id);
       const userSettings = await this.opts.settings.get(d.id);
       results.push({
@@ -123,7 +123,7 @@ export class BridgeManager implements BridgeProvider {
       ...(this.opts.hostUrl !== undefined && { hostUrl: this.opts.hostUrl }),
     });
 
-    const bridge = loadBridge({ code, capabilities, expectedId: id });
+    const bridge = await loadBridge({ code, capabilities, expectedId: id });
     this.loaded.set(id, bridge);
     return bridge;
   }
@@ -150,7 +150,7 @@ export class BridgeManager implements BridgeProvider {
     }
 
     // 2. Fall back to locally built bundle.
-    const discovered = resolveBridge(this.opts.bridgesDir, id);
+    const discovered = await resolveBridge(this.opts.bridgesDir, id);
     return readFileSync(discovered.bundlePath, "utf8");
   }
 }

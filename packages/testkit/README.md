@@ -82,7 +82,7 @@ import { fixtureHost, FixtureBackend, runConformance } from "@comical/testkit";
 
 test("my-bridge conforms", async () => {
   const capabilities = fixtureHost(new FixtureBackend());
-  const bridge = loadBridge({ code: myBundle, capabilities });
+  const bridge = await loadBridge({ code: myBundle, capabilities });
   await runConformance(bridge, { searchQuery: "the" }); // throws on first fail
 });
 ```

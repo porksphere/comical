@@ -65,7 +65,7 @@ function makeFakeNative(): NativeBridgeRuntime {
   return {
     async initBridge(id, code, settingsJson) {
       const settings = JSON.parse(settingsJson) as Record<string, unknown>;
-      const bridge = loadBridge({ code, capabilities: makeHost(settings) as never });
+      const bridge = await loadBridge({ code, capabilities: makeHost(settings) as never });
       contexts.set(id, bridge);
       const bag = bridge as unknown as Record<string, unknown>;
       const methods = Object.keys(bag).filter((k) => typeof bag[k] === "function");
