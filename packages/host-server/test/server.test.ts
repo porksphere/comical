@@ -88,6 +88,31 @@ describe("content endpoints", () => {
     expect(data.items.length).toBeGreaterThan(0);
   });
 
+  test("GET /bridges/:id/lists/:listId paginates by echoing nextCursor back as ?cursor=", async () => {
+    type Paged = { items: Array<{ id: string }>; nextCursor?: string };
+    const p1 = await fetch(`${baseUrl}/bridges/example/lists/latest`).then(r => r.json()) as Paged;
+    expect(p1.nextCursor).toBeTruthy();
+
+    const url = `${baseUrl}/bridges/example/lists/latest?cursor=${encodeURIComponent(p1.nextCursor!)}`;
+    const p2 = await fetch(url).then(r => r.json()) as Paged;
+    const p1ids = new Set(p1.items.map(i => i.id));
+    expect(p2.items.length).toBeGreaterThan(0);
+    expect(p2.items.every(i => !p1ids.has(i.id))).toBe(true);
+  });
+
+  test("a cursor over the contract ceiling is rejected at the boundary, not passed to the bridge", async () => {
+    const res = await fetch(`${baseUrl}/bridges/example/lists/latest?cursor=${"x".repeat(4097)}`);
+    expect(res.status).toBe(400);
+    expect(await res.json() as { error: string }).toEqual({ error: "cursor too long" });
+  });
+
+  test("an empty ?cursor= is treated as absent (first page), not as an invalid cursor", async () => {
+    const res = await fetch(`${baseUrl}/bridges/example/lists/latest?cursor=`);
+    expect(res.status).toBe(200);
+    const first = await fetch(`${baseUrl}/bridges/example/lists/latest`).then(r => r.json()) as { items: Array<{ id: string }> };
+    expect((await res.json() as { items: Array<{ id: string }> }).items.map(i => i.id)).toEqual(first.items.map(i => i.id));
+  });
+
   test("GET /bridges/:id/series/:id returns series details", async () => {
     const data = await fetch(`${baseUrl}/bridges/example/series/sherlock`).then(r => r.json()) as { id: string; title: string };
     expect(data.id).toBe("sherlock");

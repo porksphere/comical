@@ -45,8 +45,8 @@ const BRIDGE_INFO = {
 const DEMO_BUNDLE = `module.exports = { default: (host) => ({
   info: ${JSON.stringify(BRIDGE_INFO)},
   getLists: async () => [{ id: "home", name: "Home" }],
-  getListItems: async (listId, page) => ({ items: [{ id: "a", title: "A" }], page, hasNextPage: false }),
-  getSearchResults: async (q, page) => ({ items: [{ id: "hit", title: "Result for " + q }], page, hasNextPage: false }),
+  getListItems: async () => ({ items: [{ id: "a", title: "A" }] }),
+  getSearchResults: async (req) => ({ items: [{ id: "hit", title: "Result for " + req.text }] }),
   getSeriesDetails: async (id) => ({ id, title: "Series " + id }),
   getChapters: async () => [{ id: "c1", name: "Chapter 1", number: 1 }],
   getChapterPages: async () => [{ index: 0, imageUrl: "https://cdn/p0.webp" }],
@@ -85,7 +85,7 @@ const CONFIGURABLE_BUNDLE = `module.exports = { default: (host) => ({
   info: ${JSON.stringify(CONFIGURABLE_INFO)},
   getSettings: () => [{ type: "string", key: "baseUrl", label: "Base URL", required: true }],
   getSeriesDetails: async (id) => ({ id, title: id }),
-  getSearchResults: async (q, page) => ({ items: [], page, hasNextPage: false }),
+  getSearchResults: async () => ({ items: [] }),
 }) };`;
 
 const installed: InstalledBridge[] = [
@@ -167,7 +167,7 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
 
   test("search runs the bundle on-device and returns contract-shaped results", async () => {
     const transport = createEmbeddedTransport(makeProvider(), router);
-    const res = await transport("/bridges/demo/search?q=naruto&page=1");
+    const res = await transport("/bridges/demo/search?q=naruto");
     const body = (await res.json()) as { items: { title: string }[] };
     expect(body.items[0]?.title).toBe("Result for naruto");
   });

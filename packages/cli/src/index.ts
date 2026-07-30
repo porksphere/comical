@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
-import type { FilterValue, HostCapabilities, ListOptions, NetworkCapability, ResolvedSettings } from "@comical/contract";
+import type { FilterValue, HostCapabilities, ListRequest, NetworkCapability, ResolvedSettings, SearchRequest } from "@comical/contract";
 import { type LoadedBridge, loadBridge } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
 import {
@@ -39,12 +39,12 @@ Usage:
   comical list
   comical serve                [--port N] [--data-dir DIR] [--origin URL] [--token SECRET]
   comical lists                --bridge <id> [--fixture | --set baseUrl=URL]   (list catalog)
-  comical lists <listId>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N] [--query Q] [--filter k=v] [--sort key]
-  comical search <query>       --bridge <id> [--fixture | --set baseUrl=URL] [--page N] [--filter key=value ...] [--sort key [--desc]]
+  comical lists <listId>       --bridge <id> [--fixture | --set baseUrl=URL] [--cursor C] [--query Q] [--filter k=v] [--sort key]
+  comical search <query>       --bridge <id> [--fixture | --set baseUrl=URL] [--cursor C] [--filter key=value ...] [--sort key [--desc]]
   comical details <seriesId>   --bridge <id> [--fixture | --set baseUrl=URL]
   comical chapters <seriesId>  --bridge <id> [--fixture | --set baseUrl=URL]
   comical pages <seriesId> <chapterId> --bridge <id> [--fixture | --set baseUrl=URL]
-  comical favorites            --bridge <id> [--fixture | --set baseUrl=URL] --set sessionToken=TOKEN [--page N]
+  comical favorites            --bridge <id> [--fixture | --set baseUrl=URL] --set sessionToken=TOKEN [--cursor C]
   comical favorite <seriesId>  --bridge <id> [--fixture] --set sessionToken=TOKEN     (add)
   comical unfavorite <seriesId> --bridge <id> [--fixture] --set sessionToken=TOKEN    (remove)
   comical test                 --bridge <id> [--fixture | --set baseUrl=URL] [--set query=Q]
@@ -69,7 +69,7 @@ Options:
   --set key=value     Supply a user setting (repeatable), e.g. --set baseUrl=https://…
   --fixture           Run against the built-in legal demo backend
   --port N            Port for \`comical serve\` (default 3100)
-  --page N            Page number for search (default 1)
+  --cursor C          Resume a paged read at this cursor (copy \`nextCursor\` from the previous output)
   --scenario S        Record scenario (repeatable): search:Q | details:ID | home
   --data-dir DIR      Persistent storage location (default: .comical/)
   --origin URL        Allowed CORS origin for \`comical serve\`
@@ -121,7 +121,7 @@ async function main(): Promise<number> {
     allowPositionals: true,
     options: {
       bridge: { type: "string", short: "b" },
-      page: { type: "string" },
+      cursor: { type: "string" },
       port: { type: "string" },
       set: { type: "string", multiple: true },
       filter: { type: "string", multiple: true },
@@ -315,7 +315,8 @@ async function main(): Promise<number> {
   }
 
   const json = values.json ?? false;
-  const page = values.page ? Number(values.page) : 1;
+  /** Spread into a paged request: absent `--cursor` means "start from the beginning". */
+  const at = values.cursor ? { cursor: values.cursor } : {};
   let resultCode = 0;
 
   try {
@@ -343,24 +344,23 @@ async function main(): Promise<number> {
     switch (command) {
       case "search": {
         if (!bridge.getSearchResults) throw new Error(`bridge "${discovered.id}" does not support search`);
-        const query = positionals[1] ?? "";
         const filters = parseFilters(values.filter);
-        const options: import("@comical/contract").SearchOptions = {};
-        if (filters.length) options.filters = filters;
-        if (values.sort) options.sort = { key: values.sort, ascending: !values.desc };
-        print(json, await bridge.getSearchResults(query, page, Object.keys(options).length ? options : undefined));
+        const req: SearchRequest = { text: positionals[1] ?? "", ...at };
+        if (filters.length) req.filters = filters;
+        if (values.sort) req.sort = { key: values.sort, ascending: !values.desc };
+        print(json, await bridge.getSearchResults(req));
         break;
       }
       case "lists": {
         const listId = positionals[1];
         if (listId) {
           if (!bridge.getListItems) throw new Error(`bridge "${discovered.id}" does not support lists`);
-          const listOpts: ListOptions = {};
-          if (values.query) listOpts.query = values.query;
+          const req: ListRequest = { ...at };
+          if (values.query) req.query = values.query;
           const lf = parseFilters(values.filter);
-          if (lf.length) listOpts.filters = lf;
-          if (values.sort) listOpts.sort = { key: values.sort, ascending: !values.desc };
-          print(json, await bridge.getListItems(listId, page, Object.keys(listOpts).length ? listOpts : undefined));
+          if (lf.length) req.filters = lf;
+          if (values.sort) req.sort = { key: values.sort, ascending: !values.desc };
+          print(json, await bridge.getListItems(listId, req));
         } else {
           if (!bridge.getLists) throw new Error(`bridge "${discovered.id}" does not support lists`);
           print(json, await bridge.getLists());
@@ -387,7 +387,7 @@ async function main(): Promise<number> {
       }
       case "favorites": {
         if (!bridge.getFavorites) throw new Error(`bridge "${discovered.id}" does not support favorites`);
-        print(json, await bridge.getFavorites(page));
+        print(json, await bridge.getFavorites(at));
         break;
       }
       case "favorite": {
@@ -477,10 +477,10 @@ async function runScenarios(bridge: LoadedBridge, scenarios: string[]): Promise<
   if (scenarios.length === 0) throw new Error("record requires at least one --scenario");
   for (const scenario of scenarios) {
     const [kind, arg] = splitScenario(scenario);
-    if (kind === "search") await bridge.getSearchResults?.(arg ?? "", 1);
+    if (kind === "search") await bridge.getSearchResults?.({ text: arg ?? "" });
     else if (kind === "details") await bridge.getSeriesDetails(requireArg(arg, "details:<id>"));
     else if (kind === "lists") await bridge.getLists?.();
-    else if (kind === "list") await bridge.getListItems?.(requireArg(arg, "list:<id>"), 1);
+    else if (kind === "list") await bridge.getListItems?.(requireArg(arg, "list:<id>"));
     else throw new Error(`unknown scenario "${scenario}"`);
   }
 }

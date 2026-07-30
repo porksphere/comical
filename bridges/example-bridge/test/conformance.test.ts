@@ -23,7 +23,7 @@ function load() {
 describe("example-bridge", () => {
   test("cheerio parsing runs inside the sandbox (search returns entries)", async () => {
     const bridge = load();
-    const results = await bridge.getSearchResults!("", 1);
+    const results = await bridge.getSearchResults!({ text: "" });
     expect(results.items.length).toBeGreaterThan(0);
     expect(results.items[0]!.title).toBeTruthy();
     expect(results.items[0]!.thumbnailUrl).toStartWith("https://picsum.photos/seed/");
@@ -57,7 +57,7 @@ describe("example-bridge", () => {
 
   test("parses bridge-defined card badges from search/list results", async () => {
     const bridge = load();
-    const results = await bridge.getSearchResults!("", 1);
+    const results = await bridge.getSearchResults!({ text: "" });
     // Every fixture card carries a language badge anchored top-right.
     for (const item of results.items) {
       const en = item.badges?.find((b) => b.text === "EN");
@@ -68,7 +68,7 @@ describe("example-bridge", () => {
     expect(withNew?.badges).toContainEqual({ text: "NEW", position: "top-left", tone: "success" });
 
     // The same parsing path feeds list results.
-    const list = await bridge.getListItems!("latest", 1);
+    const list = await bridge.getListItems!("latest");
     expect(list.items[0]!.badges?.some((b) => b.text === "EN")).toBe(true);
   });
 
@@ -104,32 +104,41 @@ describe("example-bridge", () => {
     expect(lists[0]!.layout).toBe("carousel");
     expect(lists[0]!.featured).toBe(true);
 
-    const items = await bridge.getListItems!(lists[0]!.id, 1);
+    const items = await bridge.getListItems!(lists[0]!.id);
     expect(items.items.length).toBeGreaterThan(0);
     expect(items.items[0]!.title).toBeTruthy();
   });
 
-  test("list items paginate: hasNextPage + distinct pages, terminal page ends", async () => {
+  test("list items paginate by cursor: distinct pages, last page omits nextCursor", async () => {
     const bridge = load();
-    const p1 = await bridge.getListItems!("latest", 1);
-    expect(p1.page).toBe(1);
-    expect(p1.hasNextPage).toBe(true);
+    const p1 = await bridge.getListItems!("latest");
     expect(p1.items.length).toBeGreaterThan(0);
+    // More catalog remains, so the bridge hands back a token for the following page.
+    expect(typeof p1.nextCursor).toBe("string");
 
-    const p2 = await bridge.getListItems!("latest", 2);
-    expect(p2.page).toBe(2);
+    const p2 = await bridge.getListItems!("latest", { cursor: p1.nextCursor! });
     // Page 2 is a different slice of the catalog — no id overlap with page 1.
     const p1ids = new Set(p1.items.map((i) => i.id));
     expect(p2.items.every((i) => !p1ids.has(i.id))).toBe(true);
 
-    // Walk to the final page; it must report hasNextPage === false.
-    let page = 1;
+    // Walk the cursor chain to the end; the terminal page has no nextCursor at all.
+    const seen = new Set<string>();
     let last = p1;
-    while (last.hasNextPage && page < 50) {
-      page += 1;
-      last = await bridge.getListItems!("latest", page);
+    for (let hop = 0; last.nextCursor && hop < 50; hop++) {
+      for (const item of last.items) seen.add(item.id);
+      last = await bridge.getListItems!("latest", { cursor: last.nextCursor });
     }
-    expect(last.hasNextPage).toBe(false);
+    expect(last.nextCursor).toBeUndefined();
+    // The walk visited real, non-repeating items rather than looping on one page.
+    expect(seen.size).toBeGreaterThan(p1.items.length);
+  });
+
+  test("a malformed cursor restarts the walk instead of throwing", async () => {
+    const bridge = load();
+    // A stale/corrupted cursor must not surface as an error mid-scroll — it degrades to page 1.
+    const garbage = await bridge.getListItems!("latest", { cursor: "not-a-real-cursor" });
+    const first = await bridge.getListItems!("latest");
+    expect(garbage.items.map((i) => i.id)).toEqual(first.items.map((i) => i.id));
   });
 
   test("search within a list narrows that list's items", async () => {
@@ -138,8 +147,8 @@ describe("example-bridge", () => {
     const popular = lists.find((l) => l.id === "popular")!;
     expect(popular.searchable).toBe(true);
 
-    const all = await bridge.getListItems!("popular", 1);
-    const scoped = await bridge.getListItems!("popular", 1, { query: "sherlock" });
+    const all = await bridge.getListItems!("popular");
+    const scoped = await bridge.getListItems!("popular", { query: "sherlock" });
     expect(scoped.items.length).toBeGreaterThan(0);
     expect(scoped.items.length).toBeLessThan(all.items.length);
     expect(scoped.items.every((i) => i.id === "sherlock")).toBe(true);
@@ -154,24 +163,24 @@ describe("example-bridge", () => {
     expect(sorts.map((s) => s.key)).toContain("title");
 
     // Unfiltered returns the whole catalog; a genre filter narrows it (Sherlock is Mystery).
-    const all = await bridge.getSearchResults!("", 1);
-    const mystery = await bridge.getSearchResults!("", 1, { filters: [{ key: "genre", value: ["Mystery"] }] });
+    const all = await bridge.getSearchResults!({ text: "" });
+    const mystery = await bridge.getSearchResults!({ text: "",  filters: [{ key: "genre", value: ["Mystery"] }] });
     expect(mystery.items.length).toBeGreaterThan(0);
     expect(mystery.items.length).toBeLessThan(all.items.length);
     expect(mystery.items.some((i) => i.id === "sherlock")).toBe(true);
 
     // Sort by title descending flips the order (sort lives in options.sort, not filters).
-    const asc = await bridge.getSearchResults!("", 1, { sort: { key: "title", ascending: true } });
-    const desc = await bridge.getSearchResults!("", 1, { sort: { key: "title", ascending: false } });
+    const asc = await bridge.getSearchResults!({ text: "",  sort: { key: "title", ascending: true } });
+    const desc = await bridge.getSearchResults!({ text: "",  sort: { key: "title", ascending: false } });
     expect(asc.items.map((i) => i.id).join()).toBe([...desc.items].reverse().map((i) => i.id).join());
   });
 
   test("author filter returns only that author's series", async () => {
     const bridge = load();
-    const all = await bridge.getSearchResults!("", 1);
+    const all = await bridge.getSearchResults!({ text: "" });
 
     // Lewis Carroll only wrote Alice in the fixture catalog.
-    const carroll = await bridge.getSearchResults!("", 1, {
+    const carroll = await bridge.getSearchResults!({ text: "", 
       filters: [{ key: "author", value: "Lewis Carroll" }],
     });
     expect(carroll.items.length).toBeGreaterThan(0);
@@ -179,7 +188,7 @@ describe("example-bridge", () => {
     expect(carroll.items.every((i) => i.id === "alice")).toBe(true);
 
     // Partial name match (case-insensitive) should also work.
-    const partial = await bridge.getSearchResults!("", 1, {
+    const partial = await bridge.getSearchResults!({ text: "", 
       filters: [{ key: "author", value: "carroll" }],
     });
     expect(partial.items.map((i) => i.id)).toEqual(carroll.items.map((i) => i.id));
@@ -187,7 +196,7 @@ describe("example-bridge", () => {
 
   test("author filter with no matches returns empty results", async () => {
     const bridge = load();
-    const results = await bridge.getSearchResults!("", 1, {
+    const results = await bridge.getSearchResults!({ text: "", 
       filters: [{ key: "author", value: "Nonexistent Author XYZ" }],
     });
     expect(results.items.length).toBe(0);
@@ -202,18 +211,18 @@ describe("example-bridge", () => {
       label: "Ongoing only",
     });
 
-    const all = await bridge.getSearchResults!("", 1);
-    const ongoing = await bridge.getSearchResults!("", 1, { filters: [{ key: "ongoing", value: true }] });
+    const all = await bridge.getSearchResults!({ text: "" });
+    const ongoing = await bridge.getSearchResults!({ text: "",  filters: [{ key: "ongoing", value: true }] });
     expect(ongoing.items.length).toBeGreaterThan(0);
     expect(ongoing.items.length).toBeLessThan(all.items.length);
 
-    const allList = await bridge.getListItems!("latest", 1);
-    const ongoingList = await bridge.getListItems!("latest", 1, { filters: [{ key: "ongoing", value: true }] });
+    const allList = await bridge.getListItems!("latest");
+    const ongoingList = await bridge.getListItems!("latest", { filters: [{ key: "ongoing", value: true }] });
     expect(ongoingList.items.length).toBeGreaterThan(0);
     expect(ongoingList.items.length).toBeLessThan(allList.items.length);
 
     // Explicitly false behaves the same as unset — no narrowing.
-    const explicitFalse = await bridge.getSearchResults!("", 1, { filters: [{ key: "ongoing", value: false }] });
+    const explicitFalse = await bridge.getSearchResults!({ text: "",  filters: [{ key: "ongoing", value: false }] });
     expect(explicitFalse.items.length).toBe(all.items.length);
   });
 
@@ -224,18 +233,18 @@ describe("example-bridge", () => {
       capabilities: fixtureHost(backend, { sessionToken: "demo" }),
       expectedId: "example",
     });
-    expect((await bridge.getFavorites!(1)).items.length).toBe(0);
+    expect((await bridge.getFavorites!()).items.length).toBe(0);
 
     await bridge.addFavorite!("dracula");
-    const after = await bridge.getFavorites!(1);
+    const after = await bridge.getFavorites!();
     expect(after.items.map((i) => i.id)).toContain("dracula");
 
     await bridge.removeFavorite!("dracula");
-    expect((await bridge.getFavorites!(1)).items.map((i) => i.id)).not.toContain("dracula");
+    expect((await bridge.getFavorites!()).items.map((i) => i.id)).not.toContain("dracula");
   });
 
   test("favorites require authentication (no sessionToken → throws)", async () => {
     const bridge = load(); // load() wires baseUrl but no sessionToken
-    await expect(bridge.getFavorites!(1)).rejects.toThrow();
+    await expect(bridge.getFavorites!()).rejects.toThrow();
   });
 });

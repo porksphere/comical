@@ -16,7 +16,8 @@
  * "Coverage" here = contract/capability coverage + data-quality heuristics — NOT code coverage, and
  * NOT semantic correctness.
  */
-import type { Bridge, BridgeCapability, Filter, PagedResults, SeriesEntry } from "@comical/contract";
+import { CURSOR_MAX_LENGTH } from "@comical/contract";
+import type { Bridge, BridgeCapability, Cursor, Filter, PagedResults, SeriesEntry } from "@comical/contract";
 
 import { measureThumbnails, type AssetFetcher, type AssetMetrics } from "./asset-metrics.ts";
 
@@ -123,7 +124,7 @@ export function isAuthRequiredError(e: unknown): boolean {
   );
 }
 
-const ids = (r: PagedResults<SeriesEntry>): string => r.items.map((i) => i.id).join(",");
+const ids = (r: PagedResults<{ id: string }>): string => r.items.map((i) => i.id).join(",");
 
 /**
  * Evaluate a loaded bridge and return a structured coverage report. Never throws on a bridge defect
@@ -178,9 +179,7 @@ export async function evaluateBridge(
         pass("lists", "lists.catalog", `getLists returned ${lists.length} list(s)`);
 
         const first = lists[0]!;
-        const items = await bridge.getListItems(first.id, 1);
-        if (items.page !== 1) fail("lists", "lists.page", `getListItems page should echo 1, got ${items.page}`);
-        if (typeof items.hasNextPage !== "boolean") fail("lists", "lists.hasNextPage", "getListItems hasNextPage must be boolean");
+        const items = await bridge.getListItems(first.id);
         if (items.items.length === 0) {
           fail("lists", "lists.items", `list "${first.id}" returned no items`);
         } else {
@@ -189,10 +188,14 @@ export async function evaluateBridge(
           pass("lists", "lists.items", `list "${first.id}" returned ${items.items.length} item(s)`);
           dataQualityEntries("lists", items.items, warn);
 
-          const again = await bridge.getListItems(first.id, 1);
+          const again = await bridge.getListItems(first.id);
           if (ids(items) !== ids(again)) {
             fail("lists", "lists.idStability", `list "${first.id}" item ids are not stable across identical calls`);
           } else pass("lists", "lists.idStability", "list item ids are stable across calls");
+
+          await probeCursor("lists", items, (cursor) => bridge.getListItems!(first.id, { cursor }), {
+            warn, pass, fail,
+          });
         }
 
         // In-list search probe (only for a list that advertises it).
@@ -212,9 +215,7 @@ export async function evaluateBridge(
     exercised.add("search");
     const query = options.searchQuery ?? "";
     try {
-      const results0 = await bridge.getSearchResults(query, 1);
-      if (results0.page !== 1) fail("search", "search.page", `search page should echo 1, got ${results0.page}`);
-      if (typeof results0.hasNextPage !== "boolean") fail("search", "search.hasNextPage", "search hasNextPage must be boolean");
+      const results0 = await bridge.getSearchResults({ text: query });
       for (const item of results0.items) {
         if (!item.id) fail("search", "search.item.id", "a search item has an empty id");
         if (!item.title) fail("search", "search.item.title", "a search item has an empty title");
@@ -224,6 +225,9 @@ export async function evaluateBridge(
         sampledItems.push(...results0.items);
         pass("search", "search.items", `search returned ${results0.items.length} item(s)`);
         dataQualityEntries("search", results0.items, warn);
+        await probeCursor("search", results0, (cursor) => bridge.getSearchResults!({ text: query, cursor }), {
+          warn, pass, fail,
+        });
       } else {
         warn("search", "search.items", `search for "${query}" returned no items (try --query)`);
       }
@@ -300,13 +304,13 @@ export async function evaluateBridge(
       warn("favorites", "favorites.mutations", "favorites is read-only (no add/removeFavorite)");
     }
     try {
-      const favs = await bridge.getFavorites(1);
-      if (favs.page !== 1) fail("favorites", "favorites.page", `getFavorites page should echo 1, got ${favs.page}`);
+      const favs = await bridge.getFavorites();
       for (const item of favs.items) {
         if (!item.id) fail("favorites", "favorites.item.id", "a favorite has an empty id");
         if (!item.title) fail("favorites", "favorites.item.title", "a favorite has an empty title");
       }
       pass("favorites", "favorites.read", `getFavorites returned ${favs.items.length} item(s)`);
+      await probeCursor("favorites", favs, (cursor) => bridge.getFavorites!({ cursor }), { warn, pass, fail });
     } catch (e) {
       // Unauthenticated by design: a "needs credentials" throw is skipped (not a defect); anything else
       // (or a transient block) is a real read problem worth a warning.
@@ -440,6 +444,43 @@ function dataQualityEntries(cap: BridgeCapability, items: SeriesEntry[], warn: R
   }
 }
 
+/**
+ * Verify a paged read's cursor actually advances.
+ *
+ * A bridge that returns a `nextCursor` is promising a *following* page, so the two failure modes
+ * worth catching are (a) a cursor that isn't a usable token and (b) a cursor that hands back the
+ * page the caller already has — the classic infinite-scroll loop. `nextCursor: undefined` is a
+ * legitimate answer (single-page backend), so it is a skip, not a failure.
+ */
+async function probeCursor<T extends { id: string }>(
+  cap: CheckResult["capability"],
+  first: PagedResults<T>,
+  fetchNext: (cursor: Cursor) => Promise<PagedResults<T>>,
+  rec: { warn: Rec; pass: Rec; fail: Rec },
+): Promise<void> {
+  const cursor = first.nextCursor;
+  if (cursor === undefined) {
+    rec.pass(cap, `${cap}.cursor`, "single page (no nextCursor)");
+    return;
+  }
+  if (typeof cursor !== "string" || cursor.length === 0 || cursor.length > CURSOR_MAX_LENGTH) {
+    rec.fail(cap, `${cap}.cursor`, `nextCursor must be a 1-${CURSOR_MAX_LENGTH} char string, got ${typeof cursor} of length ${String(cursor).length}`);
+    return;
+  }
+  try {
+    const next = await fetchNext(cursor);
+    if (next.items.length === 0) {
+      rec.warn(cap, `${cap}.cursor`, "nextCursor led to an empty page — prefer omitting it on the last page");
+    } else if (ids(next) === ids(first)) {
+      rec.fail(cap, `${cap}.cursor`, "nextCursor returned the same items — pagination would loop forever");
+    } else {
+      rec.pass(cap, `${cap}.cursor`, `nextCursor advanced to ${next.items.length} further item(s)`);
+    }
+  } catch (e) {
+    rec.fail(cap, `${cap}.cursor`, `following nextCursor threw: ${msg(e)}`);
+  }
+}
+
 async function probeInListSearch(
   bridge: Bridge,
   listId: string,
@@ -449,11 +490,11 @@ async function probeInListSearch(
 ): Promise<void> {
   if (!bridge.getListItems) return;
   try {
-    const all = await bridge.getListItems(listId, 1);
+    const all = await bridge.getListItems(listId);
     const sample = all.items[0];
     if (!sample) return;
     const token = sample.title.split(/\s+/)[0] ?? sample.title;
-    const scoped = await bridge.getListItems(listId, 1, { query: token });
+    const scoped = await bridge.getListItems(listId, { query: token });
     if (scoped.items.length === 0) {
       warn("search", "search.inList", `in-list search for "${token}" returned nothing`);
     } else if (scoped.items.length <= all.items.length) {
@@ -488,9 +529,9 @@ async function probeFilterEffect(
   }
   const optionValue = picked.options[0]!.value;
   try {
-    const base = await bridge.getSearchResults(query, 1);
+    const base = await bridge.getSearchResults({ text: query });
     const value = picked.type === "multiselect" ? [optionValue] : optionValue;
-    const filtered = await bridge.getSearchResults(query, 1, { filters: [{ key: picked.key, value }] });
+    const filtered = await bridge.getSearchResults({ text: query, filters: [{ key: picked.key, value }] });
     if (ids(filtered) === ids(base)) {
       // Inconclusive, not a defect: the sampled page may legitimately be unchanged by this filter.
       skip("filters", "filters.effect", `applying filter "${picked.key}=${optionValue}" did not change the sampled page`);
@@ -515,8 +556,8 @@ async function probeSortEffect(
     return;
   }
   try {
-    const asc = await bridge.getSearchResults(query, 1, { sort: { key: sortKey, ascending: true } });
-    const desc = await bridge.getSearchResults(query, 1, { sort: { key: sortKey, ascending: false } });
+    const asc = await bridge.getSearchResults({ text: query, sort: { key: sortKey, ascending: true } });
+    const desc = await bridge.getSearchResults({ text: query, sort: { key: sortKey, ascending: false } });
     if (asc.items.length < 2) {
       skip("sort", "sort.effect", "not enough results to observe sort order");
     } else if (ids(asc) === ids(desc)) {

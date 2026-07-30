@@ -62,12 +62,8 @@ class TestSpritesBridge extends BridgeBase<Record<string, never>> {
     return Promise.resolve([{ id: "all", name: "Test Gallery" }]);
   }
 
-  getListItems(_listId: string, _page: number): Promise<PagedResults<SeriesEntry>> {
-    return Promise.resolve({
-      items: [{ id: "test-series", title: "Sprite Test Gallery" }],
-      page: 1,
-      hasNextPage: false,
-    });
+  getListItems(): Promise<PagedResults<SeriesEntry>> {
+    return Promise.resolve({ items: [{ id: "test-series", title: "Sprite Test Gallery" }] });
   }
 
   override getSeriesPages(_seriesId: string): Promise<Page[]> {

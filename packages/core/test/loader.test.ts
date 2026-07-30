@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { CURSOR_MAX_LENGTH } from "@comical/contract";
 import type { HostCapabilities, HttpRequest, HttpResponse } from "@comical/contract";
 import {
   BridgeContractError,
@@ -45,7 +46,7 @@ const GOOD_BRIDGE = bundle(`{
   getSeriesDetails: async (id) => ({ id, title: "Title " + id }),
   getChapters: async (id) => [{ id: "c1", name: "Chapter 1", number: 1 }],
   getChapterPages: async (m, c) => [{ index: 0, imageUrl: "https://img.example.test/" + c + "/0.png" }],
-  getSearchResults: async (q, p) => ({ items: [{ id: "m1", title: q }], page: p, hasNextPage: false }),
+  getSearchResults: async (req) => ({ items: [{ id: "m1", title: req.text }] }),
   getSettings: () => [{ type: "string", key: "baseUrl", label: "Backend URL", required: true }],
 }`);
 
@@ -54,7 +55,7 @@ describe("loadBridge", () => {
     const b = loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
     expect(b.info.id).toBe("smoke");
 
-    const results = await b.getSearchResults!("naruto", 1);
+    const results = await b.getSearchResults!({ text: "naruto" });
     expect(results.items).toHaveLength(1);
     const id = results.items[0]!.id;
 
@@ -250,7 +251,7 @@ describe("sandbox isolation", () => {
 
   test("applies the bridge's declared info.rateLimit", async () => {
     const b = loadBridge({ code: FANOUT, capabilities: stampHost() });
-    const res = await b.getSearchResults!("", 1);
+    const res = await b.getSearchResults!({ text: "" });
     // 3 requests, 1 in flight, ≥80ms apart → starts span ≥ ~160ms (allow scheduling slack).
     expect(startSpread(res.items)).toBeGreaterThanOrEqual(140);
   });
@@ -261,37 +262,84 @@ describe("sandbox isolation", () => {
       capabilities: stampHost(),
       network: { rateLimit: { maxConcurrent: 10, minIntervalMs: 0 } },
     });
-    const res = await b.getSearchResults!("", 1);
+    const res = await b.getSearchResults!({ text: "" });
     // Host says "no spacing, 10 concurrent" — the declared 1/80ms must not apply.
     expect(startSpread(res.items)).toBeLessThan(60);
   });
 
-  // A bridge that echoes the options bag it received back through item titles, so the test can
-  // assert which option keys survive the loader's boundary schema.
+  // A bridge that echoes the request object it received back through item titles, so the test can
+  // assert which request keys survive the loader's boundary schema.
   const ECHO_INFO = `{ id: "smoke", name: "Smoke", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["search", "lists", "exclude-tags"] }`;
   const ECHO_OPTS = bundle(`{
     info: ${ECHO_INFO},
     getSeriesDetails: async (id) => ({ id, title: id }),
     getChapters: async () => [],
     getChapterPages: async () => [],
-    getSearchResults: async (q, p, opts) => ({ items: [{ id: "x", title: JSON.stringify(opts ?? null) }], page: p, hasNextPage: false }),
-    getListItems: async (l, p, opts) => ({ items: [{ id: "x", title: JSON.stringify(opts ?? null) }], page: p, hasNextPage: false }),
+    getSearchResults: async (req) => ({ items: [{ id: "x", title: JSON.stringify(req ?? null) }] }),
+    getListItems: async (l, req) => ({ items: [{ id: "x", title: JSON.stringify(req ?? null) }] }),
   }`);
 
-  test("excludedTags survives the search/list options boundary schema", async () => {
+  test("excludedTags survives the search/list request boundary schema", async () => {
     const b = loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
 
-    const search = await b.getSearchResults!("q", 1, { excludedTags: ["t1", "t2"] });
-    expect(JSON.parse(search.items[0]!.title)).toEqual({ excludedTags: ["t1", "t2"] });
+    const search = await b.getSearchResults!({ text: "q", excludedTags: ["t1", "t2"] });
+    expect(JSON.parse(search.items[0]!.title)).toEqual({ text: "q", excludedTags: ["t1", "t2"] });
 
-    const list = await b.getListItems!("popular", 1, { excludedTags: ["t3"] });
+    const list = await b.getListItems!("popular", { excludedTags: ["t3"] });
     expect(JSON.parse(list.items[0]!.title)).toEqual({ excludedTags: ["t3"] });
   });
 
-  test("unknown option keys are still stripped at the boundary", async () => {
+  test("unknown request keys are still stripped at the boundary", async () => {
     const b = loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const search = await b.getSearchResults!("q", 1, { excludedTags: ["t1"], bogus: 1 } as any);
-    expect(JSON.parse(search.items[0]!.title)).toEqual({ excludedTags: ["t1"] });
+    const search = await b.getSearchResults!({ text: "q", excludedTags: ["t1"], bogus: 1 } as any);
+    expect(JSON.parse(search.items[0]!.title)).toEqual({ text: "q", excludedTags: ["t1"] });
+  });
+
+  test("a cursor is passed through to the bridge verbatim (the host never interprets it)", async () => {
+    const b = loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
+    const cursor = "offset:40|section:trending";
+
+    expect(JSON.parse((await b.getSearchResults!({ text: "", cursor })).items[0]!.title).cursor).toBe(cursor);
+    expect(JSON.parse((await b.getListItems!("popular", { cursor })).items[0]!.title).cursor).toBe(cursor);
+  });
+
+  test("an unusable cursor is rejected at the boundary before the bridge runs", async () => {
+    const b = loadBridge({ code: ECHO_OPTS, capabilities: mockHost() });
+    const tooLong = "x".repeat(CURSOR_MAX_LENGTH + 1);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(b.getSearchResults!({ text: "", cursor: tooLong })).rejects.toThrow(/search request/);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(b.getListItems!("popular", { cursor: "" } as any)).rejects.toThrow(/list request/);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(b.getSearchResults!({ text: "", cursor: 2 } as any)).rejects.toThrow(/search request/);
+  });
+
+  test("a bridge returning the retired page/hasNextPage shape has them stripped from the result", async () => {
+    const legacy = bundle(`{
+      info: ${ECHO_INFO},
+      getSeriesDetails: async (id) => ({ id, title: id }),
+      getChapters: async () => [],
+      getChapterPages: async () => [],
+      getSearchResults: async () => ({ items: [{ id: "x", title: "X" }], page: 1, hasNextPage: true }),
+    }`);
+    const b = loadBridge({ code: legacy, capabilities: mockHost() });
+    const res = await b.getSearchResults!({ text: "" });
+    // "hasNextPage: true" must not become an invented cursor — the host sees a terminal page.
+    expect(res).toEqual({ items: [{ id: "x", title: "X" }] });
+    expect(res.nextCursor).toBeUndefined();
+  });
+
+  test("a bridge returning an unusable nextCursor fails output validation", async () => {
+    const bad = bundle(`{
+      info: ${ECHO_INFO},
+      getSeriesDetails: async (id) => ({ id, title: id }),
+      getChapters: async () => [],
+      getChapterPages: async () => [],
+      getSearchResults: async () => ({ items: [], nextCursor: "" }),
+    }`);
+    const b = loadBridge({ code: bad, capabilities: mockHost() });
+    await expect(b.getSearchResults!({ text: "" })).rejects.toThrow(/getSearchResults/);
   });
 });

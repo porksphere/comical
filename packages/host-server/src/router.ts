@@ -6,9 +6,10 @@
  * The browser gets back clean JSON matching the @comical/contract models.
  */
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { cors } from "hono/cors";
-import { bridgeSeriesStatusSchema, EXCLUDED_TAGS_KEY } from "@comical/contract";
-import type { Chapter, FilterValue, ListOptions, SearchOptions, SettingValue } from "@comical/contract";
+import { bridgeSeriesStatusSchema, CURSOR_MAX_LENGTH, EXCLUDED_TAGS_KEY } from "@comical/contract";
+import type { Chapter, Cursor, FilterValue, ListRequest, SearchRequest, SettingValue } from "@comical/contract";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
 // node:vm-backed default evaluator) so this router can also be bundled into non-Node hosts
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
@@ -352,12 +353,23 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
 
   // ── Content endpoints ────────────────────────────────────────────────────────
 
+  /**
+   * Read the opaque pagination cursor off a request. Its contents belong to the bridge, so the only
+   * thing enforced here is the contract's length ceiling — a client cannot use a huge `?cursor=` to
+   * push an oversized string through to a bridge. Absent/empty means "first page".
+   */
+  const cursorParam = (c: Context): Cursor | undefined | { tooLong: true } => {
+    const raw = c.req.query("cursor");
+    if (!raw) return undefined;
+    return raw.length > CURSOR_MAX_LENGTH ? { tooLong: true } : raw;
+  };
+
   app.get("/bridges/:id/search", (c) =>
     withContentBridge(c, async (bridge) => {
       if (!bridge.getSearchResults) return c.json({ error: "not supported" }, 400);
-      const q = c.req.query("q") ?? "";
-      const page = Number(c.req.query("page") ?? "1");
-      const options: SearchOptions = {};
+      const cursor = cursorParam(c);
+      if (typeof cursor === "object") return c.json({ error: "cursor too long" }, 400);
+      const options: SearchRequest = { text: c.req.query("q") ?? "", ...(cursor ? { cursor } : {}) };
       // Filters: URL-encoded JSON array of FilterValue in ?filters=.
       const rawFilters = c.req.query("filters");
       if (rawFilters) {
@@ -372,7 +384,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       if (sortKey) options.sort = { key: sortKey, ascending: c.req.query("dir") !== "desc" };
       const excluded = await excludedTagsFor(c, bridge);
       if (excluded.length) options.excludedTags = excluded;
-      return c.json(await bridge.getSearchResults(q, page, options));
+      return c.json(await bridge.getSearchResults(options));
     }),
   );
 
@@ -394,8 +406,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   app.get("/bridges/:id/lists/:listId", (c) =>
     withContentBridge(c, async (bridge) => {
       if (!bridge.getListItems) return c.json({ error: "not supported" }, 400);
-      const page = Number(c.req.query("page") ?? "1");
-      const options: ListOptions = {};
+      const cursor = cursorParam(c);
+      if (typeof cursor === "object") return c.json({ error: "cursor too long" }, 400);
+      const options: ListRequest = cursor ? { cursor } : {};
       const q = c.req.query("q");
       if (q) options.query = q;
       const rawFilters = c.req.query("filters");
@@ -410,7 +423,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       if (sortKey) options.sort = { key: sortKey, ascending: c.req.query("dir") !== "desc" };
       const excluded = await excludedTagsFor(c, bridge);
       if (excluded.length) options.excludedTags = excluded;
-      return c.json(await bridge.getListItems(c.req.param("listId"), page, options));
+      return c.json(await bridge.getListItems(c.req.param("listId"), options));
     }),
   );
 
@@ -434,8 +447,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   app.get("/bridges/:id/favorites", (c) =>
     withContentBridge(c, async (bridge) => {
       if (!bridge.getFavorites) return c.json({ error: "not supported" }, 400);
-      const page = Number(c.req.query("page") ?? "1");
-      return c.json(await bridge.getFavorites(page));
+      const cursor = cursorParam(c);
+      if (typeof cursor === "object") return c.json({ error: "cursor too long" }, 400);
+      return c.json(await bridge.getFavorites(cursor ? { cursor } : {}));
     }),
   );
 
@@ -463,10 +477,12 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         return c.json({ favorited: await bridge.isFavorite(seriesId) });
       }
       const MAX_PAGES = 20;
+      let cursor: Cursor | undefined;
       for (let page = 1; page <= MAX_PAGES; page++) {
-        const result = await bridge.getFavorites(page);
+        const result = await bridge.getFavorites(cursor ? { cursor } : {});
         if (result.items.some((item) => item.id === seriesId)) return c.json({ favorited: true });
-        if (!result.hasNextPage) break;
+        if (!result.nextCursor) break;
+        cursor = result.nextCursor;
       }
       return c.json({ favorited: false });
     }),
@@ -1411,9 +1427,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.get("/trackers/:id/search", async (c) => {
       const id = c.req.param("id");
       const q = c.req.query("q") ?? "";
-      const page = Number(c.req.query("page") ?? "1");
+      const cursor = cursorParam(c);
+      if (typeof cursor === "object") return c.json({ error: "cursor too long" }, 400);
       try {
-        return c.json(await runtime!.searchTracker(id, q, page));
+        return c.json(await runtime!.searchTracker(id, q, cursor));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return c.json({ error: msg }, msg.includes("not found") ? 404 : 400);

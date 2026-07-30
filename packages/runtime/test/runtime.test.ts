@@ -1,6 +1,6 @@
 /** ComicalRuntime — auto-tracker-linking, title-search suggestions, and read-sync. */
 import { describe, expect, test } from "bun:test";
-import type { Bridge, BridgeInfo, Chapter, SeriesInfo, Tracker, TrackerEntryUpdate, TrackerInfo, TrackerLibraryEntry } from "@comical/contract";
+import type { Bridge, BridgeInfo, Chapter, PagedRequest, SeriesInfo, Tracker, TrackerEntryUpdate, TrackerInfo, TrackerLibraryEntry } from "@comical/contract";
 import { trackerEntryUpdateSchema } from "@comical/contract";
 import { entryKey, InMemoryLibraryStore, Library, type TrackerLink } from "@comical/library";
 import { ComicalRuntime, type BridgeProvider, type TrackerProvider } from "@comical/runtime";
@@ -80,25 +80,27 @@ function mockTracker(
 ): Tracker {
   return {
     info: { ...TRACKER_INFO, id, capabilities: opts.capabilities ?? TRACKER_INFO.capabilities },
-    async search(query, page) {
-      void query; void page;
-      return {
-        items: (opts.searchResults ?? []).map((r) => ({ externalId: r.externalId, title: r.title })),
-        page: 1,
-        hasNextPage: false,
-      };
+    async search(query) {
+      void query;
+      return { items: (opts.searchResults ?? []).map((r) => ({ externalId: r.externalId, title: r.title })) };
     },
     async updateEntry(externalId, update) {
       opts.updateCalls?.push({ externalId, ...update });
     },
-    async getLibrary(page) {
-      void page;
-      return { items: opts.libraryEntries ?? [], page: 1, hasNextPage: false };
+    async getLibrary() {
+      return { items: opts.libraryEntries ?? [] };
     },
   };
 }
 
 const ch = (id: string, number: number): Chapter => ({ id, name: `Ch ${number}`, number });
+
+// Cursors are opaque to the runtime, so these fakes use the simplest possible encoding — the page
+// number as a decimal string. That is exactly the freedom the contract gives a bridge: the runtime
+// only stores and echoes what it gets back, and stops when there is no `nextCursor`.
+const cursorPage = (req?: PagedRequest): number => (req?.cursor ? Number(req.cursor) : 1);
+const pageCursor = (page: number, hasMore: boolean): string | undefined =>
+  hasMore ? String(page) : undefined;
 
 function mockTrackerProvider(trackers: Tracker[]): TrackerProvider {
   const map = new Map(trackers.map((t) => [t.info.id, t]));
@@ -950,7 +952,7 @@ describe("syncEntryWithTracker", () => {
     const base = mockTracker("anilist", { capabilities: ["status-sync"], updateCalls });
     const tracker: Tracker = {
       ...base,
-      async getLibrary(page) { libraryCalls++; return base.getLibrary!(page); },
+      async getLibrary(req) { libraryCalls++; return base.getLibrary!(req); },
     };
     const runtime = new ComicalRuntime({
       bridges: mockBridgeProvider(bridge),
@@ -1055,17 +1057,17 @@ describe("syncEntryWithTracker", () => {
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
       chapters: [ch("c1", 1)],
     });
-    const pages: Record<number, { items: TrackerLibraryEntry[]; hasNextPage: boolean }> = {
-      1: { items: [{ externalId: 222, title: "Other", status: "reading" }], hasNextPage: true },
-      2: { items: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 1 }], hasNextPage: false },
+    const pages: Record<number, TrackerLibraryEntry[]> = {
+      1: [{ externalId: 222, title: "Other", status: "reading" }],
+      2: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 1 }],
     };
     const calledPages: number[] = [];
     const tracker: Tracker = {
       info: { ...TRACKER_INFO, id: "anilist", capabilities: ["library-sync"] },
-      async getLibrary(page) {
+      async getLibrary(req) {
+        const page = cursorPage(req);
         calledPages.push(page);
-        const p = pages[page]!;
-        return { items: p.items, page, hasNextPage: p.hasNextPage };
+        return { items: pages[page]!, nextCursor: pageCursor(page + 1, page + 1 in pages) };
       },
     };
     const runtime = new ComicalRuntime({
@@ -1099,7 +1101,7 @@ describe("syncEntryWithTracker", () => {
         entries[0]!.chaptersRead = Math.floor(update.chaptersRead ?? 0);
       },
       async getLibrary() {
-        return { items: entries, page: 1, hasNextPage: false };
+        return { items: entries };
       },
     };
     const runtime = new ComicalRuntime({
@@ -1586,10 +1588,9 @@ describe("backgroundSync — tracker gate", () => {
     let pulls = 0;
     const tracker: Tracker = {
       info: { ...TRACKER_INFO, id: "anilist", capabilities: ["library-sync"] },
-      async getLibrary(page) {
-        void page;
+      async getLibrary() {
         pulls++;
-        return { items: [], page: 1, hasNextPage: false };
+        return { items: [] };
       },
     };
     const { bridge } = instrumentedBridge();
@@ -1668,21 +1669,23 @@ function favoritesBridge(favorites: Array<{ id: string; title: string; thumbnail
   return {
     info: { ...BRIDGE_INFO, capabilities: ["favorites"] },
     async getSeriesDetails() { return { id: "x", title: "x" }; },
-    async getFavorites(page: number) {
+    async getFavorites(req) {
+      const page = cursorPage(req);
       const start = (page - 1) * perPage;
       const items = favorites.slice(start, start + perPage);
-      return { items, page, hasNextPage: start + perPage < favorites.length };
+      return { items, nextCursor: pageCursor(page + 1, start + perPage < favorites.length) };
     },
   };
 }
 
-/** A bridge that claims favorites but pages forever — the runaway `hasNextPage` the cap guards. */
+/** A bridge that claims favorites but pages forever — the runaway cursor chain the cap guards. */
 function endlessFavoritesBridge(): Bridge {
   return {
     info: { ...BRIDGE_INFO, capabilities: ["favorites"] },
     async getSeriesDetails() { return { id: "x", title: "x" }; },
-    async getFavorites(page: number) {
-      return { items: [{ id: `s${page}`, title: `Series ${page}` }], page, hasNextPage: true };
+    async getFavorites(req) {
+      const page = cursorPage(req);
+      return { items: [{ id: `s${page}`, title: `Series ${page}` }], nextCursor: pageCursor(page + 1, true) };
     },
   };
 }
@@ -1779,9 +1782,9 @@ describe("importBridgeFavorites", () => {
     const bridge: Bridge = {
       info: { ...BRIDGE_INFO, capabilities: ["favorites"] },
       async getSeriesDetails() { return { id: "x", title: "x" }; },
-      async getFavorites(page: number) {
+      async getFavorites() {
         fetches++;
-        return { items: [{ id: "s1", title: "First" }], page, hasNextPage: false };
+        return { items: [{ id: "s1", title: "First" }] };
       },
     };
 

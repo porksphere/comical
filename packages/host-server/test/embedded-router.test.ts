@@ -18,10 +18,10 @@ import { describe, expect, test } from "bun:test";
 import type {
   BridgeInfo,
   Chapter,
-  ListOptions,
+  ListRequest,
   Page,
   PagedResults,
-  SearchOptions,
+  SearchRequest,
   SeriesEntry,
   SeriesInfo,
   SeriesList,
@@ -46,13 +46,13 @@ function makeBridge(id: string, capabilities: string[], methods: string[]): Reco
     capabilities: capabilities as BridgeInfo["capabilities"],
   };
   const entry = (n: number): SeriesEntry => ({ id: `s${n}`, title: `Series ${n}` });
-  const page = (items: SeriesEntry[]): PagedResults<SeriesEntry> => ({ items, page: 1, hasNextPage: false });
+  const page = (items: SeriesEntry[]): PagedResults<SeriesEntry> => ({ items });
   const all: Record<string, unknown> = {
     getLists: async (): Promise<SeriesList[]> => [{ id: "home", name: "Home" }],
-    getListItems: async (_listId: string, _page: number, _opts?: ListOptions): Promise<PagedResults<SeriesEntry>> =>
+    getListItems: async (_listId: string, _req?: ListRequest): Promise<PagedResults<SeriesEntry>> =>
       page([entry(1), entry(2)]),
-    getSearchResults: async (q: string, _page: number, _opts?: SearchOptions): Promise<PagedResults<SeriesEntry>> =>
-      page([{ id: "hit", title: `Result for ${q}` }]),
+    getSearchResults: async (req: SearchRequest): Promise<PagedResults<SeriesEntry>> =>
+      page([{ id: "hit", title: `Result for ${req.text}` }]),
     getSeriesDetails: async (seriesId: string): Promise<SeriesInfo> => ({
       id: seriesId,
       title: `Series ${seriesId}`,
@@ -145,12 +145,13 @@ describe("embedded in-process router", () => {
     expect(await res.json()).toEqual([{ id: "home", name: "Home" }]);
   });
 
-  test("GET /bridges/:id/search parses query + page and returns paged results", async () => {
-    const res = await call("/bridges/demo/search?q=naruto&page=1");
+  test("GET /bridges/:id/search parses query + cursor and returns paged results", async () => {
+    const res = await call("/bridges/demo/search?q=naruto");
     expect(res.status).toBe(200);
     const body = (await res.json()) as PagedResults<SeriesEntry>;
     expect(body.items[0]?.title).toBe("Result for naruto");
-    expect(body.hasNextPage).toBe(false);
+    // This proxy bridge returns everything in one page, so it emits no cursor.
+    expect(body.nextCursor).toBeUndefined();
   });
 
   test("GET /bridges/:id/series/:seriesId → detail, then /chapters, then /chapters/:cid/pages", async () => {

@@ -10,7 +10,7 @@ import {
   type BridgeInfo,
   type Filter,
   type InferSettings,
-  type ListOptions,
+  type ListRequest,
   type Page,
   type PagedResults,
   type SeriesEntry,
@@ -64,10 +64,10 @@ class DirectExampleBridge extends BridgeBase<Settings> {
     return [{ type: "toggle", key: "ongoing", label: "Ongoing only" }];
   }
 
-  async getListItems(_listId: string, page: number, options?: ListOptions): Promise<PagedResults<SeriesEntry>> {
+  async getListItems(_listId: string, req: ListRequest = {}): Promise<PagedResults<SeriesEntry>> {
     const $ = await this.fetchHtml(`${this.base()}/`);
     const base = this.base();
-    const ongoingOnly = options?.filters?.find((f) => f.key === "ongoing")?.value === true;
+    const ongoingOnly = req.filters?.find((f) => f.key === "ongoing")?.value === true;
     const items = $(".gallery-catalog .gallery-card")
       .toArray()
       .filter((el) => !ongoingOnly || $(el).attr("data-status") === "ongoing")
@@ -85,7 +85,8 @@ class DirectExampleBridge extends BridgeBase<Settings> {
         return entry;
       })
       .filter((e) => e.id.length > 0);
-    return { items, page, hasNextPage: false };
+    // The whole catalog is one page here, so there is no next cursor.
+    return { items };
   }
 
   override async getSeriesDetails(seriesId: string): Promise<SeriesInfo> {

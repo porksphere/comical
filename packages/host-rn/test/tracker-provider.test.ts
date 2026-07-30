@@ -161,7 +161,7 @@ describe("EmbeddedTrackerProvider", () => {
     const provider = new EmbeddedTrackerProvider({ native: makeFakeNative(), bundles, settings });
 
     const tracker = await provider.get("anilist");
-    const result = await tracker.getLibrary!(1);
+    const result = await tracker.getLibrary!();
     expect(result.items[0]?.title).toBe("Series t1");
   });
 
@@ -255,7 +255,7 @@ describe("EmbeddedTrackerProvider", () => {
 
     const tracker = await provider.get("anilist");
     expect(initCount).toBe(1);
-    await tracker.getLibrary!(1); // triggers afterCall -> drainAndPersist
+    await tracker.getLibrary!(); // triggers afterCall -> drainAndPersist
 
     expect(await settings.get("anilist")).toEqual({ token: JSON.stringify({ access: "t2", refresh: "r2" }) });
 
@@ -278,7 +278,7 @@ describe("EmbeddedTrackerProvider", () => {
     const provider = new EmbeddedTrackerProvider({ native, bundles, settings });
 
     const tracker = await provider.get("anilist");
-    await tracker.getLibrary!(1);
+    await tracker.getLibrary!();
     expect(await settings.get("anilist")).toEqual({ token: "t1" });
     expect(initCount).toBe(1); // never invalidated -> still cached
   });
@@ -301,7 +301,7 @@ describe("EmbeddedTrackerProvider", () => {
 
     const tracker = await provider.get("anilist");
     // The afterCall drain must NOT throw and must leave settings untouched (there was no real patch).
-    await expect(tracker.getLibrary!(1)).resolves.toBeDefined();
+    await expect(tracker.getLibrary!()).resolves.toBeDefined();
     expect(await settings.get("anilist")).toEqual({ token: "t1" });
   });
 

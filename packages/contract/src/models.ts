@@ -7,6 +7,14 @@
  */
 import { z } from "zod";
 
+/**
+ * Hard ceiling on an opaque pagination {@link Cursor}, in characters. Generous enough for encoded
+ * structured state (offsets, section context, a signed page token) while keeping cursors inside a
+ * comfortable URL length and out of the client's persisted cache as bulk. A bridge that needs more
+ * resume state than this should keep it in `HostCapabilities.storage` and put the key in the cursor.
+ */
+export const CURSOR_MAX_LENGTH = 4096;
+
 /** Publication status of a series, normalized across backends. */
 export const seriesStatusSchema = z.enum([
   "unknown",
@@ -253,18 +261,59 @@ export const pageSchema = z.object({
 });
 export type Page = z.infer<typeof pageSchema>;
 
-/** A page of results with cursor-free pagination. */
+/**
+ * An opaque continuation token. The bridge produces it, the host stores it and echoes it back
+ * verbatim on the next call, and **the host never parses it** — its contents are entirely the
+ * bridge's business.
+ *
+ * Keep them small. A cursor travels in a URL query string and into the client's persisted query
+ * cache, so it is a *token*, not a suitcase: a bridge whose resume state is genuinely bulky should
+ * park that state in `HostCapabilities.storage` and put the key in the cursor. Bridges with
+ * structured position should build one with the SDK's `encodeCursor` (base64url JSON), which keeps
+ * the value URL- and storage-safe.
+ */
+export const cursorSchema = z.string().min(1).max(CURSOR_MAX_LENGTH);
+export type Cursor = z.infer<typeof cursorSchema>;
+
+/**
+ * One page of results.
+ *
+ * `nextCursor` present ⟺ there is another page; absent means the walk is finished. There is
+ * deliberately **no page number and no `hasNextPage`**:
+ *
+ * - A page number assumes page N's request is computable from `(listId, N)` alone. That holds for
+ *   offset/limit backends and fails for every keyset- or token-paginated one, where the next
+ *   request needs data only the *previous response* carried (an accumulated id list, a signed page
+ *   token). Letting the bridge own position makes those expressible.
+ * - `hasNextPage` was a second source of truth that could contradict the first. A cursor either
+ *   exists or it doesn't, so "there is more" and "here is how to get it" cannot disagree.
+ *
+ * The trade-off, accepted deliberately: cursors are **sequential**. A host can persist one and
+ * resume from it later (so cache-restore and deep-linking still work), but it cannot *invent* the
+ * cursor for page 7 without having walked pages 1–6.
+ */
 export interface PagedResults<T> {
   items: T[];
-  page: number;
-  hasNextPage: boolean;
+  /**
+   * Pass back as `cursor` to fetch the following page. Absent = this was the last page.
+   *
+   * Explicitly `| undefined` (despite `exactOptionalPropertyTypes`) because this is the one
+   * hand-written generic among otherwise zod-inferred models, and `z.string().optional()` infers
+   * `?: string | undefined` — the two shapes have to agree for the core to assign parsed results here.
+   */
+  nextCursor?: Cursor | undefined;
 }
 export const pagedResultsSchema = <T extends z.ZodTypeAny>(item: T) =>
   z.object({
     items: z.array(item),
-    page: z.number().int().nonnegative(),
-    hasNextPage: z.boolean(),
+    nextCursor: cursorSchema.optional(),
   });
+
+/** Where to resume a paged read. Absent `cursor` means "start from the beginning". */
+export interface PagedRequest {
+  cursor?: Cursor | undefined;
+}
+export const pagedRequestSchema = z.object({ cursor: cursorSchema.optional() });
 
 /** A `{ value, label }` choice — shared by filters and settings `enum` (one option shape). */
 export const optionSchema = z.object({ value: z.string(), label: z.string() });

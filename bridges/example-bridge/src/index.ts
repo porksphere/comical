@@ -15,12 +15,12 @@ import {
   type CheerioRoot,
   type Filter,
   type InferSettings,
-  type ListOptions,
+  type ListRequest,
   type Page,
   type PagedResults,
   type RelatedKind,
   type RelatedSeriesGroup,
-  type SearchOptions,
+  type SearchRequest,
   type SeriesEntry,
   type SeriesInfo,
   type SeriesList,
@@ -33,6 +33,8 @@ import {
   type TagKind,
   defineBridge,
   defineSettings,
+  nextPageCursor,
+  pageFromCursor,
 } from "@comical/sdk";
 
 const STATUSES: ReadonlySet<string> = new Set<SeriesStatus>([
@@ -183,24 +185,25 @@ class ExampleBridge extends BridgeBase<Settings> {
       .filter((l) => l.id.length > 0);
   }
 
-  async getListItems(
-    listId: string,
-    page: number,
-    options?: ListOptions,
-  ): Promise<PagedResults<SeriesEntry>> {
+  async getListItems(listId: string, req: ListRequest = {}): Promise<PagedResults<SeriesEntry>> {
+    // This backend paginates by number, so the cursor is just a page number — see `pageFromCursor`.
+    const page = pageFromCursor(req.cursor);
     const params = new URLSearchParams({ page: String(page) });
-    if (options?.query) params.set("q", options.query);
-    const sort = this.effectiveSort(options?.sort);
+    if (req.query) params.set("q", req.query);
+    const sort = this.effectiveSort(req.sort);
     if (sort) {
       params.set("sort", sort.key);
       params.set("dir", sort.ascending ? "asc" : "desc");
     }
     // Excluded tags map onto this demo backend's genre axis, pushed down as a backend negation.
-    if (options?.excludedTags?.length) params.set("excludeGenre", options.excludedTags.join(","));
-    const ongoingOnly = options?.filters?.find((f) => f.key === "ongoing")?.value === true;
+    if (req.excludedTags?.length) params.set("excludeGenre", req.excludedTags.join(","));
+    const ongoingOnly = req.filters?.find((f) => f.key === "ongoing")?.value === true;
     const $ = await this.fetchHtml(`${this.base()}/list/${encodeURIComponent(listId)}?${params.toString()}`);
-    const hasNextPage = $("section.list-items").attr("data-has-next") === "true";
-    return { items: this.cards($, "section.list-items", ongoingOnly), page, hasNextPage };
+    const hasNext = $("section.list-items").attr("data-has-next") === "true";
+    return {
+      items: this.cards($, "section.list-items", ongoingOnly),
+      nextCursor: nextPageCursor(page, hasNext),
+    };
   }
 
   async getFilters(): Promise<Filter[]> {
@@ -226,27 +229,25 @@ class ExampleBridge extends BridgeBase<Settings> {
     ];
   }
 
-  async getSearchResults(
-    query: string,
-    page: number,
-    options?: SearchOptions,
-  ): Promise<PagedResults<SeriesEntry>> {
-    const params = new URLSearchParams({ q: query, page: String(page) });
+  async getSearchResults(req: SearchRequest): Promise<PagedResults<SeriesEntry>> {
+    const page = pageFromCursor(req.cursor);
+    const params = new URLSearchParams({ q: req.text, page: String(page) });
     let ongoingOnly = false;
-    for (const f of options?.filters ?? []) {
+    for (const f of req.filters ?? []) {
       if (f.key === "genre" && Array.isArray(f.value)) params.set("genre", f.value.join(","));
       if (f.key === "author" && typeof f.value === "string") params.set("author", f.value);
       if (f.key === "ongoing" && f.value === true) ongoingOnly = true;
     }
     // Excluded tags map onto this demo backend's genre axis, pushed down as a backend negation.
-    if (options?.excludedTags?.length) params.set("excludeGenre", options.excludedTags.join(","));
-    const sort = this.effectiveSort(options?.sort);
+    if (req.excludedTags?.length) params.set("excludeGenre", req.excludedTags.join(","));
+    const sort = this.effectiveSort(req.sort);
     if (sort) {
       params.set("sort", sort.key);
       params.set("dir", sort.ascending ? "asc" : "desc");
     }
     const $ = await this.fetchHtml(`${this.base()}/search?${params.toString()}`);
-    return { items: this.cards($, "section.results", ongoingOnly), page, hasNextPage: false };
+    // This demo backend returns every match in one shot, so there is never a next cursor.
+    return { items: this.cards($, "section.results", ongoingOnly) };
   }
 
   override async getSeriesDetails(seriesId: string): Promise<SeriesInfo> {
@@ -362,9 +363,10 @@ class ExampleBridge extends BridgeBase<Settings> {
     return { Authorization: `Bearer ${token}` };
   }
 
-  async getFavorites(page: number): Promise<PagedResults<SeriesEntry>> {
+  async getFavorites(): Promise<PagedResults<SeriesEntry>> {
     const $ = await this.fetchHtml(`${this.base()}/favorites`, this.authHeaders());
-    return { items: this.cards($, "section.favorites"), page, hasNextPage: false };
+    // The whole favorites set comes back at once — a single page, so no cursor.
+    return { items: this.cards($, "section.favorites") };
   }
 
   async addFavorite(seriesId: string): Promise<void> {

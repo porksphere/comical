@@ -7,11 +7,13 @@ import {
   type Bridge,
   type BridgeFactory,
   type BridgeInfo,
-  type ListOptions,
-  type SearchOptions,
+  type ListRequest,
+  type PagedRequest,
+  type SearchRequest,
   bridgeInfoSchema,
   CONTRACT_VERSION,
   chapterSchema,
+  cursorSchema,
   filterSchema,
   filterValueSchema,
   type HostCapabilities,
@@ -52,22 +54,24 @@ export function setDefaultEvaluator(factory: (evalTimeoutMs: number) => BundleEv
   defaultEvaluatorFactory = factory;
 }
 
-/** Boundary schema for the search options bag (filters + sort + persistent tag exclusions). */
-const searchOptionsSchema = z.object({
+/** Shared by both refinable reads: where to resume, plus filters/sort/tag exclusions. */
+const refinableRequestShape = {
+  cursor: cursorSchema.optional(),
   filters: z.array(filterValueSchema).optional(),
   sort: sortSelectionSchema.optional(),
   excludedTags: z.array(z.string()).optional(),
-});
+};
 
-/** Boundary schema for the list options bag (in-list query + filters + sort + tag exclusions). */
-const listOptionsSchema = z.object({
-  query: z.string().optional(),
-  filters: z.array(filterValueSchema).optional(),
-  sort: sortSelectionSchema.optional(),
-  excludedTags: z.array(z.string()).optional(),
-});
+/** Boundary schema for a search request (query text + cursor + refinements). */
+const searchRequestSchema = z.object({ ...refinableRequestShape, text: z.string() });
+
+/** Boundary schema for a list request (in-list query + cursor + refinements). */
+const listRequestSchema = z.object({ ...refinableRequestShape, query: z.string().optional() });
+
+/** Boundary schema for a bare paged request — position only. */
+const pagedRequestSchema = z.object({ cursor: cursorSchema.optional() });
 import { errorMessage, withTimeout } from "./util.ts";
-import { validate } from "./validation.ts";
+import { validate, validateInput } from "./validation.ts";
 
 export interface RuntimeLimits {
   /** Budget for the synchronous evaluation of the bundle. */
@@ -230,20 +234,23 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
   if (raw.getLists) {
     bridge.getLists = (q) => call("getLists", z.array(seriesListSchema), () => raw.getLists!(q));
   }
+  // Request objects are validated INSIDE the `call` thunk, not before it: these methods are declared
+  // `Promise`-returning, so a bad request has to reject like everything else rather than throw
+  // synchronously out of a call the caller only ever `await`s or `.catch()`es.
   if (raw.getListItems) {
-    bridge.getListItems = (listId, p, opts) => {
-      const options =
-        opts === undefined ? undefined : (validate(listOptionsSchema, opts, "list options") as ListOptions);
-      return call("getListItems", entryPage, () => raw.getListItems!(listId, p, options));
-    };
+    bridge.getListItems = (listId, req) =>
+      call("getListItems", entryPage, () =>
+        raw.getListItems!(
+          listId,
+          req === undefined ? undefined : (validateInput(listRequestSchema, req, "list request") as ListRequest),
+        ),
+      );
   }
   if (raw.getSearchResults) {
-    bridge.getSearchResults = (q, p, opts) => {
-      // Validate the search-options INPUT (filters + sort) at the boundary.
-      const options =
-        opts === undefined ? undefined : (validate(searchOptionsSchema, opts, "search options") as SearchOptions);
-      return call("getSearchResults", entryPage, () => raw.getSearchResults!(q, p, options));
-    };
+    bridge.getSearchResults = (req) =>
+      call("getSearchResults", entryPage, () =>
+        raw.getSearchResults!(validateInput(searchRequestSchema, req, "search request") as SearchRequest),
+      );
   }
   if (raw.getFilters) {
     bridge.getFilters = () => call("getFilters", z.array(filterSchema), () => raw.getFilters!());
@@ -259,7 +266,12 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
     bridge.resolveTags = (ids) => call("resolveTags", z.array(tagSchema), () => raw.resolveTags!(ids));
   }
   if (raw.getFavorites) {
-    bridge.getFavorites = (p) => call("getFavorites", entryPage, () => raw.getFavorites!(p));
+    bridge.getFavorites = (req) =>
+      call("getFavorites", entryPage, () =>
+        raw.getFavorites!(
+          req === undefined ? undefined : (validateInput(pagedRequestSchema, req, "paged request") as PagedRequest),
+        ),
+      );
   }
   if (raw.addFavorite) {
     bridge.addFavorite = (id) => call("addFavorite", z.void(), () => raw.addFavorite!(id));

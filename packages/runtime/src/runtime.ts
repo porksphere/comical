@@ -14,7 +14,7 @@
  *     then bulk-add the caller's selection, grouping in any confirmed cross-bridge duplicates.
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
-import type { Chapter, LogCapability, PagedResults, SeriesEntry, SeriesInfo, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
+import type { Chapter, Cursor, LogCapability, PagedResults, SeriesEntry, SeriesInfo, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
 import { trackerEntryUpdateSchema } from "@comical/contract";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
 // node:vm-backed default evaluator) so `@comical/runtime`'s types stay consumable by non-Node
@@ -310,7 +310,7 @@ export class ComicalRuntime {
           // No id available — search by title and surface a suggestion for the user to confirm.
           try {
             const tracker = await this.trackers.get(t.info.id);
-            const res = await tracker.search?.(title, 1);
+            const res = await tracker.search?.(title);
             const first = res?.items[0];
             if (first) trackerSuggestions.push({ trackerId: t.info.id, result: first });
           } catch { /* best-effort */ }
@@ -424,15 +424,15 @@ export class ComicalRuntime {
     const byTitle = await lib.titleIndex();
     const items: FavoritesImportCandidate[] = [];
     let truncated = false;
-    let page = 1;
-    while (true) {
-      const result = await bridge.getFavorites(page);
+    let cursor: Cursor | undefined;
+    for (let page = 1; ; page++) {
+      const result = await bridge.getFavorites(cursor ? { cursor } : {});
       for (const entry of result.items) {
         items.push(await this.classifyFavorite(lib, byTitle, bridgeId, entry));
       }
-      if (!result.hasNextPage) break;
+      if (!result.nextCursor) break;
       if (page >= MAX_FAVORITE_PAGES) { truncated = true; break; }
-      page++;
+      cursor = result.nextCursor;
     }
     return { items, truncated };
   }
@@ -507,9 +507,9 @@ export class ComicalRuntime {
     const bridge = await this.bridges.get(bridgeId);
     if (!bridge.getFavorites) throw new Error(`bridge "${bridgeId}" does not support favorites`);
     const items: FavoritesImportItem[] = [];
-    let page = 1;
-    while (true) {
-      const result = await bridge.getFavorites(page);
+    let cursor: Cursor | undefined;
+    for (let page = 1; ; page++) {
+      const result = await bridge.getFavorites(cursor ? { cursor } : {});
       for (const entry of result.items) {
         items.push({
           seriesId: entry.id,
@@ -517,8 +517,8 @@ export class ComicalRuntime {
           ...(entry.thumbnailUrl !== undefined && { thumbnailUrl: entry.thumbnailUrl }),
         });
       }
-      if (!result.hasNextPage || page >= MAX_FAVORITE_PAGES) break;
-      page++;
+      if (!result.nextCursor || page >= MAX_FAVORITE_PAGES) break;
+      cursor = result.nextCursor;
     }
     return items;
   }
@@ -823,12 +823,12 @@ export class ComicalRuntime {
       }
     }
 
-    let page = 1;
+    let cursor: Cursor | undefined;
     let updated = 0;
     let readSynced = 0;
     const suggestions: TrackerSuggestion[] = [];
     while (true) {
-      const result = await tracker.getLibrary(page);
+      const result = await tracker.getLibrary(cursor ? { cursor } : {});
       for (const item of result.items) {
         const match = linkIndex.get(String(item.externalId));
         if (match) {
@@ -843,8 +843,8 @@ export class ComicalRuntime {
           });
         }
       }
-      if (!result.hasNextPage) break;
-      page++;
+      if (!result.nextCursor) break;
+      cursor = result.nextCursor;
     }
     return { updated, readSynced, suggestions };
   }
@@ -903,13 +903,13 @@ export class ComicalRuntime {
     // Locate this link's entry in the tracker's list (pull-capable trackers only).
     let remote: TrackerLibraryEntry | undefined;
     if (canPull) {
-      let page = 1;
+      let cursor: Cursor | undefined;
       while (true) {
-        const result = await tracker.getLibrary!(page);
+        const result = await tracker.getLibrary!(cursor ? { cursor } : {});
         const item = result.items.find((i) => String(i.externalId) === String(link.externalId));
         if (item) { remote = item; break; }
-        if (!result.hasNextPage) break;
-        page++;
+        if (!result.nextCursor) break;
+        cursor = result.nextCursor;
       }
     }
     const remoteRead = remote?.chaptersRead ?? 0;
@@ -1071,13 +1071,17 @@ export class ComicalRuntime {
    * Search a tracker for a series title (for the "link tracker" UI flow).
    * Capability "search" required.
    */
-  async searchTracker(trackerId: string, query: string, page = 1): Promise<PagedResults<TrackerSearchResult>> {
+  async searchTracker(
+    trackerId: string,
+    query: string,
+    cursor?: Cursor,
+  ): Promise<PagedResults<TrackerSearchResult>> {
     if (!this.trackers) throw new Error("ComicalRuntime: no trackers configured");
     const tracker = await this.trackers.get(trackerId);
     if (!tracker.info.capabilities.includes("search") || !tracker.search) {
       throw new Error(`tracker "${trackerId}" does not support search`);
     }
-    return tracker.search(query, page);
+    return tracker.search(query, cursor ? { cursor } : {});
   }
 
   // ── Private ───────────────────────────────────────────────────────────────────

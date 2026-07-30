@@ -11,6 +11,7 @@ import type {
   FilterValue,
   Page,
   PageThumbnail,
+  PagedRequest,
   PagedResults,
   RelatedSeriesGroup,
   SeriesEntry,
@@ -22,8 +23,14 @@ import type {
   Tag,
 } from "./models.ts";
 
-/** Optional refinements for a search: filters narrow the set, sort orders it. */
-export interface SearchOptions {
+/**
+ * Refinements shared by every browsable read: filters narrow the set, sort orders it.
+ *
+ * These sit alongside `cursor` (from {@link PagedRequest}) rather than in a separate `options`
+ * argument, so one object carries the whole request: what to fetch, how to narrow it, and where to
+ * resume. Adding a dimension later means adding a field, not another positional parameter.
+ */
+interface RefinableRequest extends PagedRequest {
   filters?: FilterValue[];
   sort?: SortSelection;
   /**
@@ -35,13 +42,16 @@ export interface SearchOptions {
   excludedTags?: string[];
 }
 
-/** Optional refinements for browsing a list: an in-list text query, plus filters/sort. */
-export interface ListOptions {
+/** A text search across the backend. */
+export interface SearchRequest extends RefinableRequest {
+  /** The user's query. May be empty when `filters` alone drive the search. */
+  text: string;
+}
+
+/** A read of one of the bridge's own lists. */
+export interface ListRequest extends RefinableRequest {
+  /** In-list text query; only honored for lists flagged `searchable`. */
   query?: string;
-  filters?: FilterValue[];
-  sort?: SortSelection;
-  /** Persistent per-bridge tag exclusions the host injects (capability `"exclude-tags"`). See `SearchOptions.excludedTags`. */
-  excludedTags?: string[];
 }
 
 export interface Bridge {
@@ -123,17 +133,13 @@ export interface Bridge {
   getLists?(query?: string): Promise<SeriesList[]>;
 
   /**
-   * Entries within a list, by the list's id. `page` is 1-based. `options` carries an in-list
-   * `query` (only honored for lists flagged `searchable`) plus filters/sort. (capability "lists")
+   * Entries within a list, by the list's id. Omit `req` (or its `cursor`) for the first page; pass
+   * back the previous result's `nextCursor` to continue. (capability "lists")
    */
-  getListItems?(listId: string, page: number, options?: ListOptions): Promise<PagedResults<SeriesEntry>>;
+  getListItems?(listId: string, req?: ListRequest): Promise<PagedResults<SeriesEntry>>;
 
-  /** Text search across the backend. `page` is 1-based. `options` carries filters + sort. (capability "search") */
-  getSearchResults?(
-    query: string,
-    page: number,
-    options?: SearchOptions,
-  ): Promise<PagedResults<SeriesEntry>>;
+  /** Text search across the backend. (capability "search") */
+  getSearchResults?(req: SearchRequest): Promise<PagedResults<SeriesEntry>>;
 
   /** Search-filter descriptors (capability "filters"). */
   getFilters?(): Promise<Filter[]>;
@@ -164,8 +170,8 @@ export interface Bridge {
   // stays anonymous. `getFavorites` is the minimum for the capability; the mutations are independently
   // optional (a backend may expose follows read-only).
 
-  /** The signed-in account's favorited series. `page` is 1-based. */
-  getFavorites?(page: number): Promise<PagedResults<SeriesEntry>>;
+  /** The signed-in account's favorited series. */
+  getFavorites?(req?: PagedRequest): Promise<PagedResults<SeriesEntry>>;
 
   /** Add a series to the account's favorites. */
   addFavorite?(seriesId: string): Promise<void>;

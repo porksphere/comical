@@ -6,7 +6,9 @@
  * settings resolution, same timeout + validation wrapping.
  */
 import {
+  cursorSchema,
   type HostCapabilities,
+  type PagedRequest,
   type PagedResults,
   type Tracker,
   type TrackerFactory,
@@ -28,8 +30,11 @@ import { createGatedNetwork, type GatedNetworkOptions } from "./net/gated-networ
 import type { RateLimitOptions } from "./net/rate-limiter.ts";
 import { resolveSettings } from "./settings.ts";
 import { errorMessage, withTimeout } from "./util.ts";
-import { validate } from "./validation.ts";
+import { validate, validateInput } from "./validation.ts";
 import { DEFAULT_LIMITS, type RuntimeLimits } from "./loader.ts";
+
+/** Boundary schema for a paged read's request object — position only. */
+const pagedRequestSchema = z.object({ cursor: cursorSchema.optional() });
 
 /** A fully-wrapped tracker: same surface as `Tracker`, but timeout-bounded and output-validated. */
 export type LoadedTracker = Tracker;
@@ -139,13 +144,17 @@ function wrapTracker(raw: Tracker, info: TrackerInfo, timeoutMs: number): Loaded
 
   const tracker: LoadedTracker = { info };
 
+  /** Validate a paged read's INPUT at the boundary, same as the bridge loader does. */
+  const pagedRequest = (req: PagedRequest | undefined): PagedRequest | undefined =>
+    req === undefined ? undefined : (validate(pagedRequestSchema, req, "paged request") as PagedRequest);
+
   if (raw.getSettings) {
     const getSettings = raw.getSettings.bind(raw);
     tracker.getSettings = () => validate(z.array(settingDescriptorSchema), getSettings(), "getSettings");
   }
   if (raw.getLibrary) {
     const entryPage = pagedResultsSchema(trackerLibraryEntrySchema);
-    tracker.getLibrary = (page) => call("getLibrary", entryPage, () => raw.getLibrary!(page));
+    tracker.getLibrary = (req) => call("getLibrary", entryPage, () => raw.getLibrary!(pagedRequest(req)));
   }
   if (raw.updateEntry) {
     tracker.updateEntry = (externalId, update) =>
@@ -153,7 +162,7 @@ function wrapTracker(raw: Tracker, info: TrackerInfo, timeoutMs: number): Loaded
   }
   if (raw.search) {
     const searchPage = pagedResultsSchema(trackerSearchResultSchema);
-    tracker.search = (q, page) => call("search", searchPage, () => raw.search!(q, page));
+    tracker.search = (q, req) => call("search", searchPage, () => raw.search!(q, pagedRequest(req)));
   }
 
   return tracker;

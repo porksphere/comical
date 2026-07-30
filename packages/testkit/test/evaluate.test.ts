@@ -20,10 +20,8 @@ const INFO = (capabilities: BridgeInfo["capabilities"]): BridgeInfo => ({
 function bridge(over: Partial<Bridge> = {}): Bridge {
   return {
     info: INFO(["search"]),
-    getSearchResults: async (_q, page) => ({
+    getSearchResults: async () => ({
       items: [{ id: "a", title: "Alpha", thumbnailUrl: "https://x/a.png" }],
-      page,
-      hasNextPage: false,
     }),
     getSeriesDetails: async (id) => ({
       id,
@@ -122,7 +120,7 @@ describe("evaluateBridge", () => {
       bridge({
         info: INFO(["search", "sort"]),
         getSortOptions: async () => [{ key: "date", label: "Date" }],
-        getSearchResults: async (_q, page) => ({ items, page, hasNextPage: false }),
+        getSearchResults: async () => ({ items }),
       }),
     );
     expect(r.results.find((x) => x.id === "sort.effect")?.severity).toBe("skip");
@@ -137,7 +135,7 @@ describe("evaluateBridge", () => {
         getFilters: async () => [
           { key: "genre", label: "Genre", type: "select", options: [{ value: "action", label: "Action" }] },
         ],
-        getSearchResults: async (_q, page) => ({ items, page, hasNextPage: false }),
+        getSearchResults: async () => ({ items }),
       }),
     );
     expect(r.results.find((x) => x.id === "filters.effect")?.severity).toBe("skip");

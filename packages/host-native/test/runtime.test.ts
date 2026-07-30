@@ -101,7 +101,7 @@ const fanout = (info: string): string => `module.exports = { default: (host) => 
     const starts = await Promise.all([0, 1, 2].map((i) =>
       host.network.request({ url: "https://b/" + i }).then((r) => Number(r.body))
     ));
-    return { items: starts.map((s) => ({ id: String(s), title: String(s) })), page: 1, hasNextPage: false };
+    return { items: starts.map((s) => ({ id: String(s), title: String(s) })) };
   },
 }) };`;
 
@@ -119,7 +119,7 @@ describe("host-native runtime (Android / async adapter)", () => {
     const info = JSON.parse(g.comical_init(fanout(RATE_INFO), "{}") as string);
     expect(info.id).toBe("t");
 
-    const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify(["", 1])));
+    const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify([{ text: "" }])));
     expect(res.items.length).toBe(3);
   });
 
@@ -133,7 +133,7 @@ describe("host-native runtime (Android / async adapter)", () => {
     // valid JSON "null".
     const code = `module.exports = { default: (host) => ({
       info: { id: "f", name: "F", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["favorites"] },
-      getFavorites: async () => ({ items: [], page: 1, hasNextPage: false }),
+      getFavorites: async () => ({ items: [] }),
       addFavorite: async () => {},
       removeFavorite: async () => {},
     }) };`;
@@ -150,7 +150,7 @@ describe("host-native runtime (Android / async adapter)", () => {
     installComicalHarness(makeAsyncHost);
     g.comical_init(fanout(RATE_INFO), "{}");
 
-    const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify(["", 1])));
+    const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify([{ text: "" }])));
     // 3 requests, 1 in flight, ≥80ms apart → starts span ≥ ~160ms.
     expect(spread(res.items)).toBeGreaterThanOrEqual(140);
   });
@@ -194,7 +194,7 @@ describe("host-native runtime (iOS / callback adapter)", () => {
     installComicalHarness(makeCallbackHost);
 
     JSON.parse(g.comical_init(fanout(RATE_INFO), "{}") as string);
-    const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify(["", 1])));
+    const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify([{ text: "" }])));
     expect(res.items.length).toBe(3);
     expect(spread(res.items)).toBeGreaterThanOrEqual(140);
   });
@@ -216,9 +216,9 @@ const oauthTracker = (info: string): string => `module.exports = { default: (hos
     type: "oauth-pin", key: "token", label: "Account", authUrl: "https://x/pin",
     exchange: { url: "https://x/token", clientId: "cid", clientSecret: "secret", redirectUri: "urn:ietf:wg:oauth:2.0:oob", refreshUrl: "https://x/refresh" },
   }],
-  getLibrary: async (page) => {
+  getLibrary: async () => {
     const res = await host.network.request({ url: "https://x/content", headers: { Authorization: "Bearer " + host.settings.token } });
-    return { items: [{ externalId: "1", title: JSON.parse(res.body).title, status: "reading" }], page, hasNextPage: false };
+    return { items: [{ externalId: "1", title: JSON.parse(res.body).title, status: "reading" }] };
   },
 }) };`;
 
@@ -231,7 +231,7 @@ describe("host-native runtime — trackers", () => {
     const info = JSON.parse(g.comical_init_tracker!(oauthTracker(TRACKER_INFO), JSON.stringify({ token: "a1" })) as string);
     expect(info.id).toBe("t");
 
-    const res = JSON.parse(await g.comical_call_tracker!("getLibrary", JSON.stringify([1])));
+    const res = JSON.parse(await g.comical_call_tracker!("getLibrary", JSON.stringify([{}])));
     expect(res.items[0].title).toBe("ok");
   });
 
@@ -252,7 +252,7 @@ describe("host-native runtime — trackers", () => {
     const stored = { token: JSON.stringify({ access: "a1", refresh: "r1" }) };
     g.comical_init_tracker!(oauthTracker(TRACKER_INFO), JSON.stringify(stored));
 
-    const res = JSON.parse(await g.comical_call_tracker!("getLibrary", JSON.stringify([1])));
+    const res = JSON.parse(await g.comical_call_tracker!("getLibrary", JSON.stringify([{}])));
     expect(res.items[0].title).toBe("refreshed");
 
     const patchJSON = g.comical_drain_tracker_patch!();
@@ -273,13 +273,13 @@ describe("host-native runtime — trackers", () => {
 
     // No `refresh` token on the stored value → buildRefreshConfigs skips it → nothing to drain.
     g.comical_init_tracker!(oauthTracker(TRACKER_INFO), JSON.stringify({ token: "plain-token" }));
-    const res = JSON.parse(await g.comical_call_tracker!("getLibrary", JSON.stringify([1])));
+    const res = JSON.parse(await g.comical_call_tracker!("getLibrary", JSON.stringify([{}])));
     expect(res.items[0].title).toBe("ok");
     expect(g.comical_drain_tracker_patch!()).toBeNull();
   });
 
   test("comical_call_tracker rejects before comical_init_tracker has run", async () => {
     installComicalHarness(makeAsyncHost);
-    await expect(g.comical_call_tracker!("getLibrary", "[1]")).rejects.toThrow(/not initialised/);
+    await expect(g.comical_call_tracker!("getLibrary", "[{}]")).rejects.toThrow(/not initialised/);
   });
 });

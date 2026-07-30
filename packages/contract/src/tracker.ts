@@ -8,7 +8,7 @@
 import { z } from "zod";
 import type { HostCapabilities } from "./capabilities.ts";
 import type { SettingDescriptor } from "./models.ts";
-import type { PagedResults } from "./models.ts";
+import type { PagedRequest, PagedResults } from "./models.ts";
 
 export const trackerCapabilitySchema = z.enum(["library-sync", "status-sync", "search", "settings"]);
 export type TrackerCapability = z.infer<typeof trackerCapabilitySchema>;
@@ -85,11 +85,11 @@ export interface Tracker {
   readonly info: TrackerInfo;
   getSettings?(): SettingDescriptor[];
   /** capability "library-sync" — pull the user's list from the tracker service. */
-  getLibrary?(page: number): Promise<PagedResults<TrackerLibraryEntry>>;
+  getLibrary?(req?: PagedRequest): Promise<PagedResults<TrackerLibraryEntry>>;
   /** capability "status-sync" — push updated read state to the tracker service. */
   updateEntry?(externalId: string | number, update: TrackerEntryUpdate): Promise<void>;
   /** capability "search" — search the tracker's title database for a manual link. */
-  search?(query: string, page: number): Promise<PagedResults<TrackerSearchResult>>;
+  search?(query: string, req?: PagedRequest): Promise<PagedResults<TrackerSearchResult>>;
 }
 
 export type TrackerFactory = (host: HostCapabilities) => Tracker;
