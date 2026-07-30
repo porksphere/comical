@@ -5,6 +5,7 @@ import { BridgeRuntimeError, loadBridge } from "../src/index.ts";
 function hostReturning(body: string, status = 200): HostCapabilities {
   const res: HttpResponse = { url: "http://b.test/", status, statusText: "", headers: {}, body };
   const store = new Map<string, string>();
+  const secureStore = new Map<string, string>();
   return {
     network: { request: async () => res },
     storage: {
@@ -12,6 +13,12 @@ function hostReturning(body: string, status = 200): HostCapabilities {
       set: async (k, v) => void store.set(k, v),
       delete: async (k) => void store.delete(k),
       keys: async () => [...store.keys()],
+      secure: {
+        get: async (k) => secureStore.get(k),
+        set: async (k, v) => void secureStore.set(k, v),
+        delete: async (k) => void secureStore.delete(k),
+        keys: async () => [...secureStore.keys()],
+      },
     },
     log: { debug() {}, info() {}, warn() {}, error() {} },
     settings: {},

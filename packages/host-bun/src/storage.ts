@@ -4,9 +4,9 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { StorageCapability } from "@comical/contract";
+import type { KeyValueStore, StorageCapability } from "@comical/contract";
 
-export class FileStorage implements StorageCapability {
+export class FileStorage implements KeyValueStore {
   private readonly file: string;
   private cache: Record<string, string> | undefined;
 
@@ -52,7 +52,7 @@ export class FileStorage implements StorageCapability {
 }
 
 /** In-memory storage (no persistence) — handy for one-shot CLI invocations and tests. */
-export class MemoryStorage implements StorageCapability {
+export class MemoryStorage implements KeyValueStore {
   private readonly map = new Map<string, string>();
   async get(key: string): Promise<string | undefined> {
     return this.map.get(key);
@@ -66,4 +66,19 @@ export class MemoryStorage implements StorageCapability {
   async keys(): Promise<string[]> {
     return [...this.map.keys()];
   }
+}
+
+/**
+ * Wrap a `KeyValueStore` as a full `StorageCapability`. Bun has no OS Keychain/Keystore to reach
+ * for, so `secure` is the exact same store, aliased per the contract's "hosts that cannot do
+ * better" rule rather than a second, differently-protected namespace.
+ */
+export function asStorageCapability(store: KeyValueStore): StorageCapability {
+  return {
+    get: (key) => store.get(key),
+    set: (key, value) => store.set(key, value),
+    delete: (key) => store.delete(key),
+    keys: () => store.keys(),
+    secure: store,
+  };
 }

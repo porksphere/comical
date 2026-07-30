@@ -22,6 +22,7 @@ const BUNDLE = readFileSync(
 
 function host(network: NetworkCapability): HostCapabilities {
   const store = new Map<string, string>();
+  const secureStore = new Map<string, string>();
   return {
     network,
     storage: {
@@ -29,6 +30,12 @@ function host(network: NetworkCapability): HostCapabilities {
       set: async (k, v) => void store.set(k, v),
       delete: async (k) => void store.delete(k),
       keys: async () => [...store.keys()],
+      secure: {
+        get: async (k) => secureStore.get(k),
+        set: async (k, v) => void secureStore.set(k, v),
+        delete: async (k) => void secureStore.delete(k),
+        keys: async () => [...secureStore.keys()],
+      },
     },
     log: silentLog,
     settings: { baseUrl: "http://fixture.local" },

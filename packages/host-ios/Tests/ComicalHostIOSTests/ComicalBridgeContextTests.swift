@@ -25,7 +25,7 @@ module.exports = {
         id: "test-ios",
         name: "iOS Test Bridge",
         version: "0.0.0",
-        contractVersion: "1.0.0",
+        contractVersion: "2.0.0",
         languages: ["en"],
         nsfw: false,
         capabilities: ["lists", "search"]
@@ -62,7 +62,7 @@ final class ComicalBridgeContextTests: XCTestCase {
     func testBridgeInfoIsPopulated() {
         let info = context.bridgeInfo
         XCTAssertEqual(info?.id, "test-ios")
-        XCTAssertEqual(info?.contractVersion, "1.0.0")
+        XCTAssertEqual(info?.contractVersion, "2.0.0")
         XCTAssertEqual(info?.capabilities, ["search"])
     }
 
@@ -99,7 +99,7 @@ final class ComicalBridgeContextTests: XCTestCase {
         // calls (favorites → 401) because cookies could neither be stored nor replayed.
         let bundle = """
         module.exports = { default: function(host) { return {
-          info: { id: "t", name: "T", version: "0", contractVersion: "1.0.0",
+          info: { id: "t", name: "T", version: "0", contractVersion: "2.0.0",
                   languages: ["en"], nsfw: false, capabilities: ["search"] },
           getSeriesDetails: async function(id) {
             var u = new URL("https://user@example.test:8443/api/favorites?page=1#frag");
@@ -120,7 +120,7 @@ final class ComicalBridgeContextTests: XCTestCase {
         // A bridge that tries to use fetch() directly must get undefined.
         let bundle = """
         module.exports = { default: function(host) { return {
-          info: { id: "t", name: "T", version: "0", contractVersion: "1.0.0",
+          info: { id: "t", name: "T", version: "0", contractVersion: "2.0.0",
                   languages: ["en"], nsfw: false, capabilities: ["search"] },
           getSeriesDetails: async function(id) { return { id: id, title: String(typeof fetch) }; },
           getChapters: async function() { return []; },
@@ -132,6 +132,31 @@ final class ComicalBridgeContextTests: XCTestCase {
         let result = try await ctx.call("getSeriesDetails", args: ["x"])
         let dict = result as? [String: Any]
         XCTAssertEqual(dict?["title"] as? String, "undefined")
+    }
+
+    func testStorageSecureIsIsolatedFromPlainStorage() async throws {
+        // storage.secure is Keychain-backed; the plain store is the JSON file. A value written to
+        // one must not be visible through the other.
+        let bundle = """
+        module.exports = { default: function(host) { return {
+          info: { id: "t", name: "T", version: "0", contractVersion: "2.0.0",
+                  languages: ["en"], nsfw: false, capabilities: ["search"] },
+          getSeriesDetails: async function(id) {
+            await host.storage.secure.set("token", "s3cr3t");
+            await host.storage.set("plain", "visible");
+            var fromSecure = await host.storage.secure.get("token");
+            var fromPlain = await host.storage.get("token");
+            return { id: id, title: fromSecure + "|" + String(fromPlain) };
+          },
+          getChapters: async function() { return []; },
+          getChapterPages: async function() { return []; },
+          getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
+        }; } };
+        """
+        let ctx = try ComicalBridgeContext(bridgeBundle: bundle)
+        let result = try await ctx.call("getSeriesDetails", args: ["x"])
+        let dict = result as? [String: Any]
+        XCTAssertEqual(dict?["title"] as? String, "s3cr3t|undefined")
     }
 
     func testInvalidBundleThrows() {

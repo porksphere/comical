@@ -25,6 +25,10 @@ const NATIVE_GLOBALS = [
   "_native_storage_set",
   "_native_storage_delete",
   "_native_storage_keys",
+  "_native_storage_secure_get",
+  "_native_storage_secure_set",
+  "_native_storage_secure_delete",
+  "_native_storage_secure_keys",
   "comical_init",
   "comical_call",
   "comical_bridge",
@@ -52,12 +56,17 @@ function stampResponse(): string {
 /** Android-style: async functions returning values. */
 function installAsyncNatives(): void {
   const store = new Map<string, string>();
+  const secureStore = new Map<string, string>();
   g._native_log = () => {};
   g._native_network_request = () => Promise.resolve(stampResponse());
   g._native_storage_get = (k: string) => Promise.resolve(store.get(k) ?? null);
   g._native_storage_set = (k: string, v: string) => { store.set(k, v); return Promise.resolve(null); };
   g._native_storage_delete = (k: string) => { store.delete(k); return Promise.resolve(null); };
   g._native_storage_keys = () => Promise.resolve(JSON.stringify([...store.keys()]));
+  g._native_storage_secure_get = (k: string) => Promise.resolve(secureStore.get(k) ?? null);
+  g._native_storage_secure_set = (k: string, v: string) => { secureStore.set(k, v); return Promise.resolve(null); };
+  g._native_storage_secure_delete = (k: string) => { secureStore.delete(k); return Promise.resolve(null); };
+  g._native_storage_secure_keys = () => Promise.resolve(JSON.stringify([...secureStore.keys()]));
 }
 
 /** Android-style network mock whose response depends on the request URL — for tracker OAuth-refresh
@@ -80,6 +89,7 @@ function installScriptedNetwork(
 /** iOS-style: callback (err, result) functions. */
 function installCallbackNatives(): void {
   const store = new Map<string, string>();
+  const secureStore = new Map<string, string>();
   type Cb = (err: unknown, result?: string) => void;
   g._native_log = () => {};
   g._native_network_request = (_req: string, cb: Cb) => cb(null, stampResponse());
@@ -87,6 +97,10 @@ function installCallbackNatives(): void {
   g._native_storage_set = (k: string, v: string, cb: Cb) => { store.set(k, v); cb(null); };
   g._native_storage_delete = (k: string, cb: Cb) => { store.delete(k); cb(null); };
   g._native_storage_keys = (cb: Cb) => cb(null, JSON.stringify([...store.keys()]));
+  g._native_storage_secure_get = (k: string, cb: Cb) => cb(null, secureStore.get(k));
+  g._native_storage_secure_set = (k: string, v: string, cb: Cb) => { secureStore.set(k, v); cb(null); };
+  g._native_storage_secure_delete = (k: string, cb: Cb) => { secureStore.delete(k); cb(null); };
+  g._native_storage_secure_keys = (cb: Cb) => cb(null, JSON.stringify([...secureStore.keys()]));
 }
 
 const RATE_INFO = `{ id: "t", name: "T", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"], rateLimit: { maxConcurrent: 1, minIntervalMs: 80 } }`;
@@ -153,6 +167,33 @@ describe("host-native runtime (Android / async adapter)", () => {
     const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify([{ text: "" }])));
     // 3 requests, 1 in flight, ≥80ms apart → starts span ≥ ~160ms.
     expect(spread(res.items)).toBeGreaterThanOrEqual(140);
+  });
+
+  test("storage.secure round-trips through the native adapter, isolated from the plain store", async () => {
+    installNativeEval();
+    installAsyncNatives();
+    installComicalHarness(makeAsyncHost);
+
+    const code = `module.exports = { default: (host) => ({
+      info: { id: "s", name: "S", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] },
+      getSeriesDetails: async (id) => ({ id, title: id }),
+      getChapters: async () => [],
+      getChapterPages: async () => [],
+      getSearchResults: async () => {
+        await host.storage.secure.set("token", "s3cr3t");
+        await host.storage.set("plain", "visible");
+        return {
+          items: [
+            { id: await host.storage.secure.get("token"), title: String(await host.storage.get("token") ?? "none") },
+          ],
+        };
+      },
+    }) };`;
+    g.comical_init(code, "{}");
+
+    const res = JSON.parse(await g.comical_call("getSearchResults", JSON.stringify([{ text: "" }])));
+    expect(res.items[0].id).toBe("s3cr3t");
+    expect(res.items[0].title).toBe("none");
   });
 
   test("enforces settings validation at init (invalid enum throws)", () => {

@@ -11,6 +11,7 @@ import type {
   HttpRequest,
   LogCapability,
   SettingValue,
+  StorageCapability,
   Tracker,
   TrackerFactory,
   TrackerInfo,
@@ -34,6 +35,11 @@ export abstract class TrackerBase<
 
   protected get settings(): Readonly<Partial<TSettings>> {
     return this.host.settings as Readonly<Partial<TSettings>>;
+  }
+
+  /** Namespaced key/value storage — `storage.secure` for values worth extra protection. */
+  protected get storage(): StorageCapability {
+    return this.host.storage;
   }
 
   protected setting<K extends keyof TSettings>(key: K): TSettings[K] | undefined {

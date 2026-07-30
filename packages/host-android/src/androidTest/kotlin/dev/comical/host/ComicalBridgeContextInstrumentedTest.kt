@@ -21,7 +21,7 @@ import org.junit.runner.RunWith
 
 private const val GOOD_BUNDLE = """
 module.exports = { default: function (host) { return {
-  info: { id: "test-android", name: "Android Test", version: "0.0.0", contractVersion: "1.0.0",
+  info: { id: "test-android", name: "Android Test", version: "0.0.0", contractVersion: "2.0.0",
           languages: ["en"], nsfw: false, capabilities: ["search"],
           rateLimit: { maxConcurrent: 1, minIntervalMs: 50 } },
   getSeriesDetails: async function (id) { return { id: id, title: "Title " + id }; },
@@ -51,7 +51,7 @@ class ComicalBridgeContextInstrumentedTest {
         val ctx = ComicalBridgeContext.create(appContext, GOOD_BUNDLE, mapOf("baseUrl" to "https://x"))
         val info = ctx.bridgeInfo()
         assertEquals("test-android", info?.id)
-        assertEquals("1.0.0", info?.contractVersion)
+        assertEquals("2.0.0", info?.contractVersion)
         assertEquals(1, info?.rateLimit?.maxConcurrent)
         ctx.close()
     }
@@ -63,6 +63,32 @@ class ComicalBridgeContextInstrumentedTest {
         val first = result.getJSONArray("items").getJSONObject(0)
         assertEquals("naruto", first.getString("title"))
         assertEquals(1, result.getInt("page"))
+        ctx.close()
+    }
+
+    @Test
+    fun storageSecureIsIsolatedFromPlainStorage() = runTest {
+        // storage.secure is Keystore-backed (EncryptedFile); the plain store is the JSON file. A
+        // value written to one must not be visible through the other.
+        val bundle = """
+        module.exports = { default: function (host) { return {
+          info: { id: "test-android", name: "Android Test", version: "0.0.0", contractVersion: "2.0.0",
+                  languages: ["en"], nsfw: false, capabilities: ["search"] },
+          getSeriesDetails: async function (id) {
+            await host.storage.secure.set("token", "s3cr3t");
+            await host.storage.set("plain", "visible");
+            var fromSecure = await host.storage.secure.get("token");
+            var fromPlain = await host.storage.get("token");
+            return { id: id, title: fromSecure + "|" + String(fromPlain) };
+          },
+          getChapters: async function () { return []; },
+          getChapterPages: async function () { return []; },
+          getSearchResults: async function () { return { items: [], page: 1, hasNextPage: false }; }
+        }; } };
+        """
+        val ctx = ComicalBridgeContext.create(appContext, bundle)
+        val result = ctx.call("getSeriesDetails", listOf("x")) as JSONObject
+        assertEquals("s3cr3t|undefined", result.getString("title"))
         ctx.close()
     }
 

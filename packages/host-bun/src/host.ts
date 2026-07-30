@@ -7,7 +7,7 @@
 import { join } from "node:path";
 import type { HostCapabilities, LogCapability, ResolvedSettings } from "@comical/contract";
 import { createBunNetwork } from "./network.ts";
-import { FileStorage, MemoryStorage } from "./storage.ts";
+import { asStorageCapability, FileStorage, MemoryStorage } from "./storage.ts";
 
 export interface BunHostOptions {
   /** Identifies the bridge, for storage namespacing. */
@@ -33,10 +33,11 @@ export function createBunHost(opts: BunHostOptions): HostCapabilities {
   const network = createBunNetwork(
     opts.userAgent !== undefined ? { userAgent: opts.userAgent } : {},
   );
-  const storage =
+  const storage = asStorageCapability(
     opts.dataDir !== undefined
       ? new FileStorage(join(opts.dataDir), opts.bridgeId)
-      : new MemoryStorage();
+      : new MemoryStorage(),
+  );
 
   return {
     network,

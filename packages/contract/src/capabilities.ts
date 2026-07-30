@@ -54,12 +54,24 @@ export interface NetworkCapability {
   request(req: HttpRequest): Promise<HttpResponse>;
 }
 
-/** Namespaced key/value storage for a bridge's own scratch (tokens, cookies, ETags). */
-export interface StorageCapability {
+/** A single namespaced key/value store: get/set/delete/list. */
+export interface KeyValueStore {
   get(key: string): Promise<string | undefined>;
   set(key: string, value: string): Promise<void>;
   delete(key: string): Promise<void>;
   keys(): Promise<string[]>;
+}
+
+/**
+ * Namespaced key/value storage for a bridge's own scratch (cache, cookies, ETags), plus a second,
+ * isolated `secure` namespace for values worth extra protection (OAuth refresh tokens, session
+ * secrets) — backed by the platform's secure storage (Keychain on iOS, Keystore-backed encrypted
+ * prefs on Android) where the host has one. Hosts that can't do better than the plain store alias
+ * `secure` to it: it is always present, so a bridge never branches on whether secure storage
+ * exists, only on whether a given value is sensitive enough to ask for it.
+ */
+export interface StorageCapability extends KeyValueStore {
+  secure: KeyValueStore;
 }
 
 /** Structured logging routed to the host. */

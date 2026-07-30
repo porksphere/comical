@@ -17,14 +17,15 @@ export interface DiscoveredBridge {
 
 /** A host with no real capabilities — enough to instantiate a bridge and read its static info. */
 function infoOnlyHost(): HostCapabilities {
+  const noopStore = {
+    get: async () => undefined,
+    set: async () => {},
+    delete: async () => {},
+    keys: async () => [],
+  };
   return {
     network: { request: async () => { throw new Error("network unavailable in info-only host"); } },
-    storage: {
-      get: async () => undefined,
-      set: async () => {},
-      delete: async () => {},
-      keys: async () => [],
-    },
+    storage: { ...noopStore, secure: noopStore },
     log: { debug() {}, info() {}, warn() {}, error() {} },
     settings: {},
   };

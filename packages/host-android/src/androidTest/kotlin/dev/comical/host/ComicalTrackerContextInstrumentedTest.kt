@@ -23,7 +23,7 @@ import org.junit.runner.RunWith
 
 private const val GOOD_TRACKER_BUNDLE = """
 module.exports = { default: function (host) { return {
-  info: { id: "test-tracker-android", name: "Android Test Tracker", version: "0.0.0", contractVersion: "1.0.0",
+  info: { id: "test-tracker-android", name: "Android Test Tracker", version: "0.0.0", contractVersion: "2.0.0",
           capabilities: ["library-sync", "search", "settings"],
           rateLimit: { maxConcurrent: 1, minIntervalMs: 50 } },
   getSettings: function () { return [{ type: "string", key: "token", label: "Token", required: true }]; },
@@ -52,7 +52,7 @@ class ComicalTrackerContextInstrumentedTest {
         val ctx = ComicalTrackerContext.create(appContext, GOOD_TRACKER_BUNDLE, mapOf("token" to "t1"))
         val info = ctx.trackerInfo()
         assertEquals("test-tracker-android", info?.id)
-        assertEquals("1.0.0", info?.contractVersion)
+        assertEquals("2.0.0", info?.contractVersion)
         assertEquals(1, info?.rateLimit?.maxConcurrent)
         ctx.close()
     }

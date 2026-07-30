@@ -21,7 +21,7 @@ module.exports = {
         id: "test-tracker-ios",
         name: "iOS Test Tracker",
         version: "0.0.0",
-        contractVersion: "1.0.0",
+        contractVersion: "2.0.0",
         capabilities: ["library-sync", "search", "settings"]
       },
       getSettings: function() {
@@ -58,7 +58,7 @@ final class ComicalTrackerContextTests: XCTestCase {
     func testTrackerInfoIsPopulated() {
         let info = context.trackerInfo
         XCTAssertEqual(info?.id, "test-tracker-ios")
-        XCTAssertEqual(info?.contractVersion, "1.0.0")
+        XCTAssertEqual(info?.contractVersion, "2.0.0")
         XCTAssertEqual(info?.capabilities, ["library-sync", "search", "settings"])
     }
 

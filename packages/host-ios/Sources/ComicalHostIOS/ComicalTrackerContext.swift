@@ -24,6 +24,7 @@
  */
 import Foundation
 import JavaScriptCore
+import Security
 import os
 
 // MARK: - Context
@@ -255,6 +256,39 @@ public final class ComicalTrackerContext {
         js.setObject(nativeSet,  forKeyedSubscript: "_native_storage_set"    as NSString)
         js.setObject(nativeDel,  forKeyedSubscript: "_native_storage_delete" as NSString)
         js.setObject(nativeKeys, forKeyedSubscript: "_native_storage_keys"   as NSString)
+
+        // Storage (storage.secure — Keychain-backed, scoped to this tracker's storageDir)
+        let nativeSecureGet: @convention(block) (String, JSValue) -> Void = { key, cb in
+            Task {
+                let val = Self.keychainGet(dir: storageDir, key: key)
+                cb.call(withArguments: [JSValue(undefinedIn: cb.context)!, val as Any])
+            }
+        }
+        let nativeSecureSet: @convention(block) (String, String, JSValue) -> Void = { key, val, cb in
+            Task {
+                Self.keychainSet(dir: storageDir, key: key, value: val)
+                cb.call(withArguments: [JSValue(undefinedIn: cb.context)!])
+            }
+        }
+        let nativeSecureDel: @convention(block) (String, JSValue) -> Void = { key, cb in
+            Task {
+                Self.keychainDelete(dir: storageDir, key: key)
+                cb.call(withArguments: [JSValue(undefinedIn: cb.context)!])
+            }
+        }
+        let nativeSecureKeys: @convention(block) (JSValue) -> Void = { cb in
+            Task {
+                let keys = Self.keychainKeys(dir: storageDir)
+                let json = (try? JSONSerialization.data(withJSONObject: keys)).flatMap {
+                    String(data: $0, encoding: .utf8)
+                } ?? "[]"
+                cb.call(withArguments: [JSValue(undefinedIn: cb.context)!, json])
+            }
+        }
+        js.setObject(nativeSecureGet,  forKeyedSubscript: "_native_storage_secure_get"    as NSString)
+        js.setObject(nativeSecureSet,  forKeyedSubscript: "_native_storage_secure_set"    as NSString)
+        js.setObject(nativeSecureDel,  forKeyedSubscript: "_native_storage_secure_delete" as NSString)
+        js.setObject(nativeSecureKeys, forKeyedSubscript: "_native_storage_secure_keys"   as NSString)
     }
 
     // MARK: - Separate-context bundle evaluator  ⚠️ UNVERIFIED (device test pending)
@@ -535,6 +569,67 @@ public final class ComicalTrackerContext {
     private static func storageWrite(dir: URL, store: [String: String]) {
         guard let data = try? JSONSerialization.data(withJSONObject: store) else { return }
         try? data.write(to: storageFile(dir: dir))
+    }
+
+    // MARK: - Keychain-backed secure storage helpers (storage.secure)
+    //
+    // Identical in structure to `ComicalBridgeContext`'s copy — see its doc comment for the
+    // per-instance service-scoping rationale; keep the two in lockstep.
+
+    private static func keychainService(dir: URL) -> String {
+        "dev.comical.secure." + dir.path
+    }
+
+    private static func keychainGet(dir: URL, key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService(dir: dir),
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func keychainSet(dir: URL, key: String, value: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService(dir: dir),
+            kSecAttrAccount as String: key,
+        ]
+        let data = value.data(using: .utf8) ?? Data()
+        let updateStatus = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if updateStatus == errSecItemNotFound {
+            var addQuery = query
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            SecItemAdd(addQuery as CFDictionary, nil)
+        }
+    }
+
+    private static func keychainDelete(dir: URL, key: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService(dir: dir),
+            kSecAttrAccount as String: key,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
+    private static func keychainKeys(dir: URL) -> [String] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService(dir: dir),
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let items = result as? [[String: Any]] else { return [] }
+        return items.compactMap { $0[kSecAttrAccount as String] as? String }
     }
 
     // MARK: - Utilities

@@ -47,6 +47,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
+    // Keystore-backed encrypted storage for storage.secure (MasterKey + EncryptedFile)
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
     // Instrumented tests (run on a device/emulator via connectedAndroidTest)
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")

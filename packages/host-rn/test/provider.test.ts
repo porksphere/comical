@@ -19,6 +19,7 @@ const router = createRouter as unknown as CreateRouter;
 // A minimal in-memory HostCapabilities for loadBridge (the demo bridge does no network I/O).
 function makeHost(settings: Record<string, unknown>): unknown {
   const store = new Map<string, string>();
+  const secureStore = new Map<string, string>();
   return {
     network: { request: async () => ({ url: "x", status: 200, statusText: "OK", headers: {}, body: "{}" }) },
     storage: {
@@ -26,6 +27,12 @@ function makeHost(settings: Record<string, unknown>): unknown {
       set: async (k: string, v: string) => void store.set(k, v),
       delete: async (k: string) => void store.delete(k),
       keys: async () => [...store.keys()],
+      secure: {
+        get: async (k: string) => secureStore.get(k),
+        set: async (k: string, v: string) => void secureStore.set(k, v),
+        delete: async (k: string) => void secureStore.delete(k),
+        keys: async () => [...secureStore.keys()],
+      },
     },
     log: { debug() {}, info() {}, warn() {}, error() {} },
     settings,

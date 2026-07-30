@@ -26,6 +26,8 @@ package dev.comical.host
 
 import android.content.Context
 import android.util.Log
+import androidx.security.crypto.EncryptedFile
+import androidx.security.crypto.MasterKey
 import com.dokar.quickjs.QuickJs
 import com.dokar.quickjs.binding.asyncFunction
 import com.dokar.quickjs.binding.function
@@ -69,12 +71,18 @@ class ComicalBridgeContext private constructor(
         .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .build()
+    private val appContext: Context = androidContext
     private val storageFile: File
+    private val secureStorageFile: File
+    private val masterKey: MasterKey by lazy {
+        MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+    }
 
     init {
         val dir = dataDir ?: File(androidContext.filesDir, "comical")
         dir.mkdirs()
         storageFile = File(dir, "storage.json")
+        secureStorageFile = File(dir, "secure-storage.enc")
     }
 
     companion object {
@@ -254,6 +262,25 @@ class ComicalBridgeContext private constructor(
         js.asyncFunction("_native_storage_keys") { _ ->
             JSONArray(readStorage().keys.toList()).toString()
         }
+
+        js.asyncFunction("_native_storage_secure_get") { args ->
+            val key = args.getOrNull(0) as? String ?: return@asyncFunction null
+            readSecureStorage()[key]
+        }
+        js.asyncFunction("_native_storage_secure_set") { args ->
+            val key = args.getOrNull(0) as? String ?: return@asyncFunction null
+            val value = args.getOrNull(1) as? String ?: return@asyncFunction null
+            writeSecureStorage(readSecureStorage().toMutableMap().apply { put(key, value) })
+            null
+        }
+        js.asyncFunction("_native_storage_secure_delete") { args ->
+            val key = args.getOrNull(0) as? String ?: return@asyncFunction null
+            writeSecureStorage(readSecureStorage().toMutableMap().apply { remove(key) })
+            null
+        }
+        js.asyncFunction("_native_storage_secure_keys") { _ ->
+            JSONArray(readSecureStorage().keys.toList()).toString()
+        }
     }
 
     /**
@@ -311,6 +338,37 @@ class ComicalBridgeContext private constructor(
 
     private fun writeStorage(store: Map<String, String>) {
         storageFile.writeText(JSONObject(store as Map<*, *>).toString())
+    }
+
+    /**
+     * `storage.secure` — Keystore-backed at rest via [EncryptedFile] (AES256-GCM, key material
+     * never leaves the Keystore). [EncryptedFile] refuses to open an output stream over an existing
+     * file (nonce-reuse protection), so a write is delete-then-recreate rather than truncate.
+     */
+    private fun secureFile(): EncryptedFile =
+        EncryptedFile.Builder(
+            appContext,
+            secureStorageFile,
+            masterKey,
+            EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB,
+        ).build()
+
+    private fun readSecureStorage(): Map<String, String> {
+        if (!secureStorageFile.exists()) return emptyMap()
+        return try {
+            val bytes = secureFile().openFileInput().use { it.readBytes() }
+            val obj = JSONObject(String(bytes, Charsets.UTF_8))
+            obj.keys().asSequence().associateWith { obj.getString(it) }
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    private fun writeSecureStorage(store: Map<String, String>) {
+        if (secureStorageFile.exists()) secureStorageFile.delete()
+        secureFile().openFileOutput().use {
+            it.write(JSONObject(store as Map<*, *>).toString().toByteArray(Charsets.UTF_8))
+        }
     }
 
     private fun jsString(s: String): String =

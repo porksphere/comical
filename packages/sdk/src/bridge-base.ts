@@ -24,6 +24,7 @@ import type {
   SeriesInfo,
   SeriesRevision,
   SettingValue,
+  StorageCapability,
 } from "@comical/contract";
 
 export type CheerioRoot = cheerio.CheerioAPI;
@@ -47,6 +48,11 @@ export abstract class BridgeBase<
 
   protected get settings(): Readonly<Partial<TSettings>> {
     return this.host.settings as Readonly<Partial<TSettings>>;
+  }
+
+  /** Namespaced key/value storage — `storage.secure` for values worth extra protection. */
+  protected get storage(): StorageCapability {
+    return this.host.storage;
   }
 
   /** Read a user-supplied setting; returns undefined if unset. */

@@ -4,6 +4,7 @@ import { BridgeSettingsError, loadBridge, redactSettingSecrets, resolveSettings,
 
 function mockHost(settings: Record<string, SettingValue>): HostCapabilities {
   const store = new Map<string, string>();
+  const secureStore = new Map<string, string>();
   return {
     network: { request: async () => ({ url: "", status: 200, statusText: "OK", headers: {}, body: "" }) },
     storage: {
@@ -11,6 +12,12 @@ function mockHost(settings: Record<string, SettingValue>): HostCapabilities {
       set: async (k, v) => void store.set(k, v),
       delete: async (k) => void store.delete(k),
       keys: async () => [...store.keys()],
+      secure: {
+        get: async (k) => secureStore.get(k),
+        set: async (k, v) => void secureStore.set(k, v),
+        delete: async (k) => void secureStore.delete(k),
+        keys: async () => [...secureStore.keys()],
+      },
     },
     log: { debug() {}, info() {}, warn() {}, error() {} },
     settings,

@@ -21,6 +21,7 @@ function mockHost(
   }),
 ): HostCapabilities {
   const store = new Map<string, string>();
+  const secureStore = new Map<string, string>();
   return {
     network: { request: async (req) => reply(req) },
     storage: {
@@ -28,6 +29,12 @@ function mockHost(
       set: async (k, v) => void store.set(k, v),
       delete: async (k) => void store.delete(k),
       keys: async () => [...store.keys()],
+      secure: {
+        get: async (k) => secureStore.get(k),
+        set: async (k, v) => void secureStore.set(k, v),
+        delete: async (k) => void secureStore.delete(k),
+        keys: async () => [...secureStore.keys()],
+      },
     },
     log: { debug() {}, info() {}, warn() {}, error() {} },
     settings: {},

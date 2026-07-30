@@ -7,7 +7,13 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { loadBridge } from "@comical/core";
 import { FixtureBackend } from "@comical/testkit";
-import { FileStorage, MemoryStorage, createBunHost, createBunNetwork } from "../src/index.ts";
+import {
+  FileStorage,
+  MemoryStorage,
+  asStorageCapability,
+  createBunHost,
+  createBunNetwork,
+} from "../src/index.ts";
 
 const BUNDLE = readFileSync(
   join(import.meta.dir, "..", "..", "..", "bridges", "example-bridge", "dist", "bridge.js"),
@@ -82,5 +88,20 @@ describe("storage", () => {
 
     const other = new FileStorage(dir, "another-bridge");
     expect(await other.get("token")).toBeUndefined();
+  });
+
+  test("asStorageCapability aliases secure to the same store (no OS Keychain/Keystore on Bun)", async () => {
+    const cap = asStorageCapability(new MemoryStorage());
+    await cap.secure.set("token", "s3cr3t");
+    // Aliased, not isolated: a plain read sees what secure wrote, and vice versa.
+    expect(await cap.get("token")).toBe("s3cr3t");
+    await cap.set("etag", "abc");
+    expect(await cap.secure.get("etag")).toBe("abc");
+  });
+
+  test("createBunHost wires storage.secure through", async () => {
+    const host = createBunHost({ bridgeId: "example" });
+    await host.storage.secure.set("k", "v");
+    expect(await host.storage.secure.get("k")).toBe("v");
   });
 });
