@@ -51,7 +51,7 @@ async function publish(name: string, opts: IndexOpts): Promise<string> {
       id: b.id,
       name: b.id,
       version: b.version ?? "0.1.0",
-      contractVersion: "1.0.0",
+      contractVersion: "2.0.0",
       languages: ["en"],
       nsfw: false,
       capabilities: [],
@@ -65,7 +65,7 @@ async function publish(name: string, opts: IndexOpts): Promise<string> {
       id: t.id,
       name: t.id,
       version: t.version ?? "0.1.0",
-      contractVersion: "1.0.0",
+      contractVersion: "2.0.0",
       capabilities: [],
       url: `${origin}/bridge.js`,
       sha256: bundleHash,
@@ -421,11 +421,11 @@ describe("ManifestStore.rebindRegistry", () => {
   const seed = async (manifest: ManifestStore, url: string) => {
     await manifest.addRegistry({ url, name: "old", requireSignature: false, publicKeyFingerprint: "abc" });
     await manifest.addInstalled({
-      id: "b1", version: "1.0.0", contractVersion: "1.0.0", registryUrl: url,
+      id: "b1", version: "1.0.0", contractVersion: "2.0.0", registryUrl: url,
       bundlePath: "/tmp/b1.js", sha256: "f".repeat(64), installedAt: "2026-01-01T00:00:00.000Z",
     });
     await manifest.addInstalledTracker({
-      id: "t1", version: "1.0.0", contractVersion: "1.0.0", registryUrl: url,
+      id: "t1", version: "1.0.0", contractVersion: "2.0.0", registryUrl: url,
       bundlePath: "/tmp/t1.js", sha256: "e".repeat(64), installedAt: "2026-01-01T00:00:00.000Z",
     });
   };
@@ -446,7 +446,7 @@ describe("ManifestStore.rebindRegistry", () => {
     const manifest = new ManifestStore(join(DATA_DIR, "rb-local"));
     await seed(manifest, at("rb-a"));
     await manifest.addInstalled({
-      id: "local", version: "1.0.0", contractVersion: "1.0.0", registryUrl: null,
+      id: "local", version: "1.0.0", contractVersion: "2.0.0", registryUrl: null,
       bundlePath: "/tmp/local.js", sha256: "d".repeat(64), installedAt: "2026-01-01T00:00:00.000Z",
     });
     await manifest.rebindRegistry(at("rb-a"), at("rb-b"));

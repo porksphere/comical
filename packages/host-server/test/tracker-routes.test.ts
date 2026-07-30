@@ -19,7 +19,7 @@ const TRACKER_SUMMARY: TrackerSummary = {
     id: "mock-tracker",
     name: "Mock Tracker",
     version: "1.0.0",
-    contractVersion: "1.0.0",
+    contractVersion: "2.0.0",
     capabilities: [],
   },
   settings: [

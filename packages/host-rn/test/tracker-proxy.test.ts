@@ -9,7 +9,7 @@ const INFO = {
   id: "t",
   name: "T",
   version: "1.0.0",
-  contractVersion: "1.0.0",
+  contractVersion: "2.0.0",
   capabilities: ["library-sync"],
 } as unknown as TrackerInfo;
 

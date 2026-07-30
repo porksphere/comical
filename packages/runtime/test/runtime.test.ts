@@ -1,7 +1,7 @@
 /** ComicalRuntime — auto-tracker-linking, title-search suggestions, and read-sync. */
 import { describe, expect, test } from "bun:test";
 import type { Bridge, BridgeInfo, Chapter, PagedRequest, SeriesInfo, Tracker, TrackerEntryUpdate, TrackerInfo, TrackerLibraryEntry } from "@comical/contract";
-import { trackerEntryUpdateSchema } from "@comical/contract";
+import { MAX_UPDATE_CHECK_BATCH, trackerEntryUpdateSchema } from "@comical/contract";
 import { entryKey, InMemoryLibraryStore, Library, type TrackerLink } from "@comical/library";
 import { ComicalRuntime, type BridgeProvider, type TrackerProvider } from "@comical/runtime";
 
@@ -15,7 +15,7 @@ const BRIDGE_INFO: BridgeInfo = {
   id: "test",
   name: "Test",
   version: "0.0.0",
-  contractVersion: "1.0.0",
+  contractVersion: "2.0.0",
   languages: ["en"],
   nsfw: false,
   capabilities: [],
@@ -25,7 +25,7 @@ const TRACKER_INFO: TrackerInfo = {
   id: "anilist",
   name: "AniList",
   version: "0.0.0",
-  contractVersion: "1.0.0",
+  contractVersion: "2.0.0",
   capabilities: ["search", "status-sync"],
 };
 
@@ -1464,6 +1464,156 @@ describe("backgroundSync — staleness window", () => {
     // A second run finds everything freshly synced.
     const again = await runtime.backgroundSync();
     expect(again).toMatchObject({ updated: 0, skipped: 2 });
+  });
+});
+
+// ── backgroundSync — batch update check ───────────────────────────────────────
+
+/**
+ * A bridge with a bulk `checkForUpdates`, standing in for a backend that answers for many series in
+ * one request. `revisions` is the source's current truth per series id — mutate it between runs to
+ * simulate a series changing. Records every batch it was asked (so chunking is observable) and every
+ * per-series `getChapters` (so the saving is observable).
+ */
+function batchCheckBridge(opts: {
+  revisions: Map<string, { latestChapterId?: string; chapterCount?: number }>;
+  /** Series ids the bridge refuses to answer for — the "don't know" case. */
+  unanswerable?: Set<string>;
+  /** Make the batch call reject, to prove the per-series fallback. */
+  fail?: boolean;
+}) {
+  const batches: string[][] = [];
+  const chapterCalls: string[] = [];
+  const bridge: Bridge = {
+    info: BRIDGE_INFO,
+    async getSeriesDetails(id: string) { return { id, title: `Series ${id}` }; },
+    async getChapters(seriesId: string) {
+      chapterCalls.push(seriesId);
+      const n = opts.revisions.get(seriesId)?.chapterCount ?? 1;
+      return Array.from({ length: n }, (_, i) => ch(`c${i + 1}`, i + 1));
+    },
+    async checkForUpdates(seriesIds: string[]) {
+      batches.push([...seriesIds]);
+      if (opts.fail) throw new Error("bulk endpoint down");
+      const out: Record<string, { latestChapterId?: string; chapterCount?: number }> = {};
+      for (const id of seriesIds) {
+        if (opts.unanswerable?.has(id)) continue;
+        const r = opts.revisions.get(id);
+        if (r) out[id] = r;
+      }
+      return out;
+    },
+  };
+  return { bridge, batches, chapterCalls };
+}
+
+const rev = (n: number) => ({ latestChapterId: `c${n}`, chapterCount: n });
+
+describe("backgroundSync — batch update check", () => {
+  test("first run has no baseline and fetches; the next run skips what the batch says is unchanged", async () => {
+    const revisions = new Map([["s0", rev(1)], ["s1", rev(1)]]);
+    const lib = makeLib();
+    const { bridge, batches, chapterCalls } = batchCheckBridge({ revisions });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 2);
+
+    // No stored revision yet, so nothing is skippable — but the answers become the baseline.
+    const first = await runtime.backgroundSync();
+    expect(first).toMatchObject({ updated: 2, unchanged: 0 });
+    expect(chapterCalls.sort()).toEqual(["s0", "s1"]);
+    expect(batches).toEqual([["s0", "s1"]]); // one request covered both series
+
+    // Second run: source reports the same revisions, so no chapter fetch happens at all.
+    chapterCalls.length = 0;
+    const second = await runtime.backgroundSync({ force: true });
+    expect(second).toMatchObject({ updated: 0, unchanged: 2, newChapters: 0 });
+    expect(chapterCalls).toEqual([]);
+  });
+
+  test("only the series whose revision moved is fetched, and its new chapter is still detected", async () => {
+    const revisions = new Map([["s0", rev(1)], ["s1", rev(1)]]);
+    const lib = makeLib();
+    const { bridge, chapterCalls } = batchCheckBridge({ revisions });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 2);
+    await runtime.backgroundSync(); // establish baselines
+
+    revisions.set("s1", rev(2)); // s1 gained a chapter; s0 untouched
+    chapterCalls.length = 0;
+    const res = await runtime.backgroundSync({ force: true });
+
+    expect(chapterCalls).toEqual(["s1"]);
+    expect(res).toMatchObject({ updated: 1, unchanged: 1, newChapters: 1 });
+  });
+
+  test("a series the bridge won't answer for is fetched rather than assumed unchanged", async () => {
+    const revisions = new Map([["s0", rev(1)], ["s1", rev(1)]]);
+    const lib = makeLib();
+    const { bridge, chapterCalls } = batchCheckBridge({ revisions, unanswerable: new Set(["s1"]) });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 2);
+    await runtime.backgroundSync();
+
+    chapterCalls.length = 0;
+    const res = await runtime.backgroundSync({ force: true });
+    // s0 was answered and matches → skipped. s1 is unknown → full fetch, never assumed unchanged.
+    expect(chapterCalls).toEqual(["s1"]);
+    expect(res).toMatchObject({ unchanged: 1, updated: 1 });
+  });
+
+  test("a failing batch call falls back to fetching every candidate", async () => {
+    const revisions = new Map([["s0", rev(1)], ["s1", rev(1)]]);
+    const lib = makeLib();
+    const { bridge, chapterCalls } = batchCheckBridge({ revisions, fail: true });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 2);
+
+    const res = await runtime.backgroundSync();
+    expect(chapterCalls.sort()).toEqual(["s0", "s1"]);
+    expect(res).toMatchObject({ updated: 2, unchanged: 0 });
+  });
+
+  test("a bridge with no checkForUpdates behaves exactly as before", async () => {
+    const lib = makeLib();
+    const { bridge, calls } = instrumentedBridge();
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 2);
+
+    await runtime.backgroundSync();
+    const res = await runtime.backgroundSync({ force: true });
+    expect(res).toMatchObject({ updated: 2, unchanged: 0 });
+    expect(calls.get("s0")).toBe(2); // fetched on both runs — no batch to skip it
+  });
+
+  test("chunks the batch so a bridge never sees more ids than the contract promises", async () => {
+    const revisions = new Map(Array.from({ length: 250 }, (_, i) => [`s${i}`, rev(1)] as const));
+    const lib = makeLib();
+    const { bridge, batches } = batchCheckBridge({ revisions });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 250);
+
+    await runtime.backgroundSync();
+    expect(batches.length).toBe(3); // 100 + 100 + 50, not 250 separate requests
+    expect(Math.max(...batches.map((b) => b.length))).toBeLessThanOrEqual(MAX_UPDATE_CHECK_BATCH);
+    expect(batches.flat().sort()).toEqual([...revisions.keys()].sort());
+  });
+
+  test("a skipped entry still counts as checked, so it doesn't monopolize the next run", async () => {
+    const revisions = new Map([["s0", rev(1)]]);
+    const lib = makeLib();
+    const { bridge } = batchCheckBridge({ revisions });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 1);
+    await runtime.backgroundSync();
+
+    const before = (await lib.getLibrary())[0]!.chaptersSyncedAt;
+    await new Promise((r) => setTimeout(r, 2));
+    await runtime.backgroundSync({ force: true }); // skipped via the batch check
+    const after = (await lib.getLibrary())[0]!.chaptersSyncedAt;
+
+    expect(after).toBeGreaterThan(before!);
+    // An unforced run now finds it inside the staleness window, i.e. it moved out of the queue.
+    expect(await runtime.backgroundSync()).toMatchObject({ skipped: 1, unchanged: 0 });
   });
 });
 

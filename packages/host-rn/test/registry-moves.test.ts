@@ -56,7 +56,7 @@ const SHA = "a".repeat(64);
 
 function bridge(over: Partial<RegistryBridgeEntry> = {}): RegistryBridgeEntry {
   return {
-    id: "demo", name: "Demo", version: "1.0.0", contractVersion: "1.0.0",
+    id: "demo", name: "Demo", version: "1.0.0", contractVersion: "2.0.0",
     languages: ["en"], nsfw: false, capabilities: ["search"],
     url: `${new URL(OLD).origin}/bridges/demo.js`, sha256: SHA, ...over,
   };
@@ -64,7 +64,7 @@ function bridge(over: Partial<RegistryBridgeEntry> = {}): RegistryBridgeEntry {
 
 function tracker(over: Partial<RegistryTrackerEntry> = {}): RegistryTrackerEntry {
   return {
-    id: "anilist", name: "AniList", version: "1.0.0", contractVersion: "1.0.0",
+    id: "anilist", name: "AniList", version: "1.0.0", contractVersion: "2.0.0",
     capabilities: ["library-sync"], url: `${new URL(OLD).origin}/trackers/anilist.js`,
     sha256: SHA, ...over,
   };

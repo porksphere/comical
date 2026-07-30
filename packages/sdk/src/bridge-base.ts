@@ -22,6 +22,7 @@ import type {
   LogCapability,
   Page,
   SeriesInfo,
+  SeriesRevision,
   SettingValue,
 } from "@comical/contract";
 
@@ -132,6 +133,10 @@ export abstract class BridgeBase<
   getChapterPages(_seriesId: string, _chapterId: string): Promise<Page[]> {
     return Promise.reject(new Error("getChapterPages is not supported by this bridge"));
   }
+
+  // Batch update check: override when the backend can answer "which of these changed?" for many
+  // series at once. Left undefined, the host falls back to a `getChapters` per series.
+  checkForUpdates?(_seriesIds: string[]): Promise<Record<string, SeriesRevision>>;
 
   // Direct-read path (capability "direct"): override when the series has no chapter structure.
   getSeriesPages?(_seriesId: string): Promise<Page[]>;

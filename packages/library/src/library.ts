@@ -5,7 +5,7 @@
  * Identity is the cross-bridge pair `(bridgeId, seriesId)`, encoded via `entryKey`. The library is
  * fully independent of any bridge's backend `favorites`: adding here never touches a bridge.
  */
-import type { Chapter, SeriesInfo, SeriesStatus } from "@comical/contract";
+import type { Chapter, SeriesInfo, SeriesRevision, SeriesStatus } from "@comical/contract";
 import { normalizeTitle } from "./match.ts";
 import {
   cachedChaptersSchema,
@@ -305,7 +305,7 @@ export class Library {
    * Reconcile a freshly-fetched chapter list against what we last knew. Returns the chapters that
    * are new since the previous sync (empty on the first sync — there's no baseline to diff against).
    */
-  async syncChapters(key: string, chapters: Chapter[]): Promise<{ added: Chapter[] }> {
+  async syncChapters(key: string, chapters: Chapter[], revision?: SeriesRevision): Promise<{ added: Chapter[] }> {
     const entry = await this.requireEntry(key);
     // Diff by logical chapter `(number, language)` — a fresh scanlation-group copy of a chapter we
     // already know is NOT a new chapter.
@@ -337,6 +337,11 @@ export class Library {
       return k;
     });
     entry.chaptersSyncedAt = t;
+    // Record the fingerprint this list came with, so the next batch check has a baseline to compare
+    // against. Written only alongside a real chapter list: a revision without the chapters it
+    // describes would let a later check match and skip a fetch that never actually happened.
+    if (revision !== undefined) entry.revision = revision;
+    else delete entry.revision;
     await this.store.putEntry(entry);
 
     // Write the full renderable list through to the offline cache — one sync now produces both
@@ -362,6 +367,22 @@ export class Library {
     }
 
     return { added };
+  }
+
+  /**
+   * Record that a batch update check answered "nothing changed" for this entry: refresh
+   * `chaptersSyncedAt` without touching `knownChapters`, the cached list, or the activity feed.
+   *
+   * The timestamp bump is the point. `backgroundSync` orders candidates stalest-first and uses that
+   * ordering as its incremental cursor, so an entry that was checked but not fetched still has to
+   * move to the back of the queue — otherwise it stays permanently stale and every run spends its
+   * budget re-checking the same entries while newer ones starve.
+   */
+  async markChaptersUnchanged(key: string, revision: SeriesRevision): Promise<void> {
+    const entry = await this.requireEntry(key);
+    entry.chaptersSyncedAt = this.now();
+    entry.revision = revision;
+    await this.store.putEntry(entry);
   }
 
   // ── Read state ────────────────────────────────────────────────────────────────

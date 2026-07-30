@@ -40,7 +40,7 @@ function makeBridge(id: string, capabilities: string[], methods: string[]): Reco
     id,
     name: `Bridge ${id}`,
     version: "1.0.0",
-    contractVersion: "1.0.0",
+    contractVersion: "2.0.0",
     languages: ["en"],
     nsfw: false,
     capabilities: capabilities as BridgeInfo["capabilities"],

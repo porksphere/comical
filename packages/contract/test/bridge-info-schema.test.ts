@@ -10,7 +10,7 @@ const BASE = {
   id: "example",
   name: "Example",
   version: "0.1.0",
-  contractVersion: "1.0.0",
+  contractVersion: "2.0.0",
   languages: ["en"],
   nsfw: false,
   capabilities: [],

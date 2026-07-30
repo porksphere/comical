@@ -1,6 +1,6 @@
 {
   "name": "example-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "private": true,
   "description": "Reference bridge: scrapes a user-supplied demo comic-library website via cheerio",

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CURSOR_MAX_LENGTH } from "@comical/contract";
+import { CURSOR_MAX_LENGTH, MAX_UPDATE_CHECK_BATCH } from "@comical/contract";
 import type { HostCapabilities, HttpRequest, HttpResponse } from "@comical/contract";
 import {
   BridgeContractError,
@@ -39,7 +39,7 @@ function bundle(factoryBody: string): string {
   return `module.exports = { default: (host) => (${factoryBody}) };`;
 }
 
-const GOOD_INFO = `{ id: "smoke", name: "Smoke", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] }`;
+const GOOD_INFO = `{ id: "smoke", name: "Smoke", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] }`;
 
 const GOOD_BRIDGE = bundle(`{
   info: ${GOOD_INFO},
@@ -115,7 +115,7 @@ describe("loadBridge", () => {
 
   test("rejects an incompatible contract version", () => {
     const code = bundle(`{
-      info: { ...${GOOD_INFO}, contractVersion: "2.0.0" },
+      info: { ...${GOOD_INFO}, contractVersion: "3.0.0" },
       getSeriesDetails: async (id) => ({ id, title: "T" }),
       getChapters: async () => [],
       getChapterPages: async () => [],
@@ -177,6 +177,72 @@ describe("loadBridge", () => {
   });
 });
 
+describe("checkForUpdates (batch update check)", () => {
+  /** A bridge whose batch check echoes back whatever `body` says, so the boundary can be probed. */
+  const withCheck = (body: string) =>
+    loadBridge({
+      code: bundle(`{
+        info: ${GOOD_INFO},
+        getSeriesDetails: async (id) => ({ id, title: id }),
+        getChapters: async () => [],
+        getChapterPages: async () => [],
+        checkForUpdates: async (ids) => (${body}),
+      }`),
+      capabilities: mockHost(),
+    });
+
+  test("passes the ids through and returns the revisions", async () => {
+    const b = withCheck(`Object.fromEntries(ids.map((id) => [id, { latestChapterId: "c-" + id, chapterCount: 3 }]))`);
+    expect(await b.checkForUpdates!(["s1", "s2"])).toEqual({
+      s1: { latestChapterId: "c-s1", chapterCount: 3 },
+      s2: { latestChapterId: "c-s2", chapterCount: 3 },
+    });
+  });
+
+  test("a series the bridge omits is simply absent — that's how it says \"don't know\"", async () => {
+    const b = withCheck(`({ s1: { chapterCount: 1 } })`);
+    const res = await b.checkForUpdates!(["s1", "s2"]);
+    expect(res.s1).toEqual({ chapterCount: 1 });
+    expect("s2" in res).toBe(false);
+  });
+
+  test("answers for series that weren't asked about are dropped", async () => {
+    // Left in, a stray key would apply one series' revision to an unrelated library entry.
+    const b = withCheck(`({ s1: { chapterCount: 1 }, "someone-elses-series": { chapterCount: 99 } })`);
+    expect(Object.keys(await b.checkForUpdates!(["s1"]))).toEqual(["s1"]);
+  });
+
+  test("a revision with no fields is rejected — it would read as a false \"unchanged\"", async () => {
+    const b = withCheck(`({ s1: {} })`);
+    await expect(b.checkForUpdates!(["s1"])).rejects.toBeInstanceOf(BridgeValidationError);
+  });
+
+  test("a malformed revision is rejected", async () => {
+    const b = withCheck(`({ s1: { chapterCount: "lots" } })`);
+    await expect(b.checkForUpdates!(["s1"])).rejects.toBeInstanceOf(BridgeValidationError);
+  });
+
+  test("an empty or oversized batch is rejected before the bridge is entered", async () => {
+    const b = withCheck(`({})`);
+    await expect(b.checkForUpdates!([])).rejects.toBeInstanceOf(BridgeValidationError);
+    const tooMany = Array.from({ length: MAX_UPDATE_CHECK_BATCH + 1 }, (_, i) => `s${i}`);
+    await expect(b.checkForUpdates!(tooMany)).rejects.toBeInstanceOf(BridgeValidationError);
+    // The documented maximum itself must be accepted, or the host couldn't fill a chunk.
+    const exactly = Array.from({ length: MAX_UPDATE_CHECK_BATCH }, (_, i) => `s${i}`);
+    expect(await b.checkForUpdates!(exactly)).toEqual({});
+  });
+
+  test("absent on a bridge that doesn't implement it, so the host can feature-detect", async () => {
+    const b = loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
+    expect(b.checkForUpdates).toBeUndefined();
+  });
+
+  test("a throwing batch check surfaces as a bridge runtime error for the caller to fall back on", async () => {
+    const b = withCheck(`(() => { throw new Error("bulk endpoint down"); })()`);
+    await expect(b.checkForUpdates!(["s1"])).rejects.toBeInstanceOf(BridgeRuntimeError);
+  });
+});
+
 describe("sandbox isolation", () => {
   test("require / process / fetch / Bun are unavailable to bridge code", async () => {
     const code = bundle(`{
@@ -229,7 +295,7 @@ describe("sandbox isolation", () => {
   });
 
   // A bridge that fans out 3 requests at once and reports each request's start timestamp.
-  const SLOW_INFO = `{ id: "smoke", name: "Smoke", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["search"], rateLimit: { maxConcurrent: 1, minIntervalMs: 80 } }`;
+  const SLOW_INFO = `{ id: "smoke", name: "Smoke", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"], rateLimit: { maxConcurrent: 1, minIntervalMs: 80 } }`;
   const FANOUT = bundle(`{
     info: ${SLOW_INFO},
     getSeriesDetails: async (id) => ({ id, title: id }),
@@ -269,7 +335,7 @@ describe("sandbox isolation", () => {
 
   // A bridge that echoes the request object it received back through item titles, so the test can
   // assert which request keys survive the loader's boundary schema.
-  const ECHO_INFO = `{ id: "smoke", name: "Smoke", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["search", "lists", "exclude-tags"] }`;
+  const ECHO_INFO = `{ id: "smoke", name: "Smoke", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search", "lists", "exclude-tags"] }`;
   const ECHO_OPTS = bundle(`{
     info: ${ECHO_INFO},
     getSeriesDetails: async (id) => ({ id, title: id }),

@@ -25,7 +25,9 @@ import {
   seriesEntrySchema,
   seriesInfoSchema,
   seriesListSchema,
+  seriesRevisionSchema,
   settingDescriptorSchema,
+  MAX_UPDATE_CHECK_BATCH,
   sortOptionSchema,
   sortSelectionSchema,
   tagSchema,
@@ -212,6 +214,11 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
   };
 
   const entryPage = pagedResultsSchema(seriesEntrySchema);
+  // An empty batch would be a pointless round-trip, and an oversized one breaks the promise the
+  // contract makes to bridges about how many ids they must cope with — both are host bugs, so they
+  // reject before the bridge is entered.
+  const updateCheckIdsSchema = z.array(z.string().min(1)).min(1).max(MAX_UPDATE_CHECK_BATCH);
+  const updateCheckResultSchema = z.record(z.string(), seriesRevisionSchema);
 
   const bridge: LoadedBridge = {
     info,
@@ -229,6 +236,20 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
       call("getChapters", z.array(chapterSchema), () => raw.getChapters!(id));
     bridge.getChapterPages = (m, c) =>
       call("getChapterPages", z.array(pageSchema), () => raw.getChapterPages!(m, c));
+
+    if (raw.checkForUpdates) {
+      bridge.checkForUpdates = async (seriesIds) => {
+        const ids = validateInput(updateCheckIdsSchema, seriesIds, "update-check ids");
+        const answered = await call("checkForUpdates", updateCheckResultSchema, () =>
+          raw.checkForUpdates!(ids),
+        );
+        // Keep only what was asked about. The contract says extra keys are ignored, and enforcing it
+        // here is what makes that a guarantee: a bridge answering for a series the host didn't ask
+        // about would otherwise let a stale or wrong revision reach an unrelated library entry.
+        const requested = new Set(ids);
+        return Object.fromEntries(Object.entries(answered).filter(([id]) => requested.has(id)));
+      };
+    }
   }
 
   if (raw.getLists) {

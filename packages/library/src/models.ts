@@ -10,7 +10,7 @@
  * uninstalled (they grey out rather than vanish).
  */
 import { z } from "zod";
-import { chapterSchema, seriesInfoSchema } from "@comical/contract";
+import { chapterSchema, seriesInfoSchema, seriesRevisionSchema } from "@comical/contract";
 
 /** Stable, cross-bridge key for a tracked series. */
 export function entryKey(bridgeId: string, seriesId: string): string {
@@ -102,6 +102,14 @@ export const libraryEntrySchema = z.object({
    */
   knownChapters: z.array(knownChapterSchema).default([]),
   chaptersSyncedAt: z.number().int().optional(),
+  /**
+   * The source's revision fingerprint as of the last successful chapter sync, when the bridge
+   * supports the batch update check. The next check compares against this and skips the full
+   * `getChapters` only when they match exactly. Absent (bridge can't batch, or never synced) means
+   * every check does the full fetch — the safe default, since "unknown" must never read as
+   * "unchanged".
+   */
+  revision: seriesRevisionSchema.optional(),
   /**
    * If set, this entry belongs to a `SeriesGroup` (same title from a different bridge). The group
    * id is the UUID of the group; use the store to resolve it to a `SeriesGroup`.

@@ -8,7 +8,7 @@
  * traded a working bridge for one that no longer loads. These tests pin the registry-side guard:
  * refuse before the download, and never offer an update that can't be loaded.
  *
- * `CONTRACT_VERSION` is "1.0.0" today, so "2.0.0" here means "needs a newer app than this build".
+ * `CONTRACT_VERSION` is "2.0.0" today, so "3.0.0" here means "needs a newer app than this build".
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
@@ -57,12 +57,12 @@ describe("RegistryManager contract compatibility", () => {
       registryVersion: "1",
       updated: new Date().toISOString(),
       bridges: [
-        entry("ok", "1.0.0", bundleUrl, hash, { languages: ["en"], nsfw: false }),
-        entry("future", "2.0.0", bundleUrl, hash, { languages: ["en"], nsfw: false }),
+        entry("ok", "2.0.0", bundleUrl, hash, { languages: ["en"], nsfw: false }),
+        entry("future", "3.0.0", bundleUrl, hash, { languages: ["en"], nsfw: false }),
       ],
       trackers: [
-        entry("ok-trk", "1.0.0", bundleUrl, hash),
-        entry("future-trk", "2.0.0", bundleUrl, hash),
+        entry("ok-trk", "2.0.0", bundleUrl, hash),
+        entry("future-trk", "3.0.0", bundleUrl, hash),
       ],
     });
   });
@@ -191,7 +191,7 @@ function installed(id: string, registryUrl: string) {
   return {
     id,
     version: "0.0.9",
-    contractVersion: "1.0.0",
+    contractVersion: "2.0.0",
     registryUrl,
     bundlePath: `/nonexistent/${id}.js`,
     sha256: "a".repeat(64),

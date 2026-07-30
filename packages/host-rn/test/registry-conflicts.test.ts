@@ -46,12 +46,12 @@ class MemRegistries implements SavedRegistryStore {
 }
 
 const bridge = (over: Partial<RegistryBridgeEntry> = {}): RegistryBridgeEntry => ({
-  id: "demo", name: "Demo", version: "1.0.0", contractVersion: "1.0.0",
+  id: "demo", name: "Demo", version: "1.0.0", contractVersion: "2.0.0",
   languages: ["en"], nsfw: false, capabilities: ["search"],
   url: "https://a.example/bridges/demo.js", sha256: SHA, ...over,
 });
 const tracker = (over: Partial<RegistryTrackerEntry> = {}): RegistryTrackerEntry => ({
-  id: "anilist", name: "AniList", version: "1.0.0", contractVersion: "1.0.0",
+  id: "anilist", name: "AniList", version: "1.0.0", contractVersion: "2.0.0",
   capabilities: ["library-sync"], url: "https://a.example/trackers/anilist.js", sha256: SHA, ...over,
 });
 const index = (over: Partial<RegistryIndex> = {}): RegistryIndex =>
@@ -130,7 +130,7 @@ describe("install conflicts (on device)", () => {
     );
     // Seed an install from A, then let a background path follow the move.
     installed.map.set("demo", {
-      id: "demo", registryUrl: A, version: "1.0.0", contractVersion: "1.0.0",
+      id: "demo", registryUrl: A, version: "1.0.0", contractVersion: "2.0.0",
       info: entryToInfo(bridge()), url: "https://a.example/bridges/demo.js", sha256: SHA,
     });
     await provider.browse(A);

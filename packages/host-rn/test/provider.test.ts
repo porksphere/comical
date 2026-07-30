@@ -36,7 +36,7 @@ const BRIDGE_INFO = {
   id: "demo",
   name: "Demo",
   version: "1.0.0",
-  contractVersion: "1.0.0",
+  contractVersion: "2.0.0",
   languages: ["en"],
   nsfw: false,
   capabilities: ["lists", "search"],

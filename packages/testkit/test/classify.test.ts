@@ -10,7 +10,7 @@ const INFO = (caps: BridgeInfo["capabilities"]): BridgeInfo => ({
   id: "t",
   name: "T",
   version: "0.0.0",
-  contractVersion: "1.0.0",
+  contractVersion: "2.0.0",
   languages: ["en"],
   nsfw: false,
   capabilities: caps,

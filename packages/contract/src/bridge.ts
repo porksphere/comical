@@ -17,6 +17,7 @@ import type {
   SeriesEntry,
   SeriesInfo,
   SeriesList,
+  SeriesRevision,
   SettingDescriptor,
   SortOption,
   SortSelection,
@@ -74,6 +75,22 @@ export interface Bridge {
 
   /** Ordered chapter list for a series. Order is the bridge's responsibility. */
   getChapters?(seriesId: string): Promise<Chapter[]>;
+
+  /**
+   * Answer "which of these series changed?" for many series in ONE backend round-trip, so a library
+   * update check costs a couple of requests instead of one `getChapters` per series. Purely an
+   * optimization: implement it when the backend has a bulk endpoint, and the host falls back to
+   * per-series `getChapters` when it's absent (or when it throws).
+   *
+   * Return a {@link SeriesRevision} per series — a fingerprint the host stores and compares, never
+   * interprets. **Omit any series you cannot answer for** rather than guessing: an omission means
+   * "don't know" and the host does the full fetch, whereas a wrong "unchanged" silently costs the
+   * user an update they never see. Extra keys the host didn't ask about are ignored.
+   *
+   * `seriesIds` holds at most {@link MAX_UPDATE_CHECK_BATCH} ids; split further internally if the
+   * backend caps a query lower.
+   */
+  checkForUpdates?(seriesIds: string[]): Promise<Record<string, SeriesRevision>>;
 
   /** Resolve the readable pages for a chapter. `imageUrl` may be absolute or a server-relative proxy path. */
   getChapterPages?(seriesId: string, chapterId: string): Promise<Page[]>;

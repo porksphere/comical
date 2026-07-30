@@ -65,7 +65,7 @@ const BASE_ENTRY = {
   id: "example",
   name: "Example",
   version: "0.1.0",
-  contractVersion: "1.0.0",
+  contractVersion: "2.0.0",
   languages: ["en"],
   nsfw: false,
   capabilities: [],
@@ -197,7 +197,7 @@ describe("fetchIndex + RegistryManager", () => {
         id: "example",
         name: "Example Bridge",
         version: "0.1.0",
-        contractVersion: "1.0.0",
+        contractVersion: "2.0.0",
         languages: ["en"],
         nsfw: false,
         capabilities: ["search"],
@@ -306,7 +306,7 @@ describe("fetchIndex + RegistryManager", () => {
         registryVersion: "1",
         updated: new Date().toISOString(),
         bridges: [{
-          id: "example", name: "Example Bridge", version: "0.1.0", contractVersion: "1.0.0",
+          id: "example", name: "Example Bridge", version: "0.1.0", contractVersion: "2.0.0",
           languages: ["en"], nsfw: false, capabilities: ["search"],
           url: `http://localhost:${other.port}/bridge.js`, sha256: bundleHash,
         }],
@@ -341,7 +341,7 @@ describe("fetchIndex + RegistryManager", () => {
       updated: new Date().toISOString(),
       bridges: [{
         id: "example",
-        name: "Example", version: "0.1.0", contractVersion: "1.0.0",
+        name: "Example", version: "0.1.0", contractVersion: "2.0.0",
         languages: ["en"], nsfw: false, capabilities: [],
         url: bridgeUrl,
         sha256: "a".repeat(64), // wrong
@@ -375,7 +375,7 @@ describe("fetchIndex + RegistryManager", () => {
       updated: new Date().toISOString(),
       publicKey,
       bridges: [{
-        id: "example", name: "Example", version: "0.1.0", contractVersion: "1.0.0",
+        id: "example", name: "Example", version: "0.1.0", contractVersion: "2.0.0",
         languages: ["en"], nsfw: false, capabilities: [],
         url: bridgeUrl, sha256: bundleHash, signature: sig,
       }],

@@ -185,6 +185,16 @@ export class FixtureBackend {
     };
   }
 
+  private json(value: unknown, status = 200): HttpResponse {
+    return {
+      url: "",
+      status,
+      statusText: status === 200 ? "OK" : "Not Found",
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify(value),
+    };
+  }
+
   /**
    * The backend's self-defined lists, in home-stack order. Each carries a presentation `layout`
    * the example-bridge surfaces verbatim, so the demo home shows the full spread: a `carousel`
@@ -414,6 +424,22 @@ export class FixtureBackend {
       return this.html(
         layout("Favorites", `<section class="favorites">${series.map(seriesCard).join("")}</section>`),
       );
+    }
+
+    // Bulk "what changed?" endpoint — the shape a real source exposes for cheap update checks:
+    // many ids in, a small fingerprint per id out, so a library check costs one request instead of
+    // one series page each. Ids it doesn't recognise are simply absent from the answer (the "don't
+    // know" signal the contract asks bridges to preserve), which is what `example-bridge`'s
+    // `checkForUpdates` relies on.
+    if (path === "/updates") {
+      const ids = (url.searchParams.get("ids") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+      const out: Record<string, { latest: string; count: number }> = {};
+      for (const id of ids) {
+        const s = this.find(id);
+        const last = s?.chapters[s.chapters.length - 1];
+        if (s && last) out[id] = { latest: last.id, count: s.chapters.length };
+      }
+      return this.json(out);
     }
 
     const chapterMatch = /^\/series\/([^/]+)\/chapter\/([^/]+)$/.exec(path);

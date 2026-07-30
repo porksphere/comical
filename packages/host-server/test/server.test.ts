@@ -140,7 +140,7 @@ describe("GET /bridges/:id/series/:seriesId/page-image/:hash/:gidRef", () => {
 
   test("returns 302 redirect to the resolved CDN URL for a bridge that implements resolvePage", async () => {
     const mockBridge = {
-      info: { id: "mock", name: "Mock", version: "0.0.1", contractVersion: "1.0.0", capabilities: ["direct"] },
+      info: { id: "mock", name: "Mock", version: "0.0.1", contractVersion: "2.0.0", capabilities: ["direct"] },
       getSeriesDetails: async () => ({ id: "test", title: "Test" }),
       resolvePage: async (_s: string, _h: string, _ref: string) => "https://cdn.example.com/image.jpg",
     };
@@ -175,7 +175,7 @@ describe("GET /bridges/:id/series/:seriesId/page-thumb/:pageIndex", () => {
   test("returns the JSON thumbnail descriptor for a bridge that implements getPageThumbnail", async () => {
     const sprite = { kind: "sprite", sheetUrl: "/test-sprite.svg", x: 0, y: 0, w: 200, h: 289, sheetWidth: 4000, sheetHeight: 289 };
     const mockBridge = {
-      info: { id: "mock-pt", name: "Mock PT", version: "0.0.1", contractVersion: "1.0.0", capabilities: ["direct"] },
+      info: { id: "mock-pt", name: "Mock PT", version: "0.0.1", contractVersion: "2.0.0", capabilities: ["direct"] },
       getSeriesDetails: async () => ({ id: "test", title: "Test" }),
       getPageThumbnail: async (_s: string, _idx: number) => sprite,
     };
@@ -242,7 +242,7 @@ describe("GET /img-proxy", () => {
       list: async () => [
         {
           info: {
-            id: "prox", name: "Prox", version: "1.0.0", contractVersion: "1.0.0",
+            id: "prox", name: "Prox", version: "1.0.0", contractVersion: "2.0.0",
             languages: ["en"], nsfw: false, capabilities: [],
             assetProxy: { hosts: [cdnHost], referer: "https://ref.example/" },
           },

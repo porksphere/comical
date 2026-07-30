@@ -14,8 +14,8 @@
  *     then bulk-add the caller's selection, grouping in any confirmed cross-bridge duplicates.
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
-import type { Chapter, Cursor, LogCapability, PagedResults, SeriesEntry, SeriesInfo, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
-import { trackerEntryUpdateSchema } from "@comical/contract";
+import type { Chapter, Cursor, LogCapability, PagedResults, SeriesEntry, SeriesInfo, SeriesRevision, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
+import { MAX_UPDATE_CHECK_BATCH, trackerEntryUpdateSchema } from "@comical/contract";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
 // node:vm-backed default evaluator) so `@comical/runtime`'s types stay consumable by non-Node
 // hosts — e.g. comical-app's embedded runtime typing `RouterOptions.runtime`. See @comical/core.
@@ -35,6 +35,30 @@ import {
 /** Page cap for a favorites walk, mirroring the router's `isFavorite` fallback scan. A favorites
  *  list this long is a runaway `hasNextPage`, not a real account. */
 const MAX_FAVORITE_PAGES = 50;
+
+/** What a bridge's batch update check said about one entry. See `batchCheckRevisions`. */
+interface UpdateCheckOutcome {
+  /** The revision the source just reported — stored as the next run's baseline either way. */
+  revision: SeriesRevision;
+  /** The reported revision matches the stored baseline exactly, so the chapter list can be skipped. */
+  unchanged: boolean;
+}
+
+/**
+ * Do two revisions describe the same state? Compared across the union of their keys rather than
+ * field by field, so a field added to `SeriesRevision` later is included automatically. Hard-coding
+ * the three current fields would silently start ignoring a fourth — and an ignored field means
+ * "unchanged" gets returned for a series that did change, which is the one failure mode the batch
+ * check must not have. Every field is a primitive, so `!==` is the whole comparison.
+ */
+function sameRevision(a: SeriesRevision, b: SeriesRevision): boolean {
+  const ax = a as Record<string, unknown>;
+  const bx = b as Record<string, unknown>;
+  for (const k of new Set([...Object.keys(ax), ...Object.keys(bx)])) {
+    if (ax[k] !== bx[k]) return false;
+  }
+  return true;
+}
 
 /** One favorite, classified against the library. See {@link ComicalRuntime.previewBridgeFavoritesImport}. */
 export interface FavoritesImportCandidate {
@@ -111,6 +135,11 @@ export interface BackgroundSyncResult {
   scanned: number;
   /** Entries skipped because they were synced within the staleness window. */
   skipped: number;
+  /**
+   * Entries a bridge's batch update check reported as unchanged, so their chapter list was never
+   * fetched. These are the requests the batch check saved; they are NOT counted in `updated`.
+   */
+  unchanged: number;
   /** True when the time budget ran out before every candidate was synced. */
   partial: boolean;
 }
@@ -533,6 +562,12 @@ export class ComicalRuntime {
    * read flags WITHOUT moving the user's resume point or recency. Per-entry/per-tracker errors are
    * swallowed so one unreachable source doesn't abort the run.
    *
+   * Before the per-entry pass, every bridge implementing `checkForUpdates` is asked in bulk which of
+   * its candidates actually changed (see `batchCheckRevisions`). Entries it reports as unchanged skip
+   * their chapter fetch entirely, which is what turns a 200-series library from ~200 requests into a
+   * couple per bridge plus one per series that really moved. A bridge without the method, one whose
+   * check fails, and every entry the check declines to answer for all fall back to a full fetch.
+   *
    * Large-library behavior: entries synced within `staleMs` are skipped (pass `force` to override —
    * the user-facing "Check for updates" path), entries run through a bounded worker pool
    * (`concurrency` wide — parallelism is across entries; per-bridge rate limiting still serializes
@@ -560,19 +595,28 @@ export class ComicalRuntime {
     // Stalest first (never-synced entries lead) so a truncated run picks up the remainder next time.
     candidates.sort((a, b) => (a.chaptersSyncedAt ?? -1) - (b.chaptersSyncedAt ?? -1));
 
-    const counters = { updated: 0, newChapters: 0, readSynced: 0 };
+    const deadlineAt = budgetMs === undefined ? undefined : startedAt + budgetMs;
+
+    // Ask each batch-capable bridge, in one request per ~100 series, which of its entries actually
+    // changed. Everything it reports as unchanged skips its `getChapters` below — the difference
+    // between one request per library entry and a couple per bridge. `force` only bypasses the
+    // staleness filter above (which candidates are considered) — it does not bypass this check, so
+    // "Check for updates" still gets the cheap batch pre-pass rather than a full fetch of everything.
+    const checks = await this.batchCheckRevisions(candidates, deadlineAt);
+
+    const counters = { updated: 0, newChapters: 0, readSynced: 0, unchanged: 0 };
     let partial = false;
     let next = 0;
     const worker = async (): Promise<void> => {
       while (next < candidates.length) {
         // Budget gates *starting* entries, but never the very first one — a run must always make
         // forward progress, or a budget shorter than startup overhead would starve forever.
-        if (next > 0 && budgetMs !== undefined && Date.now() - startedAt >= budgetMs) {
+        if (next > 0 && deadlineAt !== undefined && Date.now() >= deadlineAt) {
           partial = true;
           return;
         }
         const entry = candidates[next++]!;
-        await this.syncOneEntry(entry, counters, detailStaleMs);
+        await this.syncOneEntry(entry, counters, detailStaleMs, checks.get(entryKey(entry.bridgeId, entry.seriesId)));
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => worker()));
@@ -603,11 +647,74 @@ export class ComicalRuntime {
     };
   }
 
-  /** One entry's reconciliation pass — see backgroundSync. Errors are swallowed per entry. */
+  /**
+   * Batch update check: for every bridge that implements `checkForUpdates`, ask about all of its
+   * candidate entries in chunks and return what came back, keyed by entry.
+   *
+   * Every candidate of a batch-capable bridge is asked about, including ones with no stored
+   * revision — those can't be skipped this run, but the answer becomes the baseline that lets the
+   * NEXT run skip them. Asking only about entries that already had a baseline would mean none was
+   * ever acquired and the check would never fire at all.
+   *
+   * Conservative throughout: a bridge that can't be loaded, throws, or omits a series simply isn't
+   * in the result, and the caller does the full fetch. Nothing here can cause an update to be
+   * missed; the worst case is the per-entry behavior that predates it.
+   */
+  private async batchCheckRevisions(
+    candidates: LibraryEntryView[],
+    deadlineAt: number | undefined,
+  ): Promise<Map<string, UpdateCheckOutcome>> {
+    const out = new Map<string, UpdateCheckOutcome>();
+    const byBridge = new Map<string, LibraryEntryView[]>();
+    for (const e of candidates) {
+      const list = byBridge.get(e.bridgeId);
+      if (list) list.push(e);
+      else byBridge.set(e.bridgeId, [e]);
+    }
+
+    for (const [bridgeId, entries] of byBridge) {
+      const bridge = await this.bridges.get(bridgeId).catch(() => undefined);
+      if (!bridge?.checkForUpdates) continue;
+      const bySeriesId = new Map(entries.map((e) => [e.seriesId, e]));
+      for (let i = 0; i < entries.length; i += MAX_UPDATE_CHECK_BATCH) {
+        // The check is a net saving, but it isn't free — once past the deadline stop asking and let
+        // the (already budget-gated) per-entry pass do what it can with the time that's left.
+        if (deadlineAt !== undefined && Date.now() >= deadlineAt) return out;
+        const chunk = entries.slice(i, i + MAX_UPDATE_CHECK_BATCH);
+        const answered = await bridge
+          .checkForUpdates(chunk.map((e) => e.seriesId))
+          .catch(() => undefined);
+        if (!answered) continue; // one bad chunk falls back to per-entry fetches, nothing more
+        for (const [seriesId, revision] of Object.entries(answered)) {
+          const entry = bySeriesId.get(seriesId);
+          if (!entry) continue;
+          out.set(entryKey(bridgeId, seriesId), {
+            revision,
+            // Unchanged ONLY when there's a baseline and it matches exactly. No baseline means we
+            // can't prove anything, so it reads as changed and gets the full fetch.
+            unchanged: entry.revision !== undefined && sameRevision(entry.revision, revision),
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * One entry's reconciliation pass — see backgroundSync. Errors are swallowed per entry.
+   *
+   * `check` carries the batch update check's answer for this entry, when its bridge supports one.
+   * `check.unchanged` means the chapter list provably hasn't moved, so the `getChapters` round-trip
+   * is skipped; otherwise `check.revision` is stored alongside the list this run does fetch, as the
+   * baseline the next run compares against. Everything below the chapter pull still runs either way:
+   * a revision describes the chapter list only, and says nothing about read state, tracker links, or
+   * detail staleness.
+   */
   private async syncOneEntry(
     entry: LibraryEntryView,
-    counters: { updated: number; newChapters: number; readSynced: number },
+    counters: { updated: number; newChapters: number; readSynced: number; unchanged: number },
     detailStaleMs?: number,
+    check?: UpdateCheckOutcome,
   ): Promise<void> {
     const lib = this.requireLibrary();
     try {
@@ -616,9 +723,14 @@ export class ComicalRuntime {
 
       // Pull fresh chapter list and detect new chapters.
       let chapters: Chapter[] | undefined;
-      if (bridge.getChapters) {
+      if (check?.unchanged) {
+        // Still has to be marked checked, or stalest-first ordering would hand this entry back on
+        // every run and starve the rest of the library — see `markChaptersUnchanged`.
+        await lib.markChaptersUnchanged(key, check.revision);
+        counters.unchanged++;
+      } else if (bridge.getChapters) {
         chapters = await bridge.getChapters(entry.seriesId);
-        const result = await lib.syncChapters(key, chapters);
+        const result = await lib.syncChapters(key, chapters, check?.revision);
         counters.newChapters += result.added.length;
         counters.updated++;
       }
@@ -631,7 +743,10 @@ export class ComicalRuntime {
       // Union-merge the bridge's read state — read flags only, resume untouched.
       if (bridge.getReadChapters) {
         const remoteRead = await bridge.getReadChapters(entry.seriesId);
-        const numById = new Map((chapters ?? []).map((c) => [c.id, c.number]));
+        // Fall back to the entry's own `knownChapters` for the number lookup when the chapter fetch
+        // was skipped: the batch check said the list hasn't changed, so what we already stored IS the
+        // current list, and read reconciliation keeps its chapter numbers.
+        const numById = new Map((chapters ?? entry.knownChapters ?? []).map((c) => [c.id, c.number]));
         const res = await lib.reconcileRead(
           key,
           remoteRead.map((id) => {

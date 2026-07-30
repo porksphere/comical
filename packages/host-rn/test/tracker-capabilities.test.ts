@@ -15,7 +15,7 @@ describe("TRACKER_CAPABILITY_METHODS", () => {
   });
 
   test("each capability maps to its dedicated method", () => {
-    const base = { id: "t", name: "T", version: "1.0.0", contractVersion: "1.0.0" };
+    const base = { id: "t", name: "T", version: "1.0.0", contractVersion: "2.0.0" };
     expect(methodsForTracker({ ...base, capabilities: ["library-sync"] })).toEqual(["getLibrary"]);
     expect(methodsForTracker({ ...base, capabilities: ["status-sync"] })).toEqual(["updateEntry"]);
     expect(methodsForTracker({ ...base, capabilities: ["search"] })).toEqual(["search"]);
@@ -24,13 +24,13 @@ describe("TRACKER_CAPABILITY_METHODS", () => {
 
   test("multiple capabilities union their methods, deduped", () => {
     const methods = methodsForTracker({
-      id: "t", name: "T", version: "1.0.0", contractVersion: "1.0.0",
+      id: "t", name: "T", version: "1.0.0", contractVersion: "2.0.0",
       capabilities: ["library-sync", "status-sync", "search", "settings"],
     });
     expect(new Set(methods)).toEqual(new Set(["getLibrary", "updateEntry", "search", "getSettings"]));
   });
 
   test("no capabilities yields no methods", () => {
-    expect(methodsForTracker({ id: "t", name: "T", version: "1.0.0", contractVersion: "1.0.0", capabilities: [] })).toEqual([]);
+    expect(methodsForTracker({ id: "t", name: "T", version: "1.0.0", contractVersion: "2.0.0", capabilities: [] })).toEqual([]);
   });
 });

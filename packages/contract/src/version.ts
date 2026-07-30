@@ -5,7 +5,7 @@
  * The runtime accepts a bridge when their major versions match (semver): a major bump
  * signals a breaking change to the interfaces/models in this package.
  */
-export const CONTRACT_VERSION = "1.0.0";
+export const CONTRACT_VERSION = "2.0.0";
 
 export interface Semver {
   major: number;

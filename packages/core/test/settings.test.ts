@@ -17,7 +17,7 @@ function mockHost(settings: Record<string, SettingValue>): HostCapabilities {
   };
 }
 
-const INFO = `{ id: "s", name: "S", version: "0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["settings"] }`;
+const INFO = `{ id: "s", name: "S", version: "0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["settings"] }`;
 // A bridge whose getSeriesDetails echoes a setting value back through the title, so tests can
 // observe the resolved (defaulted/coerced) settings the bridge actually sees.
 const SETTINGS_BRIDGE = `module.exports = { default: (host) => ({

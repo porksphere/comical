@@ -32,7 +32,7 @@ const TRACKER_INFO: TrackerInfo = {
   id: "anilist",
   name: "AniList",
   version: "1.0.0",
-  contractVersion: "1.0.0",
+  contractVersion: "2.0.0",
   capabilities: ["library-sync", "settings"],
 };
 // A real CJS tracker bundle, the shape `bun build --format=cjs` emits — mirrors `provider.test.ts`'s

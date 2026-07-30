@@ -247,4 +247,50 @@ describe("example-bridge", () => {
     const bridge = load(); // load() wires baseUrl but no sessionToken
     await expect(bridge.getFavorites!()).rejects.toThrow();
   });
+
+  describe("checkForUpdates (batch update check)", () => {
+    test("answers many series in one request, matching what getChapters would report", async () => {
+      const bridge = load();
+      const ids = ["sherlock", "dracula", "alice"];
+      const revisions = await bridge.checkForUpdates!(ids);
+
+      expect(Object.keys(revisions).sort()).toEqual([...ids].sort());
+      for (const id of ids) {
+        const chapters = await bridge.getChapters!(id);
+        expect(revisions[id]).toEqual({
+          latestChapterId: chapters[chapters.length - 1]!.id,
+          chapterCount: chapters.length,
+        });
+      }
+    });
+
+    test("omits ids the backend doesn't know rather than guessing", async () => {
+      const bridge = load();
+      const revisions = await bridge.checkForUpdates!(["dracula", "no-such-series"]);
+      expect(Object.keys(revisions)).toEqual(["dracula"]);
+    });
+
+    test("the fingerprint moves when the series gains a chapter", async () => {
+      const catalog = [
+        {
+          id: "solo",
+          title: "Solo",
+          author: "A",
+          description: "d",
+          genres: ["Drama"],
+          status: "ongoing" as const,
+          chapters: [{ id: "solo-1", name: "One", number: 1, pages: 2 }],
+        },
+      ];
+      const backend = new FixtureBackend(catalog);
+      const bridge = loadBridge({ code: BUNDLE, capabilities: fixtureHost(backend), expectedId: "example" });
+
+      const before = await bridge.checkForUpdates!(["solo"]);
+      expect(before.solo).toEqual({ latestChapterId: "solo-1", chapterCount: 1 });
+
+      catalog[0]!.chapters.push({ id: "solo-2", name: "Two", number: 2, pages: 2 });
+      const after = await bridge.checkForUpdates!(["solo"]);
+      expect(after.solo).toEqual({ latestChapterId: "solo-2", chapterCount: 2 });
+    });
+  });
 });

@@ -224,6 +224,40 @@ export const chapterSchema = z.object({
 export type Chapter = z.infer<typeof chapterSchema>;
 
 /**
+ * The source's own answer to "has this series changed?", cheap enough to ask about many series at
+ * once (see `Bridge.checkForUpdates`). A fingerprint, not a diff: the host compares it against the
+ * one it recorded at the last full chapter sync and refetches on ANY difference. It never infers
+ * meaning from the individual fields — which is what keeps the check safe as sources come and go.
+ *
+ * Every field is optional because sources expose different things, but an object with none of them
+ * says nothing at all, so the schema rejects it. A bridge that cannot answer for a series must
+ * **omit that series** from the record instead: an omission means "don't know", and the host then
+ * does the full fetch. That asymmetry is deliberate — a missed update is a real bug (the user never
+ * learns their series updated), while a needless fetch only costs a request.
+ */
+export const seriesRevisionSchema = z
+  .object({
+    /** Id of the newest chapter the source currently lists. */
+    latestChapterId: z.string().min(1).optional(),
+    /** When the source says the series last changed, as epoch milliseconds (as `Chapter.publishedAt`). */
+    updatedAt: z.number().int().optional(),
+    /** How many chapters the source currently lists. */
+    chapterCount: z.number().int().nonnegative().optional(),
+  })
+  .refine(
+    (r) => r.latestChapterId !== undefined || r.updatedAt !== undefined || r.chapterCount !== undefined,
+    { message: "a revision needs at least one field — omit the series entirely to say \"don't know\"" },
+  );
+export type SeriesRevision = z.infer<typeof seriesRevisionSchema>;
+
+/**
+ * How many series ids the host will put in one `Bridge.checkForUpdates` call. The host chunks to
+ * this size, so a bridge must handle a batch this large — by splitting further itself if its
+ * backend caps a query lower.
+ */
+export const MAX_UPDATE_CHECK_BATCH = 100;
+
+/**
  * A page-preview thumbnail. A discriminated union so the same contract serves every client:
  *
  *  - `image` — a ready-to-display URL (absolute or server-relative). Render with a normal image

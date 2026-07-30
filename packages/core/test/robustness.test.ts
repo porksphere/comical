@@ -18,7 +18,7 @@ function hostReturning(body: string, status = 200): HostCapabilities {
   };
 }
 
-const INFO = `{ id: "rob", name: "Rob", version: "0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] }`;
+const INFO = `{ id: "rob", name: "Rob", version: "0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] }`;
 
 /** A bridge whose search JSON-parses the (possibly malformed) response body. */
 const JSON_BRIDGE = `module.exports = { default: (host) => ({

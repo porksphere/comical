@@ -14,7 +14,7 @@ export const SEARCH_TRACKER_INFO: TrackerInfo = {
   id: "anilist",
   name: "AniList",
   version: "1.0.0",
-  contractVersion: "1.0.0",
+  contractVersion: "2.0.0",
   capabilities: ["library-sync", "search", "settings"],
 };
 

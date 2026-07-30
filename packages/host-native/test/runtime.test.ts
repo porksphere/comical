@@ -89,7 +89,7 @@ function installCallbackNatives(): void {
   g._native_storage_keys = (cb: Cb) => cb(null, JSON.stringify([...store.keys()]));
 }
 
-const RATE_INFO = `{ id: "t", name: "T", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["search"], rateLimit: { maxConcurrent: 1, minIntervalMs: 80 } }`;
+const RATE_INFO = `{ id: "t", name: "T", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"], rateLimit: { maxConcurrent: 1, minIntervalMs: 80 } }`;
 
 /** A bridge that fans out 3 requests at once and reports each request's start timestamp. */
 const fanout = (info: string): string => `module.exports = { default: (host) => ({
@@ -132,7 +132,7 @@ describe("host-native runtime (Android / async adapter)", () => {
     // undefined and the native layer coerced it to the invalid string "undefined"; now it must be the
     // valid JSON "null".
     const code = `module.exports = { default: (host) => ({
-      info: { id: "f", name: "F", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["favorites"] },
+      info: { id: "f", name: "F", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["favorites"] },
       getFavorites: async () => ({ items: [] }),
       addFavorite: async () => {},
       removeFavorite: async () => {},
@@ -160,7 +160,7 @@ describe("host-native runtime (Android / async adapter)", () => {
     installAsyncNatives();
     installComicalHarness(makeAsyncHost);
 
-    const info = `{ id: "t", name: "T", version: "0.0.0", contractVersion: "1.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] }`;
+    const info = `{ id: "t", name: "T", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] }`;
     const code = `module.exports = { default: (host) => ({
       info: ${info},
       getSeriesDetails: async (id) => ({ id, title: id }),
@@ -207,7 +207,7 @@ describe("host-native runtime (iOS / callback adapter)", () => {
 // side to persist (comical_drain_tracker_patch), since the sandboxed context has no other channel
 // back to the RN-level settings store.
 
-const TRACKER_INFO = `{ id: "t", name: "T", version: "0.0.0", contractVersion: "1.0.0", capabilities: ["library-sync"] }`;
+const TRACKER_INFO = `{ id: "t", name: "T", version: "0.0.0", contractVersion: "2.0.0", capabilities: ["library-sync"] }`;
 
 /** A tracker whose getLibrary makes one authenticated content request and echoes its response title. */
 const oauthTracker = (info: string): string => `module.exports = { default: (host) => ({

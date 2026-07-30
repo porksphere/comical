@@ -41,8 +41,8 @@ class DirectExampleBridge extends BridgeBase<Settings> {
   readonly info: BridgeInfo = {
     id: "direct-example",
     name: "Illustration Gallery (Demo)",
-    version: "0.1.0",
-    contractVersion: "1.0.0",
+    version: "0.2.0",
+    contractVersion: "2.0.0",
     languages: ["en"],
     nsfw: false,
     capabilities: ["direct", "lists", "filters", "settings"],

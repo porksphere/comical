@@ -10,7 +10,7 @@
  * which would re-pin the record straight onto the bundle the loader refuses. That's why the code
  * keeps `hasNewer` separate from `availableVersion`.
  *
- * `CONTRACT_VERSION` is "1.0.0", so "2.0.0" below means "needs a newer app than this build".
+ * `CONTRACT_VERSION` is "2.0.0", so "3.0.0" below means "needs a newer app than this build".
  */
 import { describe, expect, test } from "bun:test";
 import { ContractIncompatibleError } from "@comical/registry/compat";
@@ -52,12 +52,12 @@ class MemRegistries implements SavedRegistryStore {
 }
 
 const bridge = (over: Partial<RegistryBridgeEntry> = {}): RegistryBridgeEntry => ({
-  id: "demo", name: "Demo", version: "1.0.0", contractVersion: "1.0.0",
+  id: "demo", name: "Demo", version: "1.0.0", contractVersion: "2.0.0",
   languages: ["en"], nsfw: false, capabilities: ["search"],
   url: "https://a.example/bridges/demo.js", sha256: SHA, ...over,
 });
 const tracker = (over: Partial<RegistryTrackerEntry> = {}): RegistryTrackerEntry => ({
-  id: "anilist", name: "AniList", version: "1.0.0", contractVersion: "1.0.0",
+  id: "anilist", name: "AniList", version: "1.0.0", contractVersion: "2.0.0",
   capabilities: ["library-sync"], url: "https://a.example/trackers/anilist.js", sha256: SHA, ...over,
 });
 const index = (over: Partial<RegistryIndex> = {}): RegistryIndex =>
@@ -89,17 +89,17 @@ function setup(indexes: Record<string, RegistryIndex>, saved: SavedRegistry[] = 
 
 /** An installed record one version behind whatever the index offers. */
 const installedBridge = (over: Partial<InstalledBridgeRecord> = {}): InstalledBridgeRecord => ({
-  id: "demo", registryUrl: A, version: "0.9.0", contractVersion: "1.0.0",
+  id: "demo", registryUrl: A, version: "0.9.0", contractVersion: "2.0.0",
   info: entryToInfo(bridge()), url: "https://a.example/bridges/demo.js", sha256: SHA, ...over,
 });
 const installedTracker = (over: Partial<InstalledTrackerRecord> = {}): InstalledTrackerRecord => ({
-  id: "anilist", registryUrl: A, version: "0.9.0", contractVersion: "1.0.0",
+  id: "anilist", registryUrl: A, version: "0.9.0", contractVersion: "2.0.0",
   info: entryToTrackerInfo(tracker()), url: "https://a.example/trackers/anilist.js", sha256: SHA, ...over,
 });
 
 describe("contract compatibility (bridges, on device)", () => {
   test("install refuses an entry targeting a contract this build can't load", async () => {
-    const { provider, installed } = setup({ [A]: index({ bridges: [bridge({ contractVersion: "2.0.0" })] }) }, [savedAt(A)]);
+    const { provider, installed } = setup({ [A]: index({ bridges: [bridge({ contractVersion: "3.0.0" })] }) }, [savedAt(A)]);
     await expect(provider.install(A, "demo")).rejects.toThrow(ContractIncompatibleError);
     // Nothing recorded: the loader's rejection would otherwise be the user's first sign of trouble,
     // with a phantom "installed" row already sitting in the list.
@@ -107,7 +107,7 @@ describe("contract compatibility (bridges, on device)", () => {
   });
 
   test("checkUpdates doesn't offer — or persist — an unloadable newer version", async () => {
-    const { provider, installed } = setup({ [A]: index({ bridges: [bridge({ version: "2.0.0", contractVersion: "2.0.0" })] }) }, [savedAt(A)]);
+    const { provider, installed } = setup({ [A]: index({ bridges: [bridge({ version: "2.0.0", contractVersion: "3.0.0" })] }) }, [savedAt(A)]);
     installed.map.set("demo", installedBridge());
 
     expect(await provider.checkUpdates()).toEqual([]);
@@ -125,7 +125,7 @@ describe("contract compatibility (bridges, on device)", () => {
     // the drift branch reads it as a republish-at-the-same-version and re-pins url/sha256/info onto
     // the bundle the loader refuses — turning a working install into a broken one, silently.
     const { provider, installed } = setup(
-      { [A]: index({ bridges: [bridge({ version: "2.0.0", contractVersion: "2.0.0", sha256: OTHER_SHA, url: "https://a.example/bridges/demo-2.js" })] }) },
+      { [A]: index({ bridges: [bridge({ version: "2.0.0", contractVersion: "3.0.0", sha256: OTHER_SHA, url: "https://a.example/bridges/demo-2.js" })] }) },
       [savedAt(A)],
     );
     installed.map.set("demo", installedBridge());
@@ -135,7 +135,7 @@ describe("contract compatibility (bridges, on device)", () => {
     const rec = installed.map.get("demo")!;
     expect(rec.sha256).toBe(SHA);
     expect(rec.url).toBe("https://a.example/bridges/demo.js");
-    expect(rec.contractVersion).toBe("1.0.0");
+    expect(rec.contractVersion).toBe("2.0.0");
   });
 
   test("a compatible newer version is still offered and annotated", async () => {
@@ -148,7 +148,7 @@ describe("contract compatibility (bridges, on device)", () => {
   });
 
   test("browse flags the entry instead of hiding it, and withholds the update", async () => {
-    const { provider, installed } = setup({ [A]: index({ bridges: [bridge({ version: "2.0.0", contractVersion: "2.0.0" })] }) }, [savedAt(A)]);
+    const { provider, installed } = setup({ [A]: index({ bridges: [bridge({ version: "2.0.0", contractVersion: "3.0.0" })] }) }, [savedAt(A)]);
     installed.map.set("demo", installedBridge());
 
     const [listed] = await provider.browse(A);
@@ -160,14 +160,14 @@ describe("contract compatibility (trackers, on device)", () => {
   const withTrackers = (t: RegistryTrackerEntry[]) => index({ bridges: [], trackers: t });
 
   test("installTracker refuses an entry targeting an unloadable contract", async () => {
-    const { provider, trackers } = setup({ [A]: withTrackers([tracker({ contractVersion: "2.0.0" })]) }, [savedAt(A)]);
+    const { provider, trackers } = setup({ [A]: withTrackers([tracker({ contractVersion: "3.0.0" })]) }, [savedAt(A)]);
     await expect(provider.installTracker(A, "anilist")).rejects.toThrow(ContractIncompatibleError);
     expect(trackers.map.size).toBe(0);
   });
 
   test("checkTrackerUpdates doesn't offer — or persist — an unloadable newer version", async () => {
     const { provider, trackers } = setup(
-      { [A]: withTrackers([tracker({ version: "2.0.0", contractVersion: "2.0.0" })]) },
+      { [A]: withTrackers([tracker({ version: "2.0.0", contractVersion: "3.0.0" })]) },
       [savedAt(A)],
     );
     trackers.map.set("anilist", installedTracker());
@@ -179,7 +179,7 @@ describe("contract compatibility (trackers, on device)", () => {
 
   test("an unloadable newer tracker version does not trigger the self-heal re-pin", async () => {
     const { provider, trackers } = setup(
-      { [A]: withTrackers([tracker({ version: "2.0.0", contractVersion: "2.0.0", sha256: OTHER_SHA, url: "https://a.example/trackers/anilist-2.js" })]) },
+      { [A]: withTrackers([tracker({ version: "2.0.0", contractVersion: "3.0.0", sha256: OTHER_SHA, url: "https://a.example/trackers/anilist-2.js" })]) },
       [savedAt(A)],
     );
     trackers.map.set("anilist", installedTracker());
@@ -202,7 +202,7 @@ describe("contract compatibility (trackers, on device)", () => {
 
   test("browseTrackers flags and withholds the same way", async () => {
     const { provider, trackers } = setup(
-      { [A]: withTrackers([tracker({ version: "2.0.0", contractVersion: "2.0.0" })]) },
+      { [A]: withTrackers([tracker({ version: "2.0.0", contractVersion: "3.0.0" })]) },
       [savedAt(A)],
     );
     trackers.map.set("anilist", installedTracker());

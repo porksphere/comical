@@ -32,7 +32,7 @@ const TRACKER_SUMMARY: TrackerSummary = {
     id: "anilist",
     name: "AniList",
     version: "1.0.0",
-    contractVersion: "1.0.0",
+    contractVersion: "2.0.0",
     capabilities: ["library-sync", "settings"],
   },
   settings: [{ type: "string", key: "token", label: "Token", required: true }],
@@ -59,7 +59,7 @@ const OAUTH_TRACKER_SUMMARY: TrackerSummary = {
     id: "anilist",
     name: "AniList",
     version: "1.0.0",
-    contractVersion: "1.0.0",
+    contractVersion: "2.0.0",
     capabilities: ["library-sync", "settings"],
   },
   settings: [
@@ -166,7 +166,7 @@ describe("embedded transport — runtime-backed tracker search", () => {
     get: async (id: string) => {
       if (id !== "anilist") throw new Error(`tracker not found: ${id}`);
       return {
-        info: { id: "anilist", name: "AniList", version: "1.0.0", contractVersion: "1.0.0", capabilities: ["search"] },
+        info: { id: "anilist", name: "AniList", version: "1.0.0", contractVersion: "2.0.0", capabilities: ["search"] },
         search: async (query: string, page: number) => ({
           items: [{ externalId: 42, title: `match: ${query}` }],
           page,

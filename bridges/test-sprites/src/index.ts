@@ -40,8 +40,8 @@ class TestSpritesBridge extends BridgeBase<Record<string, never>> {
   readonly info: BridgeInfo = {
     id: "test-sprites",
     name: "Test Sprite Thumbnails",
-    version: "0.2.0",
-    contractVersion: "1.0.0",
+    version: "0.3.0",
+    contractVersion: "2.0.0",
     languages: ["en"],
     nsfw: false,
     capabilities: ["direct", "lists"],

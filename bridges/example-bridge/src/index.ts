@@ -24,6 +24,7 @@ import {
   type SeriesEntry,
   type SeriesInfo,
   type SeriesList,
+  type SeriesRevision,
   type SeriesStatus,
   type SettingDescriptor,
   type SortOption,
@@ -79,8 +80,8 @@ class ExampleBridge extends BridgeBase<Settings> {
   readonly info: BridgeInfo = {
     id: "example",
     name: "Example (Demo Library)",
-    version: "0.1.0",
-    contractVersion: "1.0.0",
+    version: "0.2.0",
+    contractVersion: "2.0.0",
     languages: ["en"],
     nsfw: false,
     capabilities: ["lists", "search", "filters", "sort", "settings", "favorites", "exclude-tags", "resolve-tags"],
@@ -342,6 +343,31 @@ class ExampleBridge extends BridgeBase<Settings> {
         return chapter;
       })
       .filter((c) => c.id.length > 0);
+  }
+
+  /**
+   * Batch update check. The backend's `/updates` endpoint answers for many series in one request,
+   * so a library check costs a request per ~100 entries instead of a series page each.
+   *
+   * Note what is *not* done here: ids the backend leaves out of its answer are left out of ours
+   * too, rather than filled in with a guess or a per-series fallback fetch. An omission tells the
+   * host "don't know", and it then does the full `getChapters` itself — which is both safe and
+   * exactly one request, the same as the fallback would have cost.
+   */
+  override async checkForUpdates(seriesIds: string[]): Promise<Record<string, SeriesRevision>> {
+    const params = new URLSearchParams({ ids: seriesIds.join(",") });
+    const answered = JSON.parse(await this.fetchText(`${this.base()}/updates?${params.toString()}`)) as
+      Record<string, { latest?: unknown; count?: unknown }>;
+    const out: Record<string, SeriesRevision> = {};
+    for (const [id, raw] of Object.entries(answered ?? {})) {
+      const revision: SeriesRevision = {};
+      if (typeof raw?.latest === "string" && raw.latest) revision.latestChapterId = raw.latest;
+      if (typeof raw?.count === "number" && Number.isInteger(raw.count)) revision.chapterCount = raw.count;
+      // A revision with no usable field says nothing, and the contract rejects that shape — so drop
+      // the series instead, which is the honest "don't know".
+      if (revision.latestChapterId !== undefined || revision.chapterCount !== undefined) out[id] = revision;
+    }
+    return out;
   }
 
   override async getChapterPages(seriesId: string, chapterId: string): Promise<Page[]> {

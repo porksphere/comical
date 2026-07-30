@@ -254,7 +254,7 @@ describe("activity mark-read reaches trackers", () => {
         id: "anilist",
         name: "AniList",
         version: "0.0.0",
-        contractVersion: "1.0.0",
+        contractVersion: "2.0.0",
         capabilities: ["status-sync"],
       },
       async updateEntry(externalId, update) {

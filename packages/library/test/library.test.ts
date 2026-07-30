@@ -378,6 +378,55 @@ describe("new-chapter detection", () => {
   });
 });
 
+describe("source revision (batch update-check baseline)", () => {
+  const entryOf = async (lib: Library) => (await lib.getLibrary()).find((e) => e.seriesId === "s1")!;
+
+  test("syncChapters stores the revision the list came with", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)], { latestChapterId: "c1", chapterCount: 1 });
+
+    expect((await entryOf(lib)).revision).toEqual({ latestChapterId: "c1", chapterCount: 1 });
+  });
+
+  test("a sync with no revision clears any stored one", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)], { latestChapterId: "c1" });
+    // A later sync through a path that doesn't know the revision (a series-page refresh, a bridge
+    // that dropped the capability): the stored fingerprint no longer describes what we hold, so
+    // keeping it could make a future check match and skip a fetch that never happened.
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+
+    expect((await entryOf(lib)).revision).toBeUndefined();
+  });
+
+  test("markChaptersUnchanged bumps the sync time without touching the chapter list", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)], { chapterCount: 2 });
+    const before = await entryOf(lib);
+
+    // The suite's clock is monotonic per call, so the bump is observable without a real sleep.
+    await lib.markChaptersUnchanged(KEY, { chapterCount: 2 });
+    const after = await entryOf(lib);
+
+    expect(after.chaptersSyncedAt!).toBeGreaterThan(before.chaptersSyncedAt!);
+    expect(after.knownChapters.map((c) => c.id)).toEqual(["c1", "c2"]);
+    expect(after.unreadCount).toBe(before.unreadCount);
+  });
+
+  test("markChaptersUnchanged records no activity — nothing happened", async () => {
+    const lib = makeLibrary();
+    await lib.addSeries(SERIES);
+    await lib.syncChapters(KEY, [ch("c1", 1)], { chapterCount: 1 });
+    const before = (await lib.getActivity()).length;
+
+    await lib.markChaptersUnchanged(KEY, { chapterCount: 1 });
+    expect((await lib.getActivity()).length).toBe(before);
+  });
+});
+
 describe("activity feed", () => {
   test("the baseline sync records nothing; later syncs record one item per new chapter", async () => {
     const lib = makeLibrary();

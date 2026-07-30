@@ -27,7 +27,7 @@ const DATA_DIR = join(import.meta.dir, ".tmp-tracker-link-sync");
 let anilistEntries: TrackerLibraryEntry[] = [];
 
 const anilistTracker: Tracker = {
-  info: { id: "anilist", name: "AniList", version: "0.0.0", contractVersion: "1.0.0", capabilities: ["library-sync"] },
+  info: { id: "anilist", name: "AniList", version: "0.0.0", contractVersion: "2.0.0", capabilities: ["library-sync"] },
   async getLibrary(page) {
     void page;
     return { items: anilistEntries, page: 1, hasNextPage: false };
@@ -37,7 +37,7 @@ const anilistTracker: Tracker = {
 // A push-only tracker (status-sync, no library-sync): exercises the push half of the two-way sync.
 const malUpdates: Array<{ externalId: string | number; chaptersRead?: number }> = [];
 const malTracker: Tracker = {
-  info: { id: "mal", name: "MAL", version: "0.0.0", contractVersion: "1.0.0", capabilities: ["status-sync"] },
+  info: { id: "mal", name: "MAL", version: "0.0.0", contractVersion: "2.0.0", capabilities: ["status-sync"] },
   async updateEntry(externalId, update) {
     malUpdates.push({ externalId, ...(update.chaptersRead !== undefined && { chaptersRead: update.chaptersRead }) });
   },
@@ -45,7 +45,7 @@ const malTracker: Tracker = {
 
 // A tracker that can neither pull nor push, to exercise the capability-error path.
 const inertTracker: Tracker = {
-  info: { id: "inert", name: "Inert", version: "0.0.0", contractVersion: "1.0.0", capabilities: ["search"] },
+  info: { id: "inert", name: "Inert", version: "0.0.0", contractVersion: "2.0.0", capabilities: ["search"] },
 };
 
 const trackerProvider: TrackerProvider = {

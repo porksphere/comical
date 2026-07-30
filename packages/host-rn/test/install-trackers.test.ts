@@ -33,7 +33,7 @@ const TRACKER_RECORD: InstalledTrackerRecord = {
   id: "anilist",
   registryUrl: REG,
   version: "1.0.0",
-  contractVersion: "1.0.0",
+  contractVersion: "2.0.0",
   info: SEARCH_TRACKER_INFO,
   url: "https://reg.example/trackers/anilist.js",
   sha256: "a".repeat(64),
