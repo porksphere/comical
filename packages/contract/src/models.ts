@@ -228,6 +228,11 @@ export const seriesInfoSchema = z.object({
   pageCount: z.number().int().positive().optional(),
   /** This series' content rating (capability "content-rating"). See `seriesEntrySchema.contentRating`. */
   contentRating: contentRatingSchema.optional(),
+  /**
+   * A user-facing URL for this series on the source site, for sharing outside the app (e.g. a
+   * share sheet). Distinct from any bridge-internal id — this must be a URL a browser can open.
+   */
+  shareUrl: z.string().min(1).optional(),
 });
 export type SeriesInfo = z.infer<typeof seriesInfoSchema>;
 
