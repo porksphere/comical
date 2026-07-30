@@ -8,7 +8,9 @@
  * - **Structured state** — {@link encodeCursor} / {@link decodeCursor} round-trip a JSON-serializable
  *   value through base64url, which is URL-safe and survives the client's persisted query cache.
  * - **Plain page numbers** — {@link pageFromCursor} / {@link nextPageCursor} for the many backends
- *   that really are just `?page=N` or `?offset=N`, so those bridges stay one-liners.
+ *   that really are just `?page=N`, so those bridges stay one-liners.
+ * - **Offset + total** — {@link offsetFromCursor} / {@link nextOffsetCursor} for APIs that report how
+ *   many rows exist, where "is this the last window" is an exact answer rather than a guess.
  */
 import { CURSOR_MAX_LENGTH, type Cursor } from "@comical/contract";
 
@@ -81,4 +83,35 @@ export function pageFromCursor(cursor: Cursor | undefined): number {
  */
 export function nextPageCursor(page: number, hasMore: boolean): Cursor | undefined {
   return hasMore ? encodeCursor({ page: page + 1 }) : undefined;
+}
+
+/**
+ * Read a 0-based row offset out of a cursor, for backends that page by `?offset=N&limit=N`. An absent
+ * or unreadable cursor means the start of the collection.
+ */
+export function offsetFromCursor(cursor: Cursor | undefined): number {
+  const decoded = decodeCursor<{ offset?: unknown }>(cursor);
+  const offset = typeof decoded?.offset === "number" ? decoded.offset : Number.NaN;
+  return Number.isInteger(offset) && offset >= 0 ? offset : 0;
+}
+
+/**
+ * Cursor for the window after the one that started at `offset` and returned `count` rows out of
+ * `total`, or `undefined` when that was the last window:
+ *
+ * ```ts
+ * async getListItems(listId, req = {}) {
+ *   const offset = offsetFromCursor(req.cursor);
+ *   const { data, total } = await this.fetchWindow(listId, offset, LIMIT);
+ *   return { items: data.map(toEntry), nextCursor: nextOffsetCursor(offset, data.length, total) };
+ * }
+ * ```
+ *
+ * An empty window ends the walk even if `total` claims more rows remain: a cursor that doesn't
+ * advance is the infinite-scroll loop this whole design exists to make unrepresentable, and a
+ * `total` that disagrees with the rows actually returned is the backend being wrong, not a reason
+ * to keep asking.
+ */
+export function nextOffsetCursor(offset: number, count: number, total: number): Cursor | undefined {
+  return count > 0 && offset + count < total ? encodeCursor({ offset: offset + count }) : undefined;
 }
