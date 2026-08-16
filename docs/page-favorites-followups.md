@@ -15,10 +15,32 @@ documents:
 - `hasThumb` on `FavoritePage` — **removed**;
 - `contentHash` re-anchoring — **removed** (see §4);
 - `putFavoriteCollections` as the only store addition — the favorites seam is now
-  `listFavoritePages(scope?)` / `getFavoritePage` / `putFavoritePages` / `deleteFavoritePages`.
+  `listFavoritePages(scope?)` / `getFavoritePage` / `putFavoritePages` / `deleteFavoritePages`,
+  alongside the collections pair.
 
-The app's `AsyncStorageLibraryStore` must implement that seam, so the doc's store section is the part
-most likely to mislead. This repo is the source of truth; the doc is not.
+The route table also moved after an API review. As shipped:
+
+```
+GET    /library/favorite-pages?sort=&dir=&collection=&series=&q=
+GET    /library/favorite-pages/chapter/{b}/{s}/{c}                  → number[]
+POST   /library/favorite-pages/chapter/{b}/{s}/{c}/reconcile        ← { pages: [{ url? }] }
+PUT    /library/favorite-pages/{b}/{s}/{c}/{pageIndex}              ← snapshot
+DELETE /library/favorite-pages/{b}/{s}/{c}/{pageIndex}
+PUT    /library/favorite-pages/{b}/{s}/{c}/{pageIndex}/collections  ← { collectionIds }
+GET    /library/favorite-pages/collections
+POST   /library/favorite-pages/collections                          ← { name }
+PATCH  /library/favorite-pages/collections/{id}                     ← { name }
+DELETE /library/favorite-pages/collections/{id}
+POST   /library/favorite-pages/collections/reorder                  ← { orderedIds }
+```
+
+Differences from the spec worth reading twice: **no `{id}` appears in any path** (favorites are
+addressed by coordinates throughout — see §6), `sort` and `dir` are separate as on `/library` (there
+is no `oldest` key), reconcile has its own `/reconcile` path, and reorder takes `orderedIds` to match
+`/library/lists/reorder`.
+
+The app's `AsyncStorageLibraryStore` must implement the store seam, so that section of the doc is the
+part most likely to mislead. This repo is the source of truth; the doc is not.
 
 ## 2. Favorites don't render offline
 
@@ -69,3 +91,18 @@ bulk hash of the list.
 existing `order` and can end up tied with another. This is deliberate **parity with
 `reorderLists`**, which behaves identically, and clients send the whole list. Worth fixing in both
 places at once, or in neither.
+
+## 6. The favorite id is derived from `pageIndex`, which a reconcile can change
+
+`favoritePageId` encodes `(bridgeId, seriesId, chapterId, pageIndex)`. That is what makes favoriting
+idempotent and "is this page favorited" a keyed lookup rather than a scan — but it also means
+relocating a favorite **re-keys the record**, so an id captured before a reconcile no longer resolves
+afterwards.
+
+Mitigated rather than documented: **no route takes an id**. Every favorite route is addressed by
+coordinates, including collections assignment, so a client never holds an id that can go stale. The
+id stays an internal storage key.
+
+If a future surface genuinely needs a stable external handle (sharing a favorite, say), the choice is
+between a random UUID — which costs the keyed lookup and the idempotency — and a separate stable
+alias alongside the derived key. Don't reintroduce ids into paths without picking one.

@@ -183,21 +183,32 @@ describe("getFavoritePages — filter and sort", () => {
     expect((await lib.getFavoritePages()).map((p) => p.id)).toEqual([alpha2.id, alpha1.id, zebra.id]);
   });
 
-  test("sort=oldest reverses the date axis", async () => {
+  test("dir=asc reverses the date axis (what used to be a separate 'oldest' key)", async () => {
     const { lib, zebra, alpha1, alpha2 } = await seed();
-    expect((await lib.getFavoritePages({ sort: "oldest" })).map((p) => p.id)).toEqual([
+    expect((await lib.getFavoritePages({ sort: "added", dir: "asc" })).map((p) => p.id)).toEqual([
       zebra.id,
       alpha1.id,
       alpha2.id,
     ]);
   });
 
-  test("sort=series groups by series title, newest first within a series", async () => {
+  test("sort=series groups by series title, oldest first within a series", async () => {
     const { lib, zebra, alpha1, alpha2 } = await seed();
     expect((await lib.getFavoritePages({ sort: "series" })).map((p) => p.id)).toEqual([
+      alpha1.id,
+      alpha2.id,
+      zebra.id,
+    ]);
+  });
+
+  test("dir applies to a title-led key too — the thing a fused sort enum couldn't express", async () => {
+    // "series, descending" needed a whole new enum value before `dir` existed. One sign covers the
+    // entire comparison, so the within-series tie-breaker flips with it.
+    const { lib, zebra, alpha1, alpha2 } = await seed();
+    expect((await lib.getFavoritePages({ sort: "series", dir: "desc" })).map((p) => p.id)).toEqual([
+      zebra.id,
       alpha2.id,
       alpha1.id,
-      zebra.id,
     ]);
   });
 
@@ -375,11 +386,16 @@ describe("reconcileChapterFavorites", () => {
     return { lib, fav };
   }
 
+  /** Reconcile chapter `c1` of the seeded series from a list of URLs. An empty string stands for a
+   *  page the caller has no URL for — a ref with no `url`, which still counts toward the length. */
+  const reconcile = (lib: Library, urls: string[], chapterId = "c1") =>
+    lib.reconcileChapterFavorites("demo", "s1", chapterId, urls.map((url) => (url ? { url } : {})));
+
   const CHAPTER = ["https://cdn/p0.png", "https://cdn/p1.png", "https://cdn/p2.png", "https://cdn/p3.png"];
 
   test("an unchanged chapter verifies every favorite and repairs nothing", async () => {
     const { lib } = await seedFavorite();
-    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", CHAPTER)).toEqual({
+    expect(await reconcile(lib, CHAPTER)).toEqual({
       indices: [2],
       repaired: 0,
       stale: 0,
@@ -388,7 +404,7 @@ describe("reconcileChapterFavorites", () => {
 
   test("a page inserted at the front shifts the favorite, and the URL relocates it", async () => {
     const { lib, fav } = await seedFavorite();
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/new.png", ...CHAPTER]);
+    const res = await reconcile(lib, ["https://cdn/new.png", ...CHAPTER]);
     expect(res).toEqual({ indices: [3], repaired: 1, stale: 0 });
 
     // The record is RE-KEYED, because the id is derived from the coordinates.
@@ -401,14 +417,14 @@ describe("reconcileChapterFavorites", () => {
 
   test("a page removed from the front shifts the favorite the other way", async () => {
     const { lib } = await seedFavorite();
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", CHAPTER.slice(1));
+    const res = await reconcile(lib, CHAPTER.slice(1));
     expect(res).toEqual({ indices: [1], repaired: 1, stale: 0 });
   });
 
   test("a page deleted from the chapter goes stale, not deleted from favorites", async () => {
     const { lib, fav } = await seedFavorite();
     // p2 is gone; the chapter is a page shorter and no longer carries its URL.
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
+    const res = await reconcile(lib, [
       "https://cdn/p0.png",
       "https://cdn/p1.png",
       "https://cdn/p3.png",
@@ -434,42 +450,42 @@ describe("reconcileChapterFavorites", () => {
     }
     const resigned = [0, 1, 2, 3].map((i) => `https://cdn/p${i}.png?sig=NEW`);
 
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", resigned);
+    const res = await reconcile(lib, resigned);
     expect(res).toEqual({ indices: [0, 1, 2], repaired: 0, stale: 0 });
   });
 
   test("a URL miss with a CHANGED page count is still stale — that's real evidence", async () => {
     const { lib } = await seedFavorite();
     expect(
-      await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn2/x.png", "https://cdn2/y.png"]),
+      await reconcile(lib, ["https://cdn2/x.png", "https://cdn2/y.png"]),
     ).toEqual({ indices: [], repaired: 0, stale: 1 });
   });
 
   test("a stale favorite stops being reported as a favorited index", async () => {
     const { lib } = await seedFavorite();
-    await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/other.png"]);
+    await reconcile(lib, ["https://cdn/other.png"]);
     // The reader must not highlight or navigate to a page we can't vouch for.
     expect(await lib.getFavoritePageIndices("demo", "s1", "c1")).toEqual([]);
   });
 
   test("a source reverting a bad re-upload heals the favorite", async () => {
     const { lib, fav } = await seedFavorite();
-    await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/v2.png"]);
+    await reconcile(lib, ["https://cdn/v2.png"]);
     expect((await lib.getFavoritePage(fav.id))?.stale).toBe(true);
 
-    await lib.reconcileChapterFavorites("demo", "s1", "c1", CHAPTER);
+    await reconcile(lib, CHAPTER);
     expect((await lib.getFavoritePage(fav.id))?.stale).toBeUndefined();
     expect(await lib.getFavoritePageIndices("demo", "s1", "c1")).toEqual([2]);
   });
 
   test("a relocated favorite adopts its fresh URL, so it survives moving again", async () => {
     const { lib } = await seedFavorite();
-    await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/new.png", ...CHAPTER]);
+    await reconcile(lib, ["https://cdn/new.png", ...CHAPTER]);
     expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 3 }))))?.sourceUrl).toBe(
       "https://cdn/p2.png",
     );
     // Shift once more; the favorite is still matchable.
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
+    const res = await reconcile(lib, [
       "https://cdn/newer.png",
       "https://cdn/new.png",
       ...CHAPTER,
@@ -480,7 +496,7 @@ describe("reconcileChapterFavorites", () => {
   test("an empty page list is treated as a failed fetch, never as an emptied chapter", async () => {
     // Trusting it would mark the user's entire chapter stale on one transient network error.
     const { lib } = await seedFavorite();
-    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", [])).toEqual({
+    expect(await reconcile(lib, [])).toEqual({
       indices: [2],
       repaired: 0,
       stale: 0,
@@ -491,13 +507,13 @@ describe("reconcileChapterFavorites", () => {
   test("with no URL at all, the index is trusted only while the page count holds", async () => {
     const { lib } = await seedFavorite(NO_URL);
     // Same length → assume unchanged.
-    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", ["", "", "", ""])).toEqual({
+    expect(await reconcile(lib, ["", "", "", ""])).toEqual({
       indices: [2],
       repaired: 0,
       stale: 0,
     });
     // Different length → "unknown" must not read as "unchanged".
-    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", ["", ""])).toEqual({
+    expect(await reconcile(lib, ["", ""])).toEqual({
       indices: [],
       repaired: 0,
       stale: 1,
@@ -510,13 +526,13 @@ describe("reconcileChapterFavorites", () => {
       seriesTitle: "S",
       sourceUrl: "https://cdn/c2-p0.png",
     });
-    await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/x.png"]);
+    await reconcile(lib, ["https://cdn/x.png"]);
     expect((await lib.getFavoritePage(other.id))?.stale).toBeUndefined();
   });
 
   test("reconciling a chapter with no favorites is a no-op", async () => {
     const { lib } = makeLibrary();
-    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", CHAPTER)).toEqual({
+    expect(await reconcile(lib, CHAPTER)).toEqual({
       indices: [],
       repaired: 0,
       stale: 0,
@@ -534,7 +550,7 @@ describe("reconcileChapterFavorites", () => {
     await lib.setFavoritePageCollections(a.id, [dupes.id]);
     await lib.setFavoritePageCollections(b.id, [keep.id]);
 
-    expect((await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/same.png"])).indices).toEqual([0]);
+    expect((await reconcile(lib, ["https://cdn/same.png"])).indices).toEqual([0]);
 
     const merged = await lib.getFavoritePages();
     expect(merged).toHaveLength(1);
@@ -625,7 +641,7 @@ describe("scaling — a chapter's cost is independent of library size", () => {
 
     // Shift the chapter by one page so every favorite in it needs repairing.
     const pages = ["https://cdn/c7/new.png", ...Array.from({ length: 5 }, (_, i) => `https://cdn/c7/${i}.png`)];
-    const res = await lib.reconcileChapterFavorites("demo", "huge", "c7", pages);
+    const res = await lib.reconcileChapterFavorites("demo", "huge", "c7", pages.map((url) => ({ url })));
     expect(res.repaired).toBe(5);
 
     expect(calls.listAll).toBe(before.listAll); // still never the whole library

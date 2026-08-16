@@ -259,6 +259,20 @@ export const favoritePageSchema = favoritePageCoordSchema.extend({
 export type FavoritePage = z.infer<typeof favoritePageSchema>;
 
 /**
+ * One page of a freshly-fetched chapter, as handed to {@link Library.reconcileChapterFavorites}.
+ * Position in the array IS the page index.
+ *
+ * An OBJECT rather than a bare URL string deliberately, even though `url` is the only field today:
+ * a bare `string[]` has nowhere to put a second matching signal, so adding one later would break
+ * every client at once. Keeping the shape open costs a few bytes per page and keeps future work
+ * additive, which is the rule the rest of the contract follows.
+ */
+export interface ChapterPageRef {
+  /** The page's image URL in the fresh list. */
+  url?: string;
+}
+
+/**
  * Which favorites a {@link LibraryStore.listFavoritePages} call is interested in. Omitted fields
  * don't constrain. Stores MUST honour it: it is what keeps a chapter open from loading a whole
  * library's favorites, and what lets an indexed backend answer without a scan.

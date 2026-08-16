@@ -30,7 +30,7 @@ import type {
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
-import { entryKey, type FavoritePageCoord, type FavoritePagesQuery, type Library } from "@comical/library";
+import { entryKey, favoritePageId, type ChapterPageRef, type FavoritePageCoord, type FavoritePagesQuery, type Library } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
@@ -834,12 +834,14 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
 
     app.get("/library/favorite-pages", async (c) => {
       const sort = c.req.query("sort");
-      const validSort = sort === "added" || sort === "oldest" || sort === "series" || sort === "chapter";
+      const dir = c.req.query("dir");
+      const validSort = sort === "added" || sort === "series" || sort === "chapter";
       const collection = c.req.query("collection");
       const series = c.req.query("series");
       const q = c.req.query("q");
       const query: FavoritePagesQuery = {
-        ...(validSort && { sort: sort as "added" | "oldest" | "series" | "chapter" }),
+        ...(validSort && { sort: sort as "added" | "series" | "chapter" }),
+        ...((dir === "asc" || dir === "desc") && { dir }),
         ...(collection && { collection }),
         ...(series && { series }),
         ...(q && { q }),
@@ -867,15 +869,20 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     //
     // Lazy and per-chapter by design: a wrong `pageIndex` only shows up when a chapter is open or a
     // grid tile is tapped, so there is never a reason to sweep a series. Opening one chapter of a
-    // 2,000-chapter series touches that chapter's favorites and nothing else. Same answer the GET
-    // above gives, so a reader holding the page list should POST here instead of GETting.
-    app.post("/library/favorite-pages/chapter/:bridgeId/:seriesId/:chapterId", async (c) => {
+    // 2,000-chapter series touches that chapter's favorites and nothing else. Its own `/reconcile`
+    // path rather than a POST to the GET above: it answers a different question (what changed) and
+    // returns a different shape, and one URL serving two response types reads as a mistake.
+    app.post("/library/favorite-pages/chapter/:bridgeId/:seriesId/:chapterId/reconcile", async (c) => {
       const b = await body<{ pages?: unknown }>(c);
       if (!Array.isArray(b?.pages)) return c.json({ error: "pages is required" }, 400);
-      // A bare URL array: position IS the page index, which keeps the body small enough to stay
-      // cheap even for a chapterless series carrying thousands of pages. Non-strings become "" —
-      // one odd element must not reject a whole chapter's reconcile, and the LENGTH still counts.
-      const pages: string[] = b.pages.map((p) => (typeof p === "string" ? p : ""));
+      // Position IS the page index. A junk element degrades to a ref with no `url` rather than
+      // rejecting the whole chapter's reconcile — and still counts toward the length, which is the
+      // fallback signal.
+      const pages: ChapterPageRef[] = b.pages.map((p) =>
+        p && typeof p === "object" && typeof (p as { url?: unknown }).url === "string"
+          ? { url: (p as { url: string }).url }
+          : {},
+      );
       return c.json(
         await lib.reconcileChapterFavorites(
           c.req.param("bridgeId"),
@@ -896,12 +903,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     });
 
     app.post("/library/favorite-pages/collections/reorder", async (c) => {
-      // `orderedIds` is accepted as an alias so a client written against the sibling
-      // `/library/lists/reorder` route's field name doesn't silently 400.
-      const b = await body<{ ids?: string[]; orderedIds?: string[] }>(c);
-      const ids = b?.ids ?? b?.orderedIds;
-      if (!ids) return c.json({ error: "ids is required" }, 400);
-      await lib.reorderFavoriteCollections(ids);
+      // Same field name as the sibling `/library/lists/reorder` — one convention, not two.
+      const b = await body<{ orderedIds?: string[] }>(c);
+      if (!b?.orderedIds) return c.json({ error: "orderedIds is required" }, 400);
+      await lib.reorderFavoriteCollections(b.orderedIds);
       return c.json({ ok: true });
     });
 
@@ -918,10 +923,16 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ ok: true });
     });
 
-    app.put("/library/favorite-pages/:id/collections", async (c) => {
+    // Addressed by COORDINATES like every other favorite route, never by `{id}`. The id is derived
+    // from the coordinates, so a reconcile that relocates a page changes it — a client holding one
+    // across a reconcile would 404. Keeping ids out of the URL surface removes that hazard rather
+    // than documenting it.
+    app.put("/library/favorite-pages/:bridgeId/:seriesId/:chapterId/:pageIndex/collections", async (c) => {
+      const coord = favoriteCoord(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId"), c.req.param("pageIndex"));
+      if (!coord) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
       const b = await body<{ collectionIds?: string[] }>(c);
       if (!b?.collectionIds) return c.json({ error: "collectionIds is required" }, 400);
-      try { return c.json(await lib.setFavoritePageCollections(c.req.param("id"), b.collectionIds)); }
+      try { return c.json(await lib.setFavoritePageCollections(favoritePageId(coord), b.collectionIds)); }
       catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
     });
 

@@ -77,10 +77,10 @@ describe("embedded transport — page favorites", () => {
       sourceUrl: "https://cdn/p2.png",
     });
 
-    const res = await t("/library/favorite-pages/chapter/demo/s1/c1", {
+    const res = await t("/library/favorite-pages/chapter/demo/s1/c1/reconcile", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pages: ["https://cdn/new.png", "https://cdn/p2.png"] }),
+      body: JSON.stringify({ pages: [{ url: "https://cdn/new.png" }, { url: "https://cdn/p2.png" }] }),
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ indices: [1], repaired: 1, stale: 0 });

@@ -197,8 +197,8 @@ describe("reconcile route — chapter drift", () => {
     });
 
     // A bare URL array — position is the page index.
-    const res = await send("POST", "/library/favorite-pages/chapter/demo/drift/c1", {
-      pages: ["https://cdn/new.png", "https://cdn/p0.png", "https://cdn/p1.png", "https://cdn/p2.png"],
+    const res = await send("POST", "/library/favorite-pages/chapter/demo/drift/c1/reconcile", {
+      pages: [{ url: "https://cdn/new.png" }, { url: "https://cdn/p0.png" }, { url: "https://cdn/p1.png" }, { url: "https://cdn/p2.png" }],
     });
     expect(res.status).toBe(200);
     expect(await json<ReconcileBody>(res)).toEqual({ indices: [3], repaired: 1, stale: 0 });
@@ -216,8 +216,8 @@ describe("reconcile route — chapter drift", () => {
     });
 
     const res = await json<ReconcileBody>(
-      await send("POST", "/library/favorite-pages/chapter/demo/gone/c1", {
-        pages: ["https://cdn/v2-0.png", "https://cdn/v2-1.png"],
+      await send("POST", "/library/favorite-pages/chapter/demo/gone/c1/reconcile", {
+        pages: [{ url: "https://cdn/v2-0.png" }, { url: "https://cdn/v2-1.png" }],
       }),
     );
     expect(res).toEqual({ indices: [], repaired: 0, stale: 1 });
@@ -234,18 +234,18 @@ describe("reconcile route — chapter drift", () => {
   test("an empty page list is a no-op, so a failed fetch can't stale a whole chapter", async () => {
     await send("PUT", "/library/favorite-pages/demo/safe/c1/0", { seriesTitle: "S", pageCount: 2 });
     expect(
-      await json<ReconcileBody>(await send("POST", "/library/favorite-pages/chapter/demo/safe/c1", { pages: [] })),
+      await json<ReconcileBody>(await send("POST", "/library/favorite-pages/chapter/demo/safe/c1/reconcile", { pages: [] })),
     ).toEqual({ indices: [0], repaired: 0, stale: 0 });
     await send("DELETE", "/library/favorite-pages/demo/safe/c1/0");
   });
 
   test("requires a pages array, and tolerates junk entries within it", async () => {
-    expect((await send("POST", "/library/favorite-pages/chapter/demo/s1/c1", {})).status).toBe(400);
-    expect((await send("POST", "/library/favorite-pages/chapter/demo/s1/c1", { pages: "nope" })).status).toBe(400);
+    expect((await send("POST", "/library/favorite-pages/chapter/demo/s1/c1/reconcile", {})).status).toBe(400);
+    expect((await send("POST", "/library/favorite-pages/chapter/demo/s1/c1/reconcile", { pages: "nope" })).status).toBe(400);
     // One odd element must not reject an entire chapter's reconcile — non-strings become "",
     // which still counts toward the length.
-    const ok = await send("POST", "/library/favorite-pages/chapter/demo/s1/c1", {
-      pages: [null, 5, "https://cdn/ok.png"],
+    const ok = await send("POST", "/library/favorite-pages/chapter/demo/s1/c1/reconcile", {
+      pages: [null, 5, { url: "https://cdn/ok.png" }],
     });
     expect(ok.status).toBe(200);
   });
@@ -269,7 +269,7 @@ describe("collections", () => {
       (await send("PATCH", `/library/favorite-pages/collections/${panels.id}`, { name: "Best Panels" })).status,
     ).toBe(200);
 
-    await send("POST", "/library/favorite-pages/collections/reorder", { ids: [splashes.id, panels.id] });
+    await send("POST", "/library/favorite-pages/collections/reorder", { orderedIds: [splashes.id, panels.id] });
     expect((await json<CollectionBody[]>(await get("/library/favorite-pages/collections"))).map((c) => c.name)).toEqual([
       "Splashes",
       "Best Panels",
@@ -298,7 +298,8 @@ describe("collections", () => {
       await send("PUT", "/library/favorite-pages/demo/s2/c1/0", { seriesTitle: "Beta" }),
     );
 
-    const assigned = await send("PUT", `/library/favorite-pages/${encodeURIComponent(p1.id)}/collections`, {
+    // Addressed by coordinates, like every other favorite route — no id in the URL.
+    const assigned = await send("PUT", "/library/favorite-pages/demo/s1/c1/0/collections", {
       collectionIds: [panels.id],
     });
     expect(assigned.status).toBe(200);
@@ -318,10 +319,11 @@ describe("collections", () => {
     await send("DELETE", "/library/favorite-pages/demo/s2/c1/0");
   });
 
-  test("assigning collections to an unknown favorite 404s; a missing body 400s", async () => {
-    expect((await send("PUT", "/library/favorite-pages/demo%3Aghost%3Ac1%3A0/collections", {})).status).toBe(400);
+  test("assigning collections to an unknown favorite 404s; a bad body or index 400s", async () => {
+    expect((await send("PUT", "/library/favorite-pages/demo/ghost/c1/0/collections", {})).status).toBe(400);
+    expect((await send("PUT", "/library/favorite-pages/demo/ghost/c1/x/collections", { collectionIds: [] })).status).toBe(400);
     expect(
-      (await send("PUT", "/library/favorite-pages/demo%3Aghost%3Ac1%3A0/collections", { collectionIds: [] })).status,
+      (await send("PUT", "/library/favorite-pages/demo/ghost/c1/0/collections", { collectionIds: [] })).status,
     ).toBe(404);
   });
 });
@@ -340,7 +342,7 @@ describe("listing", () => {
     expect(search.map((p) => p.seriesTitle)).toEqual(["Zebra Tales"]);
 
     // Reading order beats favorite date: Ch 1 was favorited last but sorts first.
-    const reading = await json<FavoriteBody[]>(await get("/library/favorite-pages?sort=chapter&series=demo:s1"));
+    const reading = await json<FavoriteBody[]>(await get("/library/favorite-pages?sort=chapter&dir=asc&series=demo:s1"));
     expect(reading.map((p) => p.chapterName)).toEqual(["Ch 1", "Ch 2"]);
 
     // An unrecognised sort falls back to the default rather than erroring.
@@ -369,7 +371,7 @@ describe("absence and namespace separation", () => {
     for (const [method, path] of [
       ["GET", "/library/favorite-pages"],
       ["GET", "/library/favorite-pages/chapter/demo/s1/c1"],
-      ["POST", "/library/favorite-pages/chapter/demo/s1/c1"],
+      ["POST", "/library/favorite-pages/chapter/demo/s1/c1/reconcile"],
       ["GET", "/library/favorite-pages/collections"],
       ["POST", "/library/favorite-pages/collections"],
       ["PUT", "/library/favorite-pages/demo/s1/c1/0"],

@@ -18,6 +18,7 @@ import {
   type BridgePrefs,
   type CachedChapters,
   type CachedSeriesDetail,
+  type ChapterPageRef,
   type ChapterProgress,
   type FavoriteCollection,
   type FavoritePage,
@@ -92,18 +93,21 @@ export interface LibraryQuery {
   dir?: "asc" | "desc";
 }
 
-/** Sort keys for {@link Library.getFavoritePages}. */
-export type FavoritePagesSort = "added" | "oldest" | "series" | "chapter";
+/** Sort keys for {@link Library.getFavoritePages}. Direction is a separate `dir`, as on `getLibrary` —
+ *  folding it into the key (an `"oldest"` alongside `"added"`) can't express "series, descending"
+ *  without inventing another key for every combination. */
+export type FavoritePagesSort = "added" | "series" | "chapter";
 
 /** Filter + sort options for {@link Library.getFavoritePages}. All optional. */
 export interface FavoritePagesQuery {
   /**
-   * - `added` (default) — newest favorited first.
-   * - `oldest` — oldest favorited first.
-   * - `series` — grouped by series title, newest favorited first within each.
+   * - `added` (default) — by favorite date.
+   * - `series` — grouped by series title, by favorite date within each.
    * - `chapter` — reading order: series title, then chapter name, then page index.
    */
   sort?: FavoritePagesSort;
+  /** Sort direction. Defaults to `"desc"` for `added` (newest first) and `"asc"` otherwise. */
+  dir?: "asc" | "desc";
   /** A collection id, or the literal `"uncollected"` for favorites filed nowhere. */
   collection?: string;
   /** Restrict to one series, as an `entryKey` (`${bridgeId}:${seriesId}`). */
@@ -115,23 +119,22 @@ export interface FavoritePagesQuery {
 /** The literal `collection` value that selects favorites with no collection memberships. */
 export const UNCOLLECTED = "uncollected";
 
-/** Compare two favorites by `sort` key. Every branch falls through to a total order (favoritedAt,
- *  then the derived id) so paging and repeated calls are stable. */
+/** Compare two favorites by `sort` key in ASCENDING order; callers apply direction, exactly as
+ *  `compareEntries` does. Every branch falls through to the derived id so repeated calls are
+ *  stable — and note `dir` flips the tie-breakers too, since one sign covers the whole comparison. */
 function compareFavoritePages(a: FavoritePage, b: FavoritePage, sort: FavoritePagesSort): number {
-  const newestFirst = b.favoritedAt - a.favoritedAt || a.id.localeCompare(b.id);
+  const byDate = a.favoritedAt - b.favoritedAt || a.id.localeCompare(b.id);
   switch (sort) {
     case "added":
-      return newestFirst;
-    case "oldest":
-      return a.favoritedAt - b.favoritedAt || a.id.localeCompare(b.id);
+      return byDate;
     case "series":
-      return a.seriesTitle.localeCompare(b.seriesTitle) || newestFirst;
+      return a.seriesTitle.localeCompare(b.seriesTitle) || byDate;
     case "chapter":
       return (
         a.seriesTitle.localeCompare(b.seriesTitle) ||
         (a.chapterName ?? "").localeCompare(b.chapterName ?? "") ||
         a.pageIndex - b.pageIndex ||
-        newestFirst
+        a.id.localeCompare(b.id)
       );
   }
 }
@@ -826,8 +829,11 @@ export class Library {
         (p) => p.seriesTitle.toLowerCase().includes(q) || (p.chapterName?.toLowerCase().includes(q) ?? false),
       );
     }
+    // Same shape as getLibrary: the comparator is ascending and one sign applies the direction.
+    // `added` defaults to descending (newest first); the title-led keys default to ascending.
     const sort = query.sort ?? "added";
-    return pages.sort((a, b) => compareFavoritePages(a, b, sort));
+    const sign = (query.dir ?? (sort === "added" ? "desc" : "asc")) === "asc" ? 1 : -1;
+    return pages.sort((a, b) => sign * compareFavoritePages(a, b, sort));
   }
 
   /**
@@ -875,14 +881,15 @@ export class Library {
    * Repairing an index RE-KEYS the record, because the id is derived from the coordinates. Callers
    * holding an id from before a reconcile must refresh.
    *
-   * @param pages Source URLs of the chapter's pages, in order — position IS the page index. An empty
-   *              string stands in for a page whose URL the caller doesn't know.
+   * @param pages The chapter's pages in order — position IS the page index. A ref with no `url`
+   *              stands in for a page whose URL the caller doesn't know; it still counts toward the
+   *              length, which is the fallback signal.
    */
   async reconcileChapterFavorites(
     bridgeId: string,
     seriesId: string,
     chapterId: string,
-    pages: string[],
+    pages: ChapterPageRef[],
   ): Promise<{ indices: number[]; repaired: number; stale: number }> {
     const mine = await this.store.listFavoritePages({ bridgeId, seriesId, chapterId });
     // An empty list is far likelier a failed fetch than a chapter that genuinely lost every page.
@@ -898,8 +905,8 @@ export class Library {
     // One O(pages) index, then every favorite resolves by lookup — no per-favorite scan of the list.
     // First occurrence wins, so a chapter that repeats a page resolves deterministically.
     const byUrl = new Map<string, number>();
-    pages.forEach((url, i) => {
-      if (url && !byUrl.has(url)) byUrl.set(url, i);
+    pages.forEach((page, i) => {
+      if (page.url && !byUrl.has(page.url)) byUrl.set(page.url, i);
     });
 
     /** Where this favorite's page lives in the fresh list, or undefined if it's gone. */
@@ -935,7 +942,7 @@ export class Library {
         id: favoritePageId(coord),
         pageCount: pages.length,
         // Adopt the fresh URL, so a page that moves again next time is still matchable.
-        ...(pages[at] ? { sourceUrl: pages[at] } : {}),
+        ...(pages[at]?.url ? { sourceUrl: pages[at].url } : {}),
       };
       delete healed.stale; // located again — a source can revert a bad re-upload
       this.mergeFavorite(next, healed);
