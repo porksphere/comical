@@ -1,4 +1,10 @@
-# Page favorites — deferred work
+# Favorites & collections — deferred work
+
+> Updated for the universal-collections generalization (`docs/collections-plan.md`): favorites now
+> cover series/chapter/page items, lists are deleted, and the route surface moved to
+> `/library/favorites` + `/library/collections`. Route/type names below that predate that (e.g.
+> `favorite-pages` paths, `FavoritePage`) read as their `FavoriteItem` successors; the reasoning
+> stands.
 
 Things knowingly left undone when page favorites landed in this repo
 (`claude/page-favorites-runtime-00agdx`). Each is a decision, not an oversight — the reasoning is
@@ -98,9 +104,9 @@ both far more than the problem is worth.
 ## 5. Partial collection reorder can leave tied `order` values
 
 `reorderFavoriteCollections` only repositions the ids it is given; an omitted collection keeps its
-existing `order` and can end up tied with another. This is deliberate **parity with
-`reorderLists`**, which behaves identically, and clients send the whole list. Worth fixing in both
-places at once, or in neither.
+existing `order` and can end up tied with another. (Originally kept for parity with `reorderLists`;
+lists are gone now, so this is the ONE reorder implementation and can be fixed in place whenever it
+matters. Clients send the whole list.)
 
 ## 6. The favorite id is derived from `pageIndex`, which a reconcile can change
 
@@ -116,3 +122,11 @@ id stays an internal storage key.
 If a future surface genuinely needs a stable external handle (sharing a favorite, say), the choice is
 between a random UUID — which costs the keyed lookup and the idempotency — and a separate stable
 alias alongside the derived key. Don't reintroduce ids into paths without picking one.
+
+
+## 7. Chapter favorites on non-library series have no drift detection
+
+Chapter re-anchoring rides inside `syncChapters`, which only runs for library series. A chapter
+favorited on a series never added to the library rots silently if the source re-uploads it. Accepted
+in the collections plan; the fix, if ever needed, is a reconcile-style route the app calls with a
+fresh chapter list when it happens to have one.

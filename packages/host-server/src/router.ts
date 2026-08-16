@@ -30,7 +30,7 @@ import type {
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
-import { entryKey, favoritePageId, type ChapterPageRef, type FavoritePageCoord, type FavoritePagesQuery, type Library } from "@comical/library";
+import { entryKey, favoriteItemId, type ChapterPageRef, type FavoriteItemsQuery, type FavoriteItemType, type Library } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
@@ -738,17 +738,17 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       entryKey(c.req.param("bridgeId"), c.req.param("seriesId"));
 
     app.get("/library", async (c) => {
-      const list = c.req.query("list");
-      const lists = c.req.query("lists");
+      const collection = c.req.query("collection");
+      const collections = c.req.query("collections");
       const q = c.req.query("q");
       const sort = c.req.query("sort");
       const dir = c.req.query("dir");
       const validSort = sort === "added" || sort === "title" || sort === "lastRead" || sort === "unread";
       return c.json(
         await lib.getLibrary({
-          ...(list && { listId: list }),
-          ...(lists && { listIds: lists.split(",").filter(Boolean) }),
-          ...(c.req.query("unlisted") === "true" && { unlisted: true }),
+          ...(collection && { collection }),
+          ...(collections && { collections: collections.split(",").filter(Boolean) }),
+          ...(c.req.query("uncollected") === "true" && { uncollected: true }),
           ...(q && { q }),
           ...(c.req.query("unreadOnly") === "true" && { unreadOnly: true }),
           ...(validSort && { sort: sort as "added" | "title" | "lastRead" | "unread" }),
@@ -784,95 +784,59 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ ok: true });
     });
 
-    // Lists
-    app.get("/library/lists", async (c) => c.json(await lib.getLists()));
-    app.post("/library/lists", async (c) => {
-      const b = await body<{ name?: string }>(c);
-      if (!b?.name) return c.json({ error: "name is required" }, 400);
-      return c.json(await lib.createList(b.name), 201);
-    });
-    app.post("/library/lists/reorder", async (c) => {
-      const b = await body<{ orderedIds?: string[] }>(c);
-      if (!b?.orderedIds) return c.json({ error: "orderedIds is required" }, 400);
-      await lib.reorderLists(b.orderedIds);
-      return c.json({ ok: true });
-    });
-    app.patch("/library/lists/:id", async (c) => {
-      const b = await body<{ name?: string }>(c);
-      if (!b?.name) return c.json({ error: "name is required" }, 400);
-      try { await lib.renameList(c.req.param("id"), b.name); return c.json({ ok: true }); }
-      catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
-    });
-    app.delete("/library/lists/:id", async (c) => {
-      await lib.deleteList(c.req.param("id"));
-      return c.json({ ok: true });
-    });
-
-    // ── Page favorites ──────────────────────────────────────────────────────────
-    // Favoriting a single PAGE — local user data, and entirely unrelated to the bridge-account
-    // per-series `favorites` capability served under `/bridges/:id/favorites`. Hence the
-    // `favorite-pages` namespace under `/library`, never under `/bridges`.
+    // ── Favorites & collections ─────────────────────────────────────────────────
+    // Favoriting a series, a chapter, or a single PAGE into user-named collections — local user
+    // data, entirely unrelated to the bridge-account per-series `favorites` capability served under
+    // `/bridges/:id/favorites`. Hence the `/library` namespace, never `/bridges`.
     //
-    // ROUTE ORDER: `chapter` and `collections` are literal first segments that sit in the same
-    // space as the `:id` / coordinate patterns below. Today no two of them share both a method and
-    // a segment count, so nothing shadows anything — but that is a property of the current set, not
-    // a guarantee. Registering the literals FIRST is what keeps it true when a route is added
-    // later (a bare `GET /library/favorite-pages/:id` would otherwise swallow `/collections`).
+    // The explicit type segment (`series|chapter|page`) is what keeps this family unambiguous —
+    // no literal path ever competes with a pattern, which was the standing hazard of the old
+    // favorite-pages layout. Items are addressed by COORDINATES everywhere, never by their derived
+    // id: a reconcile that relocates a target re-keys the record, so an id a client held would 404.
 
-    /** The four coordinates off a favorite route's path params, or undefined for a bad `pageIndex`
+    /** Parse a 0-based page index path segment; undefined for anything non-integral
      *  (`Number("")` is 0, so the empty string is rejected explicitly). */
-    const favoriteCoord = (
-      bridgeId: string,
-      seriesId: string,
-      chapterId: string,
-      rawIndex: string,
-    ): FavoritePageCoord | undefined => {
-      const pageIndex = Number(rawIndex);
-      if (rawIndex === "" || !Number.isInteger(pageIndex) || pageIndex < 0) return undefined;
-      return { bridgeId, seriesId, chapterId, pageIndex };
+    const pageIndexParam = (raw: string): number | undefined => {
+      const idx = Number(raw);
+      return raw === "" || !Number.isInteger(idx) || idx < 0 ? undefined : idx;
     };
 
-    app.get("/library/favorite-pages", async (c) => {
+    app.get("/library/favorites", async (c) => {
+      const type = c.req.query("type");
+      const validType = type === "series" || type === "chapter" || type === "page";
       const sort = c.req.query("sort");
-      const dir = c.req.query("dir");
       const validSort = sort === "added" || sort === "series" || sort === "chapter";
+      const dir = c.req.query("dir");
       const collection = c.req.query("collection");
       const series = c.req.query("series");
       const q = c.req.query("q");
-      const query: FavoritePagesQuery = {
+      const query: FavoriteItemsQuery = {
+        ...(validType && { type: type as FavoriteItemType }),
         ...(validSort && { sort: sort as "added" | "series" | "chapter" }),
         ...((dir === "asc" || dir === "desc") && { dir }),
         ...(collection && { collection }),
         ...(series && { series }),
         ...(q && { q }),
       };
-      return c.json(await lib.getFavoritePages(query));
+      return c.json(await lib.getFavoriteItems(query));
     });
 
     // The favorited page INDICES for one chapter. The reader loads this once when a chapter opens
     // and keeps its favorite button correct across every page turn with zero further requests —
     // deliberately not a per-page status check, which would fire once per turn.
-    app.get("/library/favorite-pages/chapter/:bridgeId/:seriesId/:chapterId", async (c) =>
+    app.get("/library/favorites/page/:bridgeId/:seriesId/:chapterId/indices", async (c) =>
       c.json(
-        await lib.getFavoritePageIndices(
-          c.req.param("bridgeId"),
-          c.req.param("seriesId"),
-          c.req.param("chapterId"),
-        ),
+        await lib.getFavoritePageIndices(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId")),
       ),
     );
 
-    // Re-anchor ONE chapter's favorites against its freshly-fetched page list, returning the indices
-    // to trust. The reader already holds that list when a chapter opens, so this repairs favorites
-    // the source shifted (a page inserted ahead of them) with no extra fetch — and reports the ones
-    // it could not locate instead of letting them silently point at the wrong page.
-    //
-    // Lazy and per-chapter by design: a wrong `pageIndex` only shows up when a chapter is open or a
-    // grid tile is tapped, so there is never a reason to sweep a series. Opening one chapter of a
-    // 2,000-chapter series touches that chapter's favorites and nothing else. Its own `/reconcile`
-    // path rather than a POST to the GET above: it answers a different question (what changed) and
-    // returns a different shape, and one URL serving two response types reads as a mistake.
-    app.post("/library/favorite-pages/chapter/:bridgeId/:seriesId/:chapterId/reconcile", async (c) => {
+    // Re-anchor ONE chapter's page favorites against its freshly-fetched page list, returning the
+    // indices to trust. The reader already holds that list when a chapter opens, so this repairs
+    // favorites the source shifted (a page inserted ahead of them) with no extra fetch — and
+    // reports the ones it could not locate instead of letting them silently point at the wrong
+    // page. Lazy and per-chapter by design: opening one chapter of a 2,000-chapter series touches
+    // that chapter's favorites and nothing else.
+    app.post("/library/favorites/page/:bridgeId/:seriesId/:chapterId/reconcile", async (c) => {
       const b = await body<{ pages?: unknown }>(c);
       if (!Array.isArray(b?.pages)) return c.json({ error: "pages is required" }, 400);
       // Position IS the page index. Both fields are optional and `contentHash` is expected to be
@@ -896,70 +860,142 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       );
     });
 
-    // Collections — the favorites-side counterpart of `/library/lists`, same CRUD + reorder shape.
-    app.get("/library/favorite-pages/collections", async (c) => c.json(await lib.getFavoriteCollections()));
+    // Membership assignment, per type — coordinates in the path, like everything else here.
+    const setCollections = async (c: Context, id: string) => {
+      const b = await body<{ collectionIds?: string[] }>(c);
+      if (!b?.collectionIds) return c.json({ error: "collectionIds is required" }, 400);
+      try { return c.json(await lib.setFavoriteItemCollections(id, b.collectionIds)); }
+      catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
+    };
 
-    app.post("/library/favorite-pages/collections", async (c) => {
+    app.put("/library/favorites/series/:bridgeId/:seriesId/collections", (c) =>
+      setCollections(c, favoriteItemId({ type: "series", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") })),
+    );
+    app.put("/library/favorites/chapter/:bridgeId/:seriesId/:chapterId/collections", (c) =>
+      setCollections(
+        c,
+        favoriteItemId({ type: "chapter", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId"), chapterId: c.req.param("chapterId") }),
+      ),
+    );
+    app.put("/library/favorites/page/:bridgeId/:seriesId/:chapterId/:pageIndex/collections", (c) => {
+      const pageIndex = pageIndexParam(c.req.param("pageIndex"));
+      if (pageIndex === undefined) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
+      return setCollections(
+        c,
+        favoriteItemId({ type: "page", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId"), chapterId: c.req.param("chapterId"), pageIndex }),
+      );
+    });
+
+    // Favorite / unfavorite, per type. PUT is IDEMPOTENT and MERGES — the id derives from the
+    // coordinates, a supplied snapshot field wins as the fresher value, an omitted one is
+    // preserved (see Library.favoritePage's doc for why partial PUTs are a supported pattern).
+
+    app.put("/library/favorites/series/:bridgeId/:seriesId", async (c) => {
+      const b = await body<{ seriesTitle?: string; thumbnailUrl?: string; author?: string }>(c);
+      if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
+      return c.json(
+        await lib.favoriteSeries(
+          { bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") },
+          {
+            seriesTitle: b.seriesTitle,
+            ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
+            ...(b.author !== undefined && { author: b.author }),
+          },
+        ),
+      );
+    });
+    app.delete("/library/favorites/series/:bridgeId/:seriesId", async (c) => {
+      await lib.unfavoriteItem({ type: "series", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") });
+      return c.json({ ok: true });
+    });
+
+    app.put("/library/favorites/chapter/:bridgeId/:seriesId/:chapterId", async (c) => {
+      const b = await body<{ seriesTitle?: string; chapterName?: string; number?: number; languageCode?: string }>(c);
+      if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
+      return c.json(
+        await lib.favoriteChapter(
+          { bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId"), chapterId: c.req.param("chapterId") },
+          {
+            seriesTitle: b.seriesTitle,
+            ...(b.chapterName !== undefined && { chapterName: b.chapterName }),
+            ...(b.number !== undefined && { number: b.number }),
+            ...(b.languageCode !== undefined && { languageCode: b.languageCode }),
+          },
+        ),
+      );
+    });
+    app.delete("/library/favorites/chapter/:bridgeId/:seriesId/:chapterId", async (c) => {
+      await lib.unfavoriteItem({
+        type: "chapter",
+        bridgeId: c.req.param("bridgeId"),
+        seriesId: c.req.param("seriesId"),
+        chapterId: c.req.param("chapterId"),
+      });
+      return c.json({ ok: true });
+    });
+
+    app.put("/library/favorites/page/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
+      const pageIndex = pageIndexParam(c.req.param("pageIndex"));
+      if (pageIndex === undefined) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
+      const b = await body<{ seriesTitle?: string; chapterName?: string; pageCount?: number; sourceUrl?: string; contentHash?: string }>(c);
+      if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
+      return c.json(
+        await lib.favoritePage(
+          { bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId"), chapterId: c.req.param("chapterId"), pageIndex },
+          {
+            seriesTitle: b.seriesTitle,
+            ...(b.chapterName !== undefined && { chapterName: b.chapterName }),
+            ...(b.pageCount !== undefined && { pageCount: b.pageCount }),
+            ...(b.sourceUrl !== undefined && { sourceUrl: b.sourceUrl }),
+            ...(b.contentHash !== undefined && { contentHash: b.contentHash }),
+          },
+        ),
+      );
+    });
+    app.delete("/library/favorites/page/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
+      const pageIndex = pageIndexParam(c.req.param("pageIndex"));
+      if (pageIndex === undefined) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
+      await lib.unfavoriteItem({
+        type: "page",
+        bridgeId: c.req.param("bridgeId"),
+        seriesId: c.req.param("seriesId"),
+        chapterId: c.req.param("chapterId"),
+        pageIndex,
+      });
+      return c.json({ ok: true });
+    });
+
+    // ── Collections ─────────────────────────────────────────────────────────────
+    // THE user-grouping concept: any favorite item files into these (the old library "lists"
+    // retired into this system). Same CRUD + reorder shape lists had; collection ids are stable
+    // UUIDs, so id-addressing is safe here (unlike items, whose derived ids re-key).
+
+    app.get("/library/collections", async (c) => c.json(await lib.getFavoriteCollections()));
+
+    app.post("/library/collections", async (c) => {
       const b = await body<{ name?: string }>(c);
       if (!b?.name) return c.json({ error: "name is required" }, 400);
       return c.json(await lib.createFavoriteCollection(b.name), 201);
     });
 
-    app.post("/library/favorite-pages/collections/reorder", async (c) => {
-      // Same field name as the sibling `/library/lists/reorder` — one convention, not two.
+    app.post("/library/collections/reorder", async (c) => {
       const b = await body<{ orderedIds?: string[] }>(c);
       if (!b?.orderedIds) return c.json({ error: "orderedIds is required" }, 400);
       await lib.reorderFavoriteCollections(b.orderedIds);
       return c.json({ ok: true });
     });
 
-    app.patch("/library/favorite-pages/collections/:id", async (c) => {
+    app.patch("/library/collections/:id", async (c) => {
       const b = await body<{ name?: string }>(c);
       if (!b?.name) return c.json({ error: "name is required" }, 400);
       try { await lib.renameFavoriteCollection(c.req.param("id"), b.name); return c.json({ ok: true }); }
       catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
     });
 
-    // Deleting a collection strips its id from every member but keeps the favorites themselves.
-    app.delete("/library/favorite-pages/collections/:id", async (c) => {
+    // Deleting a collection strips its id from every member. Page favorites survive as bare hearts;
+    // series/chapter items left uncollected are pruned (they only existed as members).
+    app.delete("/library/collections/:id", async (c) => {
       await lib.deleteFavoriteCollection(c.req.param("id"));
-      return c.json({ ok: true });
-    });
-
-    // Addressed by COORDINATES like every other favorite route, never by `{id}`. The id is derived
-    // from the coordinates, so a reconcile that relocates a page changes it — a client holding one
-    // across a reconcile would 404. Keeping ids out of the URL surface removes that hazard rather
-    // than documenting it.
-    app.put("/library/favorite-pages/:bridgeId/:seriesId/:chapterId/:pageIndex/collections", async (c) => {
-      const coord = favoriteCoord(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId"), c.req.param("pageIndex"));
-      if (!coord) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
-      const b = await body<{ collectionIds?: string[] }>(c);
-      if (!b?.collectionIds) return c.json({ error: "collectionIds is required" }, 400);
-      try { return c.json(await lib.setFavoritePageCollections(favoritePageId(coord), b.collectionIds)); }
-      catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
-    });
-
-    // Favorite one page. IDEMPOTENT — the id is derived from the coordinates, so re-favoriting
-    // overwrites in place.
-    app.put("/library/favorite-pages/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
-      const coord = favoriteCoord(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId"), c.req.param("pageIndex"));
-      if (!coord) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
-      const b = await body<{ seriesTitle?: string; chapterName?: string; pageCount?: number; sourceUrl?: string; contentHash?: string }>(c);
-      if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
-      const page = await lib.favoritePage(coord, {
-        seriesTitle: b.seriesTitle,
-        ...(b.chapterName !== undefined && { chapterName: b.chapterName }),
-        ...(b.pageCount !== undefined && { pageCount: b.pageCount }),
-        ...(b.sourceUrl !== undefined && { sourceUrl: b.sourceUrl }),
-        ...(b.contentHash !== undefined && { contentHash: b.contentHash }),
-      });
-      return c.json(page);
-    });
-
-    app.delete("/library/favorite-pages/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
-      const coord = favoriteCoord(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId"), c.req.param("pageIndex"));
-      if (!coord) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
-      await lib.unfavoritePage(coord);
       return c.json({ ok: true });
     });
 
@@ -1001,7 +1037,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.post("/library/entries", async (c) => {
       const b = await body<{
         bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string;
-        author?: string; listIds?: string[];
+        author?: string;
         externalIds?: Record<string, string | number>;
       }>(c);
       if (!b?.bridgeId || !b.seriesId) {
@@ -1012,7 +1048,6 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           ...(b.title !== undefined && { title: b.title }),
           ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
           ...(b.author !== undefined && { author: b.author }),
-          ...(b.listIds !== undefined && { listIds: b.listIds }),
           ...(b.externalIds !== undefined && { externalIds: b.externalIds }),
         });
         // Guaranteed-offline cover: capture the new entry's cover bytes (fire-and-forget).
@@ -1051,12 +1086,6 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       await lib.removeSeries(keyOf(c));
       if (coverFile) await covers!.blobs.remove([coverFile]).catch(() => {});
       return c.json({ ok: true });
-    });
-
-    app.put("/library/entries/:bridgeId/:seriesId/lists", async (c) => {
-      const b = await body<{ listIds?: string[] }>(c);
-      if (!b?.listIds) return c.json({ error: "listIds is required" }, 400);
-      return withLibraryEntry(c, () => lib.setLists(keyOf(c), b.listIds!));
     });
 
     app.post("/library/entries/:bridgeId/:seriesId/sync", async (c) => {

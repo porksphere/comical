@@ -703,7 +703,6 @@ describe("logical chapters (multi-scanlator / multi-language)", () => {
       title: SERIES.title,
       addedAt: 1,
       updatedAt: 1,
-      listIds: [],
       // knownChapters intentionally omitted (legacy shape)
     } as unknown as Parameters<typeof store.putEntry>[0]);
 
@@ -735,55 +734,63 @@ describe("history", () => {
   });
 });
 
-describe("lists", () => {
-  test("create / filter library by list", async () => {
-    const lib = makeLibrary();
-    const reading = await lib.createList("Reading");
-    await lib.addSeries({ ...SERIES, listIds: [reading.id] });
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Two" });
+describe("collections filter the library", () => {
+  // The old library "lists" retired into collections: memberships live on SERIES favorite items,
+  // and getLibrary reads through them. Filing a series = favoriteSeries + collection membership.
+  async function file(lib: Library, seriesId: string, collectionIds: string[]) {
+    const item = await lib.favoriteSeries({ bridgeId: "demo", seriesId }, { seriesTitle: seriesId });
+    await lib.setFavoriteItemCollections(item.id, collectionIds);
+  }
 
-    const inReading = await lib.getLibrary({ listId: reading.id });
+  test("filing a series into a collection filters the library by it", async () => {
+    const lib = makeLibrary();
+    const reading = await lib.createFavoriteCollection("Reading");
+    await lib.addSeries(SERIES);
+    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Two" });
+    await file(lib, "s1", [reading.id]);
+
+    const inReading = await lib.getLibrary({ collection: reading.id });
     expect(inReading.map((e) => e.seriesId)).toEqual(["s1"]);
   });
 
-  test("deleting a list strips it from every entry", async () => {
+  test("deleting a collection un-files its members, and the empty series item is pruned", async () => {
     const lib = makeLibrary();
-    const list = await lib.createList("Temp");
-    await lib.addSeries({ ...SERIES, listIds: [list.id] });
+    const temp = await lib.createFavoriteCollection("Temp");
+    await lib.addSeries(SERIES);
+    await file(lib, "s1", [temp.id]);
 
-    await lib.deleteList(list.id);
-    expect(await lib.getLists()).toHaveLength(0);
-    expect((await lib.getEntry(KEY))?.listIds).toEqual([]);
-  });
-
-  test("createList assigns increasing order; reorder updates it", async () => {
-    const lib = makeLibrary();
-    const a = await lib.createList("A");
-    const b = await lib.createList("B");
-    expect([a.order, b.order]).toEqual([0, 1]);
-
-    await lib.reorderLists([b.id, a.id]);
-    const ordered = await lib.getLists();
-    expect(ordered.map((c) => c.name)).toEqual(["B", "A"]);
+    await lib.deleteFavoriteCollection(temp.id);
+    expect(await lib.getFavoriteCollections()).toHaveLength(0);
+    expect(await lib.getLibrary({ collection: temp.id })).toHaveLength(0);
+    // A series item only existed as a member — uncollected, it is data litter and goes.
+    expect(await lib.getFavoriteItems({ type: "series" })).toHaveLength(0);
+    // The LIBRARY entry is untouched; only the grouping went.
+    expect(await lib.getEntry(KEY)).toBeDefined();
   });
 });
 
 describe("getLibrary query (search / sort / filters)", () => {
   /**
-   * Three series with distinct titles/authors/lists/unread counts, added in s1→s2→s3 order:
-   *  - s1 "Naruto"  (Kishimoto) — Action          — 2 unread
-   *  - s2 "Bleach"             — Action + Romance — 0 unread (only chapter read)
-   *  - s3 "Berserk" (Miura)    — unlisted         — 1 unread
+   * Three series with distinct titles/authors/collections/unread counts, added in s1→s2→s3 order:
+   *  - s1 "Naruto"  (Kishimoto) — Action           — 2 unread
+   *  - s2 "Bleach"             — Action + Romance  — 0 unread (only chapter read)
+   *  - s3 "Berserk" (Miura)    — uncollected       — 1 unread
    */
   async function seeded() {
     const lib = makeLibrary();
-    const action = await lib.createList("Action");
-    const romance = await lib.createList("Romance");
+    const action = await lib.createFavoriteCollection("Action");
+    const romance = await lib.createFavoriteCollection("Romance");
+    const file = async (seriesId: string, title: string, collectionIds: string[]) => {
+      const item = await lib.favoriteSeries({ bridgeId: "demo", seriesId }, { seriesTitle: title });
+      await lib.setFavoriteItemCollections(item.id, collectionIds);
+    };
 
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s1", title: "Naruto", author: "Kishimoto", listIds: [action.id] });
+    await lib.addSeries({ bridgeId: "demo", seriesId: "s1", title: "Naruto", author: "Kishimoto" });
+    await file("s1", "Naruto", [action.id]);
     await lib.syncChapters(entryKey("demo", "s1"), [ch("a1", 1), ch("a2", 2)]);
 
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Bleach", listIds: [action.id, romance.id] });
+    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Bleach" });
+    await file("s2", "Bleach", [action.id, romance.id]);
     await lib.syncChapters(entryKey("demo", "s2"), [ch("b1", 1)]);
     await lib.markRead(entryKey("demo", "s2"), "b1", true);
 
@@ -824,16 +831,16 @@ describe("getLibrary query (search / sort / filters)", () => {
     expect(ids(await lib.getLibrary({ sort: "added", dir: "asc" }))).toEqual(["s1", "s2", "s3"]);
   });
 
-  test("listIds filters to ANY of the given lists", async () => {
+  test("collections filters to ANY of the given collections", async () => {
     const { lib, action, romance } = await seeded();
-    expect(ids(await lib.getLibrary({ listIds: [romance.id] }))).toEqual(["s2"]);
-    expect(ids(await lib.getLibrary({ listIds: [action.id, romance.id], sort: "title" }))).toEqual(["s2", "s1"]);
+    expect(ids(await lib.getLibrary({ collections: [romance.id] }))).toEqual(["s2"]);
+    expect(ids(await lib.getLibrary({ collections: [action.id, romance.id], sort: "title" }))).toEqual(["s2", "s1"]);
   });
 
-  test("unlisted returns only entries with no lists, taking precedence over listIds", async () => {
+  test("uncollected returns only entries in no collection, taking precedence over collections", async () => {
     const { lib, action } = await seeded();
-    expect(ids(await lib.getLibrary({ unlisted: true }))).toEqual(["s3"]);
-    expect(ids(await lib.getLibrary({ unlisted: true, listIds: [action.id] }))).toEqual(["s3"]);
+    expect(ids(await lib.getLibrary({ uncollected: true }))).toEqual(["s3"]);
+    expect(ids(await lib.getLibrary({ uncollected: true, collections: [action.id] }))).toEqual(["s3"]);
   });
 
   test("filters compose (search + unreadOnly + sort)", async () => {

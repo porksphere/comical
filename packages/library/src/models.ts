@@ -71,15 +71,6 @@ export const cachedChaptersSchema = z.object({
 });
 export type CachedChapters = z.infer<typeof cachedChaptersSchema>;
 
-/** A user-defined list the library groups entries into (e.g. "Reading", "Plan to Read"). */
-export const libraryListSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  /** Sort position among lists (ascending). */
-  order: z.number(),
-});
-export type LibraryList = z.infer<typeof libraryListSchema>;
-
 /** One tracked series in the library. */
 export const libraryEntrySchema = z.object({
   bridgeId: z.string().min(1),
@@ -88,8 +79,6 @@ export const libraryEntrySchema = z.object({
   title: z.string().min(1),
   thumbnailUrl: z.string().url().optional(),
   author: z.string().optional(),
-  /** List memberships (ids into `LibraryList`). Empty = unlisted. */
-  listIds: z.array(z.string()).default([]),
   addedAt: z.number().int(),
   updatedAt: z.number().int(),
   /** Resume cache, updated on every read so history/resume need no progress scan. */
@@ -163,56 +152,93 @@ export const chapterProgressSchema = z.object({
 });
 export type ChapterProgress = z.infer<typeof chapterProgressSchema>;
 
-// ── Page favorites ────────────────────────────────────────────────────────────
-// A favorited PAGE is local user data, entirely unrelated to a bridge account's per-series
-// `favorites` capability (`/bridges/{id}/favorites`): nothing here ever touches a bridge. Bridges
-// expose no page identity, so a favorite is located by its coordinates — `(bridgeId, seriesId,
-// chapterId, pageIndex)` — and its id is DERIVED from them, which is what makes favoriting
-// idempotent and "is this page favorited" a keyed lookup rather than a scan.
+// ── Favorites & collections ───────────────────────────────────────────────────
+// Local user data, entirely unrelated to a bridge account's per-series `favorites` capability
+// (`/bridges/{id}/favorites`): nothing here ever touches a bridge. A favorite ITEM anchors a
+// series, a chapter, or a single page; collections are user-named groupings any item can be filed
+// into — one system replacing both the old library "lists" and the favorites-side "collections".
+//
+// Every item is located by coordinates and its id is DERIVED from them (type-prefixed), which is
+// what makes favoriting idempotent and "is this favorited" a keyed lookup rather than a scan.
 
-/** Where a favorited page lives. `chapterId` carries `__direct__` for chapterless series. */
-export const favoritePageCoordSchema = z.object({
-  bridgeId: z.string().min(1),
-  seriesId: z.string().min(1),
-  chapterId: z.string().min(1),
+export type FavoriteItemType = "series" | "chapter" | "page";
+
+export interface FavoriteSeriesCoord {
+  bridgeId: string;
+  seriesId: string;
+}
+/** `chapterId` carries `__direct__` for chapterless series. */
+export interface FavoriteChapterCoord extends FavoriteSeriesCoord {
+  chapterId: string;
+}
+export interface FavoritePageCoord extends FavoriteChapterCoord {
   /** 0-based index into the chapter's page list. */
-  pageIndex: z.number().int().nonnegative(),
-});
-export type FavoritePageCoord = z.infer<typeof favoritePageCoordSchema>;
-
-/**
- * Stable, derived id for a favorited page: the four coordinates joined by `:`, each URL-encoded.
- * Encoding is what makes the join unambiguous — `encodeURIComponent` escapes `:` itself, so no
- * component can contain a bare separator — and it keeps the id usable as a single URL path segment.
- */
-export function favoritePageId(coord: FavoritePageCoord): string {
-  return [coord.bridgeId, coord.seriesId, coord.chapterId, String(coord.pageIndex)]
-    .map((s) => encodeURIComponent(s))
-    .join(":");
+  pageIndex: number;
 }
 
-/** Split a `favoritePageId` back into its coordinates. `undefined` for anything malformed. */
-export function parseFavoritePageId(id: string): FavoritePageCoord | undefined {
-  const parts = id.split(":");
-  if (parts.length !== 4) return undefined;
+/** Typed coordinates for any favoritable target. */
+export type FavoriteItemCoord =
+  | ({ type: "series" } & FavoriteSeriesCoord)
+  | ({ type: "chapter" } & FavoriteChapterCoord)
+  | ({ type: "page" } & FavoritePageCoord);
+
+/**
+ * Stable, derived id: the type token, then each coordinate URL-encoded, joined by `:`. Encoding is
+ * what makes the join unambiguous — `encodeURIComponent` escapes `:` itself — and the type prefix
+ * is what lets one keyspace hold all three shapes (`series:b:s`, `chapter:b:s:c`, `page:b:s:c:i`).
+ */
+export function favoriteItemId(coord: FavoriteItemCoord): string {
+  const parts = [coord.bridgeId, coord.seriesId];
+  if (coord.type !== "series") parts.push(coord.chapterId);
+  if (coord.type === "page") parts.push(String(coord.pageIndex));
+  return [coord.type, ...parts.map((s) => encodeURIComponent(s))].join(":");
+}
+
+/** Split a `favoriteItemId` back into typed coordinates. `undefined` for anything malformed. */
+export function parseFavoriteItemId(id: string): FavoriteItemCoord | undefined {
+  const [type, ...rest] = id.split(":");
+  const arity = type === "series" ? 2 : type === "chapter" ? 3 : type === "page" ? 4 : -1;
+  if (arity === -1 || rest.length !== arity) return undefined;
   let decoded: string[];
   try {
-    decoded = parts.map((p) => decodeURIComponent(p));
+    decoded = rest.map((p) => decodeURIComponent(p));
   } catch {
     return undefined; // invalid percent-escape
   }
-  const [bridgeId, seriesId, chapterId, rawIndex] = decoded as [string, string, string, string];
+  const [bridgeId, seriesId, chapterId, rawIndex] = decoded;
+  if (!bridgeId || !seriesId) return undefined;
+  if (type === "series") return { type, bridgeId, seriesId };
+  if (!chapterId) return undefined;
+  if (type === "chapter") return { type, bridgeId, seriesId, chapterId };
   const pageIndex = Number(rawIndex);
-  if (!bridgeId || !seriesId || !chapterId) return undefined;
   if (rawIndex === "" || !Number.isInteger(pageIndex) || pageIndex < 0) return undefined;
-  return { bridgeId, seriesId, chapterId, pageIndex };
+  return { type: "page", bridgeId, seriesId, chapterId: chapterId!, pageIndex };
 }
 
-/**
- * The display snapshot a client supplies when favoriting. Denormalised for the same reason
- * `LibraryEntry` caches one: a favorites tile must render with the bridge uninstalled or the source
- * down, long after the coordinates stop resolving.
- */
+// Display snapshots, supplied by the client when favoriting. Denormalised for the same reason
+// `LibraryEntry` caches one: a tile must render with the bridge uninstalled or the source down,
+// long after the coordinates stop resolving.
+
+export const favoriteSeriesSnapshotSchema = z.object({
+  seriesTitle: z.string().min(1),
+  thumbnailUrl: z.string().url().optional(),
+  author: z.string().optional(),
+});
+export type FavoriteSeriesSnapshot = z.infer<typeof favoriteSeriesSnapshotSchema>;
+
+export const favoriteChapterSnapshotSchema = z.object({
+  seriesTitle: z.string().min(1),
+  chapterName: z.string().optional(),
+  /**
+   * Logical-chapter identity, mirroring `Chapter.number`/`languageCode` — the chapter's RE-ANCHOR
+   * key. A chapter re-uploaded under a new id is relocated by matching `(number, languageCode)`
+   * against the fresh chapter list inside `syncChapters`, the same collapse `knownChapters` uses.
+   */
+  number: z.number().optional(),
+  languageCode: z.string().optional(),
+});
+export type FavoriteChapterSnapshot = z.infer<typeof favoriteChapterSnapshotSchema>;
+
 export const favoritePageSnapshotSchema = z.object({
   seriesTitle: z.string().min(1),
   chapterName: z.string().optional(),
@@ -237,33 +263,70 @@ export const favoritePageSnapshotSchema = z.object({
 });
 export type FavoritePageSnapshot = z.infer<typeof favoritePageSnapshotSchema>;
 
-/** One favorited page. */
-export const favoritePageSchema = favoritePageCoordSchema.extend({
-  /** `favoritePageId(coord)` — derived, never random. */
+/** Fields every favorite item carries regardless of target type. */
+const favoriteItemBase = {
+  /** `favoriteItemId(coord)` — derived, never random. */
   id: z.string().min(1),
   /** Epoch ms; the date sort axis. */
   favoritedAt: z.number().int(),
   /** Collection memberships (ids into `FavoriteCollection`). Empty = uncollected. */
   collectionIds: z.array(z.string()).default([]),
   seriesTitle: z.string().min(1),
+  /**
+   * Set when the item's target could no longer be located — a page a reconcile couldn't place, or a
+   * chapter whose id vanished from a sync with no logical match. A stale item is NEVER deleted: the
+   * user favorited it deliberately, and the snapshot still renders. It is simply no longer trusted
+   * as a pointer, so readers must not highlight or navigate to it. Clears itself when a later
+   * reconcile/sync finds the target again.
+   */
+  stale: z.boolean().optional(),
+};
+
+export const favoriteSeriesItemSchema = z.object({
+  type: z.literal("series"),
+  bridgeId: z.string().min(1),
+  seriesId: z.string().min(1),
+  ...favoriteItemBase,
+  thumbnailUrl: z.string().url().optional(),
+  author: z.string().optional(),
+});
+export type FavoriteSeriesItem = z.infer<typeof favoriteSeriesItemSchema>;
+
+export const favoriteChapterItemSchema = z.object({
+  type: z.literal("chapter"),
+  bridgeId: z.string().min(1),
+  seriesId: z.string().min(1),
+  chapterId: z.string().min(1),
+  ...favoriteItemBase,
+  chapterName: z.string().optional(),
+  number: z.number().optional(),
+  languageCode: z.string().optional(),
+});
+export type FavoriteChapterItem = z.infer<typeof favoriteChapterItemSchema>;
+
+export const favoritePageItemSchema = z.object({
+  type: z.literal("page"),
+  bridgeId: z.string().min(1),
+  seriesId: z.string().min(1),
+  chapterId: z.string().min(1),
+  pageIndex: z.number().int().nonnegative(),
+  ...favoriteItemBase,
   chapterName: z.string().optional(),
   /** The chapter's page count when this was favorited. Kept current by `reconcileChapterFavorites`,
    *  which also uses a mismatch as the last-resort "this chapter moved" signal. */
   pageCount: z.number().int().nonnegative().optional(),
   sourceUrl: z.string().optional(),
   contentHash: z.string().optional(),
-  /**
-   * Set when a reconcile against a fresh page list could not locate this page any more — the source
-   * changed the chapter and neither the hash nor the URL matched anything in it.
-   *
-   * A stale favorite is NEVER deleted: the user favorited it deliberately, and the snapshot still
-   * renders. It is simply no longer trusted as a pointer — it stops being reported as a favorited
-   * index, so the reader can't highlight or navigate to a page that isn't the one saved. Clears
-   * itself if a later reconcile finds the page again (a source reverting a bad re-upload).
-   */
-  stale: z.boolean().optional(),
 });
-export type FavoritePage = z.infer<typeof favoritePageSchema>;
+export type FavoritePageItem = z.infer<typeof favoritePageItemSchema>;
+
+/** Any favorited target — one keyspace, one store seam, one query surface. */
+export const favoriteItemSchema = z.discriminatedUnion("type", [
+  favoriteSeriesItemSchema,
+  favoriteChapterItemSchema,
+  favoritePageItemSchema,
+]);
+export type FavoriteItem = z.infer<typeof favoriteItemSchema>;
 
 /**
  * One page of a freshly-fetched chapter, as handed to {@link Library.reconcileChapterFavorites}.
@@ -274,7 +337,7 @@ export interface ChapterPageRef {
   /** The page's image URL as of now. Cheap: the caller fetched the list to render the chapter. */
   url?: string;
   /**
-   * Lowercase hex SHA-256 of the page's bytes — see `FavoritePage.contentHash`.
+   * Lowercase hex SHA-256 of the page's bytes — see `FavoritePageItem.contentHash`.
    *
    * **Expected to be SPARSE**, and that is the whole design. A client can only hash bytes it holds,
    * which is the page or two it has actually rendered; hashing the full list would mean downloading
@@ -290,19 +353,21 @@ export interface ChapterPageRef {
 }
 
 /**
- * Which favorites a {@link LibraryStore.listFavoritePages} call is interested in. Omitted fields
+ * Which favorites a {@link LibraryStore.listFavoriteItems} call is interested in. Omitted fields
  * don't constrain. Stores MUST honour it: it is what keeps a chapter open from loading a whole
  * library's favorites, and what lets an indexed backend answer without a scan.
  */
-export interface FavoritePageScope {
+export interface FavoriteItemScope {
+  type?: FavoriteItemType;
   bridgeId?: string;
   seriesId?: string;
   chapterId?: string;
 }
 
 /**
- * A user-created grouping a favorited page can be filed into. Deliberately shaped like
- * `LibraryList` so both sides reuse the same create/rename/reorder/delete patterns.
+ * A user-created grouping any favorite item can be filed into — the ONE grouping concept in the
+ * app (the old library "lists" retired into this). Deliberately not called "tags": that word
+ * belongs to bridge content/genre tags (`getTags`, `excludedTags`).
  */
 export const favoriteCollectionSchema = z.object({
   id: z.string().min(1),

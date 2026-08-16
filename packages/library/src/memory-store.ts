@@ -3,7 +3,7 @@
  * fallback for hosts without durable storage. Deep-clones on the way in and out so callers can't
  * mutate stored objects by reference.
  */
-import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type FavoriteCollection, type FavoritePage, type FavoritePageScope, type HistoryItem, type LibraryEntry, type LibraryList, type SeriesGroup, type TrackerLink } from "./models.ts";
+import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type FavoriteCollection, type FavoriteItem, type FavoriteItemScope, type HistoryItem, type LibraryEntry, type SeriesGroup, type TrackerLink } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
 const clone = <T>(v: T): T => structuredClone(v);
@@ -11,7 +11,6 @@ const clone = <T>(v: T): T => structuredClone(v);
 export class InMemoryLibraryStore implements LibraryStore {
   private entries = new Map<string, LibraryEntry>();
   private progress = new Map<string, Map<string, ChapterProgress>>();
-  private lists = new Map<string, LibraryList>();
   private groups = new Map<string, SeriesGroup>();
   private trackerLinks = new Map<string, Map<string, TrackerLink>>();
   private readingLog = new Map<string, HistoryItem>();
@@ -19,7 +18,7 @@ export class InMemoryLibraryStore implements LibraryStore {
   private activity = new Map<string, ActivityItem>();
   private details = new Map<string, CachedSeriesDetail>();
   private chaptersCache = new Map<string, CachedChapters>();
-  private favoritePages = new Map<string, FavoritePage>();
+  private favoriteItems = new Map<string, FavoriteItem>();
   private favoriteCollections: FavoriteCollection[] = [];
 
   async listEntries(): Promise<LibraryEntry[]> {
@@ -69,16 +68,6 @@ export class InMemoryLibraryStore implements LibraryStore {
     this.progress.delete(key);
   }
 
-  async listLists(): Promise<LibraryList[]> {
-    return [...this.lists.values()].map(clone);
-  }
-  async putList(list: LibraryList): Promise<void> {
-    this.lists.set(list.id, clone(list));
-  }
-  async deleteList(id: string): Promise<void> {
-    this.lists.delete(id);
-  }
-
   async listGroups(): Promise<SeriesGroup[]> {
     return [...this.groups.values()].map(clone);
   }
@@ -91,25 +80,26 @@ export class InMemoryLibraryStore implements LibraryStore {
 
   /** Filters BEFORE cloning: the clone is what makes a full listing expensive, so a scoped call
    *  must not pay for records it is going to discard. */
-  async listFavoritePages(scope?: FavoritePageScope): Promise<FavoritePage[]> {
-    const out: FavoritePage[] = [];
-    for (const p of this.favoritePages.values()) {
-      if (scope?.bridgeId !== undefined && p.bridgeId !== scope.bridgeId) continue;
-      if (scope?.seriesId !== undefined && p.seriesId !== scope.seriesId) continue;
-      if (scope?.chapterId !== undefined && p.chapterId !== scope.chapterId) continue;
-      out.push(clone(p));
+  async listFavoriteItems(scope?: FavoriteItemScope): Promise<FavoriteItem[]> {
+    const out: FavoriteItem[] = [];
+    for (const item of this.favoriteItems.values()) {
+      if (scope?.type !== undefined && item.type !== scope.type) continue;
+      if (scope?.bridgeId !== undefined && item.bridgeId !== scope.bridgeId) continue;
+      if (scope?.seriesId !== undefined && item.seriesId !== scope.seriesId) continue;
+      if (scope?.chapterId !== undefined && (item.type === "series" || item.chapterId !== scope.chapterId)) continue;
+      out.push(clone(item));
     }
     return out;
   }
-  async getFavoritePage(id: string): Promise<FavoritePage | undefined> {
-    const p = this.favoritePages.get(id);
-    return p ? clone(p) : undefined;
+  async getFavoriteItem(id: string): Promise<FavoriteItem | undefined> {
+    const item = this.favoriteItems.get(id);
+    return item ? clone(item) : undefined;
   }
-  async putFavoritePages(pages: FavoritePage[]): Promise<void> {
-    for (const page of pages) this.favoritePages.set(page.id, clone(page));
+  async putFavoriteItems(items: FavoriteItem[]): Promise<void> {
+    for (const item of items) this.favoriteItems.set(item.id, clone(item));
   }
-  async deleteFavoritePages(ids: string[]): Promise<void> {
-    for (const id of ids) this.favoritePages.delete(id);
+  async deleteFavoriteItems(ids: string[]): Promise<void> {
+    for (const id of ids) this.favoriteItems.delete(id);
   }
 
   async listFavoriteCollections(): Promise<FavoriteCollection[]> {

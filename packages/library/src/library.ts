@@ -11,7 +11,7 @@ import {
   cachedChaptersSchema,
   cachedSeriesDetailSchema,
   entryKey,
-  favoritePageId,
+  favoriteItemId,
   parseEntryKey,
   type ActivityItem,
   type ActivityItemView,
@@ -20,15 +20,23 @@ import {
   type CachedSeriesDetail,
   type ChapterPageRef,
   type ChapterProgress,
+  type FavoriteChapterCoord,
+  type FavoriteChapterItem,
+  type FavoriteChapterSnapshot,
   type FavoriteCollection,
-  type FavoritePage,
+  type FavoriteItem,
+  type FavoriteItemCoord,
+  type FavoriteItemType,
   type FavoritePageCoord,
+  type FavoritePageItem,
   type FavoritePageSnapshot,
+  type FavoriteSeriesCoord,
+  type FavoriteSeriesItem,
+  type FavoriteSeriesSnapshot,
   type HistoryItem,
   type KnownChapter,
   type LibraryEntry,
   type LibraryEntryView,
-  type LibraryList,
   type ResumePoint,
   type SeriesGroup,
   type TrackerLink,
@@ -42,7 +50,6 @@ export interface SeriesSnapshot {
   title: string;
   thumbnailUrl?: string;
   author?: string;
-  listIds?: string[];
   /** Cross-service ids from `SeriesInfo.externalIds`, keyed by tracker id — persisted for auto-grouping + sync. */
   externalIds?: Record<string, string | number>;
 }
@@ -77,12 +84,12 @@ export type LibrarySort = "added" | "title" | "lastRead" | "unread";
 
 /** Filter + sort options for {@link Library.getLibrary}. All optional. */
 export interface LibraryQuery {
-  /** Single-list filter (back-compat). Prefer `listIds`. */
-  listId?: string;
-  /** Filter to entries assigned to ANY of these lists. Empty/absent means all lists. */
-  listIds?: string[];
-  /** Only entries with no lists assigned. Takes precedence over `listId`/`listIds`. */
-  unlisted?: boolean;
+  /** Single-collection filter. Prefer `collections`. */
+  collection?: string;
+  /** Filter to entries whose series is in ANY of these collections. Empty/absent means all. */
+  collections?: string[];
+  /** Only entries whose series is in no collection. Takes precedence over `collection`/`collections`. */
+  uncollected?: boolean;
   /** Case-insensitive substring search over title + author. */
   q?: string;
   /** Only entries with at least one unread chapter. */
@@ -93,19 +100,22 @@ export interface LibraryQuery {
   dir?: "asc" | "desc";
 }
 
-/** Sort keys for {@link Library.getFavoritePages}. Direction is a separate `dir`, as on `getLibrary` —
+/** Sort keys for {@link Library.getFavoriteItems}. Direction is a separate `dir`, as on `getLibrary` —
  *  folding it into the key (an `"oldest"` alongside `"added"`) can't express "series, descending"
  *  without inventing another key for every combination. */
-export type FavoritePagesSort = "added" | "series" | "chapter";
+export type FavoriteItemsSort = "added" | "series" | "chapter";
 
-/** Filter + sort options for {@link Library.getFavoritePages}. All optional. */
-export interface FavoritePagesQuery {
+/** Filter + sort options for {@link Library.getFavoriteItems}. All optional. */
+export interface FavoriteItemsQuery {
+  /** Restrict to one item type; absent means the mixed union. */
+  type?: FavoriteItemType;
   /**
    * - `added` (default) — by favorite date.
    * - `series` — grouped by series title, by favorite date within each.
-   * - `chapter` — reading order: series title, then chapter name, then page index.
+   * - `chapter` — reading order: series title, then chapter name, then page index (series items
+   *   sort ahead of their chapters, chapters ahead of their pages, via empty-key fallbacks).
    */
-  sort?: FavoritePagesSort;
+  sort?: FavoriteItemsSort;
   /** Sort direction. Defaults to `"desc"` for `added` (newest first) and `"asc"` otherwise. */
   dir?: "asc" | "desc";
   /** A collection id, or the literal `"uncollected"` for favorites filed nowhere. */
@@ -119,23 +129,28 @@ export interface FavoritePagesQuery {
 /** The literal `collection` value that selects favorites with no collection memberships. */
 export const UNCOLLECTED = "uncollected";
 
-/** Compare two favorites by `sort` key in ASCENDING order; callers apply direction, exactly as
+/** Compare two favorite items by `sort` key in ASCENDING order; callers apply direction, exactly as
  *  `compareEntries` does. Every branch falls through to the derived id so repeated calls are
  *  stable — and note `dir` flips the tie-breakers too, since one sign covers the whole comparison. */
-function compareFavoritePages(a: FavoritePage, b: FavoritePage, sort: FavoritePagesSort): number {
+function compareFavoriteItems(a: FavoriteItem, b: FavoriteItem, sort: FavoriteItemsSort): number {
   const byDate = a.favoritedAt - b.favoritedAt || a.id.localeCompare(b.id);
   switch (sort) {
     case "added":
       return byDate;
     case "series":
       return a.seriesTitle.localeCompare(b.seriesTitle) || byDate;
-    case "chapter":
+    case "chapter": {
+      // Reading order across the union: a series item leads its own chapters (empty chapter key),
+      // and a chapter item leads its own pages (index -1).
+      const chapterKey = (i: FavoriteItem) => (i.type === "series" ? "" : (i.chapterName ?? ""));
+      const pageKey = (i: FavoriteItem) => (i.type === "page" ? i.pageIndex : -1);
       return (
         a.seriesTitle.localeCompare(b.seriesTitle) ||
-        (a.chapterName ?? "").localeCompare(b.chapterName ?? "") ||
-        a.pageIndex - b.pageIndex ||
+        chapterKey(a).localeCompare(chapterKey(b)) ||
+        pageKey(a) - pageKey(b) ||
         a.id.localeCompare(b.id)
       );
+    }
   }
 }
 
@@ -175,7 +190,6 @@ export class Library {
           bridgeId: snap.bridgeId,
           seriesId: snap.seriesId,
           title: snap.title,
-          listIds: snap.listIds ?? [],
           addedAt: t,
           updatedAt: t,
           knownChapters: [],
@@ -183,7 +197,6 @@ export class Library {
     // Optional snapshot fields: only set when provided (exactOptionalPropertyTypes-friendly).
     if (snap.thumbnailUrl !== undefined) entry.thumbnailUrl = snap.thumbnailUrl;
     if (snap.author !== undefined) entry.author = snap.author;
-    if (!existing && snap.listIds) entry.listIds = snap.listIds;
     if (snap.externalIds !== undefined) entry.externalIds = snap.externalIds;
     await this.store.putEntry(entry);
 
@@ -303,13 +316,6 @@ export class Library {
     return this.store.getEntry(key);
   }
 
-  async setLists(key: string, listIds: string[]): Promise<void> {
-    const entry = await this.requireEntry(key);
-    entry.listIds = [...new Set(listIds)];
-    entry.updatedAt = this.now();
-    await this.store.putEntry(entry);
-  }
-
   /**
    * Query the library: filter by list/search/read-state and sort, each entry carrying a derived
    * `unreadCount`. All options are optional; with none, returns every entry sorted newest-added-first.
@@ -317,14 +323,17 @@ export class Library {
   async getLibrary(opts: LibraryQuery = {}): Promise<LibraryEntryView[]> {
     const entries = await this.store.listEntries();
 
-    // List scope: `unlisted` (no lists) wins; else single `listId` (back-compat) or
-    // `listIds` (OR across the set). An empty/absent set means "all".
-    const listIds = opts.listIds ?? (opts.listId !== undefined ? [opts.listId] : undefined);
+    // Collection scope: memberships live on SERIES favorite items (the one grouping system), so the
+    // filter reads through them. The type-scoped listing is small — bounded by how many series the
+    // user has filed, never by page favorites — and only runs when a collection filter is present.
+    const collectionIds = opts.collections ?? (opts.collection !== undefined ? [opts.collection] : undefined);
     let filtered = entries;
-    if (opts.unlisted) {
-      filtered = filtered.filter((e) => e.listIds.length === 0);
-    } else if (listIds && listIds.length > 0) {
-      filtered = filtered.filter((e) => e.listIds.some((id) => listIds.includes(id)));
+    if (opts.uncollected || (collectionIds && collectionIds.length > 0)) {
+      const seriesItems = await this.store.listFavoriteItems({ type: "series" });
+      const memberships = new Map(seriesItems.map((i) => [entryKey(i.bridgeId, i.seriesId), i.collectionIds]));
+      const of = (e: LibraryEntry) => memberships.get(entryKey(e.bridgeId, e.seriesId)) ?? [];
+      if (opts.uncollected) filtered = filtered.filter((e) => of(e).length === 0);
+      else filtered = filtered.filter((e) => of(e).some((id) => collectionIds!.includes(id)));
     }
 
     // Free-text search: case-insensitive substring over title + author.
@@ -381,6 +390,13 @@ export class Library {
           if (c.publishedAt !== undefined && c.publishedAt <= entry.addedAt) return false;
           return true;
         });
+    // Re-anchor this series' chapter/page favorites BEFORE the baseline is overwritten — the
+    // vanished-chapter remap is built from the previous `knownChapters`. Skipped on the first sync
+    // (no baseline means no way to tell a re-upload from a first look).
+    if (!firstSync) {
+      await this.reanchorChapterFavorites(entry.bridgeId, entry.seriesId, entry.knownChapters ?? [], chapters);
+    }
+
     const t = this.now();
     entry.knownChapters = chapters.map((c): KnownChapter => {
       const k: KnownChapter = { id: c.id };
@@ -724,75 +740,71 @@ export class Library {
     return items.length - keepNewest;
   }
 
-  // ── Lists ────────────────────────────────────────────────────────────────────
-
-  async getLists(): Promise<LibraryList[]> {
-    return (await this.store.listLists()).sort((a, b) => a.order - b.order);
-  }
-
-  async createList(name: string): Promise<LibraryList> {
-    const existing = await this.store.listLists();
-    const order = existing.reduce((max, c) => Math.max(max, c.order), -1) + 1;
-    const list: LibraryList = { id: crypto.randomUUID(), name, order };
-    await this.store.putList(list);
-    return list;
-  }
-
-  async renameList(id: string, name: string): Promise<void> {
-    const list = (await this.store.listLists()).find((c) => c.id === id);
-    if (!list) throw new Error(`list not found: ${id}`);
-    await this.store.putList({ ...list, name });
-  }
-
-  async reorderLists(orderedIds: string[]): Promise<void> {
-    const lists = await this.store.listLists();
-    for (const c of lists) {
-      const idx = orderedIds.indexOf(c.id);
-      if (idx !== -1 && idx !== c.order) await this.store.putList({ ...c, order: idx });
-    }
-  }
-
-  /** Delete a list and strip its id from every entry that referenced it. */
-  async deleteList(id: string): Promise<void> {
-    await this.store.deleteList(id);
-    for (const entry of await this.store.listEntries()) {
-      if (entry.listIds.includes(id)) {
-        entry.listIds = entry.listIds.filter((c) => c !== id);
-        entry.updatedAt = this.now();
-        await this.store.putEntry(entry);
-      }
-    }
-  }
-
-  // ── Page favorites ────────────────────────────────────────────────────────────
+  // ── Favorites (series / chapter / page) ──────────────────────────────────────
   // Local user data, independent of the library: a page can be favorited from a series that was
   // never added, and removing a series from the library leaves its favorites alone. Unrelated to a
   // bridge account's per-series `favorites` capability, which lives behind `/bridges/{id}/favorites`.
+  //
+  // Favoriting MERGES over the stored record — a supplied field wins as the fresher value, an
+  // OMITTED one is preserved. Never a rebuild from the snapshot alone, because a partial PUT is a
+  // legitimate client pattern: comical-app favorites a page the moment the user taps and follows up
+  // with a second PUT once it has the `contentHash` (hashing a ~1MB page on Hermes' JS crypto shim
+  // is far too slow to block the tap). `favoritedAt` and `collectionIds` likewise carry over; the
+  // one field NOT carried is `stale` — the user is looking at the target as they tap, so its
+  // coordinates are current by definition.
 
-  /**
-   * Favorite one page. IDEMPOTENT: the id is derived from the coordinates, so re-favoriting the same
-   * page updates it in place rather than duplicating it.
-   *
-   * A re-favorite MERGES over the stored record — a supplied field wins as the fresher value, an
-   * OMITTED one is preserved. It is never a rebuild from the snapshot alone, because a partial PUT
-   * is a legitimate and expected client pattern: comical-app favorites the moment the user taps and
-   * follows up with a second PUT once it has the `contentHash`, since SHA-256 over a ~1MB page on
-   * Hermes' JS crypto shim is far too slow to block the tap. Rebuilding would let that follow-up
-   * silently erase whatever it didn't happen to resend — `contentHash` and `pageCount` above all,
-   * the strong and the fallback re-anchor signals respectively.
-   *
-   * `favoritedAt` and `collectionIds` likewise carry over: the user favorited this page once, and
-   * filed it deliberately. `stale` is the one field NOT carried — the user is looking at the page as
-   * they tap, so its coordinates are current by definition.
-   */
-  async favoritePage(coord: FavoritePageCoord, snap: FavoritePageSnapshot): Promise<FavoritePage> {
-    const id = favoritePageId(coord);
-    const existing = await this.store.getFavoritePage(id);
+  async favoriteSeries(coord: FavoriteSeriesCoord, snap: FavoriteSeriesSnapshot): Promise<FavoriteSeriesItem> {
+    const id = favoriteItemId({ type: "series", ...coord });
+    const prev = await this.store.getFavoriteItem(id);
+    const existing = prev?.type === "series" ? prev : undefined;
+    const thumbnailUrl = snap.thumbnailUrl ?? existing?.thumbnailUrl;
+    const author = snap.author ?? existing?.author;
+    const item: FavoriteSeriesItem = {
+      type: "series",
+      ...coord,
+      id,
+      favoritedAt: existing?.favoritedAt ?? this.now(),
+      collectionIds: existing?.collectionIds ?? [],
+      seriesTitle: snap.seriesTitle,
+      ...(thumbnailUrl !== undefined && { thumbnailUrl }),
+      ...(author !== undefined && { author }),
+    };
+    await this.store.putFavoriteItems([item]);
+    return item;
+  }
+
+  async favoriteChapter(coord: FavoriteChapterCoord, snap: FavoriteChapterSnapshot): Promise<FavoriteChapterItem> {
+    const id = favoriteItemId({ type: "chapter", ...coord });
+    const prev = await this.store.getFavoriteItem(id);
+    const existing = prev?.type === "chapter" ? prev : undefined;
+    const chapterName = snap.chapterName ?? existing?.chapterName;
+    const number = snap.number ?? existing?.number;
+    const languageCode = snap.languageCode ?? existing?.languageCode;
+    const item: FavoriteChapterItem = {
+      type: "chapter",
+      ...coord,
+      id,
+      favoritedAt: existing?.favoritedAt ?? this.now(),
+      collectionIds: existing?.collectionIds ?? [],
+      seriesTitle: snap.seriesTitle,
+      ...(chapterName !== undefined && { chapterName }),
+      ...(number !== undefined && { number }),
+      ...(languageCode !== undefined && { languageCode }),
+    };
+    await this.store.putFavoriteItems([item]);
+    return item;
+  }
+
+  async favoritePage(coord: FavoritePageCoord, snap: FavoritePageSnapshot): Promise<FavoritePageItem> {
+    const id = favoriteItemId({ type: "page", ...coord });
+    const prev = await this.store.getFavoriteItem(id);
+    const existing = prev?.type === "page" ? prev : undefined;
     const chapterName = snap.chapterName ?? existing?.chapterName;
     const pageCount = snap.pageCount ?? existing?.pageCount;
     const sourceUrl = snap.sourceUrl ?? existing?.sourceUrl;
     const contentHash = snap.contentHash ?? existing?.contentHash;
-    const page: FavoritePage = {
+    const item: FavoritePageItem = {
+      type: "page",
       ...coord,
       id,
       favoritedAt: existing?.favoritedAt ?? this.now(),
@@ -803,52 +815,56 @@ export class Library {
       ...(sourceUrl !== undefined && { sourceUrl }),
       ...(contentHash !== undefined && { contentHash }),
     };
-    await this.store.putFavoritePages([page]);
-    return page;
+    await this.store.putFavoriteItems([item]);
+    return item;
   }
 
-  /** Unfavorite by coordinates. Returns the removed record, or undefined if it was not favorited. */
-  async unfavoritePage(coord: FavoritePageCoord): Promise<FavoritePage | undefined> {
-    return this.deleteFavoritePage(favoritePageId(coord));
+  /** Unfavorite by typed coordinates. Returns the removed record, or undefined if it was not
+   *  favorited. Idempotent — a double-tap must not throw. */
+  async unfavoriteItem(coord: FavoriteItemCoord): Promise<FavoriteItem | undefined> {
+    return this.deleteFavoriteItem(favoriteItemId(coord));
   }
 
   /** Unfavorite by derived id. Returns the removed record, or undefined if there was none. */
-  async deleteFavoritePage(id: string): Promise<FavoritePage | undefined> {
-    const existing = await this.store.getFavoritePage(id);
+  async deleteFavoriteItem(id: string): Promise<FavoriteItem | undefined> {
+    const existing = await this.store.getFavoriteItem(id);
     if (!existing) return undefined;
-    await this.store.deleteFavoritePages([id]);
+    await this.store.deleteFavoriteItems([id]);
     return existing;
   }
 
-  async getFavoritePage(id: string): Promise<FavoritePage | undefined> {
-    return this.store.getFavoritePage(id);
+  async getFavoriteItem(id: string): Promise<FavoriteItem | undefined> {
+    return this.store.getFavoriteItem(id);
   }
 
   /** Filter + sort the favorites. All of it happens HERE, not in a store or a client, so every host
    *  and every platform browses identically — the same split as `getLibrary`. */
-  async getFavoritePages(query: FavoritePagesQuery = {}): Promise<FavoritePage[]> {
-    // Push a series filter down to the store: on a per-series grid this is the difference between
-    // loading one series' favorites and every favorite the user has.
+  async getFavoriteItems(query: FavoriteItemsQuery = {}): Promise<FavoriteItem[]> {
+    // Push series (and type) filters down to the store: on a per-series grid this is the
+    // difference between loading one series' favorites and every favorite the user has.
     const scoped = query.series ? parseEntryKey(query.series) : undefined;
-    let pages = await this.store.listFavoritePages(
-      scoped ? { bridgeId: scoped.bridgeId, seriesId: scoped.seriesId } : undefined,
-    );
+    let items = await this.store.listFavoriteItems({
+      ...(query.type && { type: query.type }),
+      ...(scoped && { bridgeId: scoped.bridgeId, seriesId: scoped.seriesId }),
+    });
     if (query.collection === UNCOLLECTED) {
-      pages = pages.filter((p) => p.collectionIds.length === 0);
+      items = items.filter((i) => i.collectionIds.length === 0);
     } else if (query.collection) {
-      pages = pages.filter((p) => p.collectionIds.includes(query.collection!));
+      items = items.filter((i) => i.collectionIds.includes(query.collection!));
     }
     if (query.q) {
       const q = query.q.toLowerCase();
-      pages = pages.filter(
-        (p) => p.seriesTitle.toLowerCase().includes(q) || (p.chapterName?.toLowerCase().includes(q) ?? false),
+      items = items.filter(
+        (i) =>
+          i.seriesTitle.toLowerCase().includes(q) ||
+          (i.type !== "series" && (i.chapterName?.toLowerCase().includes(q) ?? false)),
       );
     }
     // Same shape as getLibrary: the comparator is ascending and one sign applies the direction.
     // `added` defaults to descending (newest first); the title-led keys default to ascending.
     const sort = query.sort ?? "added";
     const sign = (query.dir ?? (sort === "added" ? "desc" : "asc")) === "asc" ? 1 : -1;
-    return pages.sort((a, b) => sign * compareFavoritePages(a, b, sort));
+    return items.sort((a, b) => sign * compareFavoriteItems(a, b, sort));
   }
 
   /**
@@ -862,21 +878,21 @@ export class Library {
    * light up the button or drive navigation.
    */
   async getFavoritePageIndices(bridgeId: string, seriesId: string, chapterId: string): Promise<number[]> {
-    return (await this.store.listFavoritePages({ bridgeId, seriesId, chapterId }))
-      .filter((p) => !p.stale)
-      .map((p) => p.pageIndex)
+    return (await this.store.listFavoriteItems({ type: "page", bridgeId, seriesId, chapterId }))
+      .filter((i): i is FavoritePageItem => i.type === "page" && !i.stale)
+      .map((i) => i.pageIndex)
       .sort((a, b) => a - b);
   }
 
   /**
-   * Re-anchor a chapter's favorites against a freshly-fetched page list, and return the indices the
-   * reader should treat as favorited.
+   * Re-anchor a chapter's page favorites against a freshly-fetched page list, and return the
+   * indices the reader should treat as favorited.
    *
-   * WHY this exists: a favorite is located by `(bridge, series, chapter, pageIndex)` and sources
-   * mutate chapters underneath it — a page inserted at the front shifts every index after it, and a
-   * re-upload can replace the chapter wholesale. Without reconciliation those favorites silently
-   * point at the wrong page. This is the favorites-side counterpart of `syncChapters`: the caller
-   * already holds the fresh list, so repair costs no extra fetch.
+   * WHY this exists: a page favorite is located by `(bridge, series, chapter, pageIndex)` and
+   * sources mutate chapters underneath it — a page inserted at the front shifts every index after
+   * it, and a re-upload can replace the chapter wholesale. Without reconciliation those favorites
+   * silently point at the wrong page. This is the favorites-side counterpart of `syncChapters`: the
+   * caller already holds the fresh list, so repair costs no extra fetch.
    *
    * COST: one scoped store read plus at most two batched writes, for the ONE chapter being opened.
    * It never walks a series' other chapters and never fetches a page image — `pages` is the list the
@@ -907,14 +923,16 @@ export class Library {
     chapterId: string,
     pages: ChapterPageRef[],
   ): Promise<{ indices: number[]; repaired: number; stale: number }> {
-    const mine = await this.store.listFavoritePages({ bridgeId, seriesId, chapterId });
+    const mine = (await this.store.listFavoriteItems({ type: "page", bridgeId, seriesId, chapterId })).filter(
+      (i): i is FavoritePageItem => i.type === "page",
+    );
     // An empty list is far likelier a failed fetch than a chapter that genuinely lost every page.
     // Treating it as authoritative would mark the user's whole chapter stale, so it's a no-op.
     if (pages.length === 0 || mine.length === 0) {
       return {
         indices: await this.getFavoritePageIndices(bridgeId, seriesId, chapterId),
         repaired: 0,
-        stale: mine.filter((p) => p.stale).length,
+        stale: mine.filter((i) => i.stale).length,
       };
     }
 
@@ -935,7 +953,7 @@ export class Library {
      * plenty of sources. So a miss of either kind is not evidence, and only hits are acted on —
      * which is what makes adding hashes strictly an improvement rather than a new way to be wrong.
      */
-    const locate = (fav: FavoritePage): number | undefined => {
+    const locate = (fav: FavoritePageItem): number | undefined => {
       // 1. A hash HIT is the strongest evidence there is: same bytes, wherever they now sit.
       //    Survives URL rot and a chapter re-uploaded under a new id.
       if (fav.contentHash) {
@@ -961,19 +979,19 @@ export class Library {
     };
 
     let repaired = 0;
-    const next = new Map<string, FavoritePage>();
+    const next = new Map<string, FavoritePageItem>();
     for (const fav of mine) {
       const at = locate(fav);
       if (at === undefined) {
-        this.mergeFavorite(next, { ...fav, pageCount: pages.length, stale: true });
+        this.landFavorite(next, { ...fav, pageCount: pages.length, stale: true });
         continue;
       }
       if (at !== fav.pageIndex) repaired++;
       const coord = { bridgeId, seriesId, chapterId, pageIndex: at };
-      const healed: FavoritePage = {
+      const healed: FavoritePageItem = {
         ...fav,
         ...coord,
-        id: favoritePageId(coord),
+        id: favoriteItemId({ type: "page", ...coord }),
         pageCount: pages.length,
         // Adopt whatever the fresh list knows. The URL keeps the cheap signal current; a hash we
         // didn't have upgrades this favorite permanently, so the more of a chapter the user
@@ -984,51 +1002,140 @@ export class Library {
           : {}),
       };
       delete healed.stale; // located again — a source can revert a bad re-upload
-      this.mergeFavorite(next, healed);
+      this.landFavorite(next, healed);
     }
 
     // Two batched writes for the whole chapter, however many favorites it holds: a store rewrites
     // its favorites document per call, so a write per record would re-serialize every favorite the
     // user has, once per record. Re-keying can free an id (page 3 → 4) — drop only ids nothing
     // landed on.
-    await this.store.deleteFavoritePages(mine.filter((f) => !next.has(f.id)).map((f) => f.id));
-    await this.store.putFavoritePages([...next.values()]);
+    await this.store.deleteFavoriteItems(mine.filter((f) => !next.has(f.id)).map((f) => f.id));
+    await this.store.putFavoriteItems([...next.values()]);
 
     return {
-      indices: [...next.values()].filter((p) => !p.stale).map((p) => p.pageIndex).sort((a, b) => a - b),
+      indices: [...next.values()].filter((i) => !i.stale).map((i) => i.pageIndex).sort((a, b) => a - b),
       repaired,
-      stale: [...next.values()].filter((p) => p.stale).length,
+      stale: [...next.values()].filter((i) => i.stale).length,
     };
   }
 
-  /** Land a reconciled favorite, merging if two of them relocated onto the same page: keep the
-   *  earlier favoritedAt and the union of collections, so a merge never loses user intent. */
-  private mergeFavorite(into: Map<string, FavoritePage>, page: FavoritePage): void {
-    const existing = into.get(page.id);
-    if (!existing) {
-      into.set(page.id, page);
-      return;
-    }
-    const merged: FavoritePage = {
-      ...existing,
-      ...page,
-      favoritedAt: Math.min(existing.favoritedAt, page.favoritedAt),
-      collectionIds: [...new Set([...existing.collectionIds, ...page.collectionIds])],
+  /** Merge two records of the same item that relocated onto one target: keep the earlier
+   *  favoritedAt and the union of collections, so a merge never loses user intent. */
+  private mergeFavoriteRecords<T extends FavoriteItem>(a: T, b: T): T {
+    const merged: T = {
+      ...a,
+      ...b,
+      favoritedAt: Math.min(a.favoritedAt, b.favoritedAt),
+      collectionIds: [...new Set([...a.collectionIds, ...b.collectionIds])],
     };
     // Set explicitly, never by spread: a healed record carries no `stale` key at all, which would
     // otherwise let the other side's `stale: true` survive the merge.
-    if (existing.stale === true && page.stale === true) merged.stale = true;
+    if (a.stale === true && b.stale === true) merged.stale = true;
     else delete merged.stale;
-    into.set(page.id, merged);
+    return merged;
   }
 
-  /** Replace a favorite's collection memberships. Unknown collection ids are dropped. */
-  async setFavoritePageCollections(id: string, collectionIds: string[]): Promise<FavoritePage> {
-    const page = await this.getFavoritePage(id);
-    if (!page) throw new Error(`favorite page not found: ${id}`);
+  /** Land a re-anchored record, merging if two of them relocated onto the same target. */
+  private landFavorite<T extends FavoriteItem>(into: Map<string, T>, item: T): void {
+    const existing = into.get(item.id);
+    into.set(item.id, existing ? this.mergeFavoriteRecords(existing, item) : item);
+  }
+
+  /**
+   * Re-anchor this series' CHAPTER and PAGE favorites against a fresh chapter list — the chapter
+   * counterpart of `reconcileChapterFavorites`, run for free inside `syncChapters` (which already
+   * receives that list for every library series; favorites on non-library series never sync and so
+   * have no drift detection — accepted).
+   *
+   * Chapters have ids, not indices, so there is no index repair: a favorite whose `chapterId` is
+   * still present is verified (and un-staled). A vanished id is re-anchored by LOGICAL chapter
+   * `(number, languageCode)` — the same collapse `knownChapters` uses — which is what heals a
+   * chapter re-uploaded under a new id. The remap is built from the entry's previous
+   * `knownChapters`, so page favorites in a re-uploaded chapter heal too, even with no chapter
+   * item present. Anything unmatchable is marked `stale`, never deleted.
+   */
+  private async reanchorChapterFavorites(
+    bridgeId: string,
+    seriesId: string,
+    previouslyKnown: KnownChapter[],
+    chapters: Chapter[],
+  ): Promise<void> {
+    if (chapters.length === 0) return; // failed-fetch guard, same as the page reconcile
+    const items = (await this.store.listFavoriteItems({ bridgeId, seriesId })).filter(
+      (i): i is FavoriteChapterItem | FavoritePageItem => i.type !== "series",
+    );
+    if (items.length === 0) return;
+
+    const freshIds = new Set(chapters.map((c) => c.id));
+    const logicalKey = (number: number, languageCode?: string) => `${number}:${languageCode ?? ""}`;
+    const freshByLogical = new Map<string, Chapter>();
+    for (const c of chapters) {
+      if (c.number === undefined) continue;
+      const lk = logicalKey(c.number, c.languageCode);
+      if (!freshByLogical.has(lk)) freshByLogical.set(lk, c);
+    }
+    // Vanished old chapter id → its logical replacement in the fresh list.
+    const remap = new Map<string, Chapter>();
+    for (const k of previouslyKnown) {
+      if (freshIds.has(k.id) || k.number === undefined) continue;
+      const match = freshByLogical.get(logicalKey(k.number, k.languageCode));
+      if (match) remap.set(k.id, match);
+    }
+
+    const byId = new Map(items.map((i) => [i.id, i]));
+    const next = new Map<string, FavoriteChapterItem | FavoritePageItem>();
+    const dropped: string[] = [];
+    for (const item of items) {
+      if (freshIds.has(item.chapterId)) {
+        // Target verified. Un-stale if a previous sync had lost it (a source reverting).
+        if (item.stale) {
+          const healed = { ...item };
+          delete healed.stale;
+          this.landFavorite(next, healed);
+        }
+        continue;
+      }
+      // A chapter item favorited before any sync baseline can still self-anchor by its own snapshot.
+      const target =
+        remap.get(item.chapterId) ??
+        (item.type === "chapter" && item.number !== undefined
+          ? freshByLogical.get(logicalKey(item.number, item.languageCode))
+          : undefined);
+      if (!target) {
+        if (!item.stale) this.landFavorite(next, { ...item, stale: true });
+        continue;
+      }
+      dropped.push(item.id);
+      const rekeyed: FavoriteChapterItem | FavoritePageItem =
+        item.type === "chapter"
+          ? {
+              ...item,
+              chapterId: target.id,
+              id: favoriteItemId({ type: "chapter", bridgeId, seriesId, chapterId: target.id }),
+              ...(target.name !== undefined && { chapterName: target.name }),
+            }
+          : {
+              ...item,
+              chapterId: target.id,
+              id: favoriteItemId({ type: "page", bridgeId, seriesId, chapterId: target.id, pageIndex: item.pageIndex }),
+            };
+      delete rekeyed.stale;
+      // A re-key can land on coordinates the user favorited separately — merge, never clobber.
+      const collide = next.get(rekeyed.id) ?? (byId.get(rekeyed.id) as typeof rekeyed | undefined);
+      this.landFavorite(next, collide && !next.has(rekeyed.id) ? this.mergeFavoriteRecords(collide, rekeyed) : rekeyed);
+    }
+
+    await this.store.deleteFavoriteItems(dropped.filter((id) => !next.has(id)));
+    await this.store.putFavoriteItems([...next.values()]);
+  }
+
+  /** Replace an item's collection memberships. Unknown collection ids are dropped. */
+  async setFavoriteItemCollections(id: string, collectionIds: string[]): Promise<FavoriteItem> {
+    const item = await this.store.getFavoriteItem(id);
+    if (!item) throw new Error(`favorite not found: ${id}`);
     const known = new Set((await this.store.listFavoriteCollections()).map((c) => c.id));
-    const next: FavoritePage = { ...page, collectionIds: [...new Set(collectionIds)].filter((c) => known.has(c)) };
-    await this.store.putFavoritePages([next]);
+    const next: FavoriteItem = { ...item, collectionIds: [...new Set(collectionIds)].filter((c) => known.has(c)) };
+    await this.store.putFavoriteItems([next]);
     return next;
   }
 
@@ -1063,19 +1170,24 @@ export class Library {
   }
 
   /**
-   * Delete a collection and strip its id from every favorite that referenced it. Deleting a
-   * collection NEVER deletes the favorites in it — they fall back to uncollected, mirroring how
-   * `deleteList` leaves library entries in place.
+   * Delete a collection and strip its id from every member.
+   *
+   * Page favorites are NEVER deleted by this — a bare page is a heart the user set deliberately and
+   * simply becomes uncollected. Series and chapter items left with zero memberships ARE pruned:
+   * they only entered the system by being put in a collection (app policy — bare hearts are a
+   * page-only affordance), so an uncollected one is data litter, not intent.
    */
   async deleteFavoriteCollection(id: string): Promise<void> {
     const collections = await this.store.listFavoriteCollections();
     await this.store.putFavoriteCollections(collections.filter((c) => c.id !== id));
     // One batched write for the whole cascade — a per-member write would rewrite the favorites
     // document once per member.
-    const stripped = (await this.store.listFavoritePages())
-      .filter((p) => p.collectionIds.includes(id))
-      .map((p) => ({ ...p, collectionIds: p.collectionIds.filter((c) => c !== id) }));
-    await this.store.putFavoritePages(stripped);
+    const members = (await this.store.listFavoriteItems()).filter((i) => i.collectionIds.includes(id));
+    const stripped = members.map((i) => ({ ...i, collectionIds: i.collectionIds.filter((c) => c !== id) }));
+    const pruned = stripped.filter((i) => i.type !== "page" && i.collectionIds.length === 0);
+    await this.store.deleteFavoriteItems(pruned.map((i) => i.id));
+    const kept = stripped.filter((i) => !(i.type !== "page" && i.collectionIds.length === 0));
+    await this.store.putFavoriteItems(kept);
   }
 
   // ── Series groups ─────────────────────────────────────────────────────────────
