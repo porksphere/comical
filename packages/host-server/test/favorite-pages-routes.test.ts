@@ -131,6 +131,41 @@ describe("favoriting pages", () => {
     await send("DELETE", "/library/favorite-pages/demo/s1/c1/0");
   });
 
+  test("the two-PUT flow: favorite on tap, then send the hash, without losing anything", async () => {
+    // The client can't hash before the first PUT — SHA-256 over a ~1MB page on Hermes' JS crypto
+    // shim would visibly lag the tap. So it favorites immediately and follows up. The follow-up
+    // carries only what it has, and must not erase the rest.
+    const first = await json<FavoriteBody>(
+      await send("PUT", "/library/favorite-pages/demo/twoput/c1/4", {
+        seriesTitle: "Two Put",
+        chapterName: "Ch 1",
+        pageCount: 18,
+        sourceUrl: "https://cdn/p4.png",
+      }),
+    );
+    expect(first.contentHash).toBeUndefined();
+
+    const second = await json<FavoriteBody>(
+      await send("PUT", "/library/favorite-pages/demo/twoput/c1/4", {
+        seriesTitle: "Two Put",
+        contentHash: "sha-p4",
+      }),
+    );
+    expect(second).toMatchObject({
+      chapterName: "Ch 1",
+      pageCount: 18,
+      sourceUrl: "https://cdn/p4.png",
+      contentHash: "sha-p4",
+      favoritedAt: first.favoritedAt,
+    });
+
+    // And it is the persisted record, not just the response body.
+    const listed = await json<FavoriteBody[]>(await get("/library/favorite-pages?series=demo:twoput"));
+    expect(listed[0]).toMatchObject({ pageCount: 18, sourceUrl: "https://cdn/p4.png", contentHash: "sha-p4" });
+
+    await send("DELETE", "/library/favorite-pages/demo/twoput/c1/4");
+  });
+
   test("survives a restart — favorites round-trip through the FileLibraryStore on disk", async () => {
     await send("PUT", "/library/favorite-pages/demo/s1/c1/1", { seriesTitle: "Persisted" });
     // A fresh store over the same dir reads what the first one wrote.

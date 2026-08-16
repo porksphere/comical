@@ -771,23 +771,37 @@ export class Library {
 
   /**
    * Favorite one page. IDEMPOTENT: the id is derived from the coordinates, so re-favoriting the same
-   * page refreshes its display snapshot in place rather than duplicating it — and deliberately keeps
-   * the original `favoritedAt`, its collection memberships, and any captured thumbnail, which a
-   * re-favorite (e.g. a client replaying a stale write) must never silently discard.
+   * page updates it in place rather than duplicating it.
+   *
+   * A re-favorite MERGES over the stored record — a supplied field wins as the fresher value, an
+   * OMITTED one is preserved. It is never a rebuild from the snapshot alone, because a partial PUT
+   * is a legitimate and expected client pattern: comical-app favorites the moment the user taps and
+   * follows up with a second PUT once it has the `contentHash`, since SHA-256 over a ~1MB page on
+   * Hermes' JS crypto shim is far too slow to block the tap. Rebuilding would let that follow-up
+   * silently erase whatever it didn't happen to resend — `contentHash` and `pageCount` above all,
+   * the strong and the fallback re-anchor signals respectively.
+   *
+   * `favoritedAt` and `collectionIds` likewise carry over: the user favorited this page once, and
+   * filed it deliberately. `stale` is the one field NOT carried — the user is looking at the page as
+   * they tap, so its coordinates are current by definition.
    */
   async favoritePage(coord: FavoritePageCoord, snap: FavoritePageSnapshot): Promise<FavoritePage> {
     const id = favoritePageId(coord);
     const existing = await this.store.getFavoritePage(id);
+    const chapterName = snap.chapterName ?? existing?.chapterName;
+    const pageCount = snap.pageCount ?? existing?.pageCount;
+    const sourceUrl = snap.sourceUrl ?? existing?.sourceUrl;
+    const contentHash = snap.contentHash ?? existing?.contentHash;
     const page: FavoritePage = {
       ...coord,
       id,
       favoritedAt: existing?.favoritedAt ?? this.now(),
       collectionIds: existing?.collectionIds ?? [],
       seriesTitle: snap.seriesTitle,
-      ...(snap.chapterName !== undefined && { chapterName: snap.chapterName }),
-      ...(snap.pageCount !== undefined && { pageCount: snap.pageCount }),
-      ...(snap.sourceUrl !== undefined && { sourceUrl: snap.sourceUrl }),
-      ...(snap.contentHash !== undefined && { contentHash: snap.contentHash }),
+      ...(chapterName !== undefined && { chapterName }),
+      ...(pageCount !== undefined && { pageCount }),
+      ...(sourceUrl !== undefined && { sourceUrl }),
+      ...(contentHash !== undefined && { contentHash }),
     };
     await this.store.putFavoritePages([page]);
     return page;

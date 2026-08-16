@@ -127,6 +127,52 @@ describe("favoriting a page", () => {
     expect(page).toMatchObject({ sourceUrl: "https://cdn.example/0.png", contentHash: "sha-0" });
   });
 
+  test("a partial re-favorite MERGES — it never erases a field it didn't resend", async () => {
+    // The client cannot always send everything at once. comical-app favorites on tap and follows up
+    // with a second PUT carrying the hash, because SHA-256 over a ~1MB page on Hermes' JS crypto
+    // shim is far too slow to block the tap. A rebuild-from-snapshot would let that second PUT wipe
+    // whatever it didn't happen to repeat — including `pageCount`, which reconcile falls back on.
+    const { lib } = makeLibrary();
+    await lib.favoritePage(coord(), {
+      seriesTitle: "Series One",
+      chapterName: "Ch 1",
+      pageCount: 20,
+      sourceUrl: "https://cdn/p0.png",
+    });
+
+    const after = await lib.favoritePage(coord(), { seriesTitle: "Series One", contentHash: "sha-0" });
+    expect(after).toMatchObject({
+      chapterName: "Ch 1",
+      pageCount: 20,
+      sourceUrl: "https://cdn/p0.png",
+      contentHash: "sha-0",
+    });
+  });
+
+  test("a re-favorite that DOES resend a field takes the fresher value", async () => {
+    const { lib } = makeLibrary();
+    await lib.favoritePage(coord(), { seriesTitle: "S", sourceUrl: "https://cdn/old.png", contentHash: "sha-old" });
+    const after = await lib.favoritePage(coord(), {
+      seriesTitle: "S",
+      sourceUrl: "https://cdn/new.png",
+      contentHash: "sha-new",
+    });
+    expect(after).toMatchObject({ sourceUrl: "https://cdn/new.png", contentHash: "sha-new" });
+  });
+
+  test("re-favoriting clears `stale` — the user is looking at the page as they tap", async () => {
+    const { lib, fav } = await (async () => {
+      const { lib } = makeLibrary();
+      const fav = await lib.favoritePage(coord({ pageIndex: 2 }), { seriesTitle: "S", pageCount: 4 });
+      return { lib, fav };
+    })();
+    await reconcileRefs(lib, [{}, {}]); // count changed, unplaceable → stale
+    expect((await lib.getFavoritePage(fav.id))?.stale).toBe(true);
+
+    const refreshed = await lib.favoritePage(coord({ pageIndex: 2 }), { seriesTitle: "S", pageCount: 4 });
+    expect(refreshed.stale).toBeUndefined();
+  });
+
   test("distinct pages of the same chapter are distinct favorites", async () => {
     const { lib } = makeLibrary();
     await lib.favoritePage(coord({ pageIndex: 0 }), { seriesTitle: "S" });

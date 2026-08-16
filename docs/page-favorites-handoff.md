@@ -6,8 +6,10 @@
 > file is a second source of truth with no reason to exist — remove it in the merge commit.
 > (`docs/page-favorites-followups.md` is NOT transient; it records deferred decisions and stays.)
 
-**Runtime half:** branch `claude/page-favorites-runtime-00agdx`, commit `ac554fd`.
-**Pin this commit** in `external/comical` before starting; until then every route below 404s.
+**Runtime half:** branch `claude/page-favorites-runtime-00agdx`. **Pin the branch head** in
+`external/comical`; until the pin moves, every route below 404s. (`ac554fd` works but predates the
+`favoritePage` merge fix in §3 — on that commit a partial re-favorite erases fields it doesn't
+resend, which breaks the two-PUT pattern.)
 
 ---
 
@@ -134,16 +136,27 @@ state applies unchanged.
 > relocates a page *changes it*, and a held id will 404. That is exactly why no route accepts one.
 > Address favorites by coordinates — you always have them.
 
-**`PUT` is idempotent.** Re-favoriting the same page refreshes the display snapshot but keeps the
-original `favoritedAt`, its collection memberships, and its `contentHash`.
+**`PUT` is idempotent, and it MERGES.** A supplied field wins as the fresher value; an **omitted one
+is preserved**, never erased. `favoritedAt` and `collectionIds` carry over too. `stale` is cleared —
+the user is looking at the page as they tap, so its coordinates are current by definition.
+
+This is what makes the two-PUT pattern safe, and it is the pattern you want: **don't block the
+favorite tap on hashing.** SHA-256 over a ~1MB page through Hermes' JS `crypto.subtle` shim is slow
+enough to be felt. Favorite immediately with whatever you have, then PUT again with just
+`{ seriesTitle, contentHash }` once the hash is ready — `chapterName`, `pageCount` and `sourceUrl`
+survive untouched. (Sending everything on the follow-up is still fine, and harmless.)
 
 ## 4. What the client actually has to do
 
 ### Favorite button
 
-`PUT` with the snapshot. You are rendering the page, so **hash the bytes you already have** and send
-`contentHash` — lowercase hex SHA-256, no extra fetch. This is the single highest-value thing the
-client does; everything in §4's repair story gets weaker without it.
+`PUT` with the snapshot, and send `contentHash` — lowercase hex SHA-256 — because it is the strongest
+re-anchor key and everything in the repair story below is weaker without it.
+
+**Never fetch a page in order to hash it, and never block the tap on hashing.** Hash bytes you
+already hold: on native that is `Image.getCachePathAsync`, not a download. If the hash isn't ready at
+tap time, use the two-PUT pattern from §3 — favorite now, PUT the hash after. The merge semantics
+exist precisely so that second PUT is free of side effects.
 
 ### Reader: opening a chapter
 
