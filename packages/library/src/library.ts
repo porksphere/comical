@@ -861,11 +861,16 @@ export class Library {
    * It never walks a series' other chapters and never fetches a page image — `pages` is the list the
    * reader already fetched to render this chapter, so a huge series costs no more than a small one.
    *
-   * Matching is by `sourceUrl`, falling back to bare index trust while the page count is unchanged.
-   * There is deliberately no content-hash signal: it would be stronger, but matching on one means
-   * hashing the fresh list, and a client only holds bytes for the page or two it has rendered — so
-   * it would turn opening a chapter into downloading it. A favorite that matches nothing is marked
-   * `stale` rather than deleted.
+   * Matching is deliberately ASYMMETRIC. A `sourceUrl` hit is proof and relocates the favorite; a
+   * miss proves nothing, because sources that sign or expire page URLs produce misses constantly on
+   * chapters that never changed. So a miss falls back to the page count: unchanged means assume
+   * unchanged, changed means the page genuinely cannot be placed and the favorite is marked `stale`
+   * (never deleted). The upshot is that this catches the case it exists for — indices shifted by an
+   * inserted or removed page — without ever mass-staling a chapter behind a rotating CDN.
+   *
+   * There is deliberately no content-hash signal, which would be stronger: matching on one means
+   * hashing the FRESH list, and a client only holds bytes for the page or two it has rendered, so it
+   * would turn opening a chapter into downloading it.
    *
    * Repairing an index RE-KEYS the record, because the id is derived from the coordinates. Callers
    * holding an id from before a reconcile must refresh.
@@ -899,11 +904,17 @@ export class Library {
 
     /** Where this favorite's page lives in the fresh list, or undefined if it's gone. */
     const locate = (fav: FavoritePage): number | undefined => {
-      // The list carries URLs and we have one: this answer is authoritative either way. A miss means
-      // the page is gone, not merely moved — don't fall through to the weaker index guess.
-      if (fav.sourceUrl && byUrl.size > 0) return byUrl.get(fav.sourceUrl);
-      // Nothing to match on. Trust the stored index only while the chapter is the same length —
-      // "unknown" must not read as "unchanged".
+      // A URL HIT is authoritative: that is exactly the page, wherever it now sits.
+      if (fav.sourceUrl) {
+        const at = byUrl.get(fav.sourceUrl);
+        if (at !== undefined) return at;
+      }
+      // A URL MISS is NOT evidence the page vanished. Many sources hand out signed or otherwise
+      // rotating page URLs, so a stored URL matching nothing is the norm there even when the
+      // chapter is untouched — treating a miss as proof would stale every favorite in the chapter
+      // on the first reconcile, which is the opposite of this method's job. Fall back to the one
+      // signal that survives rotation: the page count. Unchanged means assume unchanged; changed
+      // means something really did happen and we genuinely cannot place this page.
       if (fav.pageCount !== undefined && fav.pageCount !== pages.length) return undefined;
       return fav.pageIndex < pages.length ? fav.pageIndex : undefined;
     };

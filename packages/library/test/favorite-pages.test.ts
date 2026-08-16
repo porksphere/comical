@@ -405,18 +405,44 @@ describe("reconcileChapterFavorites", () => {
     expect(res).toEqual({ indices: [1], repaired: 1, stale: 0 });
   });
 
-  test("a rotated URL can't be matched — the favorite goes stale, not deleted", async () => {
+  test("a page deleted from the chapter goes stale, not deleted from favorites", async () => {
     const { lib, fav } = await seedFavorite();
+    // p2 is gone; the chapter is a page shorter and no longer carries its URL.
     const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
-      "https://cdn2/signed?a=1",
-      "https://cdn2/signed?a=2",
-      "https://cdn2/signed?a=3",
+      "https://cdn/p0.png",
+      "https://cdn/p1.png",
+      "https://cdn/p3.png",
     ]);
     expect(res).toEqual({ indices: [], repaired: 0, stale: 1 });
 
     // Kept, with its snapshot intact — the user favorited it deliberately.
     expect(await lib.getFavoritePage(fav.id)).toMatchObject({ stale: true, seriesTitle: "S" });
     expect(await lib.getFavoritePages()).toHaveLength(1);
+  });
+
+  test("rotating URLs must NOT mass-stale a chapter that hasn't changed", async () => {
+    // Plenty of sources hand out signed / expiring page URLs, so a stored URL matching nothing is
+    // the NORM there rather than evidence a page vanished. Treating a miss as proof would stale
+    // every favorite in the chapter on the very first reconcile — the exact opposite of the job.
+    const { lib } = makeLibrary();
+    for (const i of [0, 1, 2]) {
+      await lib.favoritePage(coord({ pageIndex: i }), {
+        seriesTitle: "S",
+        pageCount: 4,
+        sourceUrl: `https://cdn/p${i}.png?sig=OLD`,
+      });
+    }
+    const resigned = [0, 1, 2, 3].map((i) => `https://cdn/p${i}.png?sig=NEW`);
+
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", resigned);
+    expect(res).toEqual({ indices: [0, 1, 2], repaired: 0, stale: 0 });
+  });
+
+  test("a URL miss with a CHANGED page count is still stale — that's real evidence", async () => {
+    const { lib } = await seedFavorite();
+    expect(
+      await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn2/x.png", "https://cdn2/y.png"]),
+    ).toEqual({ indices: [], repaired: 0, stale: 1 });
   });
 
   test("a stale favorite stops being reported as a favorited index", async () => {
