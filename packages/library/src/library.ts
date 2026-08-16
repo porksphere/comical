@@ -258,7 +258,7 @@ export class Library {
    * Reconcile the entry's display snapshot (what the library grid/history render) with a fresh,
    * successful `SeriesInfo` — the source is authoritative for its own metadata, so a renamed series
    * or changed cover/author heals on the next browse instead of staying frozen at add time. New
-   * `externalIds` merge in (never removed); `addedAt`/`listIds`/progress are untouched. No-op when
+   * `externalIds` merge in (never removed); `addedAt`/progress/memberships are untouched. No-op when
    * nothing changed or the series isn't in the library.
    */
   async refreshSnapshot(key: string, info: SeriesInfo): Promise<void> {
