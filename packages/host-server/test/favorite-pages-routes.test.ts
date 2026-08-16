@@ -5,8 +5,9 @@
  * bridge-account per-series `favorites` capability under `/bridges/:id/favorites`, which is why they
  * live under `/library` — a fact the "namespaces stay separate" test below pins down.
  *
- * No page bytes are stored anywhere: a favorite is coordinates plus a display snapshot plus the
- * `sourceUrl` that lets a drifted chapter be repaired.
+ * No page bytes are stored anywhere: a favorite is coordinates plus a display snapshot plus the two
+ * re-anchor keys (`sourceUrl` and a client-supplied `contentHash`) that let a drifted chapter be
+ * repaired.
  */
 import { rmSync } from "node:fs";
 import { join } from "node:path";
@@ -43,6 +44,7 @@ interface FavoriteBody {
   chapterName?: string;
   pageCount?: number;
   sourceUrl?: string;
+  contentHash?: string;
   stale?: boolean;
   favoritedAt: number;
   collectionIds: string[];
@@ -87,12 +89,13 @@ afterAll(() => {
 });
 
 describe("favoriting pages", () => {
-  test("PUT favorites a page with its re-anchor URL, DELETE removes it", async () => {
+  test("PUT favorites a page with both re-anchor keys, DELETE removes it", async () => {
     const put = await send("PUT", "/library/favorite-pages/demo/s1/c1/3", {
       seriesTitle: "Series One",
       chapterName: "Ch 1",
       pageCount: 20,
       sourceUrl: "https://cdn.example/3.png",
+      contentHash: "sha256-of-page-3",
     });
     expect(put.status).toBe(200);
     expect(await json<FavoriteBody>(put)).toMatchObject({
@@ -104,6 +107,7 @@ describe("favoriting pages", () => {
       chapterName: "Ch 1",
       pageCount: 20,
       sourceUrl: "https://cdn.example/3.png",
+      contentHash: "sha256-of-page-3",
       collectionIds: [],
     });
 
@@ -231,6 +235,29 @@ describe("reconcile route — chapter drift", () => {
     await send("DELETE", "/library/favorite-pages/demo/gone/c1/1");
   });
 
+  test("a content hash relocates a favorite whose URLs have rotated", async () => {
+    await send("PUT", "/library/favorite-pages/demo/rot/c1/2", {
+      seriesTitle: "Rotated",
+      pageCount: 3,
+      sourceUrl: "https://cdn/old-p2.png?sig=OLD",
+      contentHash: "sha-p2",
+    });
+
+    // Every URL re-signed, and the reader only had bytes for the page it was showing — one hash.
+    const res = await json<ReconcileBody>(
+      await send("POST", "/library/favorite-pages/chapter/demo/rot/c1/reconcile", {
+        pages: [
+          { url: "https://cdn/new-a.png?sig=NEW" },
+          { url: "https://cdn/new-b.png?sig=NEW", contentHash: "sha-p2" },
+          { url: "https://cdn/new-c.png?sig=NEW" },
+        ],
+      }),
+    );
+    expect(res).toEqual({ indices: [1], repaired: 1, stale: 0 });
+    expect(await json<number[]>(await get("/library/favorite-pages/chapter/demo/rot/c1"))).toEqual([1]);
+    await send("DELETE", "/library/favorite-pages/demo/rot/c1/1");
+  });
+
   test("an empty page list is a no-op, so a failed fetch can't stale a whole chapter", async () => {
     await send("PUT", "/library/favorite-pages/demo/safe/c1/0", { seriesTitle: "S", pageCount: 2 });
     expect(
@@ -245,7 +272,7 @@ describe("reconcile route — chapter drift", () => {
     // One odd element must not reject an entire chapter's reconcile — non-strings become "",
     // which still counts toward the length.
     const ok = await send("POST", "/library/favorite-pages/chapter/demo/s1/c1/reconcile", {
-      pages: [null, 5, { url: "https://cdn/ok.png" }],
+      pages: [null, 5, { url: "https://cdn/ok.png" }, { contentHash: 9 }, { url: "https://cdn/x.png", contentHash: "sha-x" }],
     });
     expect(ok.status).toBe(200);
   });

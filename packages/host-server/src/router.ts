@@ -875,14 +875,17 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.post("/library/favorite-pages/chapter/:bridgeId/:seriesId/:chapterId/reconcile", async (c) => {
       const b = await body<{ pages?: unknown }>(c);
       if (!Array.isArray(b?.pages)) return c.json({ error: "pages is required" }, 400);
-      // Position IS the page index. A junk element degrades to a ref with no `url` rather than
-      // rejecting the whole chapter's reconcile — and still counts toward the length, which is the
-      // fallback signal.
-      const pages: ChapterPageRef[] = b.pages.map((p) =>
-        p && typeof p === "object" && typeof (p as { url?: unknown }).url === "string"
-          ? { url: (p as { url: string }).url }
-          : {},
-      );
+      // Position IS the page index. Both fields are optional and `contentHash` is expected to be
+      // sparse — callers send hashes only for pages they already hold bytes for. A junk element
+      // degrades to an empty ref rather than rejecting the whole chapter's reconcile, and still
+      // counts toward the length, which is the fallback signal.
+      const pages: ChapterPageRef[] = b.pages.map((raw) => {
+        const p = (raw ?? {}) as { url?: unknown; contentHash?: unknown };
+        return {
+          ...(typeof p.url === "string" && { url: p.url }),
+          ...(typeof p.contentHash === "string" && { contentHash: p.contentHash }),
+        };
+      });
       return c.json(
         await lib.reconcileChapterFavorites(
           c.req.param("bridgeId"),
@@ -941,13 +944,14 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.put("/library/favorite-pages/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
       const coord = favoriteCoord(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId"), c.req.param("pageIndex"));
       if (!coord) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
-      const b = await body<{ seriesTitle?: string; chapterName?: string; pageCount?: number; sourceUrl?: string }>(c);
+      const b = await body<{ seriesTitle?: string; chapterName?: string; pageCount?: number; sourceUrl?: string; contentHash?: string }>(c);
       if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
       const page = await lib.favoritePage(coord, {
         seriesTitle: b.seriesTitle,
         ...(b.chapterName !== undefined && { chapterName: b.chapterName }),
         ...(b.pageCount !== undefined && { pageCount: b.pageCount }),
         ...(b.sourceUrl !== undefined && { sourceUrl: b.sourceUrl }),
+        ...(b.contentHash !== undefined && { contentHash: b.contentHash }),
       });
       return c.json(page);
     });

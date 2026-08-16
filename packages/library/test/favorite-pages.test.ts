@@ -14,6 +14,7 @@ import {
   parseFavoritePageId,
   UNCOLLECTED,
   type FavoritePageCoord,
+  type ChapterPageRef,
   type FavoritePageSnapshot,
   type LibraryStore,
 } from "../src/index.ts";
@@ -25,6 +26,10 @@ const coord = (over: Partial<FavoritePageCoord> = {}): FavoritePageCoord => ({
   pageIndex: 0,
   ...over,
 });
+
+/** Reconcile chapter `c1` of the standard series from explicit page refs. */
+const reconcileRefs = (lib: Library, pages: ChapterPageRef[], chapterId = "c1") =>
+  lib.reconcileChapterFavorites("demo", "s1", chapterId, pages);
 
 /** A library with a controllable clock, so `favoritedAt` ordering is deterministic. */
 function makeLibrary(): { lib: Library; tick: () => void } {
@@ -110,10 +115,16 @@ describe("favoriting a page", () => {
     expect(again.collectionIds).toEqual([collection.id]);
   });
 
-  test("records the source URL — the re-anchor key", async () => {
+  test("records both re-anchor keys — the URL and the client-supplied hash", async () => {
+    // The hash is free to capture here: the user is looking at the page as they favorite it, so the
+    // client already holds the bytes.
     const { lib } = makeLibrary();
-    const page = await lib.favoritePage(coord(), { seriesTitle: "S", sourceUrl: "https://cdn.example/0.png" });
-    expect(page.sourceUrl).toBe("https://cdn.example/0.png");
+    const page = await lib.favoritePage(coord(), {
+      seriesTitle: "S",
+      sourceUrl: "https://cdn.example/0.png",
+      contentHash: "sha-0",
+    });
+    expect(page).toMatchObject({ sourceUrl: "https://cdn.example/0.png", contentHash: "sha-0" });
   });
 
   test("distinct pages of the same chapter are distinct favorites", async () => {
@@ -390,6 +401,7 @@ describe("reconcileChapterFavorites", () => {
    *  page the caller has no URL for — a ref with no `url`, which still counts toward the length. */
   const reconcile = (lib: Library, urls: string[], chapterId = "c1") =>
     lib.reconcileChapterFavorites("demo", "s1", chapterId, urls.map((url) => (url ? { url } : {})));
+
 
   const CHAPTER = ["https://cdn/p0.png", "https://cdn/p1.png", "https://cdn/p2.png", "https://cdn/p3.png"];
 
@@ -685,5 +697,141 @@ describe("scaling — a chapter's cost is independent of library size", () => {
     // every favorite, since collections span series.)
     expect(calls.put - before.put).toBe(1);
     expect(calls.recordsWritten - before.recordsWritten).toBe(20);
+  });
+});
+
+/**
+ * The content-hash signal. It is the strong re-anchor key — it survives URL rot and a chapter
+ * re-uploaded under a new id — but it is inherently SPARSE: a client can only hash pages it has
+ * rendered, and hashing a whole chapter would mean downloading it just to open it.
+ *
+ * So the contract is that hashes may only ever help. These lock that down: hits are acted on, misses
+ * are not (with one narrow, provable exception), and coverage grows by adoption rather than fetching.
+ */
+describe("reconcileChapterFavorites — content hashes", () => {
+  const WITH_BOTH: FavoritePageSnapshot = {
+    seriesTitle: "S",
+    pageCount: 4,
+    sourceUrl: "https://cdn/p2.png",
+    contentHash: "sha-p2",
+  };
+
+  async function seedHashed(snap: FavoritePageSnapshot = WITH_BOTH) {
+    const { lib } = makeLibrary();
+    const fav = await lib.favoritePage(coord({ pageIndex: 2 }), snap);
+    return { lib, fav };
+  }
+
+  test("a hash relocates a page whose URL has completely rotated", async () => {
+    // This is the case URL matching alone gave up on: same bytes, brand-new signed URLs.
+    const { lib } = await seedHashed();
+    const res = await reconcileRefs(lib, [
+      { url: "https://cdn2/signed?a=1", contentHash: "sha-p0" },
+      { url: "https://cdn2/signed?a=2", contentHash: "sha-p2" }, // moved to index 1
+      { url: "https://cdn2/signed?a=3", contentHash: "sha-p3" },
+    ]);
+    expect(res).toEqual({ indices: [1], repaired: 1, stale: 0 });
+    // The rotated URL is adopted too, so the cheap signal works again next time.
+    expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 1 }))))?.sourceUrl).toBe(
+      "https://cdn2/signed?a=2",
+    );
+  });
+
+  test("a hash beats a page count that says 'unchanged'", async () => {
+    // Same length, so the count fallback would have shrugged — the hash finds the real position.
+    const { lib } = await seedHashed();
+    const res = await reconcileRefs(lib, [
+      { contentHash: "sha-p1" },
+      { contentHash: "sha-p2" },
+      { contentHash: "sha-p0" },
+      { contentHash: "sha-p3" },
+    ]);
+    expect(res).toEqual({ indices: [1], repaired: 1, stale: 0 });
+  });
+
+  test("SPARSE hashes are safe — an unhashed list behaves exactly as before", async () => {
+    // The realistic payload: the client rendered one page, so it can hash one page. Every other
+    // favorite must be unaffected rather than staled for lacking a hash to match against.
+    const { lib } = makeLibrary();
+    for (const i of [0, 1, 2]) {
+      await lib.favoritePage(coord({ pageIndex: i }), {
+        seriesTitle: "S",
+        pageCount: 4,
+        sourceUrl: `https://cdn/p${i}.png`,
+        contentHash: `sha-p${i}`,
+      });
+    }
+    const res = await reconcileRefs(lib, [
+      { url: "https://cdn/p0.png" },
+      { url: "https://cdn/p1.png", contentHash: "sha-p1" }, // the only page the reader hashed
+      { url: "https://cdn/p2.png" },
+      { url: "https://cdn/p3.png" },
+    ]);
+    expect(res).toEqual({ indices: [0, 1, 2], repaired: 0, stale: 0 });
+  });
+
+  test("a hash MISS is never evidence — the page may simply be one of the unhashed ones", async () => {
+    // A favorite with a hash, against a list that carries hashes for OTHER pages only. Treating
+    // that as "gone" would stale favorites purely for being outside the reader's scroll position.
+    const { lib, fav } = await seedHashed();
+    const res = await reconcileRefs(lib, [
+      { url: "https://cdn/p0.png", contentHash: "sha-p0" },
+      { url: "https://cdn/p1.png", contentHash: "sha-p1" },
+      { url: "https://cdn/p2.png" }, // our page, unhashed this time
+      { url: "https://cdn/p3.png" },
+    ]);
+    expect(res).toEqual({ indices: [2], repaired: 0, stale: 0 });
+    expect((await lib.getFavoritePage(fav.id))?.stale).toBeUndefined();
+  });
+
+  test("a hash AT the favorite's own index that differs IS evidence — that's the one exception", async () => {
+    // Same length and no URL to match, so every other signal shrugs. But the reader hashed exactly
+    // the page our favorite claims to be, and it is a different image: proof it isn't there.
+    // This is the same-length re-upload case nothing else catches.
+    const { lib, fav } = await seedHashed({ seriesTitle: "S", pageCount: 4, contentHash: "sha-p2" });
+    const res = await reconcileRefs(lib, [{}, {}, { contentHash: "sha-DIFFERENT" }, {}]);
+    expect(res).toEqual({ indices: [], repaired: 0, stale: 1 });
+    expect((await lib.getFavoritePage(fav.id))?.stale).toBe(true);
+  });
+
+  test("...but a differing positional hash loses to finding the page elsewhere", async () => {
+    const { lib } = await seedHashed({ seriesTitle: "S", pageCount: 4, contentHash: "sha-p2" });
+    const res = await reconcileRefs(lib, [{}, {}, { contentHash: "sha-OTHER" }, { contentHash: "sha-p2" }]);
+    expect(res).toEqual({ indices: [3], repaired: 1, stale: 0 });
+  });
+
+  test("a favorite with no hash ADOPTS one, so coverage grows as the user reads", async () => {
+    // No extra fetch anywhere: the reader hashes what it was already displaying, and the favorite
+    // is permanently upgraded to the rot-proof signal.
+    const { lib } = await seedHashed({ seriesTitle: "S", pageCount: 4, sourceUrl: "https://cdn/p2.png" });
+    expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 2 }))))?.contentHash).toBeUndefined();
+
+    await reconcileRefs(lib, [
+      { url: "https://cdn/p0.png" },
+      { url: "https://cdn/p1.png" },
+      { url: "https://cdn/p2.png", contentHash: "sha-p2" },
+      { url: "https://cdn/p3.png" },
+    ]);
+    expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 2 }))))?.contentHash).toBe("sha-p2");
+
+    // Now the URLs can rot freely and the favorite still relocates.
+    const res = await reconcileRefs(lib, [{ url: "https://new/x.png" }, { url: "https://new/y.png", contentHash: "sha-p2" }]);
+    expect(res).toEqual({ indices: [1], repaired: 1, stale: 0 });
+  });
+
+  test("adopting never overwrites a hash the favorite already had", async () => {
+    const { lib } = await seedHashed();
+    await reconcileRefs(lib, [{}, {}, { url: "https://cdn/p2.png", contentHash: "sha-IMPOSTOR" }, {}]);
+    // Reached via the URL/count path, not the hash — the stored hash is the user's own capture.
+    expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 2 }))))?.contentHash).toBe("sha-p2");
+  });
+
+  test("rotating URLs plus zero hashes still doesn't mass-stale an unchanged chapter", async () => {
+    const { lib } = await seedHashed();
+    expect(await reconcileRefs(lib, [{ url: "https://r/1" }, { url: "https://r/2" }, { url: "https://r/3" }, { url: "https://r/4" }])).toEqual({
+      indices: [2],
+      repaired: 0,
+      stale: 0,
+    });
   });
 });

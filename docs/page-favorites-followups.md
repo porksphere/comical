@@ -13,7 +13,8 @@ documents:
 - the thumbnail-capture subsystem, `favoritePages: { blobs, fetchPage }`, and
   `GET /library/favorite-pages/{id}/thumb` — **all removed**, no page bytes are stored;
 - `hasThumb` on `FavoritePage` — **removed**;
-- `contentHash` re-anchoring — **removed** (see §4);
+- `contentHash` as the spec described it — a signal the host computes by fetching pages. It exists,
+  but the CLIENT supplies it and only for pages it already holds bytes for (see §4);
 - `putFavoriteCollections` as the only store addition — the favorites seam is now
   `listFavoritePages(scope?)` / `getFavoritePage` / `putFavoritePages` / `deleteFavoritePages`,
   alongside the collections pair.
@@ -23,7 +24,7 @@ The route table also moved after an API review. As shipped:
 ```
 GET    /library/favorite-pages?sort=&dir=&collection=&series=&q=
 GET    /library/favorite-pages/chapter/{b}/{s}/{c}                  → number[]
-POST   /library/favorite-pages/chapter/{b}/{s}/{c}/reconcile        ← { pages: [{ url? }] }
+POST   /library/favorite-pages/chapter/{b}/{s}/{c}/reconcile        ← { pages: [{ url?, contentHash? }] }
 PUT    /library/favorite-pages/{b}/{s}/{c}/{pageIndex}              ← snapshot
 DELETE /library/favorite-pages/{b}/{s}/{c}/{pageIndex}
 PUT    /library/favorite-pages/{b}/{s}/{c}/{pageIndex}/collections  ← { collectionIds }
@@ -67,23 +68,32 @@ Scoped paths are already cheap and covered by tests that assert **call counts an
 (`packages/library/test/favorite-pages.test.ts`, "scaling" describe), so a regression to
 list-everything fails loudly rather than just slowing down.
 
-## 4. Re-anchoring cannot catch a same-length re-upload behind rotating URLs
+## 4. Re-anchoring strength depends on how much of a chapter the reader has actually seen
 
-`reconcileChapterFavorites` matches on `sourceUrl`, asymmetrically: a hit relocates the favorite, a
-miss proves nothing (sources that sign or expire page URLs miss constantly on untouched chapters).
-A miss therefore falls back to the page count, so:
+`reconcileChapterFavorites` runs a ladder of signals, ordered so each can only ever HELP. Both
+inputs are unreliable in opposite ways — `contentHash` is sparse, `sourceUrl` rotates — so misses are
+not treated as evidence and only hits are acted on:
 
-- **caught:** indices shifted by an inserted or removed page — the case it exists for;
-- **caught:** a page deleted from the chapter (count changes, URL gone) → marked `stale`;
-- **not caught:** a chapter re-uploaded at the *same length* by a source with rotating URLs. The
-  favorite keeps pointing at its old index, now possibly the wrong page.
+1. **hash hit** anywhere in the list → relocate. Survives URL rot and a re-upload under a new id.
+2. **URL hit** → relocate. Free, and covers the common case.
+3. **hash present at the favorite's own index and different** → the saved page is provably not
+   there, and 1–2 already failed to find it: `stale`.
+4. **page count** → unchanged means assume unchanged; changed means unplaceable, so `stale`.
 
-A content hash would catch it. It was deliberately removed: matching on one means hashing the
-**fresh** page list, and a client only holds bytes for the page or two it has rendered — so a
-hash-matched reconcile would turn opening a chapter into downloading it. If this case turns out to
-matter, the affordable shape is **opportunistic** hashing (the reader reports `(index, hash)` only
-for pages it actually displays, costing no extra download and improving as the user reads), not a
-bulk hash of the list.
+**Nothing ever asks a caller to hash a whole chapter** — that would mean downloading it just to open
+it. Clients send whatever hashes they hold (typically the page or two the reader displayed), and
+favorites **adopt** hashes they are handed, so a chapter becomes more rot-proof the more of it the
+user actually reads. No extra fetch is ever involved.
+
+What this means in practice: a favorite the user has revisited is strongly anchored; one saved long
+ago and never reopened has only its URL, and on a rotating-URL source will fall through to the page
+count. That is the intended trade, not a defect — but it does mean **coverage is a function of
+reading behaviour**, which is worth remembering before blaming the matcher for a miss.
+
+The remaining true gap is narrow: a same-length re-upload, on a rotating-URL source, of a page the
+reader has never had bytes for. Rule 3 catches it the moment the reader opens that page. Closing it
+without reading would need a perceptual hash (to survive re-encoding) plus a full chapter fetch —
+both far more than the problem is worth.
 
 ## 5. Partial collection reorder can leave tied `order` values
 

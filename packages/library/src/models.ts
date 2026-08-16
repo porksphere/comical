@@ -218,16 +218,22 @@ export const favoritePageSnapshotSchema = z.object({
   chapterName: z.string().optional(),
   pageCount: z.number().int().nonnegative().optional(),
   /**
-   * The page's image URL when it was favorited, and the re-anchor key: matching it against a
+   * The page's image URL when it was favorited. The cheap re-anchor key: matching it against a
    * freshly-fetched page list relocates a page that merely shifted, at NO network cost — the list is
-   * one the reader already fetched to display the chapter.
-   *
-   * Deliberately the only such signal. A content hash would be stronger (it survives URL rot), but
-   * matching on one means hashing the fresh list, and a client only holds bytes for the page or two
-   * it has actually rendered — so a hash-matched reconcile would have to download the whole chapter.
-   * When a URL rots, the favorite goes stale rather than costing the user a chapter download.
+   * one the reader already fetched to display the chapter. Expected to rot on sources that sign or
+   * expire URLs, which is what `contentHash` is for.
    */
   sourceUrl: z.string().optional(),
+  /**
+   * Fingerprint of the page's image bytes — **lowercase hex SHA-256** — computed by the CLIENT from
+   * bytes it already holds, so the host does no image work and stores no pixels. Free to capture
+   * here: the user is looking at the page as they favorite it.
+   *
+   * The strong re-anchor key. Unlike `sourceUrl` it survives URL rot and a chapter re-uploaded under
+   * a new id. The algorithm is fixed rather than opaque because a hash written at favorite time is
+   * compared against hashes computed later, possibly by a different client against the same host.
+   */
+  contentHash: z.string().optional(),
 });
 export type FavoritePageSnapshot = z.infer<typeof favoritePageSnapshotSchema>;
 
@@ -245,6 +251,7 @@ export const favoritePageSchema = favoritePageCoordSchema.extend({
    *  which also uses a mismatch as the last-resort "this chapter moved" signal. */
   pageCount: z.number().int().nonnegative().optional(),
   sourceUrl: z.string().optional(),
+  contentHash: z.string().optional(),
   /**
    * Set when a reconcile against a fresh page list could not locate this page any more — the source
    * changed the chapter and neither the hash nor the URL matched anything in it.
@@ -260,16 +267,26 @@ export type FavoritePage = z.infer<typeof favoritePageSchema>;
 
 /**
  * One page of a freshly-fetched chapter, as handed to {@link Library.reconcileChapterFavorites}.
- * Position in the array IS the page index.
- *
- * An OBJECT rather than a bare URL string deliberately, even though `url` is the only field today:
- * a bare `string[]` has nowhere to put a second matching signal, so adding one later would break
- * every client at once. Keeping the shape open costs a few bytes per page and keeps future work
- * additive, which is the rule the rest of the contract follows.
+ * Position in the array IS the page index. Both fields are optional, and populating them is
+ * best-effort — see below, because it drives how the matcher may read them.
  */
 export interface ChapterPageRef {
-  /** The page's image URL in the fresh list. */
+  /** The page's image URL as of now. Cheap: the caller fetched the list to render the chapter. */
   url?: string;
+  /**
+   * Lowercase hex SHA-256 of the page's bytes — see `FavoritePage.contentHash`.
+   *
+   * **Expected to be SPARSE**, and that is the whole design. A client can only hash bytes it holds,
+   * which is the page or two it has actually rendered; hashing the full list would mean downloading
+   * the chapter just to open it. So callers fill this in for whatever they happen to have and leave
+   * the rest blank.
+   *
+   * The consequence for anything reading this: a hash MISS carries no information (the page may
+   * simply be one of the unhashed ones), so only a hash HIT may be acted on. The one exception is
+   * positional — a hash present at a favorite's own index that differs from the favorite's is proof
+   * that the page there is not the saved one.
+   */
+  contentHash?: string;
 }
 
 /**

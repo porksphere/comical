@@ -787,6 +787,7 @@ export class Library {
       ...(snap.chapterName !== undefined && { chapterName: snap.chapterName }),
       ...(snap.pageCount !== undefined && { pageCount: snap.pageCount }),
       ...(snap.sourceUrl !== undefined && { sourceUrl: snap.sourceUrl }),
+      ...(snap.contentHash !== undefined && { contentHash: snap.contentHash }),
     };
     await this.store.putFavoritePages([page]);
     return page;
@@ -867,16 +868,17 @@ export class Library {
    * It never walks a series' other chapters and never fetches a page image — `pages` is the list the
    * reader already fetched to render this chapter, so a huge series costs no more than a small one.
    *
-   * Matching is deliberately ASYMMETRIC. A `sourceUrl` hit is proof and relocates the favorite; a
-   * miss proves nothing, because sources that sign or expire page URLs produce misses constantly on
-   * chapters that never changed. So a miss falls back to the page count: unchanged means assume
-   * unchanged, changed means the page genuinely cannot be placed and the favorite is marked `stale`
-   * (never deleted). The upshot is that this catches the case it exists for — indices shifted by an
-   * inserted or removed page — without ever mass-staling a chapter behind a rotating CDN.
+   * Matching is deliberately ASYMMETRIC, because both signals are unreliable in opposite ways:
+   * `contentHash` is sparse (a client can only hash pages it has rendered — see `ChapterPageRef`)
+   * and `sourceUrl` rotates on sources that sign or expire URLs. So a miss of either kind proves
+   * nothing and only HITS are acted on, which is what makes each signal purely additive rather than
+   * a new way to get it wrong. The ladder: hash hit, then URL hit, then the one informative miss (a
+   * hash at the favorite's own index that differs — proof the saved page is not there), then the
+   * page count. A favorite that ends up unplaceable is marked `stale`, never deleted.
    *
-   * There is deliberately no content-hash signal, which would be stronger: matching on one means
-   * hashing the FRESH list, and a client only holds bytes for the page or two it has rendered, so it
-   * would turn opening a chapter into downloading it.
+   * Nothing here ever asks the caller to hash a whole chapter: that would mean downloading it just
+   * to open it. Callers pass whatever hashes they happen to hold, and favorites ADOPT hashes they
+   * are handed, so coverage grows as the user reads rather than through any extra fetch.
    *
    * Repairing an index RE-KEYS the record, because the id is derived from the coordinates. Callers
    * holding an id from before a reconcile must refresh.
@@ -902,26 +904,44 @@ export class Library {
       };
     }
 
-    // One O(pages) index, then every favorite resolves by lookup — no per-favorite scan of the list.
-    // First occurrence wins, so a chapter that repeats a page resolves deterministically.
+    // Two O(pages) indexes, then every favorite resolves by lookup — no per-favorite scan of the
+    // list. First occurrence wins, so a chapter that repeats a page resolves deterministically.
+    const byHash = new Map<string, number>();
     const byUrl = new Map<string, number>();
     pages.forEach((page, i) => {
+      if (page.contentHash && !byHash.has(page.contentHash)) byHash.set(page.contentHash, i);
       if (page.url && !byUrl.has(page.url)) byUrl.set(page.url, i);
     });
 
-    /** Where this favorite's page lives in the fresh list, or undefined if it's gone. */
+    /**
+     * Where this favorite's page lives in the fresh list, or undefined if it's gone.
+     *
+     * Ordered so each signal can only ever HELP. That is forced by both inputs being unreliable in
+     * opposite ways: hashes are sparse (a client only hashes what it rendered), and URLs rotate on
+     * plenty of sources. So a miss of either kind is not evidence, and only hits are acted on —
+     * which is what makes adding hashes strictly an improvement rather than a new way to be wrong.
+     */
     const locate = (fav: FavoritePage): number | undefined => {
-      // A URL HIT is authoritative: that is exactly the page, wherever it now sits.
+      // 1. A hash HIT is the strongest evidence there is: same bytes, wherever they now sit.
+      //    Survives URL rot and a chapter re-uploaded under a new id.
+      if (fav.contentHash) {
+        const at = byHash.get(fav.contentHash);
+        if (at !== undefined) return at;
+      }
+      // 2. A URL HIT is authoritative too, and costs nothing to check.
       if (fav.sourceUrl) {
         const at = byUrl.get(fav.sourceUrl);
         if (at !== undefined) return at;
       }
-      // A URL MISS is NOT evidence the page vanished. Many sources hand out signed or otherwise
-      // rotating page URLs, so a stored URL matching nothing is the norm there even when the
-      // chapter is untouched — treating a miss as proof would stale every favorite in the chapter
-      // on the first reconcile, which is the opposite of this method's job. Fall back to the one
-      // signal that survives rotation: the page count. Unchanged means assume unchanged; changed
-      // means something really did happen and we genuinely cannot place this page.
+      // 3. Negative proof, the one case a miss DOES tell us something: the caller hashed this
+      //    favorite's own index and got something else. The saved page is provably not there, and
+      //    steps 1-2 already failed to find it elsewhere. This is what catches a same-length
+      //    re-upload — the case the page-count fallback below is blind to.
+      const here = pages[fav.pageIndex]?.contentHash;
+      if (fav.contentHash && here && here !== fav.contentHash) return undefined;
+      // 4. Nothing conclusive. Fall back to the signal that survives both rotation and sparseness:
+      //    the page count. Unchanged means assume unchanged; changed means something really did
+      //    happen and we genuinely cannot place this page.
       if (fav.pageCount !== undefined && fav.pageCount !== pages.length) return undefined;
       return fav.pageIndex < pages.length ? fav.pageIndex : undefined;
     };
@@ -941,8 +961,13 @@ export class Library {
         ...coord,
         id: favoritePageId(coord),
         pageCount: pages.length,
-        // Adopt the fresh URL, so a page that moves again next time is still matchable.
+        // Adopt whatever the fresh list knows. The URL keeps the cheap signal current; a hash we
+        // didn't have upgrades this favorite permanently, so the more of a chapter the user
+        // actually reads, the more of it becomes rot-proof — no extra fetch, ever.
         ...(pages[at]?.url ? { sourceUrl: pages[at].url } : {}),
+        ...(fav.contentHash === undefined && pages[at]?.contentHash
+          ? { contentHash: pages[at].contentHash }
+          : {}),
       };
       delete healed.stale; // located again — a source can revert a bad re-upload
       this.mergeFavorite(next, healed);

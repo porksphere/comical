@@ -4,8 +4,9 @@
  * favoriting works with no server.
  *
  * Favorites store no page bytes on device — only coordinates, a display snapshot, and the two
- * re-anchor signals. The reconcile route is what keeps them pointing at the right page when a
- * source shifts a chapter underneath them.
+ * re-anchor keys (`sourceUrl`, plus a `contentHash` the client computes from bytes it already
+ * holds). The reconcile route is what keeps them pointing at the right page when a source shifts a
+ * chapter underneath them.
  */
 import { describe, expect, test } from "bun:test";
 import { createRouter } from "@comical/host-server/router";
@@ -94,9 +95,10 @@ describe("embedded transport — page favorites", () => {
     const res = await put(t, "/library/favorite-pages/demo/s1/c1/0", {
       seriesTitle: "Series One",
       sourceUrl: "https://cdn.example/0.png",
+      contentHash: "sha-0",
     });
     const page = (await res.json()) as Record<string, unknown>;
-    expect(page).toMatchObject({ sourceUrl: "https://cdn.example/0.png" });
+    expect(page).toMatchObject({ sourceUrl: "https://cdn.example/0.png", contentHash: "sha-0" });
     // Nothing thumbnail-shaped survived the redesign.
     expect(page.hasThumb).toBeUndefined();
     expect(page.thumbFile).toBeUndefined();
