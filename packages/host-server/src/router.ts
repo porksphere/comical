@@ -30,7 +30,7 @@ import type {
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
-import { entryKey, favoriteItemId, type ChapterPageRef, type FavoriteItemsQuery, type FavoriteItemType, type Library } from "@comical/library";
+import { entryKey, collectionItemId, type ChapterPageRef, type CollectionItemsQuery, type CollectionItemType, type Library } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
@@ -784,10 +784,11 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ ok: true });
     });
 
-    // ── Favorites & collections ─────────────────────────────────────────────────
-    // Favoriting a series, a chapter, or a single PAGE into user-named collections — local user
-    // data, entirely unrelated to the bridge-account per-series `favorites` capability served under
-    // `/bridges/:id/favorites`. Hence the `/library` namespace, never `/bridges`.
+    // ── Collections & collected items ───────────────────────────────────────────
+    // Collecting a series, a chapter, or a single PAGE into user-named collections — local user
+    // data. "Favorites" deliberately does not appear on this surface: that word belongs to the
+    // bridge-account per-series capability served under `/bridges/:id/favorites`, which is
+    // unrelated. Hence the `/library` namespace, never `/bridges`.
     //
     // The explicit type segment (`series|chapter|page`) is what keeps this family unambiguous —
     // no literal path ever competes with a pattern, which was the standing hazard of the old
@@ -801,7 +802,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return raw === "" || !Number.isInteger(idx) || idx < 0 ? undefined : idx;
     };
 
-    app.get("/library/favorites", async (c) => {
+    app.get("/library/collected", async (c) => {
       const type = c.req.query("type");
       const validType = type === "series" || type === "chapter" || type === "page";
       const sort = c.req.query("sort");
@@ -810,23 +811,23 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       const collection = c.req.query("collection");
       const series = c.req.query("series");
       const q = c.req.query("q");
-      const query: FavoriteItemsQuery = {
-        ...(validType && { type: type as FavoriteItemType }),
+      const query: CollectionItemsQuery = {
+        ...(validType && { type: type as CollectionItemType }),
         ...(validSort && { sort: sort as "added" | "series" | "chapter" }),
         ...((dir === "asc" || dir === "desc") && { dir }),
         ...(collection && { collection }),
         ...(series && { series }),
         ...(q && { q }),
       };
-      return c.json(await lib.getFavoriteItems(query));
+      return c.json(await lib.getCollectionItems(query));
     });
 
     // The favorited page INDICES for one chapter. The reader loads this once when a chapter opens
     // and keeps its favorite button correct across every page turn with zero further requests —
     // deliberately not a per-page status check, which would fire once per turn.
-    app.get("/library/favorites/page/:bridgeId/:seriesId/:chapterId/indices", async (c) =>
+    app.get("/library/collected/page/:bridgeId/:seriesId/:chapterId/indices", async (c) =>
       c.json(
-        await lib.getFavoritePageIndices(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId")),
+        await lib.getCollectedPageIndices(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId")),
       ),
     );
 
@@ -836,7 +837,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     // reports the ones it could not locate instead of letting them silently point at the wrong
     // page. Lazy and per-chapter by design: opening one chapter of a 2,000-chapter series touches
     // that chapter's favorites and nothing else.
-    app.post("/library/favorites/page/:bridgeId/:seriesId/:chapterId/reconcile", async (c) => {
+    app.post("/library/collected/page/:bridgeId/:seriesId/:chapterId/reconcile", async (c) => {
       const b = await body<{ pages?: unknown }>(c);
       if (!Array.isArray(b?.pages)) return c.json({ error: "pages is required" }, 400);
       // Position IS the page index. Both fields are optional and `contentHash` is expected to be
@@ -851,7 +852,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         };
       });
       return c.json(
-        await lib.reconcileChapterFavorites(
+        await lib.reconcileChapterPages(
           c.req.param("bridgeId"),
           c.req.param("seriesId"),
           c.req.param("chapterId"),
@@ -861,40 +862,44 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     });
 
     // Membership assignment, per type — coordinates in the path, like everything else here.
+    // PURE COLLECTIONS: emptying an item's memberships removes it (`{ removed: true }` comes back
+    // instead of the item), so a client unchecking the last collection needs no separate DELETE.
     const setCollections = async (c: Context, id: string) => {
       const b = await body<{ collectionIds?: string[] }>(c);
       if (!b?.collectionIds) return c.json({ error: "collectionIds is required" }, 400);
-      try { return c.json(await lib.setFavoriteItemCollections(id, b.collectionIds)); }
-      catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
+      try {
+        const item = await lib.setItemCollections(id, b.collectionIds);
+        return c.json(item ?? { removed: true });
+      } catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
     };
 
-    app.put("/library/favorites/series/:bridgeId/:seriesId/collections", (c) =>
-      setCollections(c, favoriteItemId({ type: "series", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") })),
+    app.put("/library/collected/series/:bridgeId/:seriesId/collections", (c) =>
+      setCollections(c, collectionItemId({ type: "series", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") })),
     );
-    app.put("/library/favorites/chapter/:bridgeId/:seriesId/:chapterId/collections", (c) =>
+    app.put("/library/collected/chapter/:bridgeId/:seriesId/:chapterId/collections", (c) =>
       setCollections(
         c,
-        favoriteItemId({ type: "chapter", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId"), chapterId: c.req.param("chapterId") }),
+        collectionItemId({ type: "chapter", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId"), chapterId: c.req.param("chapterId") }),
       ),
     );
-    app.put("/library/favorites/page/:bridgeId/:seriesId/:chapterId/:pageIndex/collections", (c) => {
+    app.put("/library/collected/page/:bridgeId/:seriesId/:chapterId/:pageIndex/collections", (c) => {
       const pageIndex = pageIndexParam(c.req.param("pageIndex"));
       if (pageIndex === undefined) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
       return setCollections(
         c,
-        favoriteItemId({ type: "page", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId"), chapterId: c.req.param("chapterId"), pageIndex }),
+        collectionItemId({ type: "page", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId"), chapterId: c.req.param("chapterId"), pageIndex }),
       );
     });
 
     // Favorite / unfavorite, per type. PUT is IDEMPOTENT and MERGES — the id derives from the
     // coordinates, a supplied snapshot field wins as the fresher value, an omitted one is
-    // preserved (see Library.favoritePage's doc for why partial PUTs are a supported pattern).
+    // preserved (see Library.collectPage's doc for why partial PUTs are a supported pattern).
 
-    app.put("/library/favorites/series/:bridgeId/:seriesId", async (c) => {
+    app.put("/library/collected/series/:bridgeId/:seriesId", async (c) => {
       const b = await body<{ seriesTitle?: string; thumbnailUrl?: string; author?: string }>(c);
       if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
       return c.json(
-        await lib.favoriteSeries(
+        await lib.collectSeries(
           { bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") },
           {
             seriesTitle: b.seriesTitle,
@@ -904,16 +909,16 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         ),
       );
     });
-    app.delete("/library/favorites/series/:bridgeId/:seriesId", async (c) => {
-      await lib.unfavoriteItem({ type: "series", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") });
+    app.delete("/library/collected/series/:bridgeId/:seriesId", async (c) => {
+      await lib.uncollectItem({ type: "series", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") });
       return c.json({ ok: true });
     });
 
-    app.put("/library/favorites/chapter/:bridgeId/:seriesId/:chapterId", async (c) => {
+    app.put("/library/collected/chapter/:bridgeId/:seriesId/:chapterId", async (c) => {
       const b = await body<{ seriesTitle?: string; chapterName?: string; number?: number; languageCode?: string }>(c);
       if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
       return c.json(
-        await lib.favoriteChapter(
+        await lib.collectChapter(
           { bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId"), chapterId: c.req.param("chapterId") },
           {
             seriesTitle: b.seriesTitle,
@@ -924,8 +929,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         ),
       );
     });
-    app.delete("/library/favorites/chapter/:bridgeId/:seriesId/:chapterId", async (c) => {
-      await lib.unfavoriteItem({
+    app.delete("/library/collected/chapter/:bridgeId/:seriesId/:chapterId", async (c) => {
+      await lib.uncollectItem({
         type: "chapter",
         bridgeId: c.req.param("bridgeId"),
         seriesId: c.req.param("seriesId"),
@@ -934,13 +939,13 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ ok: true });
     });
 
-    app.put("/library/favorites/page/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
+    app.put("/library/collected/page/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
       const pageIndex = pageIndexParam(c.req.param("pageIndex"));
       if (pageIndex === undefined) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
       const b = await body<{ seriesTitle?: string; chapterName?: string; pageCount?: number; sourceUrl?: string; contentHash?: string }>(c);
       if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
       return c.json(
-        await lib.favoritePage(
+        await lib.collectPage(
           { bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId"), chapterId: c.req.param("chapterId"), pageIndex },
           {
             seriesTitle: b.seriesTitle,
@@ -952,10 +957,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         ),
       );
     });
-    app.delete("/library/favorites/page/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
+    app.delete("/library/collected/page/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
       const pageIndex = pageIndexParam(c.req.param("pageIndex"));
       if (pageIndex === undefined) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
-      await lib.unfavoriteItem({
+      await lib.uncollectItem({
         type: "page",
         bridgeId: c.req.param("bridgeId"),
         seriesId: c.req.param("seriesId"),
@@ -970,32 +975,32 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     // retired into this system). Same CRUD + reorder shape lists had; collection ids are stable
     // UUIDs, so id-addressing is safe here (unlike items, whose derived ids re-key).
 
-    app.get("/library/collections", async (c) => c.json(await lib.getFavoriteCollections()));
+    app.get("/library/collections", async (c) => c.json(await lib.getCollections()));
 
     app.post("/library/collections", async (c) => {
       const b = await body<{ name?: string }>(c);
       if (!b?.name) return c.json({ error: "name is required" }, 400);
-      return c.json(await lib.createFavoriteCollection(b.name), 201);
+      return c.json(await lib.createCollection(b.name), 201);
     });
 
     app.post("/library/collections/reorder", async (c) => {
       const b = await body<{ orderedIds?: string[] }>(c);
       if (!b?.orderedIds) return c.json({ error: "orderedIds is required" }, 400);
-      await lib.reorderFavoriteCollections(b.orderedIds);
+      await lib.reorderCollections(b.orderedIds);
       return c.json({ ok: true });
     });
 
     app.patch("/library/collections/:id", async (c) => {
       const b = await body<{ name?: string }>(c);
       if (!b?.name) return c.json({ error: "name is required" }, 400);
-      try { await lib.renameFavoriteCollection(c.req.param("id"), b.name); return c.json({ ok: true }); }
+      try { await lib.renameCollection(c.req.param("id"), b.name); return c.json({ ok: true }); }
       catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
     });
 
-    // Deleting a collection strips its id from every member. Page favorites survive as bare hearts;
-    // series/chapter items left uncollected are pruned (they only existed as members).
+    // Deleting a collection strips its id from every member and removes any item — every type —
+    // left with zero memberships. Items exist only as members.
     app.delete("/library/collections/:id", async (c) => {
-      await lib.deleteFavoriteCollection(c.req.param("id"));
+      await lib.deleteCollection(c.req.param("id"));
       return c.json({ ok: true });
     });
 

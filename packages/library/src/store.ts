@@ -6,7 +6,7 @@
  *
  * Keys are `entryKey(bridgeId, seriesId)`.
  */
-import type { ActivityItem, BridgePrefs, CachedChapters, CachedSeriesDetail, ChapterProgress, FavoriteCollection, FavoriteItem, FavoriteItemScope, HistoryItem, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
+import type { ActivityItem, BridgePrefs, CachedChapters, CachedSeriesDetail, ChapterProgress, Collection, CollectionItem, CollectionItemScope, HistoryItem, LibraryEntry, SeriesGroup, TrackerLink } from "./models.ts";
 
 export interface LibraryStore {
   // ── Entries ──────────────────────────────────────────────────────────────
@@ -39,28 +39,28 @@ export interface LibraryStore {
   putGroup(group: SeriesGroup): Promise<void>;
   deleteGroup(id: string): Promise<void>;
 
-  // ── Favorites (series / chapter / page items) ─────────────────────────────
-  // Keyed by the derived `favoriteItemId`. Deliberately scoped + batched rather than
-  // list-everything/write-one: favorites are the one collection here with no natural ceiling (a
-  // heavy user of a long-running series accumulates thousands), and both the reader's chapter-open
-  // path and a reconcile would otherwise cost a full load and a write per record.
+  // ── Collection items (series / chapter / page) ────────────────────────────
+  // Keyed by the derived `collectionItemId`. Deliberately scoped + batched rather than
+  // list-everything/write-one: items are the one data set here with no natural ceiling (a heavy
+  // user of a long-running series accumulates thousands), and both the reader's chapter-open path
+  // and a reconcile would otherwise cost a full load and a write per record.
 
   /** Items matching `scope`; every item when it is omitted. Stores MUST honour the scope —
    *  it is what keeps opening a chapter off the whole-library path. */
-  listFavoriteItems(scope?: FavoriteItemScope): Promise<FavoriteItem[]>;
-  /** One item by its derived id — the keyed lookup that makes "is this favorited" O(1)
+  listCollectionItems(scope?: CollectionItemScope): Promise<CollectionItem[]>;
+  /** One item by its derived id — the keyed lookup that makes "is this collected" O(1)
    *  rather than a scan. */
-  getFavoriteItem(id: string): Promise<FavoriteItem | undefined>;
+  getCollectionItem(id: string): Promise<CollectionItem | undefined>;
   /** Upsert a batch (the derived id makes each idempotent). One call must cost ONE durable write,
    *  however many records it carries — a reconcile repairs a whole chapter through it. */
-  putFavoriteItems(items: FavoriteItem[]): Promise<void>;
-  /** Delete a batch. Same one-write-per-call expectation as `putFavoriteItems`. */
-  deleteFavoriteItems(ids: string[]): Promise<void>;
+  putCollectionItems(items: CollectionItem[]): Promise<void>;
+  /** Delete a batch. Same one-write-per-call expectation as `putCollectionItems`. */
+  deleteCollectionItems(ids: string[]): Promise<void>;
 
   /** Collections are a small ordered array — the whole document is read and written at once, so a
    *  reorder or a cascading delete is a single write rather than N racing read-modify-writes. */
-  listFavoriteCollections(): Promise<FavoriteCollection[]>;
-  putFavoriteCollections(collections: FavoriteCollection[]): Promise<void>;
+  listCollections(): Promise<Collection[]>;
+  putCollections(collections: Collection[]): Promise<void>;
 
   // ── Tracker links ─────────────────────────────────────────────────────────
   listTrackerLinks(key: string): Promise<TrackerLink[]>;

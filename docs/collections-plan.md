@@ -17,13 +17,17 @@ and carries no collision.
 
 1. **Pivot confirmed.** The `/library/favorite-pages` family is replaced, not aliased — it shipped
    to no client, so it can be renamed outright with no migration.
-2. **Core is uniform; policy lives in the app.** Any item type can exist as a bare anchor
-   (favorited, in no collection). The app's policy: a bare heart is a **page-only** affordance;
-   series and chapters enter the system through "add to collection." This keeps mechanism/policy
-   split — a future "heart a series" feature is a UI change, not a runtime change.
-   One asymmetry in core to prevent data litter: **deleting a collection prunes series/chapter
-   items left with zero memberships** (they only existed as members), but never prunes bare pages
-   (those are hearts the user set deliberately).
+2. **SUPERSEDED → pure collections.** (Originally: bare page hearts allowed, page-only prune
+   exception.) Final decision: **an item exists only as a member of collections**, every type
+   alike. Emptying an item's memberships removes it; deleting a collection removes items it was the
+   last membership of, pages included. A freshly-created item may be transiently uncollected until
+   its first filing (the two-PUT hash flow needs that), but there is no persistent bare-heart
+   concept. The reader's one-tap heart is app policy: membership in a lazily-created ordinary
+   "Favorites" collection, with no special-casing in core.
+   This also dissolved the last naming tension: the word **"favorites" now belongs exclusively to
+   the bridge-account capability** (`/bridges/:id/favorites`). The local surface is collections
+   vocabulary throughout — `CollectionItem`, `collectSeries`/`collectChapter`/`collectPage`,
+   `collectedAt`, routes at `/library/collected/...`, and no `UNCOLLECTED` sentinel.
 3. **No backwards compatibility, anywhere — including data.** Single-user project; the app and
    server move in lockstep with the submodule pin. No route aliases, no deprecated fields, no
    transition cycle, and **no lists migration**: existing `lists.json` / `listIds` data is simply

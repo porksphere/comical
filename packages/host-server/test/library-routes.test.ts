@@ -96,8 +96,8 @@ describe("/library lifecycle", () => {
     // reorder is a no-op with a single collection but exercises the endpoint.
     expect((await send("POST", "/library/collections/reorder", { orderedIds: [collection.id] })).status).toBe(200);
 
-    await send("PUT", "/library/favorites/series/demo/s1", { seriesTitle: "Series One" });
-    await send("PUT", "/library/favorites/series/demo/s1/collections", { collectionIds: [collection.id] });
+    await send("PUT", "/library/collected/series/demo/s1", { seriesTitle: "Series One" });
+    await send("PUT", "/library/collected/series/demo/s1/collections", { collectionIds: [collection.id] });
     const filed = (await (await get(`/library?collection=${collection.id}`)).json()) as Array<{ seriesId: string }>;
     expect(filed.map((e) => e.seriesId)).toEqual(["s1"]);
 

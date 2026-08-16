@@ -1,10 +1,11 @@
 # Favorites & collections — deferred work
 
-> Updated for the universal-collections generalization (`docs/collections-plan.md`): favorites now
-> cover series/chapter/page items, lists are deleted, and the route surface moved to
-> `/library/favorites` + `/library/collections`. Route/type names below that predate that (e.g.
-> `favorite-pages` paths, `FavoritePage`) read as their `FavoriteItem` successors; the reasoning
-> stands.
+> Updated for the universal-collections generalization and the PURE-COLLECTIONS revision
+> (`docs/collections-plan.md`): series/chapter/page items exist only as collection members (zero
+> memberships removes an item — no bare page hearts), lists are deleted, "favorites" now refers
+> exclusively to the bridge-account capability, and the surface lives at `/library/collected` +
+> `/library/collections`. Route/type names below that predate this (`favorite-pages` paths,
+> `FavoritePage`, "favorite") read as their `CollectionItem` successors; the reasoning stands.
 
 Things knowingly left undone when page favorites landed in this repo
 (`claude/page-favorites-runtime-00agdx`). Each is a decision, not an oversight — the reasoning is

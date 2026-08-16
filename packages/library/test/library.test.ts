@@ -736,15 +736,15 @@ describe("history", () => {
 
 describe("collections filter the library", () => {
   // The old library "lists" retired into collections: memberships live on SERIES favorite items,
-  // and getLibrary reads through them. Filing a series = favoriteSeries + collection membership.
+  // and getLibrary reads through them. Filing a series = collectSeries + collection membership.
   async function file(lib: Library, seriesId: string, collectionIds: string[]) {
-    const item = await lib.favoriteSeries({ bridgeId: "demo", seriesId }, { seriesTitle: seriesId });
-    await lib.setFavoriteItemCollections(item.id, collectionIds);
+    const item = await lib.collectSeries({ bridgeId: "demo", seriesId }, { seriesTitle: seriesId });
+    await lib.setItemCollections(item.id, collectionIds);
   }
 
   test("filing a series into a collection filters the library by it", async () => {
     const lib = makeLibrary();
-    const reading = await lib.createFavoriteCollection("Reading");
+    const reading = await lib.createCollection("Reading");
     await lib.addSeries(SERIES);
     await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Two" });
     await file(lib, "s1", [reading.id]);
@@ -755,15 +755,15 @@ describe("collections filter the library", () => {
 
   test("deleting a collection un-files its members, and the empty series item is pruned", async () => {
     const lib = makeLibrary();
-    const temp = await lib.createFavoriteCollection("Temp");
+    const temp = await lib.createCollection("Temp");
     await lib.addSeries(SERIES);
     await file(lib, "s1", [temp.id]);
 
-    await lib.deleteFavoriteCollection(temp.id);
-    expect(await lib.getFavoriteCollections()).toHaveLength(0);
+    await lib.deleteCollection(temp.id);
+    expect(await lib.getCollections()).toHaveLength(0);
     expect(await lib.getLibrary({ collection: temp.id })).toHaveLength(0);
     // A series item only existed as a member — uncollected, it is data litter and goes.
-    expect(await lib.getFavoriteItems({ type: "series" })).toHaveLength(0);
+    expect(await lib.getCollectionItems({ type: "series" })).toHaveLength(0);
     // The LIBRARY entry is untouched; only the grouping went.
     expect(await lib.getEntry(KEY)).toBeDefined();
   });
@@ -778,11 +778,11 @@ describe("getLibrary query (search / sort / filters)", () => {
    */
   async function seeded() {
     const lib = makeLibrary();
-    const action = await lib.createFavoriteCollection("Action");
-    const romance = await lib.createFavoriteCollection("Romance");
+    const action = await lib.createCollection("Action");
+    const romance = await lib.createCollection("Romance");
     const file = async (seriesId: string, title: string, collectionIds: string[]) => {
-      const item = await lib.favoriteSeries({ bridgeId: "demo", seriesId }, { seriesTitle: title });
-      await lib.setFavoriteItemCollections(item.id, collectionIds);
+      const item = await lib.collectSeries({ bridgeId: "demo", seriesId }, { seriesTitle: title });
+      await lib.setItemCollections(item.id, collectionIds);
     };
 
     await lib.addSeries({ bridgeId: "demo", seriesId: "s1", title: "Naruto", author: "Kishimoto" });
