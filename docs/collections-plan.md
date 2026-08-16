@@ -24,12 +24,10 @@ and carries no collision.
    One asymmetry in core to prevent data litter: **deleting a collection prunes series/chapter
    items left with zero memberships** (they only existed as members), but never prunes bare pages
    (those are hearts the user set deliberately).
-3. **No backwards compatibility, anywhere.** Single-user project; the app and server move in
-   lockstep with the submodule pin. No route aliases, no deprecated fields kept, no transition
-   cycle — old surface is deleted outright. The ONE thing kept is the one-time **data** migration
-   of existing lists (that's preserving the user's data, not compatibility): store-level, like the
-   categories→lists precedent, but memberships-preserving. Skippable too if losing current list
-   memberships is acceptable — say so and it goes.
+3. **No backwards compatibility, anywhere — including data.** Single-user project; the app and
+   server move in lockstep with the submodule pin. No route aliases, no deprecated fields, no
+   transition cycle, and **no lists migration**: existing `lists.json` / `listIds` data is simply
+   abandoned (stray keys in old documents are inert). Collections start empty.
 
 ## Data model — `@comical/library`
 
@@ -65,8 +63,8 @@ type FavoriteItem =
   - *page*: the entire existing subsystem (reconcile ladder, sparse hashes, stale) moves over
     **unchanged**.
 - `FavoriteCollection` unchanged: `{ id, name, order }`.
-- `LibraryEntry.listIds` is **removed from the schema**. The migration consumes it; a stray old
-  document's leftover key is ignored by zod, not preserved.
+- `LibraryEntry.listIds` is **removed from the schema**, along with `LibraryList` itself. Stray
+  keys in old on-disk documents are inert.
 
 ## Store seam
 
@@ -85,14 +83,9 @@ Same three load-bearing requirements as before: honour the scope, batch = one wr
 series** — which works for all three types, since a series anchor lives in its own series' shard
 (`favorite-items/{b:s}.json`; a bridge+series scope names exactly one shard).
 
-**Migrations:**
-- `favorite-pages/` shards → dropped without migration; no client ever produced them.
-- **Lists → collections** (the real one), one-time in `FileLibraryStore` on first favorites or
-  collections access: each `LibraryList` becomes a `FavoriteCollection` **keeping its id**; each
-  entry's `listIds` become a `series` FavoriteItem with those `collectionIds`, snapshot from the
-  entry (title/thumbnailUrl/author), `favoritedAt = entry.addedAt`. `lists.json` is then removed
-  and entries' `listIds` cleared, so the migration cannot re-run. The app's
-  `AsyncStorageLibraryStore` mirrors this against its own keys (spec'd in the rewritten handoff).
+**Migrations: none.** `favorite-pages/` shards were never produced by any client; `lists.json`
+and entries' `listIds` are abandoned in place (never read again). The categories→lists legacy
+migration in `FileLibraryStore` goes too — the field it heals no longer exists.
 
 ## Routes
 
@@ -146,10 +139,8 @@ and scoped reads keep it off the page shards), build `entryKey → collectionIds
    collection-delete prune semantics.
 3. **Router.** New `/library/favorites` + `/library/collections` families; delete the
    `/library/favorite-pages` family. Full HTTP integration tests, host-rn transport tests.
-4. **Lists retirement.** Store migration (file), `getLibrary` rewiring, wholesale deletion of the
-   list routes/methods/schema field. This phase is the risk concentration — it touches live data
-   and the hottest existing query, and gets the densest tests (migration idempotency, memberships
-   preserved).
+4. **Lists retirement.** Wholesale deletion of the list routes/methods/schema fields across
+   library, runtime, host-server and host-rn, plus `getLibrary` rewiring onto series favorites.
 5. **Docs + coordination.** Rewrite `page-favorites-handoff.md` → `collections-handoff.md`
    (app store migration spec included), update follow-ups (§5 resolved by unification), message to
    the app session. App stays held until Phase 3 lands; their Phase 1 (store
@@ -160,9 +151,7 @@ comparable to the API-tightening commit. Phase 4 is the genuinely new work.
 
 ## Risks / accepted costs
 
-- **Lists migration is the one irreversible step** — it rewrites live user documents. Mitigation:
-  memberships-preserving by construction, idempotent by construction (source documents removed),
-  and tested against a fixture of the current on-disk layout.
+- Existing list memberships are lost by design (decision 3).
 - Chapter anchors on non-library series have no drift detection (nothing ever fetches their
   chapter lists). Accepted; recorded in follow-ups.
 - Mixed-type collection browsing pushes rendering variety to the client — which is the
