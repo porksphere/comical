@@ -25,7 +25,6 @@ import type {
   CreateRouter,
   DownloadsStore,
   EmbeddedCoversConfig,
-  EmbeddedFavoritePagesConfig,
   EmbeddedDownloadsEngineConfig,
   EmbeddedTransport,
   InstalledStore,
@@ -63,11 +62,6 @@ export interface EmbeddedRuntimeConfig {
    *  `read`, plus the page fetcher). Supplied alongside `libraryStore`; the reused router captures
    *  covers on library-add/browse and serves them at `/library/entries/:b/:s/cover`. */
   covers?: EmbeddedCoversConfig;
-  /** Optional device seams for favorited-page thumbnails (a favorites-rooted blob store with `read`,
-   *  plus the page fetcher). Supplied alongside `libraryStore`; the reused router captures a page's
-   *  bytes when it is favorited and serves them at `/library/favorite-pages/:id/thumb`. Without it
-   *  favorites still work — they just carry no host-side thumbnail (`hasThumb` stays false). */
-  favoritePages?: EmbeddedFavoritePagesConfig;
   /** The embedder's transport setter — passed the embedded transport (or `null` to restore remote). */
   setTransport: (transport: EmbeddedTransport | null) => void;
   /** The installed-tracker manifest (AsyncStorage-backed in an app) — what `EmbeddedRegistryProvider`'s
@@ -231,7 +225,6 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
     embeddedDownloads,
     embeddedEngine,
     embeddedLibrary ? config.covers : undefined, // covers only make sense with a library
-    embeddedLibrary ? config.favoritePages : undefined, // ditto — favorites live under /library
     trackerProvider,
     config.oauthCallbackUrl,
   );

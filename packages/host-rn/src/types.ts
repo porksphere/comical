@@ -56,20 +56,6 @@ export interface EmbeddedCoversConfig {
   fetchPage: PageFetcher;
 }
 
-/**
- * The device seams for favorited-page thumbnails — the same pair as `EmbeddedCoversConfig`, for the
- * same reason: bytes land in a favorites-rooted store WITH `read` (the router serves them back at
- * `/library/favorite-pages/:id/thumb`) and a `fetchPage` turns the page's URL into those bytes.
- *
- * Required for a favorites grid to show anything on a chaptered series: the bridge-side per-page
- * thumbnail endpoint is series-level with no chapter component, so the host captures the page's own
- * bytes on favorite instead. Only effective alongside `libraryStore`.
- */
-export interface EmbeddedFavoritePagesConfig {
-  blobs: BlobStore;
-  fetchPage: PageFetcher;
-}
-
 export type { BridgeProvider, BridgeSummary, BridgeSource } from "@comical/host-server/bridge-provider";
 export type { RegistryProvider } from "@comical/host-server/registry-provider";
 export type { TrackerProvider, TrackerSummary } from "@comical/host-server/tracker-provider";
@@ -104,9 +90,6 @@ export type CreateRouter = (
     /** Cover byte cache — with it (alongside `library`) the router captures and serves library
      *  entries' covers for guaranteed-offline rendering. */
     covers?: EmbeddedCoversConfig;
-    /** Favorited-page thumbnail cache — with it (alongside `library`) the router captures a page's
-     *  bytes when it is favorited and serves them at `/library/favorite-pages/:id/thumb`. */
-    favoritePages?: EmbeddedFavoritePagesConfig;
     /** Tracker-management surface — enables the `/trackers*` endpoints when provided. */
     trackers?: TrackerProvider;
   },

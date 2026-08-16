@@ -93,7 +93,7 @@ const makeCreate = () => createRouter as unknown as CreateRouter;
 
 describe("embedded transport — on-device trackers", () => {
   test("mounts /trackers* when a TrackerProvider is supplied", async () => {
-    const t = createEmbeddedTransport(stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined, undefined, stubTrackerProvider);
+    const t = createEmbeddedTransport(stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined, stubTrackerProvider);
 
     const list = await t("/trackers");
     expect(list.status).toBe(200);
@@ -124,7 +124,7 @@ describe("embedded transport — on-device trackers", () => {
   // silently falling back to the default `http://localhost:3100`.
   test("threads callbackBaseUrl into oauth-start's authUrl instead of the localhost default", async () => {
     const withCustomBase = createEmbeddedTransport(
-      stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined, undefined,
+      stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined,
       oauthTrackerProvider, "comical://oauth-callback",
     );
     const res = await withCustomBase("/trackers/anilist/oauth-start", {
@@ -140,7 +140,7 @@ describe("embedded transport — on-device trackers", () => {
 
   test("falls back to the localhost default when no callbackBaseUrl is supplied", async () => {
     const withoutCustomBase = createEmbeddedTransport(
-      stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined, undefined,
+      stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined,
       oauthTrackerProvider,
     );
     const res = await withoutCustomBase("/trackers/anilist/oauth-start", {
@@ -187,7 +187,7 @@ describe("embedded transport — runtime-backed tracker search", () => {
     });
     return createEmbeddedTransport(
       stubBridgeProvider, makeCreate(), undefined, { library, runtime },
-      undefined, undefined, undefined, undefined, stubTrackerProvider,
+      undefined, undefined, undefined, stubTrackerProvider,
     );
   };
 

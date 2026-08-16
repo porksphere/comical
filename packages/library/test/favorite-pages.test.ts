@@ -14,6 +14,7 @@ import {
   parseFavoritePageId,
   UNCOLLECTED,
   type FavoritePageCoord,
+  type FavoritePageSnapshot,
 } from "../src/index.ts";
 
 const coord = (over: Partial<FavoritePageCoord> = {}): FavoritePageCoord => ({
@@ -98,17 +99,24 @@ describe("favoriting a page", () => {
     expect(again.favoritedAt).toBe(1_000);
   });
 
-  test("re-favoriting preserves collection memberships and a captured thumbnail", async () => {
+  test("re-favoriting preserves collection memberships", async () => {
     const { lib } = makeLibrary();
     const collection = await lib.createFavoriteCollection("Panels");
     const page = await lib.favoritePage(coord(), { seriesTitle: "Series One" });
     await lib.setFavoritePageCollections(page.id, [collection.id]);
-    await lib.setFavoritePageThumb(page.id, "demo/s1/c1/0.jpg");
 
     const again = await lib.favoritePage(coord(), { seriesTitle: "Series One" });
     expect(again.collectionIds).toEqual([collection.id]);
-    expect(again.hasThumb).toBe(true);
-    expect(again.thumbFile).toBe("demo/s1/c1/0.jpg");
+  });
+
+  test("records the client-supplied content hash — the re-anchor key", async () => {
+    const { lib } = makeLibrary();
+    const page = await lib.favoritePage(coord(), {
+      seriesTitle: "S",
+      sourceUrl: "https://cdn.example/0.png",
+      contentHash: "abc123",
+    });
+    expect(page).toMatchObject({ sourceUrl: "https://cdn.example/0.png", contentHash: "abc123" });
   });
 
   test("distinct pages of the same chapter are distinct favorites", async () => {
@@ -118,25 +126,14 @@ describe("favoriting a page", () => {
     expect(await lib.getFavoritePages()).toHaveLength(2);
   });
 
-  test("unfavoriting returns the removed record so a host can unlink its blob", async () => {
+  test("unfavoriting returns the removed record, and is idempotent", async () => {
     const { lib } = makeLibrary();
-    const page = await lib.favoritePage(coord(), { seriesTitle: "S" });
-    await lib.setFavoritePageThumb(page.id, "demo/s1/c1/0.jpg");
+    await lib.favoritePage(coord(), { seriesTitle: "S" });
 
-    const removed = await lib.unfavoritePage(coord());
-    expect(removed?.thumbFile).toBe("demo/s1/c1/0.jpg");
+    expect((await lib.unfavoritePage(coord()))?.seriesTitle).toBe("S");
     expect(await lib.getFavoritePages()).toEqual([]);
     // Removing again is a no-op, not an error — a double-tap must not throw.
     expect(await lib.unfavoritePage(coord())).toBeUndefined();
-  });
-
-  test("setFavoritePageThumb on an already-unfavorited page is a no-op", async () => {
-    // A best-effort capture can still be in flight when the user unfavorites.
-    const { lib } = makeLibrary();
-    const page = await lib.favoritePage(coord(), { seriesTitle: "S" });
-    await lib.unfavoritePage(coord());
-    await lib.setFavoritePageThumb(page.id, "demo/s1/c1/0.jpg");
-    expect(await lib.getFavoritePages()).toEqual([]);
   });
 });
 
@@ -357,5 +354,196 @@ describe("independence from the library", () => {
     await lib.favoritePage(coord(), { seriesTitle: "Series One" });
     await lib.removeSeries("demo:s1");
     expect(await lib.getFavoritePages()).toHaveLength(1);
+  });
+});
+
+/**
+ * Chapter drift. A favorite is located by `(bridge, series, chapter, pageIndex)` and sources mutate
+ * chapters underneath it — a page inserted at the front shifts every index after it, a re-upload can
+ * replace the chapter wholesale. `reconcileChapterFavorites` is what stops those favorites from
+ * silently pointing at the wrong page.
+ */
+describe("reconcileChapterFavorites", () => {
+  const p = (sourceUrl: string, contentHash?: string) => ({ sourceUrl, ...(contentHash && { contentHash }) });
+
+  /** Page 2 of a 4-page chapter, with both re-anchor signals recorded. Callers pass a narrower
+   *  snapshot to test what happens when a signal is missing. */
+  const BOTH_SIGNALS: FavoritePageSnapshot = {
+    seriesTitle: "S",
+    pageCount: 4,
+    sourceUrl: "https://cdn/p2.png",
+    contentHash: "hash-p2",
+  };
+  const URL_ONLY: FavoritePageSnapshot = { seriesTitle: "S", pageCount: 4, sourceUrl: "https://cdn/p2.png" };
+  const NO_SIGNALS: FavoritePageSnapshot = { seriesTitle: "S", pageCount: 4 };
+
+  async function seedFavorite(snap: FavoritePageSnapshot = BOTH_SIGNALS) {
+    const { lib } = makeLibrary();
+    const fav = await lib.favoritePage(coord({ pageIndex: 2 }), snap);
+    return { lib, fav };
+  }
+
+  test("an unchanged chapter verifies every favorite and repairs nothing", async () => {
+    const { lib } = await seedFavorite();
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
+      p("https://cdn/p0.png", "hash-p0"),
+      p("https://cdn/p1.png", "hash-p1"),
+      p("https://cdn/p2.png", "hash-p2"),
+      p("https://cdn/p3.png", "hash-p3"),
+    ]);
+    expect(res).toEqual({ indices: [2], repaired: 0, stale: 0 });
+  });
+
+  test("a page inserted at the front shifts the favorite, and the hash relocates it", async () => {
+    const { lib, fav } = await seedFavorite();
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
+      p("https://cdn/new.png", "hash-new"),
+      p("https://cdn/p0.png", "hash-p0"),
+      p("https://cdn/p1.png", "hash-p1"),
+      p("https://cdn/p2.png", "hash-p2"), // was index 2, now 3
+      p("https://cdn/p3.png", "hash-p3"),
+    ]);
+    expect(res).toEqual({ indices: [3], repaired: 1, stale: 0 });
+
+    // The record is RE-KEYED, because the id is derived from the coordinates.
+    expect(await lib.getFavoritePage(fav.id)).toBeUndefined();
+    const moved = await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 3 })));
+    expect(moved).toMatchObject({ pageIndex: 3, pageCount: 5, contentHash: "hash-p2" });
+  });
+
+  test("the hash relocates a page even when its URL has rotted", async () => {
+    const { lib } = await seedFavorite();
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
+      p("https://cdn2/signed?a=1", "hash-p0"),
+      p("https://cdn2/signed?a=2", "hash-p2"), // same bytes, brand new URL, moved to index 1
+      p("https://cdn2/signed?a=3", "hash-p3"),
+    ]);
+    expect(res).toEqual({ indices: [1], repaired: 1, stale: 0 });
+    // The rotted URL is refreshed from the fresh list, so the cheap signal works next time too.
+    expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 1 }))))?.sourceUrl).toBe(
+      "https://cdn2/signed?a=2",
+    );
+  });
+
+  test("without a hash, a matching URL still relocates the favorite for free", async () => {
+    const { lib } = await seedFavorite(URL_ONLY);
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
+      p("https://cdn/new.png"),
+      p("https://cdn/p0.png"),
+      p("https://cdn/p1.png"),
+      p("https://cdn/p2.png"),
+    ]);
+    expect(res).toEqual({ indices: [3], repaired: 1, stale: 0 });
+  });
+
+  test("a favorite with no hash adopts one, so the NEXT reconcile survives URL rot", async () => {
+    const { lib } = await seedFavorite(URL_ONLY);
+    await lib.reconcileChapterFavorites("demo", "s1", "c1", [
+      p("https://cdn/p0.png", "hash-p0"),
+      p("https://cdn/p1.png", "hash-p1"),
+      p("https://cdn/p2.png", "hash-p2"),
+      p("https://cdn/p3.png", "hash-p3"),
+    ]);
+    expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 2 }))))?.contentHash).toBe("hash-p2");
+  });
+
+  test("a re-encoded re-upload can't be matched — the favorite goes stale, not deleted", async () => {
+    const { lib, fav } = await seedFavorite();
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
+      p("https://cdn/v2-p0.png", "hash-v2-p0"),
+      p("https://cdn/v2-p1.png", "hash-v2-p1"),
+      p("https://cdn/v2-p2.png", "hash-v2-p2"), // same page, re-encoded → different bytes
+    ]);
+    expect(res).toEqual({ indices: [], repaired: 0, stale: 1 });
+
+    // Kept, with its snapshot intact — the user favorited it deliberately.
+    const kept = await lib.getFavoritePage(fav.id);
+    expect(kept).toMatchObject({ stale: true, seriesTitle: "S" });
+    expect(await lib.getFavoritePages()).toHaveLength(1);
+  });
+
+  test("a stale favorite stops being reported as a favorited index", async () => {
+    const { lib } = await seedFavorite();
+    await lib.reconcileChapterFavorites("demo", "s1", "c1", [p("https://cdn/other.png", "hash-other")]);
+    // The reader must not highlight or navigate to a page we can't vouch for.
+    expect(await lib.getFavoritePageIndices("demo", "s1", "c1")).toEqual([]);
+  });
+
+  test("a source reverting a bad re-upload heals the favorite", async () => {
+    const { lib, fav } = await seedFavorite();
+    await lib.reconcileChapterFavorites("demo", "s1", "c1", [p("https://cdn/v2.png", "hash-v2")]);
+    expect((await lib.getFavoritePage(fav.id))?.stale).toBe(true);
+
+    await lib.reconcileChapterFavorites("demo", "s1", "c1", [
+      p("https://cdn/p0.png", "hash-p0"),
+      p("https://cdn/p1.png", "hash-p1"),
+      p("https://cdn/p2.png", "hash-p2"),
+    ]);
+    const healed = await lib.getFavoritePage(fav.id);
+    expect(healed?.stale).toBeUndefined();
+    expect(await lib.getFavoritePageIndices("demo", "s1", "c1")).toEqual([2]);
+  });
+
+  test("an empty page list is treated as a failed fetch, never as an emptied chapter", async () => {
+    // Trusting it would mark the user's entire chapter stale on one transient network error.
+    const { lib } = await seedFavorite();
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", []);
+    expect(res).toEqual({ indices: [2], repaired: 0, stale: 0 });
+    expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 2 }))))?.stale).toBeUndefined();
+  });
+
+  test("with no signals at all, the index is trusted only while the page count holds", async () => {
+    const { lib } = await seedFavorite(NO_SIGNALS);
+    // Same length → assume unchanged.
+    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", [{}, {}, {}, {}])).toEqual({
+      indices: [2],
+      repaired: 0,
+      stale: 0,
+    });
+    // Different length → "unknown" must not read as "unchanged".
+    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", [{}, {}])).toEqual({
+      indices: [],
+      repaired: 0,
+      stale: 1,
+    });
+  });
+
+  test("only the named chapter is touched", async () => {
+    const { lib } = await seedFavorite();
+    const other = await lib.favoritePage(coord({ chapterId: "c2", pageIndex: 0 }), {
+      seriesTitle: "S",
+      contentHash: "hash-other",
+    });
+    await lib.reconcileChapterFavorites("demo", "s1", "c1", [p("https://cdn/x.png", "hash-x")]);
+    expect((await lib.getFavoritePage(other.id))?.stale).toBeUndefined();
+  });
+
+  test("reconciling a chapter with no favorites is a no-op", async () => {
+    const { lib } = makeLibrary();
+    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", [p("https://cdn/p0.png")])).toEqual({
+      indices: [],
+      repaired: 0,
+      stale: 0,
+    });
+  });
+
+  test("two favorites relocating onto one page merge instead of colliding", async () => {
+    // A chapter that de-duplicated a repeated page: both favorites now name the same index, and the
+    // derived id means they'd overwrite each other. The merge must not drop either's collections.
+    const { lib } = makeLibrary();
+    const dupes = await lib.createFavoriteCollection("Dupes");
+    const keep = await lib.createFavoriteCollection("Keep");
+    const a = await lib.favoritePage(coord({ pageIndex: 1 }), { seriesTitle: "S", contentHash: "same" });
+    const b = await lib.favoritePage(coord({ pageIndex: 2 }), { seriesTitle: "S", contentHash: "same" });
+    await lib.setFavoritePageCollections(a.id, [dupes.id]);
+    await lib.setFavoritePageCollections(b.id, [keep.id]);
+
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [p("https://cdn/p0.png", "same")]);
+    expect(res.indices).toEqual([0]);
+
+    const merged = await lib.getFavoritePages();
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.collectionIds.sort()).toEqual([dupes.id, keep.id].sort());
+    expect(merged[0]!.favoritedAt).toBe(1_000); // the earlier of the two
   });
 });

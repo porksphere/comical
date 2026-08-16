@@ -218,11 +218,26 @@ export const favoritePageSnapshotSchema = z.object({
   chapterName: z.string().optional(),
   pageCount: z.number().int().nonnegative().optional(),
   /**
-   * The page's image URL at capture time. Debug/fallback only — page URLs are expected to rot, so
-   * this is never the thumbnail's source of truth (that's the captured blob). It IS what the host
-   * feeds its page fetcher when capturing that blob.
+   * The page's image URL when it was favorited. Doubles as the cheap re-anchor key: matching it
+   * against a freshly-fetched page list relocates a page that merely shifted, at no network cost.
+   * Expected to rot eventually, which is what `contentHash` is for.
    */
   sourceUrl: z.string().optional(),
+  /**
+   * Fingerprint of the page's raw image bytes — **lowercase hex SHA-256**, computed by the CLIENT
+   * from bytes it already holds (it just rendered the page), so the host does no image work and
+   * stores no pixels.
+   *
+   * This is the strongest re-anchor signal: unlike `sourceUrl` it survives URL rot and a chapter
+   * being re-uploaded under a new id. The algorithm is fixed rather than opaque because the hash
+   * written at favorite time is compared against hashes computed later, potentially by a different
+   * client against the same host — they must agree.
+   *
+   * Limit worth knowing: an exact hash relocates a page whose FILE is unchanged (the common
+   * "a page was inserted ahead of it" case). A re-encoded or re-scanned re-upload changes the bytes,
+   * so the favorite goes stale instead of being repaired.
+   */
+  contentHash: z.string().optional(),
 });
 export type FavoritePageSnapshot = z.infer<typeof favoritePageSnapshotSchema>;
 
@@ -236,19 +251,34 @@ export const favoritePageSchema = favoritePageCoordSchema.extend({
   collectionIds: z.array(z.string()).default([]),
   seriesTitle: z.string().min(1),
   chapterName: z.string().optional(),
+  /** The chapter's page count when this was favorited. Kept current by `reconcileChapterFavorites`,
+   *  which also uses a mismatch as the last-resort "this chapter moved" signal. */
   pageCount: z.number().int().nonnegative().optional(),
   sourceUrl: z.string().optional(),
-  /** A thumbnail blob was captured for this favorite and can be served back by the host. */
-  hasThumb: z.boolean().optional(),
+  contentHash: z.string().optional(),
   /**
-   * Relative path of the captured page bytes under the host's favorite-thumbs blob root — the
-   * manifest pointer, exactly like `CachedSeriesDetail.coverFile`. Host-internal: clients read
-   * `hasThumb` and fetch the host's thumb route, never this path. Absent until capture succeeds,
-   * and always set/cleared together with `hasThumb`.
+   * Set when a reconcile against a fresh page list could not locate this page any more — the source
+   * changed the chapter and neither the hash nor the URL matched anything in it.
+   *
+   * A stale favorite is NEVER deleted: the user favorited it deliberately, and the snapshot still
+   * renders. It is simply no longer trusted as a pointer — it stops being reported as a favorited
+   * index, so the reader can't highlight or navigate to a page that isn't the one saved. Clears
+   * itself if a later reconcile finds the page again (a source reverting a bad re-upload).
    */
-  thumbFile: z.string().optional(),
+  stale: z.boolean().optional(),
 });
 export type FavoritePage = z.infer<typeof favoritePageSchema>;
+
+/**
+ * One page of a freshly-fetched chapter, as handed to {@link Library.reconcileChapterFavorites}.
+ * Position in the array IS the page index. Both fields are optional because what a client can
+ * supply varies: a URL is always to hand, a hash only if it has the bytes.
+ */
+export interface ChapterPageRef {
+  sourceUrl?: string;
+  /** Lowercase hex SHA-256 of the page's raw bytes — see `FavoritePage.contentHash`. */
+  contentHash?: string;
+}
 
 /**
  * A user-created grouping a favorited page can be filed into. Deliberately shaped like

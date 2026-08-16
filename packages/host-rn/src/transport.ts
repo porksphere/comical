@@ -24,7 +24,6 @@ import type {
   DownloadEngine,
   Downloads,
   EmbeddedCoversConfig,
-  EmbeddedFavoritePagesConfig,
   EmbeddedTransport,
   Library,
   RegistryProvider,
@@ -49,7 +48,6 @@ export function createEmbeddedTransport(
   downloads?: Downloads,
   downloadEngine?: DownloadEngine,
   covers?: EmbeddedCoversConfig,
-  favoritePages?: EmbeddedFavoritePagesConfig,
   trackers?: TrackerProvider,
   /** The app's own custom-scheme redirect URI (e.g. `comical://oauth-callback`, from
    *  `expo-linking`'s `Linking.createURL(...)`) — there's no real server to redirect an OAuth
@@ -67,7 +65,6 @@ export function createEmbeddedTransport(
     ...(downloads ? { downloads } : {}),
     ...(downloadEngine ? { downloadEngine } : {}),
     ...(covers ? { covers } : {}),
-    ...(favoritePages ? { favoritePages } : {}),
     ...(trackers ? { trackers } : {}),
     ...(callbackBaseUrl ? { callbackBaseUrl } : {}),
   });

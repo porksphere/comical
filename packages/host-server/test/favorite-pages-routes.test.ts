@@ -1,15 +1,16 @@
 /**
- * The `/library/favorite-pages` routes over a `FileLibraryStore` on a real temp dir, plus the
- * thumbnail-capture subsystem behind the optional `favoritePages` config.
+ * The `/library/favorite-pages` routes over a `FileLibraryStore` on a real temp dir.
  *
  * These are local-user-data routes for favoriting a single PAGE. They are unrelated to the
  * bridge-account per-series `favorites` capability under `/bridges/:id/favorites`, which is why they
  * live under `/library` — a fact the "namespaces stay separate" test below pins down.
+ *
+ * No page bytes are stored anywhere: a favorite is coordinates plus a display snapshot plus the two
+ * re-anchor signals (`sourceUrl`, `contentHash`) that let a drifted chapter be repaired.
  */
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { BlobStore, PageFetcher } from "@comical/downloads";
 import { Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
 import { BridgeManager } from "../src/bridge-manager.ts";
@@ -20,40 +21,9 @@ import { SettingsStore } from "../src/settings-store.ts";
 const BRIDGES_DIR = join(import.meta.dir, "..", "..", "..", "bridges");
 const DATA_DIR = join(import.meta.dir, ".tmp-favorite-pages");
 
-const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
-
-/** An in-memory `BlobStore` standing in for the host's file-backed one. */
-function memoryBlobStore() {
-  const files = new Map<string, Uint8Array>();
-  const store: BlobStore = {
-    async write(path, data) {
-      files.set(path, data);
-      return { bytes: data.byteLength };
-    },
-    async read(path) {
-      return files.get(path);
-    },
-    async remove(paths) {
-      for (const p of paths) files.delete(p);
-    },
-    async removeAll() {
-      files.clear();
-    },
-    async usage() {
-      return [...files.values()].reduce((n, d) => n + d.byteLength, 0);
-    },
-  };
-  return { store, files };
-}
-
 let baseUrl: string;
-let noThumbUrl: string;
 let noLibraryUrl: string;
 let stop: () => void;
-let blobs: ReturnType<typeof memoryBlobStore>;
-/** Every `sourceUrl` the capture subsystem was asked to fetch, and a switch to make it fail. */
-let fetched: string[];
-let failCapture = false;
 
 const get = (p: string) => fetch(`${baseUrl}${p}`);
 const send = (method: string, p: string, body?: unknown, base = baseUrl) =>
@@ -72,14 +42,21 @@ interface FavoriteBody {
   seriesTitle: string;
   chapterName?: string;
   pageCount?: number;
+  sourceUrl?: string;
+  contentHash?: string;
+  stale?: boolean;
   favoritedAt: number;
   collectionIds: string[];
-  hasThumb?: boolean;
 }
 interface CollectionBody {
   id: string;
   name: string;
   order: number;
+}
+interface ReconcileBody {
+  indices: number[];
+  repaired: number;
+  stale: number;
 }
 
 beforeAll(() => {
@@ -90,45 +67,17 @@ beforeAll(() => {
     settings: new SettingsStore(DATA_DIR),
   });
 
-  blobs = memoryBlobStore();
-  fetched = [];
-  const fetchPage: PageFetcher = async (_ctx, page) => {
-    fetched.push(page.sourceUrl);
-    if (failCapture) throw new Error("upstream exploded");
-    return { data: PNG, contentType: "image/png" };
-  };
-
-  const makeLibrary = (dir: string) => {
-    const library = new Library(new FileLibraryStore(join(DATA_DIR, dir)));
-    return { library, runtime: new ComicalRuntime({ bridges: manager, library }) };
-  };
-
-  const main = makeLibrary("library");
-  const srv = Bun.serve({
-    port: 0,
-    fetch: createRouter(manager, {
-      library: main.library,
-      runtime: main.runtime,
-      favoritePages: { blobs: blobs.store, fetchPage },
-    }).fetch,
-  });
+  const library = new Library(new FileLibraryStore(join(DATA_DIR, "library")));
+  const runtime = new ComicalRuntime({ bridges: manager, library });
+  const srv = Bun.serve({ port: 0, fetch: createRouter(manager, { library, runtime }).fetch });
   baseUrl = `http://localhost:${srv.port}`;
 
-  // A second server with a library but NO favoritePages config — capture must degrade cleanly.
-  const bare = makeLibrary("library-no-thumbs");
-  const noThumbSrv = Bun.serve({
-    port: 0,
-    fetch: createRouter(manager, { library: bare.library, runtime: bare.runtime }).fetch,
-  });
-  noThumbUrl = `http://localhost:${noThumbSrv.port}`;
-
-  // ...and a third with no library at all, for the absence check.
+  // A second server with no library at all, for the absence check.
   const noLibrarySrv = Bun.serve({ port: 0, fetch: createRouter(manager).fetch });
   noLibraryUrl = `http://localhost:${noLibrarySrv.port}`;
 
   stop = () => {
     srv.stop(true);
-    noThumbSrv.stop(true);
     noLibrarySrv.stop(true);
   };
 });
@@ -139,16 +88,16 @@ afterAll(() => {
 });
 
 describe("favoriting pages", () => {
-  test("PUT favorites a page, captures its thumbnail, and DELETE removes both", async () => {
+  test("PUT favorites a page with both re-anchor signals, DELETE removes it", async () => {
     const put = await send("PUT", "/library/favorite-pages/demo/s1/c1/3", {
       seriesTitle: "Series One",
       chapterName: "Ch 1",
       pageCount: 20,
       sourceUrl: "https://cdn.example/3.png",
+      contentHash: "sha256-of-page-3",
     });
     expect(put.status).toBe(200);
-    const page = await json<FavoriteBody>(put);
-    expect(page).toMatchObject({
+    expect(await json<FavoriteBody>(put)).toMatchObject({
       bridgeId: "demo",
       seriesId: "s1",
       chapterId: "c1",
@@ -156,30 +105,21 @@ describe("favoriting pages", () => {
       seriesTitle: "Series One",
       chapterName: "Ch 1",
       pageCount: 20,
+      sourceUrl: "https://cdn.example/3.png",
+      contentHash: "sha256-of-page-3",
       collectionIds: [],
-      hasThumb: true,
     });
-    expect(fetched).toContain("https://cdn.example/3.png");
-
-    // The captured bytes are served back at the thumb route.
-    const thumb = await get(`/library/favorite-pages/${encodeURIComponent(page.id)}/thumb`);
-    expect(thumb.status).toBe(200);
-    expect(thumb.headers.get("Content-Type")).toBe("image/png");
-    expect(new Uint8Array(await thumb.arrayBuffer())).toEqual(PNG);
 
     expect((await send("DELETE", "/library/favorite-pages/demo/s1/c1/3")).status).toBe(200);
     expect(await json<FavoriteBody[]>(await get("/library/favorite-pages"))).toEqual([]);
-    // The blob is unlinked with the favorite — no orphaned bytes.
-    expect(blobs.files.size).toBe(0);
-    expect((await get(`/library/favorite-pages/${encodeURIComponent(page.id)}/thumb`)).status).toBe(404);
   });
 
   test("PUT is idempotent — re-favoriting overwrites rather than duplicating", async () => {
     const first = await json<FavoriteBody>(
-      await send("PUT", "/library/favorite-pages/demo/s1/c1/0", { seriesTitle: "Old", sourceUrl: "https://cdn/0.png" }),
+      await send("PUT", "/library/favorite-pages/demo/s1/c1/0", { seriesTitle: "Old" }),
     );
     const second = await json<FavoriteBody>(
-      await send("PUT", "/library/favorite-pages/demo/s1/c1/0", { seriesTitle: "New", sourceUrl: "https://cdn/0.png" }),
+      await send("PUT", "/library/favorite-pages/demo/s1/c1/0", { seriesTitle: "New" }),
     );
 
     expect(second.id).toBe(first.id);
@@ -194,8 +134,7 @@ describe("favoriting pages", () => {
     await send("PUT", "/library/favorite-pages/demo/s1/c1/1", { seriesTitle: "Persisted" });
     // A fresh store over the same dir reads what the first one wrote.
     const reopened = new Library(new FileLibraryStore(join(DATA_DIR, "library")));
-    const pages = await reopened.getFavoritePages();
-    expect(pages.map((p) => p.seriesTitle)).toEqual(["Persisted"]);
+    expect((await reopened.getFavoritePages()).map((p) => p.seriesTitle)).toEqual(["Persisted"]);
     await send("DELETE", "/library/favorite-pages/demo/s1/c1/1");
   });
 
@@ -252,6 +191,75 @@ describe("chapter indices route", () => {
   });
 });
 
+describe("reconcile route — chapter drift", () => {
+  const p = (sourceUrl: string, contentHash: string) => ({ sourceUrl, contentHash });
+
+  test("repairs a shifted favorite and returns the indices to trust", async () => {
+    await send("PUT", "/library/favorite-pages/demo/drift/c1/2", {
+      seriesTitle: "Drifty",
+      pageCount: 4,
+      sourceUrl: "https://cdn/p2.png",
+      contentHash: "hash-p2",
+    });
+
+    const res = await send("POST", "/library/favorite-pages/chapter/demo/drift/c1", {
+      pages: [
+        p("https://cdn/new.png", "hash-new"),
+        p("https://cdn/p0.png", "hash-p0"),
+        p("https://cdn/p1.png", "hash-p1"),
+        p("https://cdn/p2.png", "hash-p2"),
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(await json<ReconcileBody>(res)).toEqual({ indices: [3], repaired: 1, stale: 0 });
+
+    // The plain GET now agrees — the repair is persisted, not just reported.
+    expect(await json<number[]>(await get("/library/favorite-pages/chapter/demo/drift/c1"))).toEqual([3]);
+    await send("DELETE", "/library/favorite-pages/demo/drift/c1/3");
+  });
+
+  test("an unlocatable favorite is marked stale, kept, and dropped from the indices", async () => {
+    await send("PUT", "/library/favorite-pages/demo/gone/c1/1", {
+      seriesTitle: "Replaced",
+      pageCount: 3,
+      contentHash: "hash-old",
+    });
+
+    const res = await json<ReconcileBody>(
+      await send("POST", "/library/favorite-pages/chapter/demo/gone/c1", {
+        pages: [p("https://cdn/v2-0.png", "hash-v2-0"), p("https://cdn/v2-1.png", "hash-v2-1")],
+      }),
+    );
+    expect(res).toEqual({ indices: [], repaired: 0, stale: 1 });
+
+    // Still in the grid — the user favorited it deliberately — but flagged.
+    const all = await json<FavoriteBody[]>(await get("/library/favorite-pages?series=demo:gone"));
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ stale: true, seriesTitle: "Replaced" });
+    expect(await json<number[]>(await get("/library/favorite-pages/chapter/demo/gone/c1"))).toEqual([]);
+
+    await send("DELETE", "/library/favorite-pages/demo/gone/c1/1");
+  });
+
+  test("an empty page list is a no-op, so a failed fetch can't stale a whole chapter", async () => {
+    await send("PUT", "/library/favorite-pages/demo/safe/c1/0", { seriesTitle: "S", pageCount: 2 });
+    expect(
+      await json<ReconcileBody>(await send("POST", "/library/favorite-pages/chapter/demo/safe/c1", { pages: [] })),
+    ).toEqual({ indices: [0], repaired: 0, stale: 0 });
+    await send("DELETE", "/library/favorite-pages/demo/safe/c1/0");
+  });
+
+  test("requires a pages array, and tolerates junk entries within it", async () => {
+    expect((await send("POST", "/library/favorite-pages/chapter/demo/s1/c1", {})).status).toBe(400);
+    expect((await send("POST", "/library/favorite-pages/chapter/demo/s1/c1", { pages: "nope" })).status).toBe(400);
+    // One odd element must not reject an entire chapter's reconcile.
+    const ok = await send("POST", "/library/favorite-pages/chapter/demo/s1/c1", {
+      pages: [null, { sourceUrl: 5 }, { sourceUrl: "https://cdn/ok.png" }],
+    });
+    expect(ok.status).toBe(200);
+  });
+});
+
 describe("collections", () => {
   test("CRUD + reorder, and 'collections' is never parsed as a favorite id", async () => {
     const created = await send("POST", "/library/favorite-pages/collections", { name: "Panels" });
@@ -261,7 +269,7 @@ describe("collections", () => {
       await send("POST", "/library/favorite-pages/collections", { name: "Splashes" }),
     );
 
-    // The literal segment wins over the `:id/thumb` and `:id/collections` patterns.
+    // The literal segment wins over the `:id/collections` pattern.
     const list = await get("/library/favorite-pages/collections");
     expect(list.status).toBe(200);
     expect((await json<CollectionBody[]>(list)).map((c) => c.name)).toEqual(["Panels", "Splashes"]);
@@ -351,59 +359,17 @@ describe("listing", () => {
     await send("DELETE", "/library/favorite-pages/demo/s2/c9/4");
     await send("DELETE", "/library/favorite-pages/demo/s1/c1/7");
   });
-});
 
-describe("thumbnail capture is best-effort", () => {
-  test("a capture failure still favorites the page, with hasThumb false", async () => {
-    failCapture = true;
-    try {
-      const res = await send("PUT", "/library/favorite-pages/demo/s1/c5/2", {
-        seriesTitle: "S",
-        sourceUrl: "https://cdn.example/boom.png",
-      });
-      expect(res.status).toBe(200);
-      const page = await json<FavoriteBody>(res);
-      expect(page.hasThumb).toBeUndefined();
-      expect((await get(`/library/favorite-pages/${encodeURIComponent(page.id)}/thumb`)).status).toBe(404);
-    } finally {
-      failCapture = false;
-    }
-    await send("DELETE", "/library/favorite-pages/demo/s1/c5/2");
-  });
-
-  test("no sourceUrl means no capture attempt, and the favorite still lands", async () => {
-    const before = fetched.length;
-    const page = await json<FavoriteBody>(
-      await send("PUT", "/library/favorite-pages/demo/s1/c6/0", { seriesTitle: "S" }),
-    );
-    expect(page.hasThumb).toBeUndefined();
-    expect(fetched.length).toBe(before);
-    await send("DELETE", "/library/favorite-pages/demo/s1/c6/0");
-  });
-
-  test("with no favoritePages config the routes still work and the thumb route is absent", async () => {
-    const put = await send(
-      "PUT",
-      "/library/favorite-pages/demo/s1/c1/0",
-      { seriesTitle: "S", sourceUrl: "https://cdn.example/0.png" },
-      noThumbUrl,
-    );
-    expect(put.status).toBe(200);
-    const page = await json<FavoriteBody>(put);
-    expect(page.hasThumb).toBeUndefined();
-    // The thumb route only mounts when a readable blob store is configured.
-    expect((await fetch(`${noThumbUrl}/library/favorite-pages/${encodeURIComponent(page.id)}/thumb`)).status).toBe(404);
-    expect((await fetch(`${noThumbUrl}/library/favorite-pages`)).status).toBe(200);
-  });
-
-  test("captured thumbnail bytes count toward /library/usage", async () => {
-    const empty = await json<{ diskBytes: number }>(await get("/library/usage"));
+  test("favorites store no page bytes, so they add nothing to /library/usage beyond their document", async () => {
+    const before = await json<{ diskBytes: number }>(await get("/library/usage"));
     await send("PUT", "/library/favorite-pages/demo/s1/c7/0", {
       seriesTitle: "S",
       sourceUrl: "https://cdn.example/7.png",
+      contentHash: "hash-7",
     });
-    const withThumb = await json<{ diskBytes: number }>(await get("/library/usage"));
-    expect(withThumb.diskBytes).toBeGreaterThanOrEqual(empty.diskBytes + PNG.byteLength);
+    const after = await json<{ diskBytes: number }>(await get("/library/usage"));
+    // A JSON record, not a page image: kilobytes at most, never the hundreds of KB a page runs to.
+    expect(after.diskBytes - before.diskBytes).toBeLessThan(4096);
     await send("DELETE", "/library/favorite-pages/demo/s1/c7/0");
   });
 });
@@ -413,6 +379,7 @@ describe("absence and namespace separation", () => {
     for (const [method, path] of [
       ["GET", "/library/favorite-pages"],
       ["GET", "/library/favorite-pages/chapter/demo/s1/c1"],
+      ["POST", "/library/favorite-pages/chapter/demo/s1/c1"],
       ["GET", "/library/favorite-pages/collections"],
       ["POST", "/library/favorite-pages/collections"],
       ["PUT", "/library/favorite-pages/demo/s1/c1/0"],

@@ -18,6 +18,7 @@ import {
   type BridgePrefs,
   type CachedChapters,
   type CachedSeriesDetail,
+  type ChapterPageRef,
   type ChapterProgress,
   type FavoriteCollection,
   type FavoritePage,
@@ -784,15 +785,13 @@ export class Library {
       ...(snap.chapterName !== undefined && { chapterName: snap.chapterName }),
       ...(snap.pageCount !== undefined && { pageCount: snap.pageCount }),
       ...(snap.sourceUrl !== undefined && { sourceUrl: snap.sourceUrl }),
-      ...(existing?.hasThumb !== undefined && { hasThumb: existing.hasThumb }),
-      ...(existing?.thumbFile !== undefined && { thumbFile: existing.thumbFile }),
+      ...(snap.contentHash !== undefined && { contentHash: snap.contentHash }),
     };
     await this.store.putFavoritePage(page);
     return page;
   }
 
-  /** Unfavorite by coordinates. Returns the removed record (so a host can unlink its thumbnail
-   *  blob), or undefined if the page was not favorited. */
+  /** Unfavorite by coordinates. Returns the removed record, or undefined if it was not favorited. */
   async unfavoritePage(coord: FavoritePageCoord): Promise<FavoritePage | undefined> {
     return this.deleteFavoritePage(favoritePageId(coord));
   }
@@ -837,12 +836,132 @@ export class Library {
    * This is the reader's shape: it loads the set once when the chapter opens and keeps the favorite
    * button correct across every page turn with zero further requests. A per-page "is this favorited"
    * check would fire once per turn, which is why none exists.
+   *
+   * Stale favorites are excluded — an index we know no longer points at the saved page must not
+   * light up the button or drive navigation.
    */
   async getFavoritePageIndices(bridgeId: string, seriesId: string, chapterId: string): Promise<number[]> {
     return (await this.store.listFavoritePages())
-      .filter((p) => p.bridgeId === bridgeId && p.seriesId === seriesId && p.chapterId === chapterId)
+      .filter((p) => p.bridgeId === bridgeId && p.seriesId === seriesId && p.chapterId === chapterId && !p.stale)
       .map((p) => p.pageIndex)
       .sort((a, b) => a - b);
+  }
+
+  /**
+   * Re-anchor a chapter's favorites against a freshly-fetched page list, and return the indices the
+   * reader should treat as favorited.
+   *
+   * WHY this exists: a favorite is located by `(bridge, series, chapter, pageIndex)` and sources
+   * mutate chapters underneath it — a page inserted at the front shifts every index after it, and a
+   * re-upload can replace the chapter wholesale. Without reconciliation those favorites silently
+   * point at the wrong page. This is the favorites-side counterpart of `syncChapters`: the caller
+   * already holds the fresh list, so repair costs no extra fetch.
+   *
+   * Matching runs strongest-signal-first — `contentHash` (survives URL rot and a re-upload), then
+   * `sourceUrl`, then bare index trust while the page count is unchanged. A favorite that matches
+   * nothing is marked `stale` rather than deleted.
+   *
+   * Repairing an index RE-KEYS the record, because the id is derived from the coordinates. Callers
+   * holding an id from before a reconcile must refresh.
+   */
+  async reconcileChapterFavorites(
+    bridgeId: string,
+    seriesId: string,
+    chapterId: string,
+    pages: ChapterPageRef[],
+  ): Promise<{ indices: number[]; repaired: number; stale: number }> {
+    const mine = (await this.store.listFavoritePages()).filter(
+      (p) => p.bridgeId === bridgeId && p.seriesId === seriesId && p.chapterId === chapterId,
+    );
+    // An empty list is far likelier a failed fetch than a chapter that genuinely lost every page.
+    // Treating it as authoritative would mark the user's whole chapter stale, so it's a no-op.
+    if (pages.length === 0 || mine.length === 0) {
+      return {
+        indices: await this.getFavoritePageIndices(bridgeId, seriesId, chapterId),
+        repaired: 0,
+        stale: mine.filter((p) => p.stale).length,
+      };
+    }
+
+    // First occurrence wins, so duplicate pages in a chapter resolve deterministically.
+    const byHash = new Map<string, number>();
+    const byUrl = new Map<string, number>();
+    pages.forEach((p, i) => {
+      if (p.contentHash && !byHash.has(p.contentHash)) byHash.set(p.contentHash, i);
+      if (p.sourceUrl && !byUrl.has(p.sourceUrl)) byUrl.set(p.sourceUrl, i);
+    });
+
+    /** Where this favorite's page lives in the fresh list, or undefined if it's gone. */
+    const locate = (fav: FavoritePage): number | undefined => {
+      if (fav.contentHash && byHash.size > 0) {
+        // The list carries hashes and we have one: this answer is authoritative either way. A miss
+        // means the page is genuinely gone, not merely moved — don't fall through to weaker signals.
+        return byHash.get(fav.contentHash);
+      }
+      if (fav.sourceUrl && byUrl.size > 0) return byUrl.get(fav.sourceUrl);
+      // Nothing to match on. Trust the stored index only while the chapter is the same length —
+      // "unknown" must not read as "unchanged".
+      if (fav.pageCount !== undefined && fav.pageCount !== pages.length) return undefined;
+      return fav.pageIndex < pages.length ? fav.pageIndex : undefined;
+    };
+
+    let repaired = 0;
+    const next = new Map<string, FavoritePage>();
+    for (const fav of mine) {
+      const at = locate(fav);
+      if (at === undefined) {
+        this.mergeFavorite(next, { ...fav, pageCount: pages.length, stale: true });
+        continue;
+      }
+      if (at !== fav.pageIndex) repaired++;
+      const coord = { bridgeId, seriesId, chapterId, pageIndex: at };
+      const healed: FavoritePage = {
+        ...fav,
+        ...coord,
+        id: favoritePageId(coord),
+        pageCount: pages.length,
+        ...(pages[at]?.sourceUrl !== undefined && { sourceUrl: pages[at]!.sourceUrl }),
+        // Adopt a hash we didn't have, so the NEXT reconcile survives this URL rotting.
+        ...(fav.contentHash === undefined && pages[at]?.contentHash !== undefined
+          ? { contentHash: pages[at]!.contentHash }
+          : {}),
+      };
+      delete healed.stale; // located again — a source can revert a bad re-upload
+      this.mergeFavorite(next, healed);
+    }
+
+    // Re-keying can free an id (page 3 → 4) — drop only ids nothing landed on.
+    for (const fav of mine) {
+      if (!next.has(fav.id)) await this.store.deleteFavoritePage(fav.id);
+    }
+    for (const page of next.values()) await this.store.putFavoritePage(page);
+
+    return {
+      indices: [...next.values()].filter((p) => !p.stale).map((p) => p.pageIndex).sort((a, b) => a - b),
+      repaired,
+      stale: [...next.values()].filter((p) => p.stale).length,
+    };
+  }
+
+  /** Land a reconciled favorite, merging if two of them relocated onto the same page: keep the
+   *  earlier favoritedAt and the union of collections, so a merge never loses user intent. */
+  private mergeFavorite(into: Map<string, FavoritePage>, page: FavoritePage): void {
+    const existing = into.get(page.id);
+    if (!existing) {
+      into.set(page.id, page);
+      return;
+    }
+    const merged: FavoritePage = {
+      ...existing,
+      ...page,
+      favoritedAt: Math.min(existing.favoritedAt, page.favoritedAt),
+      collectionIds: [...new Set([...existing.collectionIds, ...page.collectionIds])],
+    };
+    // Set explicitly, never by spread: a healed record carries no `stale` key at all, which would
+    // otherwise let the other side's `stale: true` survive the merge.
+    if (existing.stale === true && page.stale === true) merged.stale = true;
+    else delete merged.stale;
+    into.set(page.id, merged);
   }
 
   /** Replace a favorite's collection memberships. Unknown collection ids are dropped. */
@@ -853,14 +972,6 @@ export class Library {
     const next: FavoritePage = { ...page, collectionIds: [...new Set(collectionIds)].filter((c) => known.has(c)) };
     await this.store.putFavoritePage(next);
     return next;
-  }
-
-  /** Record where the host stored this favorite's thumbnail bytes. `hasThumb` and `thumbFile` are
-   *  only ever written together, so they cannot drift. */
-  async setFavoritePageThumb(id: string, thumbFile: string): Promise<void> {
-    const page = await this.getFavoritePage(id);
-    if (!page) return; // unfavorited while a best-effort capture was in flight
-    await this.store.putFavoritePage({ ...page, hasThumb: true, thumbFile });
   }
 
   // ── Favorite collections ──────────────────────────────────────────────────────

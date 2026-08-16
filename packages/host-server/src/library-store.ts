@@ -12,13 +12,6 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path";
 import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type FavoriteCollection, type FavoritePage, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
-/**
- * Subdirectories of the library dir that are BLOB roots, not store documents. Each is served by its
- * own `BlobStore`, which reports its own `usage()` — `diskUsage` skips them so `/library/usage`,
- * which adds the two together, cannot double-count.
- */
-const BLOB_SUBDIRS = new Set(["covers", "favorite-thumbs"]);
-
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
     return JSON.parse(await readFile(path, "utf8")) as T;
@@ -122,9 +115,8 @@ export class FileLibraryStore implements LibraryStore {
 
   // ── Disk usage ───────────────────────────────────────────────────────────────
 
-  /** Actual bytes under the library dir, EXCLUDING the blob subdirs — those `BlobStore`s are rooted
-   *  inside it (`{dir}/covers`, `{dir}/favorite-thumbs`) and report their own usage; counting them
-   *  here would double. See `BLOB_SUBDIRS`. */
+  /** Actual bytes under the library dir, EXCLUDING the covers subdir — the covers `BlobStore` is
+   *  rooted inside it (`{dir}/covers`) and reports its own usage; counting it here would double. */
   async diskUsage(): Promise<number> {
     let total = 0;
     const walk = async (dir: string, atRoot: boolean): Promise<void> => {
@@ -135,7 +127,7 @@ export class FileLibraryStore implements LibraryStore {
         return; // dir missing / transient — report what we could see
       }
       for (const entry of entries) {
-        if (atRoot && entry.isDirectory() && BLOB_SUBDIRS.has(entry.name)) continue;
+        if (atRoot && entry.isDirectory() && entry.name === "covers") continue;
         const path = join(dir, entry.name);
         if (entry.isDirectory()) await walk(path, false);
         else total += (await stat(path).catch(() => null))?.size ?? 0;

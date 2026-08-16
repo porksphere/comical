@@ -72,14 +72,14 @@ describe("FileLibraryStore page favorites", () => {
   test("favorites round-trip through a real dir and survive a reopen", async () => {
     const store = new FileLibraryStore(LIB);
     await store.putFavoritePage(page({ chapterName: "Ch 1", pageCount: 20 }));
-    await store.putFavoritePage(page({ id: "demo:s1:c1:4", pageIndex: 4, thumbFile: "demo/s1/c1/4.png", hasThumb: true }));
+    await store.putFavoritePage(page({ id: "demo:s1:c1:4", pageIndex: 4, contentHash: "sha-4", stale: true }));
 
     // A second store over the same dir reads only what was written — no shared in-memory cache.
     const reopened = new FileLibraryStore(LIB);
     const got = (await reopened.listFavoritePages()).sort((a, b) => a.pageIndex - b.pageIndex);
     expect(got).toHaveLength(2);
     expect(got[0]).toMatchObject({ id: "demo:s1:c1:0", chapterName: "Ch 1", pageCount: 20 });
-    expect(got[1]).toMatchObject({ pageIndex: 4, thumbFile: "demo/s1/c1/4.png", hasThumb: true });
+    expect(got[1]).toMatchObject({ pageIndex: 4, contentHash: "sha-4", stale: true });
   });
 
   test("putFavoritePage is an upsert on the derived id, and delete removes just that one", async () => {
@@ -123,18 +123,16 @@ describe("FileLibraryStore page favorites", () => {
     expect(await store.listFavoriteCollections()).toHaveLength(1);
   });
 
-  test("diskUsage counts favorite documents but skips the blob subdirs", async () => {
+  test("diskUsage counts favorite documents but still skips the covers blob root", async () => {
     const store = new FileLibraryStore(LIB);
     await store.putFavoritePage(page());
     const docsOnly = await store.diskUsage();
     expect(docsOnly).toBeGreaterThan(0);
 
-    // Both blob roots report their own usage via their BlobStore; counting them here would make
-    // /library/usage double them.
-    for (const sub of ["covers", "favorite-thumbs"]) {
-      mkdirSync(join(LIB, sub), { recursive: true });
-      writeFileSync(join(LIB, sub, "blob.bin"), Buffer.alloc(4096));
-    }
+    // The covers BlobStore reports its own usage; counting it here would make /library/usage
+    // double it. Favorites store no bytes at all, so they add nothing beyond their JSON document.
+    mkdirSync(join(LIB, "covers"), { recursive: true });
+    writeFileSync(join(LIB, "covers", "blob.bin"), Buffer.alloc(4096));
     expect(await store.diskUsage()).toBe(docsOnly);
   });
 });

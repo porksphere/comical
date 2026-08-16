@@ -58,7 +58,6 @@ export type {
   DownloadEngine,
   DownloadEngineEvent,
   EmbeddedCoversConfig,
-  EmbeddedFavoritePagesConfig,
   EmbeddedDownloadsEngineConfig,
   EmbeddedRouter,
   EmbeddedTransport,

@@ -1,19 +1,18 @@
 /**
  * The embedded transport's page-favorites surface: with an on-device library the reused
- * `@comical/host-server` router mounts `/library/favorite-pages*` and resolves it in-process, and
- * with the optional `favoritePages` device seams it also captures and serves page thumbnails.
+ * `@comical/host-server` router mounts `/library/favorite-pages*` and resolves it in-process, so
+ * favoriting works with no server.
  *
- * That capture is not a nicety on-device: the bridge-side per-page thumbnail endpoint is
- * series-level with no chapter component, so without it a favorites grid is blank for every
- * chaptered series. These lock that the config reaches the router, and that omitting it degrades to
- * "no thumbnail" rather than breaking favorites.
+ * Favorites store no page bytes on device — only coordinates, a display snapshot, and the two
+ * re-anchor signals. The reconcile route is what keeps them pointing at the right page when a
+ * source shifts a chapter underneath them.
  */
 import { describe, expect, test } from "bun:test";
 import { createRouter } from "@comical/host-server/router";
 import { InMemoryLibraryStore, Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
 import { createEmbeddedTransport } from "../src/transport.ts";
-import type { BlobStore, BridgeProvider, CreateRouter, EmbeddedFavoritePagesConfig, PageFetcher } from "../src/types.ts";
+import type { BridgeProvider, CreateRouter } from "../src/types.ts";
 
 // Favorites never touch a bridge — a stub that throws proves they resolve purely from the store.
 const stubProvider = {
@@ -29,45 +28,10 @@ const stubProvider = {
 } as unknown as BridgeProvider;
 
 const makeCreate = () => createRouter as unknown as CreateRouter;
-const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]);
-
-/** A device-shaped blob store (an expo-file-system one in the app) — crucially WITH `read`. */
-function deviceBlobs() {
-  const files = new Map<string, Uint8Array>();
-  const store: BlobStore = {
-    async write(path, data) {
-      files.set(path, data);
-      return { bytes: data.byteLength };
-    },
-    async read(path) {
-      return files.get(path);
-    },
-    async remove(paths) {
-      for (const p of paths) files.delete(p);
-    },
-    async removeAll() {
-      files.clear();
-    },
-    async usage() {
-      return [...files.values()].reduce((n, d) => n + d.byteLength, 0);
-    },
-  };
-  return { store, files };
-}
-
-function makeTransport(favoritePages?: EmbeddedFavoritePagesConfig) {
+function makeTransport() {
   const library = new Library(new InMemoryLibraryStore());
   const runtime = new ComicalRuntime({ bridges: stubProvider, library });
-  return createEmbeddedTransport(
-    stubProvider,
-    makeCreate(),
-    undefined,
-    { library, runtime },
-    undefined,
-    undefined,
-    undefined,
-    favoritePages,
-  );
+  return createEmbeddedTransport(stubProvider, makeCreate(), undefined, { library, runtime });
 }
 
 const put = (t: ReturnType<typeof makeTransport>, path: string, body: unknown) =>
@@ -105,42 +69,40 @@ describe("embedded transport — page favorites", () => {
     expect(list).toHaveLength(2);
   });
 
-  test("the favoritePages seams reach the router: capture on favorite, serve at /thumb", async () => {
-    const blobs = deviceBlobs();
-    const seen: string[] = [];
-    const fetchPage: PageFetcher = async (_ctx, page) => {
-      seen.push(page.sourceUrl);
-      return { data: PNG, contentType: "image/png" };
-    };
-    const t = makeTransport({ blobs: blobs.store, fetchPage });
-
-    const res = await put(t, "/library/favorite-pages/demo/s1/c1/0", {
+  test("reconcile reaches the router in-process and repairs a shifted favorite", async () => {
+    const t = makeTransport();
+    await put(t, "/library/favorite-pages/demo/s1/c1/2", {
       seriesTitle: "Series One",
-      sourceUrl: "https://cdn.example/0.png",
+      pageCount: 4,
+      contentHash: "hash-p2",
     });
-    const page = (await res.json()) as { id: string; hasThumb?: boolean };
-    expect(page.hasThumb).toBe(true);
-    expect(seen).toEqual(["https://cdn.example/0.png"]);
 
-    const thumb = await t(`/library/favorite-pages/${encodeURIComponent(page.id)}/thumb`);
-    expect(thumb.status).toBe(200);
-    // The buffering transport must hand back the raw bytes, not a lossy text decode.
-    expect(new Uint8Array(await thumb.arrayBuffer())).toEqual(PNG);
+    const res = await t("/library/favorite-pages/chapter/demo/s1/c1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pages: [{ contentHash: "hash-new" }, { contentHash: "hash-p2" }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ indices: [1], repaired: 1, stale: 0 });
 
-    // Unfavoriting unlinks the device blob rather than orphaning it in app storage.
-    await t("/library/favorite-pages/demo/s1/c1/0", { method: "DELETE" });
-    expect(blobs.files.size).toBe(0);
+    // The reader's zero-request path agrees with the repair.
+    expect(await (await t("/library/favorite-pages/chapter/demo/s1/c1")).json()).toEqual([1]);
   });
 
-  test("without the favoritePages seams, favorites still work and carry no thumbnail", async () => {
+  test("favorites carry no stored bytes — only coordinates, snapshot and re-anchor signals", async () => {
     const t = makeTransport();
     const res = await put(t, "/library/favorite-pages/demo/s1/c1/0", {
       seriesTitle: "Series One",
       sourceUrl: "https://cdn.example/0.png",
+      contentHash: "hash-0",
     });
-    expect(res.status).toBe(200);
-    const page = (await res.json()) as { id: string; hasThumb?: boolean };
+    const page = (await res.json()) as Record<string, unknown>;
+    expect(page).toMatchObject({ sourceUrl: "https://cdn.example/0.png", contentHash: "hash-0" });
+    // Nothing thumbnail-shaped survived the redesign.
     expect(page.hasThumb).toBeUndefined();
-    expect((await t(`/library/favorite-pages/${encodeURIComponent(page.id)}/thumb`)).status).toBe(404);
+    expect(page.thumbFile).toBeUndefined();
+    expect((await t(`/library/favorite-pages/${encodeURIComponent(String(page.id))}/thumb`)).status).toBe(404);
   });
 });
