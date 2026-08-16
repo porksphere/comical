@@ -1,135 +1,143 @@
-# Universal collections — handoff to `comical-app`
+# Universal collections — migration handoff to `comical-app`
 
 > **Transient document. Delete it when this branch merges.**
-> It briefs the `comical-app` session building the client half; the API it snapshots lives in the
-> code, which wins on any disagreement. (`docs/page-favorites-followups.md` records deferred
-> decisions and stays; `docs/collections-plan.md` is the design rationale.)
+> It briefs the `comical-app` session migrating the client from the page-favorites API to the
+> universal-collections API. The code is the source of truth on any disagreement.
+> (`docs/collections-plan.md` is the design rationale; `docs/page-favorites-followups.md` records
+> deferred decisions and stays.)
 
 **Runtime half:** branch `claude/page-favorites-runtime-00agdx`. **Pin the branch head.**
 
-## ⚠️ This supersedes the page-favorites design entirely
+## What happened and what it means for your existing code
 
-If you built or planned against `page-favorites-handoff.md` or any `/library/favorite-pages` route:
-that surface is **gone**. The feature generalized into one system — favoriting a **series, chapter,
-or page** into user **collections** — and the library's custom **lists are deleted with no
-migration** (existing lists data is abandoned; single-user decision). Also gone:
-`LibraryList`, `LibraryEntry.listIds`, `/library/lists*`, `PUT /library/entries/{b}/{s}/lists`, and
-`/library?list=|lists=|unlisted=`. Nothing aliases them.
+You implemented the client against the `/library/favorite-pages` API. That surface is **replaced**,
+not extended: favorites generalized to **series, chapter, or page items** filed into collections,
+and the library's custom **lists are deleted** — collections are the one grouping system now.
+No aliases, no compat, no data migration anywhere (single-user decision; existing lists data and
+any favorites data your build wrote are abandoned).
 
-## 1. Types — import type-only from `@comical/library`
+The good news: **your logic mostly survives — this is largely a rename migration.** Everything
+behavioural you built against is unchanged: merge-on-PUT (the two-PUT hash flow stays safe),
+the reconcile request/response shapes, indices-excludes-stale, sort/dir semantics, `UNCOLLECTED`,
+`__direct__`, coordinates-never-ids, 404-when-no-library. What changed is names, paths, one new
+`type` dimension, and the lists feature folding in.
 
-```ts
-type FavoriteItemType = "series" | "chapter" | "page";
+Your app-side `docs/page-favorites-plan.md` is stale again — rewrite or delete it against this.
 
-// Discriminated union; `type` is the discriminator. All items carry:
-//   id            — DERIVED from type+coordinates (e.g. "page:b:s:c:3"). NEVER put one in a URL:
-//                   re-anchoring re-keys records, so held ids go stale. Address by coordinates.
-//   favoritedAt   — epoch ms
-//   collectionIds — [] = uncollected
-//   seriesTitle   — display snapshot (all snapshot fields render offline / after bridge removal)
-//   stale?        — target could no longer be located; render with a "may be gone" affordance,
-//                   never highlight/navigate from it, never delete it
-type FavoriteItem =
-  | { type: "series";  bridgeId; seriesId; thumbnailUrl?; author?; ... }
-  | { type: "chapter"; bridgeId; seriesId; chapterId; chapterName?; number?; languageCode?; ... }
-  | { type: "page";    bridgeId; seriesId; chapterId; pageIndex; chapterName?; pageCount?;
-                       sourceUrl?; contentHash?; ... };
+## 1. Route migration table
 
-type FavoriteCollection = { id: string; name: string; order: number };
-type ChapterPageRef = { url?: string; contentHash?: string };
-```
+| You call today | Call instead | Notes |
+|---|---|---|
+| `GET /library/favorite-pages?…` | `GET /library/favorites?type=page&…` | Same query params plus `type`. **Omitting `type` returns the mixed union** (series/chapter items too) — pass `type=page` anywhere your grid expects pages only. |
+| `GET /library/favorite-pages/chapter/{b}/{s}/{c}` | `GET /library/favorites/page/{b}/{s}/{c}/indices` | Response unchanged (`number[]`). |
+| `POST …/favorite-pages/chapter/{b}/{s}/{c}/reconcile` | `POST /library/favorites/page/{b}/{s}/{c}/reconcile` | Body and response **unchanged**. |
+| `PUT/DELETE /library/favorite-pages/{b}/{s}/{c}/{i}` | `PUT/DELETE /library/favorites/page/{b}/{s}/{c}/{i}` | Body unchanged. Response now carries `type: "page"` and a `page:`-prefixed id. |
+| `PUT …/favorite-pages/{b}/{s}/{c}/{i}/collections` | `PUT /library/favorites/page/{b}/{s}/{c}/{i}/collections` | Unchanged body. |
+| `GET/POST /library/favorite-pages/collections` | `GET/POST /library/collections` | Promoted to top level. |
+| `PATCH/DELETE …/favorite-pages/collections/{id}` | `PATCH/DELETE /library/collections/{id}` | |
+| `POST …/favorite-pages/collections/reorder` | `POST /library/collections/reorder` | Still `{ orderedIds }`. |
+| `GET /library?list=` / `?lists=` / `?unlisted=` | `?collection=` / `?collections=` / `?uncollected=` | |
+| `GET/POST /library/lists`, `PATCH/DELETE /library/lists/{id}`, `POST /library/lists/reorder` | `/library/collections` equivalents | **Lists routes are gone.** Same CRUD shapes throughout. |
+| `PUT /library/entries/{b}/{s}/lists` | see §4 — series favorites | **Gone.** Filing a series is now a series favorite + memberships. |
 
-Snapshot types for PUTs: `FavoriteSeriesSnapshot` (`seriesTitle`, `thumbnailUrl?`, `author?`),
-`FavoriteChapterSnapshot` (`seriesTitle`, `chapterName?`, `number?`, `languageCode?` — send
-number/language when you have them, they are the chapter's re-anchor identity),
-`FavoritePageSnapshot` (`seriesTitle`, `chapterName?`, `pageCount?`, `sourceUrl?`, `contentHash?`).
-Helpers: `favoriteItemId`, `parseFavoriteItemId`, `UNCOLLECTED`.
-
-## 2. `AsyncStorageLibraryStore`: six methods change, three go
-
-**Delete**: `listLists` / `putList` / `deleteList` (and any lists documents handling).
-
-**Implement**:
-
-```ts
-listFavoriteItems(scope?: { type?; bridgeId?; seriesId?; chapterId? }): Promise<FavoriteItem[]>;
-getFavoriteItem(id: string): Promise<FavoriteItem | undefined>;
-putFavoriteItems(items: FavoriteItem[]): Promise<void>;
-deleteFavoriteItems(ids: string[]): Promise<void>;
-listFavoriteCollections(): Promise<FavoriteCollection[]>;
-putFavoriteCollections(collections: FavoriteCollection[]): Promise<void>;
-```
-
-The three load-bearing requirements (violations won't fail tests, they make the reader slow at a
-few thousand favorites):
-
-1. **Honour `scope`** — it keeps a chapter open off the whole-library path. Filter before parsing
-   where possible.
-2. **Batch = ONE durable write** per call, however many records.
-3. **Shard per series**: key per series (e.g. `comical:lib:favorite-items:{bridgeId}:{seriesId}`
-   holding `{ [id]: FavoriteItem }`). A series ANCHOR lives in its own series' shard, so one layout
-   covers all three types. `getFavoriteItem(id)` finds its shard via `parseFavoriteItemId(id)`
-   (every coordinate type carries bridge+series). Measured on the file store: 64ms → 3.4ms per
-   chapter-open reconcile at 25k favorites.
-
-Collections stay one document. Everything through `serializeAsyncMethods` as usual.
-
-## 3. HTTP routes
+New routes you did not have before:
 
 ```
-GET    /library/favorites?type=&sort=&dir=&collection=&series=&q=   → FavoriteItem[] (mixed union)
-GET    /library/favorites/page/{b}/{s}/{c}/indices                  → number[]   (reader path)
-POST   /library/favorites/page/{b}/{s}/{c}/reconcile                ← { pages: ChapterPageRef[] }
-                                                                    → { indices, repaired, stale }
-PUT    /library/favorites/series/{b}/{s}                            ← snapshot → item
+PUT    /library/favorites/series/{b}/{s}              ← { seriesTitle, thumbnailUrl?, author? }
 DELETE /library/favorites/series/{b}/{s}
-PUT    /library/favorites/series/{b}/{s}/collections                ← { collectionIds } → item
-PUT    /library/favorites/chapter/{b}/{s}/{c}                       ← snapshot → item
+PUT    /library/favorites/series/{b}/{s}/collections  ← { collectionIds }
+PUT    /library/favorites/chapter/{b}/{s}/{c}         ← { seriesTitle, chapterName?, number?, languageCode? }
 DELETE /library/favorites/chapter/{b}/{s}/{c}
-PUT    /library/favorites/chapter/{b}/{s}/{c}/collections           ← { collectionIds } → item
-PUT    /library/favorites/page/{b}/{s}/{c}/{i}                      ← snapshot → item
-DELETE /library/favorites/page/{b}/{s}/{c}/{i}
-PUT    /library/favorites/page/{b}/{s}/{c}/{i}/collections          ← { collectionIds } → item
-
-GET    /library/collections                                         → FavoriteCollection[]
-POST   /library/collections            ← { name } → collection (201)
-PATCH  /library/collections/{id}       ← { name }
-DELETE /library/collections/{id}       (see prune note below)
-POST   /library/collections/reorder    ← { orderedIds }
-
-GET    /library?collection=&collections=&uncollected=&q=&unreadOnly=&sort=&dir=
+PUT    /library/favorites/chapter/{b}/{s}/{c}/collections ← { collectionIds }
 ```
 
-- Coordinates URL-encoded; `{c}` carries `__direct__` for chapterless series. All routes 404 with
-  no library mounted.
-- **Every item PUT is idempotent and MERGES**: supplied fields win, omitted fields are preserved
-  (`favoritedAt`/`collectionIds` carry; `stale` clears). The page two-PUT flow (favorite on tap,
-  send `contentHash` in a follow-up PUT — never block the tap on Hermes-shim hashing; hash from
-  bytes you already hold, e.g. `Image.getCachePathAsync`) is safe by design and tested.
-- **Collection delete prunes** series/chapter items left with zero memberships (they only existed
-  as members — bare hearts are a page-only affordance, app policy). Bare pages survive.
+Send `number`/`languageCode` on chapter PUTs when you have them — they are the chapter's re-anchor
+identity (§5).
 
-## 4. Behaviour the client builds on
+## 2. Type migration table (`@comical/library`, type-only imports)
 
-- **Reader (pages)**: on chapter open, `POST …/page/…/reconcile` with the page list you already
-  fetched (`{url}` per page; add `contentHash` only for pages whose bytes you hold — sparse is
-  expected). Drive the favorite button from the returned indices; no per-page checks. Fall back to
-  `GET …/indices` when you don't have the list.
-- **Chapters re-anchor themselves**: `syncChapters` (which the host already runs on library series)
-  re-keys chapter favorites — and page favorites inside them — when a chapter is re-uploaded under
-  a new id with the same `(number, languageCode)`; unmatched ones go `stale`. Favorites on
-  non-library series get no such detection.
-- **Library tab**: the lists UI re-points at collections. Filing a series =
-  `PUT /library/favorites/series/{b}/{s}` + its `/collections` route; the library grid filters via
-  `?collection=` / `?uncollected=`. Un-filing to zero collections prunes the series item (the
-  LIBRARY entry is untouched).
-- **Collection browse**: `GET /library/favorites?collection=X` returns the mixed union — render per
-  `type` with native primitives. No thumbnail endpoint exists; resolve images client-side (series
-  tiles have `thumbnailUrl`; page tiles re-resolve the page URL; text-only fallback when a source
-  is gone).
+| You import today | Import instead | Notes |
+|---|---|---|
+| `FavoritePage` | `FavoritePageItem` | Same fields plus `type: "page"`. Union: `FavoriteItem`. |
+| `FavoritePagesQuery` / `FavoritePagesSort` | `FavoriteItemsQuery` / `FavoriteItemsSort` | Query gains `type?`. |
+| `FavoritePageScope` | `FavoriteItemScope` | Gains `type?`. |
+| `favoritePageId` / `parseFavoritePageId` | `favoriteItemId` / `parseFavoriteItemId` | Coord now carries `type`; ids are prefixed: `page:b:s:c:i`, `chapter:b:s:c`, `series:b:s`. |
+| `FavoritePageSnapshot`, `FavoriteCollection`, `ChapterPageRef`, `UNCOLLECTED` | unchanged | |
+| `LibraryList`, `LibraryEntry.listIds` | **gone** | Nothing replaces `listIds` on the entry — memberships live on series favorite items (§4). |
 
-## 5. Definition of done, app side
+New: `FavoriteItem`, `FavoriteSeriesItem`, `FavoriteChapterItem`, `FavoriteSeriesSnapshot`,
+`FavoriteChapterSnapshot`, `FavoriteItemCoord`, `FavoriteItemType`.
 
-Store seam swapped (sharded, serialized); lists UI replaced by collections; reader toggle +
-reconcile on chapter open with `contentHash` sent on favorite; collection browse with type filter;
-stale affordance; pin bumped.
+## 3. `AsyncStorageLibraryStore` migration
+
+Renames — same contracts you already implemented (honour the scope; batch = one durable write;
+shard per series):
+
+| Your method | Becomes |
+|---|---|
+| `listFavoritePages(scope?)` | `listFavoriteItems(scope?)` — scope gains `type?` |
+| `getFavoritePage(id)` | `getFavoriteItem(id)` |
+| `putFavoritePages(pages)` | `putFavoriteItems(items)` |
+| `deleteFavoritePages(ids)` | `deleteFavoriteItems(ids)` |
+| collections pair | unchanged |
+| `listLists` / `putList` / `deleteList` | **delete these** and their documents |
+
+Details that matter:
+
+- **Sharding carries over as-is**: a series ANCHOR lives in its own series' shard, so one layout
+  covers all three types. Rename keys to `comical:lib:favorite-items:{bridgeId}:{seriesId}` and
+  drop any old `favorite-pages` keys — record ids changed prefix, so old records are invalid
+  anyway; wipe, don't migrate.
+- `getFavoriteItem(id)` still finds its shard via `parseFavoriteItemId(id)` — every coordinate
+  type carries bridge+series.
+- **One subtle scope rule**: a `chapterId`-scoped listing must exclude series items (they have no
+  `chapterId`) — i.e. `scope.chapterId` set ⇒ skip `type === "series"` and skip non-matching
+  chapterIds. Both reference stores do exactly this; copy them.
+- Old `lists.json`-equivalent keys and `listIds` in stored entries: abandon in place, never read.
+
+## 4. The lists UI becomes the collections UI
+
+This is the real new work; the favorites migration above is mechanical.
+
+- **CRUD/reorder screens**: point at `/library/collections*`. Shapes are identical to lists
+  (`{id, name, order}`, `{orderedIds}`), so the UI logic ports directly.
+- **Filing a series** (the old "add to list"):
+  1. `PUT /library/favorites/series/{b}/{s}` with `{ seriesTitle, thumbnailUrl?, author? }` (you
+     have all three on the entry) — idempotent, safe to repeat;
+  2. `PUT /library/favorites/series/{b}/{s}/collections` with the full membership array.
+- **Reading a series' memberships** (the old `entry.listIds`):
+  `GET /library/favorites?type=series&series={b}:{s}` → `item.collectionIds` (empty result =
+  unfiled). For the library screen's filter chips, the `?collection=` param on `/library` does the
+  join server-side — you don't need memberships client-side to filter.
+- **Un-filing to zero**: send `DELETE /library/favorites/series/{b}/{s}` rather than
+  `collections: []`. Core allows bare anchors (mechanism), but bare hearts are a **page-only**
+  affordance by app policy — a memberships-emptied series item would linger in `/library/favorites`
+  listings. Same rule for chapter items.
+- **Collection delete prunes** series/chapter items left with zero memberships server-side; bare
+  pages survive as hearts. Your UI needn't strip members itself.
+- **Chapter filing** is the same pair of routes with `chapter` in the path — an "add chapter to
+  collection" affordance wherever you want it.
+- **Collection browse**: `GET /library/favorites?collection={id}` returns the mixed union — switch
+  on `type` and render each variant natively (series tiles have `thumbnailUrl`; page tiles
+  re-resolve the page URL as you already do; chapter rows from `seriesTitle`/`chapterName`).
+  `sort=chapter` interleaves sensibly (series lead their chapters, chapters lead their pages).
+
+## 5. Behaviour you get for free (nothing to build)
+
+`syncChapters` — which the host already runs for library series — now re-anchors chapter AND page
+favorites when a source re-uploads a chapter under a new id with the same `(number, languageCode)`,
+and marks unmatched ones `stale` (they un-stale if the id returns). Two client implications only:
+ids and indices you hold can be re-keyed by a sync, so refetch rather than cache across sync
+events (you already must, since page reconcile re-keys too); and `stale` can now appear on chapter
+items — give it the same "may no longer be available" affordance as stale pages. Favorites on
+non-library series get no such detection (followups §7).
+
+## 6. Definition of done, app side
+
+- Favorites client migrated per §§1–3 (mechanical renames; old stored favorites wiped).
+- Lists UI replaced by collections UI per §4, including series filing via series favorites and the
+  DELETE-not-empty-memberships rule.
+- Reader flow unchanged in shape: reconcile on chapter open, `contentHash` on favorite (from bytes
+  already held — `Image.getCachePathAsync`), indices drive the button.
+- Stale affordance extended to chapter items.
+- `docs/page-favorites-plan.md` replaced; pin bumped to this branch's head.
