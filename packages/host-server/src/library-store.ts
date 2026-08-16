@@ -10,7 +10,14 @@
  */
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
+import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type FavoriteCollection, type FavoritePage, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
+
+/**
+ * Subdirectories of the library dir that are BLOB roots, not store documents. Each is served by its
+ * own `BlobStore`, which reports its own `usage()` — `diskUsage` skips them so `/library/usage`,
+ * which adds the two together, cannot double-count.
+ */
+const BLOB_SUBDIRS = new Set(["covers", "favorite-thumbs"]);
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -29,6 +36,8 @@ export class FileLibraryStore implements LibraryStore {
   private readingLogCache?: Map<string, HistoryItem>;
   private bridgePrefsCache?: Map<string, BridgePrefs>;
   private activityCache?: Map<string, ActivityItem>;
+  private favoritePagesCache?: Map<string, FavoritePage>;
+  private favoriteCollectionsCache?: FavoriteCollection[];
 
   constructor(private readonly dir: string) {}
 
@@ -52,6 +61,12 @@ export class FileLibraryStore implements LibraryStore {
   }
   private get activityPath(): string {
     return join(this.dir, "activity.json");
+  }
+  private get favoritePagesPath(): string {
+    return join(this.dir, "favorite-pages.json");
+  }
+  private get favoriteCollectionsPath(): string {
+    return join(this.dir, "favorite-collections.json");
   }
   private progressPath(key: string): string {
     return join(this.dir, "progress", `${encodeURIComponent(key)}.json`);
@@ -107,11 +122,12 @@ export class FileLibraryStore implements LibraryStore {
 
   // ── Disk usage ───────────────────────────────────────────────────────────────
 
-  /** Actual bytes under the library dir, EXCLUDING the covers subdir — the covers `BlobStore` is
-   *  rooted inside it (`{dir}/covers`) and reports its own usage; counting it here would double. */
+  /** Actual bytes under the library dir, EXCLUDING the blob subdirs — those `BlobStore`s are rooted
+   *  inside it (`{dir}/covers`, `{dir}/favorite-thumbs`) and report their own usage; counting them
+   *  here would double. See `BLOB_SUBDIRS`. */
   async diskUsage(): Promise<number> {
     let total = 0;
-    const walk = async (dir: string, skipCovers: boolean): Promise<void> => {
+    const walk = async (dir: string, atRoot: boolean): Promise<void> => {
       let entries;
       try {
         entries = await readdir(dir, { withFileTypes: true });
@@ -119,7 +135,7 @@ export class FileLibraryStore implements LibraryStore {
         return; // dir missing / transient — report what we could see
       }
       for (const entry of entries) {
-        if (skipCovers && entry.isDirectory() && entry.name === "covers") continue;
+        if (atRoot && entry.isDirectory() && BLOB_SUBDIRS.has(entry.name)) continue;
         const path = join(dir, entry.name);
         if (entry.isDirectory()) await walk(path, false);
         else total += (await stat(path).catch(() => null))?.size ?? 0;
@@ -237,6 +253,45 @@ export class FileLibraryStore implements LibraryStore {
   }
   async deleteGroup(id: string): Promise<void> {
     if ((await this.groups()).delete(id)) await this.flushGroups();
+  }
+
+  // ── Page favorites ────────────────────────────────────────────────────────────
+
+  private async favoritePages(): Promise<Map<string, FavoritePage>> {
+    if (!this.favoritePagesCache) {
+      const obj = await readJson<Record<string, FavoritePage>>(this.favoritePagesPath, {});
+      this.favoritePagesCache = new Map(Object.entries(obj));
+    }
+    return this.favoritePagesCache;
+  }
+
+  private async flushFavoritePages(): Promise<void> {
+    const obj = Object.fromEntries((await this.favoritePages()).entries());
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(this.favoritePagesPath, JSON.stringify(obj, null, 2), "utf8");
+  }
+
+  async listFavoritePages(): Promise<FavoritePage[]> {
+    return [...(await this.favoritePages()).values()];
+  }
+  async putFavoritePage(page: FavoritePage): Promise<void> {
+    (await this.favoritePages()).set(page.id, page);
+    await this.flushFavoritePages();
+  }
+  async deleteFavoritePage(id: string): Promise<void> {
+    if ((await this.favoritePages()).delete(id)) await this.flushFavoritePages();
+  }
+
+  async listFavoriteCollections(): Promise<FavoriteCollection[]> {
+    if (!this.favoriteCollectionsCache) {
+      this.favoriteCollectionsCache = await readJson<FavoriteCollection[]>(this.favoriteCollectionsPath, []);
+    }
+    return [...this.favoriteCollectionsCache];
+  }
+  async putFavoriteCollections(collections: FavoriteCollection[]): Promise<void> {
+    this.favoriteCollectionsCache = [...collections];
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(this.favoriteCollectionsPath, JSON.stringify(collections, null, 2), "utf8");
   }
 
   // ── Tracker links ─────────────────────────────────────────────────────────────

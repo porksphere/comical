@@ -163,6 +163,105 @@ export const chapterProgressSchema = z.object({
 });
 export type ChapterProgress = z.infer<typeof chapterProgressSchema>;
 
+// ── Page favorites ────────────────────────────────────────────────────────────
+// A favorited PAGE is local user data, entirely unrelated to a bridge account's per-series
+// `favorites` capability (`/bridges/{id}/favorites`): nothing here ever touches a bridge. Bridges
+// expose no page identity, so a favorite is located by its coordinates — `(bridgeId, seriesId,
+// chapterId, pageIndex)` — and its id is DERIVED from them, which is what makes favoriting
+// idempotent and "is this page favorited" a keyed lookup rather than a scan.
+
+/** Where a favorited page lives. `chapterId` carries `__direct__` for chapterless series. */
+export const favoritePageCoordSchema = z.object({
+  bridgeId: z.string().min(1),
+  seriesId: z.string().min(1),
+  chapterId: z.string().min(1),
+  /** 0-based index into the chapter's page list. */
+  pageIndex: z.number().int().nonnegative(),
+});
+export type FavoritePageCoord = z.infer<typeof favoritePageCoordSchema>;
+
+/**
+ * Stable, derived id for a favorited page: the four coordinates joined by `:`, each URL-encoded.
+ * Encoding is what makes the join unambiguous — `encodeURIComponent` escapes `:` itself, so no
+ * component can contain a bare separator — and it keeps the id usable as a single URL path segment.
+ */
+export function favoritePageId(coord: FavoritePageCoord): string {
+  return [coord.bridgeId, coord.seriesId, coord.chapterId, String(coord.pageIndex)]
+    .map((s) => encodeURIComponent(s))
+    .join(":");
+}
+
+/** Split a `favoritePageId` back into its coordinates. `undefined` for anything malformed. */
+export function parseFavoritePageId(id: string): FavoritePageCoord | undefined {
+  const parts = id.split(":");
+  if (parts.length !== 4) return undefined;
+  let decoded: string[];
+  try {
+    decoded = parts.map((p) => decodeURIComponent(p));
+  } catch {
+    return undefined; // invalid percent-escape
+  }
+  const [bridgeId, seriesId, chapterId, rawIndex] = decoded as [string, string, string, string];
+  const pageIndex = Number(rawIndex);
+  if (!bridgeId || !seriesId || !chapterId) return undefined;
+  if (rawIndex === "" || !Number.isInteger(pageIndex) || pageIndex < 0) return undefined;
+  return { bridgeId, seriesId, chapterId, pageIndex };
+}
+
+/**
+ * The display snapshot a client supplies when favoriting. Denormalised for the same reason
+ * `LibraryEntry` caches one: a favorites tile must render with the bridge uninstalled or the source
+ * down, long after the coordinates stop resolving.
+ */
+export const favoritePageSnapshotSchema = z.object({
+  seriesTitle: z.string().min(1),
+  chapterName: z.string().optional(),
+  pageCount: z.number().int().nonnegative().optional(),
+  /**
+   * The page's image URL at capture time. Debug/fallback only — page URLs are expected to rot, so
+   * this is never the thumbnail's source of truth (that's the captured blob). It IS what the host
+   * feeds its page fetcher when capturing that blob.
+   */
+  sourceUrl: z.string().optional(),
+});
+export type FavoritePageSnapshot = z.infer<typeof favoritePageSnapshotSchema>;
+
+/** One favorited page. */
+export const favoritePageSchema = favoritePageCoordSchema.extend({
+  /** `favoritePageId(coord)` — derived, never random. */
+  id: z.string().min(1),
+  /** Epoch ms; the date sort axis. */
+  favoritedAt: z.number().int(),
+  /** Collection memberships (ids into `FavoriteCollection`). Empty = uncollected. */
+  collectionIds: z.array(z.string()).default([]),
+  seriesTitle: z.string().min(1),
+  chapterName: z.string().optional(),
+  pageCount: z.number().int().nonnegative().optional(),
+  sourceUrl: z.string().optional(),
+  /** A thumbnail blob was captured for this favorite and can be served back by the host. */
+  hasThumb: z.boolean().optional(),
+  /**
+   * Relative path of the captured page bytes under the host's favorite-thumbs blob root — the
+   * manifest pointer, exactly like `CachedSeriesDetail.coverFile`. Host-internal: clients read
+   * `hasThumb` and fetch the host's thumb route, never this path. Absent until capture succeeds,
+   * and always set/cleared together with `hasThumb`.
+   */
+  thumbFile: z.string().optional(),
+});
+export type FavoritePage = z.infer<typeof favoritePageSchema>;
+
+/**
+ * A user-created grouping a favorited page can be filed into. Deliberately shaped like
+ * `LibraryList` so both sides reuse the same create/rename/reorder/delete patterns.
+ */
+export const favoriteCollectionSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  /** Sort position among collections (ascending). */
+  order: z.number(),
+});
+export type FavoriteCollection = z.infer<typeof favoriteCollectionSchema>;
+
 /**
  * A library entry augmented with derived, non-persisted fields a host renders directly.
  * `unreadCount` = logical chapters `(number, language)` with no read copy in any scanlation group.

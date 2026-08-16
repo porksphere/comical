@@ -98,6 +98,9 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
     });
     // Guaranteed-offline covers for library entries, under the library's own dir.
     routerOpts.covers = { blobs: new FileBlobStore(join(dir, "covers")), fetchPage: pageFetcher };
+    // Captured page bytes for favorited pages — the only way a favorites grid gets a thumbnail for
+    // a chaptered series (the bridge-side page-thumb endpoint has no chapter component).
+    routerOpts.favoritePages = { blobs: new FileBlobStore(join(dir, "favorite-thumbs")), fetchPage: pageFetcher };
   }
 
   let engine: DownloadEngine | undefined;

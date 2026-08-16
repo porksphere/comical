@@ -3,7 +3,7 @@
  * fallback for hosts without durable storage. Deep-clones on the way in and out so callers can't
  * mutate stored objects by reference.
  */
-import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type SeriesGroup, type TrackerLink } from "./models.ts";
+import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type FavoriteCollection, type FavoritePage, type HistoryItem, type LibraryEntry, type LibraryList, type SeriesGroup, type TrackerLink } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
 const clone = <T>(v: T): T => structuredClone(v);
@@ -19,6 +19,8 @@ export class InMemoryLibraryStore implements LibraryStore {
   private activity = new Map<string, ActivityItem>();
   private details = new Map<string, CachedSeriesDetail>();
   private chaptersCache = new Map<string, CachedChapters>();
+  private favoritePages = new Map<string, FavoritePage>();
+  private favoriteCollections: FavoriteCollection[] = [];
 
   async listEntries(): Promise<LibraryEntry[]> {
     return [...this.entries.values()].map(clone);
@@ -85,6 +87,23 @@ export class InMemoryLibraryStore implements LibraryStore {
   }
   async deleteGroup(id: string): Promise<void> {
     this.groups.delete(id);
+  }
+
+  async listFavoritePages(): Promise<FavoritePage[]> {
+    return [...this.favoritePages.values()].map(clone);
+  }
+  async putFavoritePage(page: FavoritePage): Promise<void> {
+    this.favoritePages.set(page.id, clone(page));
+  }
+  async deleteFavoritePage(id: string): Promise<void> {
+    this.favoritePages.delete(id);
+  }
+
+  async listFavoriteCollections(): Promise<FavoriteCollection[]> {
+    return this.favoriteCollections.map(clone);
+  }
+  async putFavoriteCollections(collections: FavoriteCollection[]): Promise<void> {
+    this.favoriteCollections = collections.map(clone);
   }
 
   async listTrackerLinks(key: string): Promise<TrackerLink[]> {

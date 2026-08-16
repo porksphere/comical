@@ -11,6 +11,7 @@ import {
   cachedChaptersSchema,
   cachedSeriesDetailSchema,
   entryKey,
+  favoritePageId,
   parseEntryKey,
   type ActivityItem,
   type ActivityItemView,
@@ -18,6 +19,10 @@ import {
   type CachedChapters,
   type CachedSeriesDetail,
   type ChapterProgress,
+  type FavoriteCollection,
+  type FavoritePage,
+  type FavoritePageCoord,
+  type FavoritePageSnapshot,
   type HistoryItem,
   type KnownChapter,
   type LibraryEntry,
@@ -85,6 +90,50 @@ export interface LibraryQuery {
   sort?: LibrarySort;
   /** Sort direction. Defaults to `"asc"` for `title`, `"desc"` otherwise. */
   dir?: "asc" | "desc";
+}
+
+/** Sort keys for {@link Library.getFavoritePages}. */
+export type FavoritePagesSort = "added" | "oldest" | "series" | "chapter";
+
+/** Filter + sort options for {@link Library.getFavoritePages}. All optional. */
+export interface FavoritePagesQuery {
+  /**
+   * - `added` (default) — newest favorited first.
+   * - `oldest` — oldest favorited first.
+   * - `series` — grouped by series title, newest favorited first within each.
+   * - `chapter` — reading order: series title, then chapter name, then page index.
+   */
+  sort?: FavoritePagesSort;
+  /** A collection id, or the literal `"uncollected"` for favorites filed nowhere. */
+  collection?: string;
+  /** Restrict to one series, as an `entryKey` (`${bridgeId}:${seriesId}`). */
+  series?: string;
+  /** Case-insensitive substring search over series title + chapter name. */
+  q?: string;
+}
+
+/** The literal `collection` value that selects favorites with no collection memberships. */
+export const UNCOLLECTED = "uncollected";
+
+/** Compare two favorites by `sort` key. Every branch falls through to a total order (favoritedAt,
+ *  then the derived id) so paging and repeated calls are stable. */
+function compareFavoritePages(a: FavoritePage, b: FavoritePage, sort: FavoritePagesSort): number {
+  const newestFirst = b.favoritedAt - a.favoritedAt || a.id.localeCompare(b.id);
+  switch (sort) {
+    case "added":
+      return newestFirst;
+    case "oldest":
+      return a.favoritedAt - b.favoritedAt || a.id.localeCompare(b.id);
+    case "series":
+      return a.seriesTitle.localeCompare(b.seriesTitle) || newestFirst;
+    case "chapter":
+      return (
+        a.seriesTitle.localeCompare(b.seriesTitle) ||
+        (a.chapterName ?? "").localeCompare(b.chapterName ?? "") ||
+        a.pageIndex - b.pageIndex ||
+        newestFirst
+      );
+  }
 }
 
 /** Compare two entry views by `sort` key in ascending order (callers apply direction). */
@@ -708,6 +757,153 @@ export class Library {
         entry.listIds = entry.listIds.filter((c) => c !== id);
         entry.updatedAt = this.now();
         await this.store.putEntry(entry);
+      }
+    }
+  }
+
+  // ── Page favorites ────────────────────────────────────────────────────────────
+  // Local user data, independent of the library: a page can be favorited from a series that was
+  // never added, and removing a series from the library leaves its favorites alone. Unrelated to a
+  // bridge account's per-series `favorites` capability, which lives behind `/bridges/{id}/favorites`.
+
+  /**
+   * Favorite one page. IDEMPOTENT: the id is derived from the coordinates, so re-favoriting the same
+   * page refreshes its display snapshot in place rather than duplicating it — and deliberately keeps
+   * the original `favoritedAt`, its collection memberships, and any captured thumbnail, which a
+   * re-favorite (e.g. a client replaying a stale write) must never silently discard.
+   */
+  async favoritePage(coord: FavoritePageCoord, snap: FavoritePageSnapshot): Promise<FavoritePage> {
+    const id = favoritePageId(coord);
+    const existing = (await this.store.listFavoritePages()).find((p) => p.id === id);
+    const page: FavoritePage = {
+      ...coord,
+      id,
+      favoritedAt: existing?.favoritedAt ?? this.now(),
+      collectionIds: existing?.collectionIds ?? [],
+      seriesTitle: snap.seriesTitle,
+      ...(snap.chapterName !== undefined && { chapterName: snap.chapterName }),
+      ...(snap.pageCount !== undefined && { pageCount: snap.pageCount }),
+      ...(snap.sourceUrl !== undefined && { sourceUrl: snap.sourceUrl }),
+      ...(existing?.hasThumb !== undefined && { hasThumb: existing.hasThumb }),
+      ...(existing?.thumbFile !== undefined && { thumbFile: existing.thumbFile }),
+    };
+    await this.store.putFavoritePage(page);
+    return page;
+  }
+
+  /** Unfavorite by coordinates. Returns the removed record (so a host can unlink its thumbnail
+   *  blob), or undefined if the page was not favorited. */
+  async unfavoritePage(coord: FavoritePageCoord): Promise<FavoritePage | undefined> {
+    return this.deleteFavoritePage(favoritePageId(coord));
+  }
+
+  /** Unfavorite by derived id. Returns the removed record, or undefined if there was none. */
+  async deleteFavoritePage(id: string): Promise<FavoritePage | undefined> {
+    const existing = (await this.store.listFavoritePages()).find((p) => p.id === id);
+    if (!existing) return undefined;
+    await this.store.deleteFavoritePage(id);
+    return existing;
+  }
+
+  async getFavoritePage(id: string): Promise<FavoritePage | undefined> {
+    return (await this.store.listFavoritePages()).find((p) => p.id === id);
+  }
+
+  /** Filter + sort the favorites. All of it happens HERE, not in a store or a client, so every host
+   *  and every platform browses identically — the same split as `getLibrary`. */
+  async getFavoritePages(query: FavoritePagesQuery = {}): Promise<FavoritePage[]> {
+    let pages = await this.store.listFavoritePages();
+    if (query.collection === UNCOLLECTED) {
+      pages = pages.filter((p) => p.collectionIds.length === 0);
+    } else if (query.collection) {
+      pages = pages.filter((p) => p.collectionIds.includes(query.collection!));
+    }
+    if (query.series) {
+      pages = pages.filter((p) => entryKey(p.bridgeId, p.seriesId) === query.series);
+    }
+    if (query.q) {
+      const q = query.q.toLowerCase();
+      pages = pages.filter(
+        (p) => p.seriesTitle.toLowerCase().includes(q) || (p.chapterName?.toLowerCase().includes(q) ?? false),
+      );
+    }
+    const sort = query.sort ?? "added";
+    return pages.sort((a, b) => compareFavoritePages(a, b, sort));
+  }
+
+  /**
+   * The favorited page indices for ONE chapter, ascending.
+   *
+   * This is the reader's shape: it loads the set once when the chapter opens and keeps the favorite
+   * button correct across every page turn with zero further requests. A per-page "is this favorited"
+   * check would fire once per turn, which is why none exists.
+   */
+  async getFavoritePageIndices(bridgeId: string, seriesId: string, chapterId: string): Promise<number[]> {
+    return (await this.store.listFavoritePages())
+      .filter((p) => p.bridgeId === bridgeId && p.seriesId === seriesId && p.chapterId === chapterId)
+      .map((p) => p.pageIndex)
+      .sort((a, b) => a - b);
+  }
+
+  /** Replace a favorite's collection memberships. Unknown collection ids are dropped. */
+  async setFavoritePageCollections(id: string, collectionIds: string[]): Promise<FavoritePage> {
+    const page = await this.getFavoritePage(id);
+    if (!page) throw new Error(`favorite page not found: ${id}`);
+    const known = new Set((await this.store.listFavoriteCollections()).map((c) => c.id));
+    const next: FavoritePage = { ...page, collectionIds: [...new Set(collectionIds)].filter((c) => known.has(c)) };
+    await this.store.putFavoritePage(next);
+    return next;
+  }
+
+  /** Record where the host stored this favorite's thumbnail bytes. `hasThumb` and `thumbFile` are
+   *  only ever written together, so they cannot drift. */
+  async setFavoritePageThumb(id: string, thumbFile: string): Promise<void> {
+    const page = await this.getFavoritePage(id);
+    if (!page) return; // unfavorited while a best-effort capture was in flight
+    await this.store.putFavoritePage({ ...page, hasThumb: true, thumbFile });
+  }
+
+  // ── Favorite collections ──────────────────────────────────────────────────────
+
+  async getFavoriteCollections(): Promise<FavoriteCollection[]> {
+    return (await this.store.listFavoriteCollections()).sort((a, b) => a.order - b.order);
+  }
+
+  async createFavoriteCollection(name: string): Promise<FavoriteCollection> {
+    const existing = await this.store.listFavoriteCollections();
+    const order = existing.reduce((max, c) => Math.max(max, c.order), -1) + 1;
+    const collection: FavoriteCollection = { id: crypto.randomUUID(), name, order };
+    await this.store.putFavoriteCollections([...existing, collection]);
+    return collection;
+  }
+
+  async renameFavoriteCollection(id: string, name: string): Promise<void> {
+    const collections = await this.store.listFavoriteCollections();
+    if (!collections.some((c) => c.id === id)) throw new Error(`favorite collection not found: ${id}`);
+    await this.store.putFavoriteCollections(collections.map((c) => (c.id === id ? { ...c, name } : c)));
+  }
+
+  async reorderFavoriteCollections(orderedIds: string[]): Promise<void> {
+    const collections = await this.store.listFavoriteCollections();
+    await this.store.putFavoriteCollections(
+      collections.map((c) => {
+        const idx = orderedIds.indexOf(c.id);
+        return idx === -1 ? c : { ...c, order: idx };
+      }),
+    );
+  }
+
+  /**
+   * Delete a collection and strip its id from every favorite that referenced it. Deleting a
+   * collection NEVER deletes the favorites in it — they fall back to uncollected, mirroring how
+   * `deleteList` leaves library entries in place.
+   */
+  async deleteFavoriteCollection(id: string): Promise<void> {
+    const collections = await this.store.listFavoriteCollections();
+    await this.store.putFavoriteCollections(collections.filter((c) => c.id !== id));
+    for (const page of await this.store.listFavoritePages()) {
+      if (page.collectionIds.includes(id)) {
+        await this.store.putFavoritePage({ ...page, collectionIds: page.collectionIds.filter((c) => c !== id) });
       }
     }
   }

@@ -6,7 +6,7 @@
  *
  * Keys are `entryKey(bridgeId, seriesId)`.
  */
-import type { ActivityItem, BridgePrefs, CachedChapters, CachedSeriesDetail, ChapterProgress, HistoryItem, LibraryEntry, LibraryList, SeriesGroup, TrackerLink } from "./models.ts";
+import type { ActivityItem, BridgePrefs, CachedChapters, CachedSeriesDetail, ChapterProgress, FavoriteCollection, FavoritePage, HistoryItem, LibraryEntry, LibraryList, SeriesGroup, TrackerLink } from "./models.ts";
 
 export interface LibraryStore {
   // ── Entries ──────────────────────────────────────────────────────────────
@@ -43,6 +43,18 @@ export interface LibraryStore {
   listGroups(): Promise<SeriesGroup[]>;
   putGroup(group: SeriesGroup): Promise<void>;
   deleteGroup(id: string): Promise<void>;
+
+  // ── Page favorites ────────────────────────────────────────────────────────
+  /** Every favorited page; keyed internally by its derived `favoritePageId`. */
+  listFavoritePages(): Promise<FavoritePage[]>;
+  /** Upsert one favorite (the derived id makes this idempotent). */
+  putFavoritePage(page: FavoritePage): Promise<void>;
+  deleteFavoritePage(id: string): Promise<void>;
+
+  /** Collections are a small ordered array — the whole document is read and written at once, so a
+   *  reorder or a cascading delete is a single write rather than N racing read-modify-writes. */
+  listFavoriteCollections(): Promise<FavoriteCollection[]>;
+  putFavoriteCollections(collections: FavoriteCollection[]): Promise<void>;
 
   // ── Tracker links ─────────────────────────────────────────────────────────
   listTrackerLinks(key: string): Promise<TrackerLink[]>;

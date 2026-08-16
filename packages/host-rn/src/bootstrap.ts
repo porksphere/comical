@@ -18,6 +18,7 @@ import type {
   CreateRouter,
   DownloadsStore,
   EmbeddedCoversConfig,
+  EmbeddedFavoritePagesConfig,
   EmbeddedDownloadsEngineConfig,
   EmbeddedTransport,
   InstalledStore,
@@ -53,6 +54,9 @@ export interface EmbeddedBootstrapConfig {
   /** Optional device seams for guaranteed-offline library covers (covers-rooted blob store with
    *  `read` + page fetcher). Only effective alongside `libraryStore`. */
   covers?: EmbeddedCoversConfig;
+  /** Optional device seams for favorited-page thumbnails (favorites-rooted blob store with `read` +
+   *  page fetcher). Only effective alongside `libraryStore`. */
+  favoritePages?: EmbeddedFavoritePagesConfig;
   /** The installed-tracker manifest (AsyncStorage-backed) — trackers are registry-installed exactly
    *  like bridges. Supplying `trackerSettings` alongside a registered native tracker runtime mounts
    *  the `/trackers*` endpoints (see `EmbeddedRuntimeConfig.installedTrackers`'s doc comment in
@@ -102,6 +106,7 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     ...(config.downloadsStore ? { downloadsStore: config.downloadsStore } : {}),
     ...(config.downloadsEngine ? { downloadsEngine: config.downloadsEngine } : {}),
     ...(config.covers ? { covers: config.covers } : {}),
+    ...(config.favoritePages ? { favoritePages: config.favoritePages } : {}),
     ...(config.trackerSettings ? { trackerSettings: config.trackerSettings } : {}),
     ...(config.oauthCallbackUrl ? { oauthCallbackUrl: config.oauthCallbackUrl } : {}),
     ...(config.cache ? { cache: config.cache } : {}),

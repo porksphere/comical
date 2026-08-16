@@ -30,8 +30,8 @@ import type {
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
-import { entryKey, type Library } from "@comical/library";
-import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
+import { entryKey, type FavoritePage, type FavoritePageCoord, type FavoritePagesQuery, type Library } from "@comical/library";
+import { contentTypeFor, extFor, relPathFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
 import type { ComicalRuntime, FavoritesImportItem } from "@comical/runtime";
@@ -65,6 +65,19 @@ export interface RouterOptions {
    * route, making covers render with the source unreachable.
    */
   covers?: { blobs: BlobStore; fetchPage: PageFetcher };
+  /**
+   * Thumbnail byte cache for favorited PAGES — the same shape as `covers`, and required for the
+   * favorites grid to render at all. The bridge-side per-page thumbnail endpoint
+   * (`/bridges/:id/series/:seriesId/page-thumb/:pageIndex`) is SERIES-level with no chapter
+   * component, so there is no way to ask a bridge for "page N of chapter C"; a grid built on it
+   * would be blank for every chaptered series. Instead the host captures the page's own bytes on
+   * PUT (through `fetchPage`, reusing the `/img-proxy` referer rules) and serves them back at
+   * `/library/favorite-pages/:id/thumb`.
+   *
+   * Capture is best-effort: without this config, or on any failure, `hasThumb` stays false and the
+   * client falls back to re-resolving the page URL. Only effective alongside `library`.
+   */
+  favoritePages?: { blobs: BlobStore; fetchPage: PageFetcher };
   /** Downloads service — enables the optional `/downloads` offline-manifest endpoints when provided. */
   downloads?: Downloads;
   /**
@@ -559,6 +572,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   // browsing; non-library series keep the exact error behavior they had.
   const libMeta = opts.library;
   const covers = opts.covers;
+  const favoriteThumbs = opts.favoritePages;
 
   /**
    * Capture a library entry's cover bytes (fire-and-forget): fetch the entry snapshot's
@@ -808,6 +822,171 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ ok: true });
     });
 
+    // ── Page favorites ──────────────────────────────────────────────────────────
+    // Favoriting a single PAGE — local user data, and entirely unrelated to the bridge-account
+    // per-series `favorites` capability served under `/bridges/:id/favorites`. Hence the
+    // `favorite-pages` namespace under `/library`, never under `/bridges`.
+    //
+    // ROUTE ORDER: `chapter` and `collections` are literal first segments that sit in the same
+    // space as the `:id` / coordinate patterns below. Today no two of them share both a method and
+    // a segment count, so nothing shadows anything — but that is a property of the current set, not
+    // a guarantee. Registering the literals FIRST is what keeps it true when a route is added
+    // later (a bare `GET /library/favorite-pages/:id` would otherwise swallow `/collections`).
+
+    /**
+     * Capture a favorite's page bytes into the favorites blob store, returning the blob path.
+     *
+     * AWAITED by the PUT, unlike the cover capture's fire-and-forget: the client has just rendered
+     * this exact page, so the bytes are close at hand, and awaiting is what lets the PUT response's
+     * `hasThumb` be truthful — the grid tile then paints from the host on its first render instead
+     * of needing a refetch. Best-effort throughout: every failure path returns undefined and the
+     * favorite itself still stands.
+     */
+    const captureFavoriteThumb = async (page: FavoritePage): Promise<string | undefined> => {
+      if (!favoriteThumbs || !page.sourceUrl) return undefined;
+      try {
+        const fetched = await favoriteThumbs.fetchPage(
+          { bridgeId: page.bridgeId, seriesId: page.seriesId, chapterId: page.chapterId },
+          { index: page.pageIndex, sourceUrl: page.sourceUrl },
+        );
+        const file = relPathFor(
+          page.bridgeId,
+          page.seriesId,
+          page.chapterId,
+          page.pageIndex,
+          extFor(fetched.contentType ?? page.sourceUrl),
+        );
+        await favoriteThumbs.blobs.write(file, fetched.data);
+        // A re-capture whose extension changed leaves the old blob behind — unlink it.
+        if (page.thumbFile && page.thumbFile !== file) {
+          await favoriteThumbs.blobs.remove([page.thumbFile]).catch(() => {});
+        }
+        return file;
+      } catch {
+        return undefined; // capture is best-effort; `hasThumb` stays false
+      }
+    };
+
+    /** The four coordinates off a favorite route's path params, or undefined for a bad `pageIndex`
+     *  (`Number("")` is 0, so the empty string is rejected explicitly). */
+    const favoriteCoord = (
+      bridgeId: string,
+      seriesId: string,
+      chapterId: string,
+      rawIndex: string,
+    ): FavoritePageCoord | undefined => {
+      const pageIndex = Number(rawIndex);
+      if (rawIndex === "" || !Number.isInteger(pageIndex) || pageIndex < 0) return undefined;
+      return { bridgeId, seriesId, chapterId, pageIndex };
+    };
+
+    app.get("/library/favorite-pages", async (c) => {
+      const sort = c.req.query("sort");
+      const validSort = sort === "added" || sort === "oldest" || sort === "series" || sort === "chapter";
+      const collection = c.req.query("collection");
+      const series = c.req.query("series");
+      const q = c.req.query("q");
+      const query: FavoritePagesQuery = {
+        ...(validSort && { sort: sort as "added" | "oldest" | "series" | "chapter" }),
+        ...(collection && { collection }),
+        ...(series && { series }),
+        ...(q && { q }),
+      };
+      return c.json(await lib.getFavoritePages(query));
+    });
+
+    // The favorited page INDICES for one chapter. The reader loads this once when a chapter opens
+    // and keeps its favorite button correct across every page turn with zero further requests —
+    // deliberately not a per-page status check, which would fire once per turn.
+    app.get("/library/favorite-pages/chapter/:bridgeId/:seriesId/:chapterId", async (c) =>
+      c.json(
+        await lib.getFavoritePageIndices(
+          c.req.param("bridgeId"),
+          c.req.param("seriesId"),
+          c.req.param("chapterId"),
+        ),
+      ),
+    );
+
+    // Collections — the favorites-side counterpart of `/library/lists`, same CRUD + reorder shape.
+    app.get("/library/favorite-pages/collections", async (c) => c.json(await lib.getFavoriteCollections()));
+
+    app.post("/library/favorite-pages/collections", async (c) => {
+      const b = await body<{ name?: string }>(c);
+      if (!b?.name) return c.json({ error: "name is required" }, 400);
+      return c.json(await lib.createFavoriteCollection(b.name), 201);
+    });
+
+    app.post("/library/favorite-pages/collections/reorder", async (c) => {
+      // `orderedIds` is accepted as an alias so a client written against the sibling
+      // `/library/lists/reorder` route's field name doesn't silently 400.
+      const b = await body<{ ids?: string[]; orderedIds?: string[] }>(c);
+      const ids = b?.ids ?? b?.orderedIds;
+      if (!ids) return c.json({ error: "ids is required" }, 400);
+      await lib.reorderFavoriteCollections(ids);
+      return c.json({ ok: true });
+    });
+
+    app.patch("/library/favorite-pages/collections/:id", async (c) => {
+      const b = await body<{ name?: string }>(c);
+      if (!b?.name) return c.json({ error: "name is required" }, 400);
+      try { await lib.renameFavoriteCollection(c.req.param("id"), b.name); return c.json({ ok: true }); }
+      catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
+    });
+
+    // Deleting a collection strips its id from every member but keeps the favorites themselves.
+    app.delete("/library/favorite-pages/collections/:id", async (c) => {
+      await lib.deleteFavoriteCollection(c.req.param("id"));
+      return c.json({ ok: true });
+    });
+
+    // The captured page bytes for one favorite — the grid's and the viewer's image source.
+    if (favoriteThumbs?.blobs.read) {
+      app.get("/library/favorite-pages/:id/thumb", async (c) => {
+        const page = await lib.getFavoritePage(c.req.param("id"));
+        if (!page?.thumbFile) return c.json({ error: "no thumbnail captured" }, 404);
+        const data = await favoriteThumbs.blobs.read!(page.thumbFile);
+        if (!data) return c.json({ error: "thumbnail blob missing" }, 404);
+        return new Response(data as unknown as ArrayBuffer, {
+          headers: { "Content-Type": contentTypeFor(page.thumbFile), "Cache-Control": "max-age=86400" },
+        });
+      });
+    }
+
+    app.put("/library/favorite-pages/:id/collections", async (c) => {
+      const b = await body<{ collectionIds?: string[] }>(c);
+      if (!b?.collectionIds) return c.json({ error: "collectionIds is required" }, 400);
+      try { return c.json(await lib.setFavoritePageCollections(c.req.param("id"), b.collectionIds)); }
+      catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
+    });
+
+    // Favorite one page. IDEMPOTENT — the id is derived from the coordinates, so re-favoriting
+    // overwrites in place. This is also where thumbnail capture is triggered.
+    app.put("/library/favorite-pages/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
+      const coord = favoriteCoord(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId"), c.req.param("pageIndex"));
+      if (!coord) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
+      const b = await body<{ seriesTitle?: string; chapterName?: string; pageCount?: number; sourceUrl?: string }>(c);
+      if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
+      const page = await lib.favoritePage(coord, {
+        seriesTitle: b.seriesTitle,
+        ...(b.chapterName !== undefined && { chapterName: b.chapterName }),
+        ...(b.pageCount !== undefined && { pageCount: b.pageCount }),
+        ...(b.sourceUrl !== undefined && { sourceUrl: b.sourceUrl }),
+      });
+      const thumbFile = await captureFavoriteThumb(page);
+      if (!thumbFile) return c.json(page); // no capture configured, no source URL, or it failed
+      await lib.setFavoritePageThumb(page.id, thumbFile);
+      return c.json({ ...page, hasThumb: true, thumbFile });
+    });
+
+    app.delete("/library/favorite-pages/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
+      const coord = favoriteCoord(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId"), c.req.param("pageIndex"));
+      if (!coord) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
+      const removed = await lib.unfavoritePage(coord);
+      if (removed?.thumbFile) await favoriteThumbs?.blobs.remove([removed.thumbFile]).catch(() => {});
+      return c.json({ ok: true });
+    });
+
     // Import from bridge favorites — read-only classification of every favorite against the library
     // ("new" / already here from this bridge / another source for something already here), so a
     // client can show the list for confirmation before anything is written.
@@ -833,13 +1012,15 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       }),
     );
 
-    // The bytes the library occupies on this host — store documents plus captured cover blobs.
-    // Powers the client Storage screen's library figure, host-aware through the transport (device
-    // AsyncStorage docs when embedded, the server's library dir when remote).
+    // The bytes the library occupies on this host — store documents plus the captured cover and
+    // favorite-page-thumbnail blobs. Powers the client Storage screen's library figure, host-aware
+    // through the transport (device AsyncStorage docs when embedded, the server's library dir when
+    // remote). A store's own `diskUsage` excludes those blob roots, so nothing is counted twice.
     app.get("/library/usage", async (c) => {
       const docs = (await lib.diskUsage().catch(() => undefined)) ?? 0;
       const coverBytes = (await covers?.blobs.usage?.().catch(() => undefined)) ?? 0;
-      return c.json({ diskBytes: docs + coverBytes });
+      const thumbBytes = (await favoriteThumbs?.blobs.usage?.().catch(() => undefined)) ?? 0;
+      return c.json({ diskBytes: docs + coverBytes + thumbBytes });
     });
 
     // Entries
