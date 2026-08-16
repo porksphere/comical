@@ -218,26 +218,16 @@ export const favoritePageSnapshotSchema = z.object({
   chapterName: z.string().optional(),
   pageCount: z.number().int().nonnegative().optional(),
   /**
-   * The page's image URL when it was favorited. Doubles as the cheap re-anchor key: matching it
-   * against a freshly-fetched page list relocates a page that merely shifted, at no network cost.
-   * Expected to rot eventually, which is what `contentHash` is for.
+   * The page's image URL when it was favorited, and the re-anchor key: matching it against a
+   * freshly-fetched page list relocates a page that merely shifted, at NO network cost — the list is
+   * one the reader already fetched to display the chapter.
+   *
+   * Deliberately the only such signal. A content hash would be stronger (it survives URL rot), but
+   * matching on one means hashing the fresh list, and a client only holds bytes for the page or two
+   * it has actually rendered — so a hash-matched reconcile would have to download the whole chapter.
+   * When a URL rots, the favorite goes stale rather than costing the user a chapter download.
    */
   sourceUrl: z.string().optional(),
-  /**
-   * Fingerprint of the page's raw image bytes — **lowercase hex SHA-256**, computed by the CLIENT
-   * from bytes it already holds (it just rendered the page), so the host does no image work and
-   * stores no pixels.
-   *
-   * This is the strongest re-anchor signal: unlike `sourceUrl` it survives URL rot and a chapter
-   * being re-uploaded under a new id. The algorithm is fixed rather than opaque because the hash
-   * written at favorite time is compared against hashes computed later, potentially by a different
-   * client against the same host — they must agree.
-   *
-   * Limit worth knowing: an exact hash relocates a page whose FILE is unchanged (the common
-   * "a page was inserted ahead of it" case). A re-encoded or re-scanned re-upload changes the bytes,
-   * so the favorite goes stale instead of being repaired.
-   */
-  contentHash: z.string().optional(),
 });
 export type FavoritePageSnapshot = z.infer<typeof favoritePageSnapshotSchema>;
 
@@ -255,7 +245,6 @@ export const favoritePageSchema = favoritePageCoordSchema.extend({
    *  which also uses a mismatch as the last-resort "this chapter moved" signal. */
   pageCount: z.number().int().nonnegative().optional(),
   sourceUrl: z.string().optional(),
-  contentHash: z.string().optional(),
   /**
    * Set when a reconcile against a fresh page list could not locate this page any more — the source
    * changed the chapter and neither the hash nor the URL matched anything in it.
@@ -270,14 +259,14 @@ export const favoritePageSchema = favoritePageCoordSchema.extend({
 export type FavoritePage = z.infer<typeof favoritePageSchema>;
 
 /**
- * One page of a freshly-fetched chapter, as handed to {@link Library.reconcileChapterFavorites}.
- * Position in the array IS the page index. Both fields are optional because what a client can
- * supply varies: a URL is always to hand, a hash only if it has the bytes.
+ * Which favorites a {@link LibraryStore.listFavoritePages} call is interested in. Omitted fields
+ * don't constrain. Stores MUST honour it: it is what keeps a chapter open from loading a whole
+ * library's favorites, and what lets an indexed backend answer without a scan.
  */
-export interface ChapterPageRef {
-  sourceUrl?: string;
-  /** Lowercase hex SHA-256 of the page's raw bytes — see `FavoritePage.contentHash`. */
-  contentHash?: string;
+export interface FavoritePageScope {
+  bridgeId?: string;
+  seriesId?: string;
+  chapterId?: string;
 }
 
 /**

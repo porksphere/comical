@@ -18,7 +18,6 @@ import {
   type BridgePrefs,
   type CachedChapters,
   type CachedSeriesDetail,
-  type ChapterPageRef,
   type ChapterProgress,
   type FavoriteCollection,
   type FavoritePage,
@@ -775,7 +774,7 @@ export class Library {
    */
   async favoritePage(coord: FavoritePageCoord, snap: FavoritePageSnapshot): Promise<FavoritePage> {
     const id = favoritePageId(coord);
-    const existing = (await this.store.listFavoritePages()).find((p) => p.id === id);
+    const existing = await this.store.getFavoritePage(id);
     const page: FavoritePage = {
       ...coord,
       id,
@@ -785,9 +784,8 @@ export class Library {
       ...(snap.chapterName !== undefined && { chapterName: snap.chapterName }),
       ...(snap.pageCount !== undefined && { pageCount: snap.pageCount }),
       ...(snap.sourceUrl !== undefined && { sourceUrl: snap.sourceUrl }),
-      ...(snap.contentHash !== undefined && { contentHash: snap.contentHash }),
     };
-    await this.store.putFavoritePage(page);
+    await this.store.putFavoritePages([page]);
     return page;
   }
 
@@ -798,27 +796,29 @@ export class Library {
 
   /** Unfavorite by derived id. Returns the removed record, or undefined if there was none. */
   async deleteFavoritePage(id: string): Promise<FavoritePage | undefined> {
-    const existing = (await this.store.listFavoritePages()).find((p) => p.id === id);
+    const existing = await this.store.getFavoritePage(id);
     if (!existing) return undefined;
-    await this.store.deleteFavoritePage(id);
+    await this.store.deleteFavoritePages([id]);
     return existing;
   }
 
   async getFavoritePage(id: string): Promise<FavoritePage | undefined> {
-    return (await this.store.listFavoritePages()).find((p) => p.id === id);
+    return this.store.getFavoritePage(id);
   }
 
   /** Filter + sort the favorites. All of it happens HERE, not in a store or a client, so every host
    *  and every platform browses identically — the same split as `getLibrary`. */
   async getFavoritePages(query: FavoritePagesQuery = {}): Promise<FavoritePage[]> {
-    let pages = await this.store.listFavoritePages();
+    // Push a series filter down to the store: on a per-series grid this is the difference between
+    // loading one series' favorites and every favorite the user has.
+    const scoped = query.series ? parseEntryKey(query.series) : undefined;
+    let pages = await this.store.listFavoritePages(
+      scoped ? { bridgeId: scoped.bridgeId, seriesId: scoped.seriesId } : undefined,
+    );
     if (query.collection === UNCOLLECTED) {
       pages = pages.filter((p) => p.collectionIds.length === 0);
     } else if (query.collection) {
       pages = pages.filter((p) => p.collectionIds.includes(query.collection!));
-    }
-    if (query.series) {
-      pages = pages.filter((p) => entryKey(p.bridgeId, p.seriesId) === query.series);
     }
     if (query.q) {
       const q = query.q.toLowerCase();
@@ -841,8 +841,8 @@ export class Library {
    * light up the button or drive navigation.
    */
   async getFavoritePageIndices(bridgeId: string, seriesId: string, chapterId: string): Promise<number[]> {
-    return (await this.store.listFavoritePages())
-      .filter((p) => p.bridgeId === bridgeId && p.seriesId === seriesId && p.chapterId === chapterId && !p.stale)
+    return (await this.store.listFavoritePages({ bridgeId, seriesId, chapterId }))
+      .filter((p) => !p.stale)
       .map((p) => p.pageIndex)
       .sort((a, b) => a - b);
   }
@@ -857,22 +857,29 @@ export class Library {
    * point at the wrong page. This is the favorites-side counterpart of `syncChapters`: the caller
    * already holds the fresh list, so repair costs no extra fetch.
    *
-   * Matching runs strongest-signal-first — `contentHash` (survives URL rot and a re-upload), then
-   * `sourceUrl`, then bare index trust while the page count is unchanged. A favorite that matches
-   * nothing is marked `stale` rather than deleted.
+   * COST: one scoped store read plus at most two batched writes, for the ONE chapter being opened.
+   * It never walks a series' other chapters and never fetches a page image — `pages` is the list the
+   * reader already fetched to render this chapter, so a huge series costs no more than a small one.
+   *
+   * Matching is by `sourceUrl`, falling back to bare index trust while the page count is unchanged.
+   * There is deliberately no content-hash signal: it would be stronger, but matching on one means
+   * hashing the fresh list, and a client only holds bytes for the page or two it has rendered — so
+   * it would turn opening a chapter into downloading it. A favorite that matches nothing is marked
+   * `stale` rather than deleted.
    *
    * Repairing an index RE-KEYS the record, because the id is derived from the coordinates. Callers
    * holding an id from before a reconcile must refresh.
+   *
+   * @param pages Source URLs of the chapter's pages, in order — position IS the page index. An empty
+   *              string stands in for a page whose URL the caller doesn't know.
    */
   async reconcileChapterFavorites(
     bridgeId: string,
     seriesId: string,
     chapterId: string,
-    pages: ChapterPageRef[],
+    pages: string[],
   ): Promise<{ indices: number[]; repaired: number; stale: number }> {
-    const mine = (await this.store.listFavoritePages()).filter(
-      (p) => p.bridgeId === bridgeId && p.seriesId === seriesId && p.chapterId === chapterId,
-    );
+    const mine = await this.store.listFavoritePages({ bridgeId, seriesId, chapterId });
     // An empty list is far likelier a failed fetch than a chapter that genuinely lost every page.
     // Treating it as authoritative would mark the user's whole chapter stale, so it's a no-op.
     if (pages.length === 0 || mine.length === 0) {
@@ -883,21 +890,17 @@ export class Library {
       };
     }
 
-    // First occurrence wins, so duplicate pages in a chapter resolve deterministically.
-    const byHash = new Map<string, number>();
+    // One O(pages) index, then every favorite resolves by lookup — no per-favorite scan of the list.
+    // First occurrence wins, so a chapter that repeats a page resolves deterministically.
     const byUrl = new Map<string, number>();
-    pages.forEach((p, i) => {
-      if (p.contentHash && !byHash.has(p.contentHash)) byHash.set(p.contentHash, i);
-      if (p.sourceUrl && !byUrl.has(p.sourceUrl)) byUrl.set(p.sourceUrl, i);
+    pages.forEach((url, i) => {
+      if (url && !byUrl.has(url)) byUrl.set(url, i);
     });
 
     /** Where this favorite's page lives in the fresh list, or undefined if it's gone. */
     const locate = (fav: FavoritePage): number | undefined => {
-      if (fav.contentHash && byHash.size > 0) {
-        // The list carries hashes and we have one: this answer is authoritative either way. A miss
-        // means the page is genuinely gone, not merely moved — don't fall through to weaker signals.
-        return byHash.get(fav.contentHash);
-      }
+      // The list carries URLs and we have one: this answer is authoritative either way. A miss means
+      // the page is gone, not merely moved — don't fall through to the weaker index guess.
       if (fav.sourceUrl && byUrl.size > 0) return byUrl.get(fav.sourceUrl);
       // Nothing to match on. Trust the stored index only while the chapter is the same length —
       // "unknown" must not read as "unchanged".
@@ -920,21 +923,19 @@ export class Library {
         ...coord,
         id: favoritePageId(coord),
         pageCount: pages.length,
-        ...(pages[at]?.sourceUrl !== undefined && { sourceUrl: pages[at]!.sourceUrl }),
-        // Adopt a hash we didn't have, so the NEXT reconcile survives this URL rotting.
-        ...(fav.contentHash === undefined && pages[at]?.contentHash !== undefined
-          ? { contentHash: pages[at]!.contentHash }
-          : {}),
+        // Adopt the fresh URL, so a page that moves again next time is still matchable.
+        ...(pages[at] ? { sourceUrl: pages[at] } : {}),
       };
       delete healed.stale; // located again — a source can revert a bad re-upload
       this.mergeFavorite(next, healed);
     }
 
-    // Re-keying can free an id (page 3 → 4) — drop only ids nothing landed on.
-    for (const fav of mine) {
-      if (!next.has(fav.id)) await this.store.deleteFavoritePage(fav.id);
-    }
-    for (const page of next.values()) await this.store.putFavoritePage(page);
+    // Two batched writes for the whole chapter, however many favorites it holds: a store rewrites
+    // its favorites document per call, so a write per record would re-serialize every favorite the
+    // user has, once per record. Re-keying can free an id (page 3 → 4) — drop only ids nothing
+    // landed on.
+    await this.store.deleteFavoritePages(mine.filter((f) => !next.has(f.id)).map((f) => f.id));
+    await this.store.putFavoritePages([...next.values()]);
 
     return {
       indices: [...next.values()].filter((p) => !p.stale).map((p) => p.pageIndex).sort((a, b) => a - b),
@@ -970,7 +971,7 @@ export class Library {
     if (!page) throw new Error(`favorite page not found: ${id}`);
     const known = new Set((await this.store.listFavoriteCollections()).map((c) => c.id));
     const next: FavoritePage = { ...page, collectionIds: [...new Set(collectionIds)].filter((c) => known.has(c)) };
-    await this.store.putFavoritePage(next);
+    await this.store.putFavoritePages([next]);
     return next;
   }
 
@@ -1012,11 +1013,12 @@ export class Library {
   async deleteFavoriteCollection(id: string): Promise<void> {
     const collections = await this.store.listFavoriteCollections();
     await this.store.putFavoriteCollections(collections.filter((c) => c.id !== id));
-    for (const page of await this.store.listFavoritePages()) {
-      if (page.collectionIds.includes(id)) {
-        await this.store.putFavoritePage({ ...page, collectionIds: page.collectionIds.filter((c) => c !== id) });
-      }
-    }
+    // One batched write for the whole cascade — a per-member write would rewrite the favorites
+    // document once per member.
+    const stripped = (await this.store.listFavoritePages())
+      .filter((p) => p.collectionIds.includes(id))
+      .map((p) => ({ ...p, collectionIds: p.collectionIds.filter((c) => c !== id) }));
+    await this.store.putFavoritePages(stripped);
   }
 
   // ── Series groups ─────────────────────────────────────────────────────────────

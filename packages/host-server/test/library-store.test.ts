@@ -2,7 +2,7 @@
  * FileLibraryStore persistence + the one-time "categories → lists" entry migration: a legacy
  * `entries.json` (carrying `categoryIds`, no `listIds`) is healed on first read and rewritten.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { FavoriteCollection, FavoritePage } from "@comical/library";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -71,33 +71,88 @@ describe("FileLibraryStore page favorites", () => {
 
   test("favorites round-trip through a real dir and survive a reopen", async () => {
     const store = new FileLibraryStore(LIB);
-    await store.putFavoritePage(page({ chapterName: "Ch 1", pageCount: 20 }));
-    await store.putFavoritePage(page({ id: "demo:s1:c1:4", pageIndex: 4, contentHash: "sha-4", stale: true }));
+    await store.putFavoritePages([
+      page({ chapterName: "Ch 1", pageCount: 20 }),
+      page({ id: "demo:s1:c1:4", pageIndex: 4, sourceUrl: "https://cdn/4.png", stale: true }),
+    ]);
 
     // A second store over the same dir reads only what was written — no shared in-memory cache.
     const reopened = new FileLibraryStore(LIB);
     const got = (await reopened.listFavoritePages()).sort((a, b) => a.pageIndex - b.pageIndex);
     expect(got).toHaveLength(2);
     expect(got[0]).toMatchObject({ id: "demo:s1:c1:0", chapterName: "Ch 1", pageCount: 20 });
-    expect(got[1]).toMatchObject({ pageIndex: 4, contentHash: "sha-4", stale: true });
+    expect(got[1]).toMatchObject({ pageIndex: 4, sourceUrl: "https://cdn/4.png", stale: true });
   });
 
   test("putFavoritePage is an upsert on the derived id, and delete removes just that one", async () => {
     const store = new FileLibraryStore(LIB);
-    await store.putFavoritePage(page({ seriesTitle: "First" }));
-    await store.putFavoritePage(page({ seriesTitle: "Second" }));
+    await store.putFavoritePages([page({ seriesTitle: "First" })]);
+    await store.putFavoritePages([page({ seriesTitle: "Second" })]);
     expect(await store.listFavoritePages()).toHaveLength(1);
     expect((await store.listFavoritePages())[0]!.seriesTitle).toBe("Second");
 
-    await store.putFavoritePage(page({ id: "demo:s1:c1:1", pageIndex: 1 }));
-    await store.deleteFavoritePage("demo:s1:c1:0");
+    await store.putFavoritePages([page({ id: "demo:s1:c1:1", pageIndex: 1 })]);
+    await store.deleteFavoritePages(["demo:s1:c1:0"]);
     expect((await new FileLibraryStore(LIB).listFavoritePages()).map((p) => p.id)).toEqual(["demo:s1:c1:1"]);
   });
 
   test("deleting an unknown favorite is a no-op", async () => {
     const store = new FileLibraryStore(LIB);
-    await store.deleteFavoritePage("nope:nope:nope:0");
+    await store.deleteFavoritePages(["nope:nope:nope:0"]);
     expect(await store.listFavoritePages()).toEqual([]);
+  });
+
+  test("favorites are sharded per series, and a write touches only its own shard", async () => {
+    const store = new FileLibraryStore(LIB);
+    await store.putFavoritePages([page(), page({ id: "demo:s2:c1:0", seriesId: "s2" })]);
+
+    const shardDir = join(LIB, "favorite-pages");
+    expect(readdirSync(shardDir).sort()).toEqual(["demo%3As1.json", "demo%3As2.json"]);
+
+    // Writing into one series must leave the other series' document byte-identical: that is what
+    // keeps a chapter open from re-serializing every favorite the user has.
+    const otherBefore = readFileSync(join(shardDir, "demo%3As2.json"), "utf8");
+    await store.putFavoritePages([page({ id: "demo:s1:c9:3", chapterId: "c9", pageIndex: 3 })]);
+    expect(readFileSync(join(shardDir, "demo%3As2.json"), "utf8")).toBe(otherBefore);
+
+    // Emptying a series drops its document rather than leaving an empty one behind.
+    await store.deleteFavoritePages(["demo:s2:c1:0"]);
+    expect(readdirSync(shardDir)).toEqual(["demo%3As1.json"]);
+  });
+
+  test("an unscoped listing spans every shard, after a reopen", async () => {
+    const store = new FileLibraryStore(LIB);
+    await store.putFavoritePages([
+      page(),
+      page({ id: "demo:s2:c1:0", seriesId: "s2" }),
+      page({ id: "other:s1:c1:0", bridgeId: "other" }),
+    ]);
+    // A fresh store has no cache — it must find the shards on disk.
+    expect((await new FileLibraryStore(LIB).listFavoritePages()).map((p) => p.id).sort()).toEqual([
+      "demo:s1:c1:0",
+      "demo:s2:c1:0",
+      "other:s1:c1:0",
+    ]);
+  });
+
+  test("getFavoritePage is a keyed lookup, and scoped listing honours the scope", async () => {
+    const store = new FileLibraryStore(LIB);
+    await store.putFavoritePages([
+      page(),
+      page({ id: "demo:s1:c2:0", chapterId: "c2" }),
+      page({ id: "demo:s2:c1:0", seriesId: "s2" }),
+      page({ id: "other:s1:c1:0", bridgeId: "other" }),
+    ]);
+
+    const reopened = new FileLibraryStore(LIB);
+    expect((await reopened.getFavoritePage("demo:s1:c2:0"))?.chapterId).toBe("c2");
+    expect(await reopened.getFavoritePage("nope")).toBeUndefined();
+
+    // Scoping is what keeps a chapter open off the whole-library path.
+    expect(await reopened.listFavoritePages({ bridgeId: "demo", seriesId: "s1", chapterId: "c1" })).toHaveLength(1);
+    expect(await reopened.listFavoritePages({ bridgeId: "demo", seriesId: "s1" })).toHaveLength(2);
+    expect(await reopened.listFavoritePages({ bridgeId: "demo" })).toHaveLength(3);
+    expect(await reopened.listFavoritePages()).toHaveLength(4);
   });
 
   test("collections are stored as one ordered document", async () => {
@@ -125,7 +180,7 @@ describe("FileLibraryStore page favorites", () => {
 
   test("diskUsage counts favorite documents but still skips the covers blob root", async () => {
     const store = new FileLibraryStore(LIB);
-    await store.putFavoritePage(page());
+    await store.putFavoritePages([page()]);
     const docsOnly = await store.diskUsage();
     expect(docsOnly).toBeGreaterThan(0);
 

@@ -74,15 +74,13 @@ describe("embedded transport — page favorites", () => {
     await put(t, "/library/favorite-pages/demo/s1/c1/2", {
       seriesTitle: "Series One",
       pageCount: 4,
-      contentHash: "hash-p2",
+      sourceUrl: "https://cdn/p2.png",
     });
 
     const res = await t("/library/favorite-pages/chapter/demo/s1/c1", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        pages: [{ contentHash: "hash-new" }, { contentHash: "hash-p2" }],
-      }),
+      body: JSON.stringify({ pages: ["https://cdn/new.png", "https://cdn/p2.png"] }),
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ indices: [1], repaired: 1, stale: 0 });
@@ -96,10 +94,9 @@ describe("embedded transport — page favorites", () => {
     const res = await put(t, "/library/favorite-pages/demo/s1/c1/0", {
       seriesTitle: "Series One",
       sourceUrl: "https://cdn.example/0.png",
-      contentHash: "hash-0",
     });
     const page = (await res.json()) as Record<string, unknown>;
-    expect(page).toMatchObject({ sourceUrl: "https://cdn.example/0.png", contentHash: "hash-0" });
+    expect(page).toMatchObject({ sourceUrl: "https://cdn.example/0.png" });
     // Nothing thumbnail-shaped survived the redesign.
     expect(page.hasThumb).toBeUndefined();
     expect(page.thumbFile).toBeUndefined();

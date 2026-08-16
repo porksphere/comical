@@ -10,7 +10,7 @@
  */
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type FavoriteCollection, type FavoritePage, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
+import { activityKey, entryKey, parseFavoritePageId, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type FavoriteCollection, type FavoritePage, type FavoritePageScope, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -29,7 +29,6 @@ export class FileLibraryStore implements LibraryStore {
   private readingLogCache?: Map<string, HistoryItem>;
   private bridgePrefsCache?: Map<string, BridgePrefs>;
   private activityCache?: Map<string, ActivityItem>;
-  private favoritePagesCache?: Map<string, FavoritePage>;
   private favoriteCollectionsCache?: FavoriteCollection[];
 
   constructor(private readonly dir: string) {}
@@ -54,9 +53,6 @@ export class FileLibraryStore implements LibraryStore {
   }
   private get activityPath(): string {
     return join(this.dir, "activity.json");
-  }
-  private get favoritePagesPath(): string {
-    return join(this.dir, "favorite-pages.json");
   }
   private get favoriteCollectionsPath(): string {
     return join(this.dir, "favorite-collections.json");
@@ -248,30 +244,112 @@ export class FileLibraryStore implements LibraryStore {
   }
 
   // ── Page favorites ────────────────────────────────────────────────────────────
+  // Sharded per series (`favorite-pages/{bridge:series}.json`), the same shape `progress/` and
+  // `details/` already use here — and for the same reason. Favorites are the one collection with no
+  // natural ceiling, and every flush rewrites a whole document: as ONE document, opening a chapter
+  // of a heavily-favorited library re-serialized every favorite the user had. Sharded, a write
+  // costs one series' favorites no matter how many the library holds, and the reader's paths
+  // (chapter open, reconcile) are naturally scoped to a single shard.
 
-  private async favoritePages(): Promise<Map<string, FavoritePage>> {
-    if (!this.favoritePagesCache) {
-      const obj = await readJson<Record<string, FavoritePage>>(this.favoritePagesPath, {});
-      this.favoritePagesCache = new Map(Object.entries(obj));
+  private favoriteShards = new Map<string, Map<string, FavoritePage>>();
+  /** Set once every shard has been read, so an unscoped listing doesn't re-scan the directory. */
+  private allFavoriteShardsLoaded = false;
+
+  private get favoritesDir(): string {
+    return join(this.dir, "favorite-pages");
+  }
+  private favoriteShardPath(shard: string): string {
+    return join(this.favoritesDir, `${encodeURIComponent(shard)}.json`);
+  }
+  /** Which shard a favorite belongs to. Derivable from the id alone, which is what lets
+   *  `getFavoritePage` be a keyed lookup rather than a scan across shards. */
+  private static favoriteShardOf(page: { bridgeId: string; seriesId: string }): string {
+    return entryKey(page.bridgeId, page.seriesId);
+  }
+
+  private async favoriteShard(shard: string): Promise<Map<string, FavoritePage>> {
+    let map = this.favoriteShards.get(shard);
+    if (!map) {
+      const obj = await readJson<Record<string, FavoritePage>>(this.favoriteShardPath(shard), {});
+      map = new Map(Object.entries(obj));
+      this.favoriteShards.set(shard, map);
     }
-    return this.favoritePagesCache;
+    return map;
   }
 
-  private async flushFavoritePages(): Promise<void> {
-    const obj = Object.fromEntries((await this.favoritePages()).entries());
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.favoritePagesPath, JSON.stringify(obj, null, 2), "utf8");
+  /** Load every shard — only for genuinely cross-series work (the full grid, a collection cascade). */
+  private async allFavoriteShards(): Promise<Map<string, Map<string, FavoritePage>>> {
+    if (!this.allFavoriteShardsLoaded) {
+      let files: string[] = [];
+      try {
+        files = await readdir(this.favoritesDir);
+      } catch {
+        files = []; // never written to yet
+      }
+      for (const file of files) {
+        if (!file.endsWith(".json")) continue;
+        await this.favoriteShard(decodeURIComponent(file.slice(0, -".json".length)));
+      }
+      this.allFavoriteShardsLoaded = true;
+    }
+    return this.favoriteShards;
   }
 
-  async listFavoritePages(): Promise<FavoritePage[]> {
-    return [...(await this.favoritePages()).values()];
+  private async flushFavoriteShard(shard: string): Promise<void> {
+    const map = await this.favoriteShard(shard);
+    if (map.size === 0) {
+      await rm(this.favoriteShardPath(shard), { force: true });
+      return;
+    }
+    await mkdir(this.favoritesDir, { recursive: true });
+    await writeFile(this.favoriteShardPath(shard), JSON.stringify(Object.fromEntries(map), null, 2), "utf8");
   }
-  async putFavoritePage(page: FavoritePage): Promise<void> {
-    (await this.favoritePages()).set(page.id, page);
-    await this.flushFavoritePages();
+
+  async listFavoritePages(scope?: FavoritePageScope): Promise<FavoritePage[]> {
+    // A bridge+series scope names exactly one shard — the whole point of the layout. Anything
+    // broader has to consider every series.
+    const shards =
+      scope?.bridgeId !== undefined && scope.seriesId !== undefined
+        ? [await this.favoriteShard(entryKey(scope.bridgeId, scope.seriesId))]
+        : [...(await this.allFavoriteShards()).values()];
+    const out: FavoritePage[] = [];
+    for (const map of shards) {
+      for (const p of map.values()) {
+        if (scope?.bridgeId !== undefined && p.bridgeId !== scope.bridgeId) continue;
+        if (scope?.seriesId !== undefined && p.seriesId !== scope.seriesId) continue;
+        if (scope?.chapterId !== undefined && p.chapterId !== scope.chapterId) continue;
+        out.push(p);
+      }
+    }
+    return out;
   }
-  async deleteFavoritePage(id: string): Promise<void> {
-    if ((await this.favoritePages()).delete(id)) await this.flushFavoritePages();
+
+  async getFavoritePage(id: string): Promise<FavoritePage | undefined> {
+    const coord = parseFavoritePageId(id);
+    if (!coord) return undefined;
+    return (await this.favoriteShard(FileLibraryStore.favoriteShardOf(coord))).get(id);
+  }
+
+  /** One flush per SERIES touched — a reconcile repairs a chapter, so that is a single write. */
+  async putFavoritePages(pages: FavoritePage[]): Promise<void> {
+    const touched = new Set<string>();
+    for (const page of pages) {
+      const shard = FileLibraryStore.favoriteShardOf(page);
+      (await this.favoriteShard(shard)).set(page.id, page);
+      touched.add(shard);
+    }
+    for (const shard of touched) await this.flushFavoriteShard(shard);
+  }
+
+  async deleteFavoritePages(ids: string[]): Promise<void> {
+    const touched = new Set<string>();
+    for (const id of ids) {
+      const coord = parseFavoritePageId(id);
+      if (!coord) continue;
+      const shard = FileLibraryStore.favoriteShardOf(coord);
+      if ((await this.favoriteShard(shard)).delete(id)) touched.add(shard);
+    }
+    for (const shard of touched) await this.flushFavoriteShard(shard);
   }
 
   async listFavoriteCollections(): Promise<FavoriteCollection[]> {

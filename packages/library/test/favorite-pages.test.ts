@@ -15,6 +15,7 @@ import {
   UNCOLLECTED,
   type FavoritePageCoord,
   type FavoritePageSnapshot,
+  type LibraryStore,
 } from "../src/index.ts";
 
 const coord = (over: Partial<FavoritePageCoord> = {}): FavoritePageCoord => ({
@@ -109,14 +110,10 @@ describe("favoriting a page", () => {
     expect(again.collectionIds).toEqual([collection.id]);
   });
 
-  test("records the client-supplied content hash — the re-anchor key", async () => {
+  test("records the source URL — the re-anchor key", async () => {
     const { lib } = makeLibrary();
-    const page = await lib.favoritePage(coord(), {
-      seriesTitle: "S",
-      sourceUrl: "https://cdn.example/0.png",
-      contentHash: "abc123",
-    });
-    expect(page).toMatchObject({ sourceUrl: "https://cdn.example/0.png", contentHash: "abc123" });
+    const page = await lib.favoritePage(coord(), { seriesTitle: "S", sourceUrl: "https://cdn.example/0.png" });
+    expect(page.sourceUrl).toBe("https://cdn.example/0.png");
   });
 
   test("distinct pages of the same chapter are distinct favorites", async () => {
@@ -362,146 +359,119 @@ describe("independence from the library", () => {
  * chapters underneath it — a page inserted at the front shifts every index after it, a re-upload can
  * replace the chapter wholesale. `reconcileChapterFavorites` is what stops those favorites from
  * silently pointing at the wrong page.
+ *
+ * It is lazy and per-chapter on purpose: `pages` is the URL list the reader already fetched to
+ * render the chapter it just opened, so repairing costs no extra request and never touches the rest
+ * of the series.
  */
 describe("reconcileChapterFavorites", () => {
-  const p = (sourceUrl: string, contentHash?: string) => ({ sourceUrl, ...(contentHash && { contentHash }) });
+  /** Page 2 of a 4-page chapter. Callers pass a narrower snapshot to drop the URL signal. */
+  const WITH_URL: FavoritePageSnapshot = { seriesTitle: "S", pageCount: 4, sourceUrl: "https://cdn/p2.png" };
+  const NO_URL: FavoritePageSnapshot = { seriesTitle: "S", pageCount: 4 };
 
-  /** Page 2 of a 4-page chapter, with both re-anchor signals recorded. Callers pass a narrower
-   *  snapshot to test what happens when a signal is missing. */
-  const BOTH_SIGNALS: FavoritePageSnapshot = {
-    seriesTitle: "S",
-    pageCount: 4,
-    sourceUrl: "https://cdn/p2.png",
-    contentHash: "hash-p2",
-  };
-  const URL_ONLY: FavoritePageSnapshot = { seriesTitle: "S", pageCount: 4, sourceUrl: "https://cdn/p2.png" };
-  const NO_SIGNALS: FavoritePageSnapshot = { seriesTitle: "S", pageCount: 4 };
-
-  async function seedFavorite(snap: FavoritePageSnapshot = BOTH_SIGNALS) {
+  async function seedFavorite(snap: FavoritePageSnapshot = WITH_URL) {
     const { lib } = makeLibrary();
     const fav = await lib.favoritePage(coord({ pageIndex: 2 }), snap);
     return { lib, fav };
   }
 
+  const CHAPTER = ["https://cdn/p0.png", "https://cdn/p1.png", "https://cdn/p2.png", "https://cdn/p3.png"];
+
   test("an unchanged chapter verifies every favorite and repairs nothing", async () => {
     const { lib } = await seedFavorite();
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
-      p("https://cdn/p0.png", "hash-p0"),
-      p("https://cdn/p1.png", "hash-p1"),
-      p("https://cdn/p2.png", "hash-p2"),
-      p("https://cdn/p3.png", "hash-p3"),
-    ]);
-    expect(res).toEqual({ indices: [2], repaired: 0, stale: 0 });
+    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", CHAPTER)).toEqual({
+      indices: [2],
+      repaired: 0,
+      stale: 0,
+    });
   });
 
-  test("a page inserted at the front shifts the favorite, and the hash relocates it", async () => {
+  test("a page inserted at the front shifts the favorite, and the URL relocates it", async () => {
     const { lib, fav } = await seedFavorite();
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
-      p("https://cdn/new.png", "hash-new"),
-      p("https://cdn/p0.png", "hash-p0"),
-      p("https://cdn/p1.png", "hash-p1"),
-      p("https://cdn/p2.png", "hash-p2"), // was index 2, now 3
-      p("https://cdn/p3.png", "hash-p3"),
-    ]);
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/new.png", ...CHAPTER]);
     expect(res).toEqual({ indices: [3], repaired: 1, stale: 0 });
 
     // The record is RE-KEYED, because the id is derived from the coordinates.
     expect(await lib.getFavoritePage(fav.id)).toBeUndefined();
-    const moved = await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 3 })));
-    expect(moved).toMatchObject({ pageIndex: 3, pageCount: 5, contentHash: "hash-p2" });
+    expect(await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 3 })))).toMatchObject({
+      pageIndex: 3,
+      pageCount: 5,
+    });
   });
 
-  test("the hash relocates a page even when its URL has rotted", async () => {
+  test("a page removed from the front shifts the favorite the other way", async () => {
     const { lib } = await seedFavorite();
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
-      p("https://cdn2/signed?a=1", "hash-p0"),
-      p("https://cdn2/signed?a=2", "hash-p2"), // same bytes, brand new URL, moved to index 1
-      p("https://cdn2/signed?a=3", "hash-p3"),
-    ]);
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", CHAPTER.slice(1));
     expect(res).toEqual({ indices: [1], repaired: 1, stale: 0 });
-    // The rotted URL is refreshed from the fresh list, so the cheap signal works next time too.
-    expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 1 }))))?.sourceUrl).toBe(
-      "https://cdn2/signed?a=2",
-    );
   });
 
-  test("without a hash, a matching URL still relocates the favorite for free", async () => {
-    const { lib } = await seedFavorite(URL_ONLY);
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
-      p("https://cdn/new.png"),
-      p("https://cdn/p0.png"),
-      p("https://cdn/p1.png"),
-      p("https://cdn/p2.png"),
-    ]);
-    expect(res).toEqual({ indices: [3], repaired: 1, stale: 0 });
-  });
-
-  test("a favorite with no hash adopts one, so the NEXT reconcile survives URL rot", async () => {
-    const { lib } = await seedFavorite(URL_ONLY);
-    await lib.reconcileChapterFavorites("demo", "s1", "c1", [
-      p("https://cdn/p0.png", "hash-p0"),
-      p("https://cdn/p1.png", "hash-p1"),
-      p("https://cdn/p2.png", "hash-p2"),
-      p("https://cdn/p3.png", "hash-p3"),
-    ]);
-    expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 2 }))))?.contentHash).toBe("hash-p2");
-  });
-
-  test("a re-encoded re-upload can't be matched — the favorite goes stale, not deleted", async () => {
+  test("a rotated URL can't be matched — the favorite goes stale, not deleted", async () => {
     const { lib, fav } = await seedFavorite();
     const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
-      p("https://cdn/v2-p0.png", "hash-v2-p0"),
-      p("https://cdn/v2-p1.png", "hash-v2-p1"),
-      p("https://cdn/v2-p2.png", "hash-v2-p2"), // same page, re-encoded → different bytes
+      "https://cdn2/signed?a=1",
+      "https://cdn2/signed?a=2",
+      "https://cdn2/signed?a=3",
     ]);
     expect(res).toEqual({ indices: [], repaired: 0, stale: 1 });
 
     // Kept, with its snapshot intact — the user favorited it deliberately.
-    const kept = await lib.getFavoritePage(fav.id);
-    expect(kept).toMatchObject({ stale: true, seriesTitle: "S" });
+    expect(await lib.getFavoritePage(fav.id)).toMatchObject({ stale: true, seriesTitle: "S" });
     expect(await lib.getFavoritePages()).toHaveLength(1);
   });
 
   test("a stale favorite stops being reported as a favorited index", async () => {
     const { lib } = await seedFavorite();
-    await lib.reconcileChapterFavorites("demo", "s1", "c1", [p("https://cdn/other.png", "hash-other")]);
+    await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/other.png"]);
     // The reader must not highlight or navigate to a page we can't vouch for.
     expect(await lib.getFavoritePageIndices("demo", "s1", "c1")).toEqual([]);
   });
 
   test("a source reverting a bad re-upload heals the favorite", async () => {
     const { lib, fav } = await seedFavorite();
-    await lib.reconcileChapterFavorites("demo", "s1", "c1", [p("https://cdn/v2.png", "hash-v2")]);
+    await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/v2.png"]);
     expect((await lib.getFavoritePage(fav.id))?.stale).toBe(true);
 
-    await lib.reconcileChapterFavorites("demo", "s1", "c1", [
-      p("https://cdn/p0.png", "hash-p0"),
-      p("https://cdn/p1.png", "hash-p1"),
-      p("https://cdn/p2.png", "hash-p2"),
-    ]);
-    const healed = await lib.getFavoritePage(fav.id);
-    expect(healed?.stale).toBeUndefined();
+    await lib.reconcileChapterFavorites("demo", "s1", "c1", CHAPTER);
+    expect((await lib.getFavoritePage(fav.id))?.stale).toBeUndefined();
     expect(await lib.getFavoritePageIndices("demo", "s1", "c1")).toEqual([2]);
+  });
+
+  test("a relocated favorite adopts its fresh URL, so it survives moving again", async () => {
+    const { lib } = await seedFavorite();
+    await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/new.png", ...CHAPTER]);
+    expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 3 }))))?.sourceUrl).toBe(
+      "https://cdn/p2.png",
+    );
+    // Shift once more; the favorite is still matchable.
+    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [
+      "https://cdn/newer.png",
+      "https://cdn/new.png",
+      ...CHAPTER,
+    ]);
+    expect(res).toEqual({ indices: [4], repaired: 1, stale: 0 });
   });
 
   test("an empty page list is treated as a failed fetch, never as an emptied chapter", async () => {
     // Trusting it would mark the user's entire chapter stale on one transient network error.
     const { lib } = await seedFavorite();
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", []);
-    expect(res).toEqual({ indices: [2], repaired: 0, stale: 0 });
+    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", [])).toEqual({
+      indices: [2],
+      repaired: 0,
+      stale: 0,
+    });
     expect((await lib.getFavoritePage(favoritePageId(coord({ pageIndex: 2 }))))?.stale).toBeUndefined();
   });
 
-  test("with no signals at all, the index is trusted only while the page count holds", async () => {
-    const { lib } = await seedFavorite(NO_SIGNALS);
+  test("with no URL at all, the index is trusted only while the page count holds", async () => {
+    const { lib } = await seedFavorite(NO_URL);
     // Same length → assume unchanged.
-    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", [{}, {}, {}, {}])).toEqual({
+    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", ["", "", "", ""])).toEqual({
       indices: [2],
       repaired: 0,
       stale: 0,
     });
     // Different length → "unknown" must not read as "unchanged".
-    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", [{}, {}])).toEqual({
+    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", ["", ""])).toEqual({
       indices: [],
       repaired: 0,
       stale: 1,
@@ -512,15 +482,15 @@ describe("reconcileChapterFavorites", () => {
     const { lib } = await seedFavorite();
     const other = await lib.favoritePage(coord({ chapterId: "c2", pageIndex: 0 }), {
       seriesTitle: "S",
-      contentHash: "hash-other",
+      sourceUrl: "https://cdn/c2-p0.png",
     });
-    await lib.reconcileChapterFavorites("demo", "s1", "c1", [p("https://cdn/x.png", "hash-x")]);
+    await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/x.png"]);
     expect((await lib.getFavoritePage(other.id))?.stale).toBeUndefined();
   });
 
   test("reconciling a chapter with no favorites is a no-op", async () => {
     const { lib } = makeLibrary();
-    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", [p("https://cdn/p0.png")])).toEqual({
+    expect(await lib.reconcileChapterFavorites("demo", "s1", "c1", CHAPTER)).toEqual({
       indices: [],
       repaired: 0,
       stale: 0,
@@ -533,17 +503,145 @@ describe("reconcileChapterFavorites", () => {
     const { lib } = makeLibrary();
     const dupes = await lib.createFavoriteCollection("Dupes");
     const keep = await lib.createFavoriteCollection("Keep");
-    const a = await lib.favoritePage(coord({ pageIndex: 1 }), { seriesTitle: "S", contentHash: "same" });
-    const b = await lib.favoritePage(coord({ pageIndex: 2 }), { seriesTitle: "S", contentHash: "same" });
+    const a = await lib.favoritePage(coord({ pageIndex: 1 }), { seriesTitle: "S", sourceUrl: "https://cdn/same.png" });
+    const b = await lib.favoritePage(coord({ pageIndex: 2 }), { seriesTitle: "S", sourceUrl: "https://cdn/same.png" });
     await lib.setFavoritePageCollections(a.id, [dupes.id]);
     await lib.setFavoritePageCollections(b.id, [keep.id]);
 
-    const res = await lib.reconcileChapterFavorites("demo", "s1", "c1", [p("https://cdn/p0.png", "same")]);
-    expect(res.indices).toEqual([0]);
+    expect((await lib.reconcileChapterFavorites("demo", "s1", "c1", ["https://cdn/same.png"])).indices).toEqual([0]);
 
     const merged = await lib.getFavoritePages();
     expect(merged).toHaveLength(1);
     expect(merged[0]!.collectionIds.sort()).toEqual([dupes.id, keep.id].sort());
     expect(merged[0]!.favoritedAt).toBe(1_000); // the earlier of the two
+  });
+});
+
+/**
+ * Scaling. Favorites are the one collection here with no natural ceiling, and a reader hits these
+ * paths every time a chapter opens. What matters is that the per-chapter work stays flat as the
+ * library grows — a store that loads or rewrites everything per call would not.
+ */
+describe("scaling — a chapter's cost is independent of library size", () => {
+  /** A store that counts what the service asks of it, and how wide each read was. */
+  function countingStore() {
+    const inner = new InMemoryLibraryStore();
+    const calls = { listAll: 0, listScoped: 0, get: 0, put: 0, del: 0, recordsRead: 0, recordsWritten: 0 };
+    const store = new Proxy(inner, {
+      get(t, prop, recv) {
+        if (prop === "listFavoritePages") {
+          return async (scope?: Parameters<typeof inner.listFavoritePages>[0]) => {
+            scope ? calls.listScoped++ : calls.listAll++;
+            const out = await inner.listFavoritePages(scope);
+            calls.recordsRead += out.length;
+            return out;
+          };
+        }
+        if (prop === "getFavoritePage") {
+          return async (id: string) => (calls.get++, inner.getFavoritePage(id));
+        }
+        if (prop === "putFavoritePages") {
+          return async (pages: Parameters<typeof inner.putFavoritePages>[0]) => {
+            calls.put++;
+            calls.recordsWritten += pages.length;
+            return inner.putFavoritePages(pages);
+          };
+        }
+        if (prop === "deleteFavoritePages") {
+          return async (ids: string[]) => (calls.del++, inner.deleteFavoritePages(ids));
+        }
+        return Reflect.get(t, prop, recv);
+      },
+    }) as LibraryStore;
+    return { store, calls };
+  }
+
+  /** `total` favorites spread over many chapters of one series, 5 per chapter. */
+  async function seedLibrary(lib: Library, total: number) {
+    for (let i = 0; i < total; i++) {
+      const chapterId = `c${Math.floor(i / 5)}`;
+      await lib.favoritePage(
+        { bridgeId: "demo", seriesId: "huge", chapterId, pageIndex: i % 5 },
+        { seriesTitle: "Huge", chapterName: chapterId, pageCount: 20, sourceUrl: `https://cdn/${chapterId}/${i % 5}.png` },
+      );
+    }
+  }
+
+  test("favoriting a page is a keyed lookup — it never lists the library", async () => {
+    const { store, calls } = countingStore();
+    const lib = new Library(store);
+    await seedLibrary(lib, 200);
+    // 200 favorites added: 200 keyed gets, 200 batched writes, and not one full listing.
+    expect(calls.get).toBe(200);
+    expect(calls.listAll).toBe(0);
+    expect(calls.recordsWritten).toBe(200);
+  });
+
+  test("opening a chapter reads only that chapter's favorites", async () => {
+    const { store, calls } = countingStore();
+    const lib = new Library(store);
+    await seedLibrary(lib, 500);
+    const before = { ...calls };
+
+    await lib.getFavoritePageIndices("demo", "huge", "c7");
+
+    expect(calls.listAll).toBe(before.listAll); // never the whole-library path
+    expect(calls.listScoped).toBe(before.listScoped + 1);
+    // 5 records touched out of 500 — the cost is the chapter, not the library.
+    expect(calls.recordsRead - before.recordsRead).toBe(5);
+  });
+
+  test("reconciling a chapter costs one scoped read and at most two batched writes", async () => {
+    const { store, calls } = countingStore();
+    const lib = new Library(store);
+    await seedLibrary(lib, 500);
+    const before = { ...calls };
+
+    // Shift the chapter by one page so every favorite in it needs repairing.
+    const pages = ["https://cdn/c7/new.png", ...Array.from({ length: 5 }, (_, i) => `https://cdn/c7/${i}.png`)];
+    const res = await lib.reconcileChapterFavorites("demo", "huge", "c7", pages);
+    expect(res.repaired).toBe(5);
+
+    expect(calls.listAll).toBe(before.listAll); // still never the whole library
+    expect(calls.listScoped).toBe(before.listScoped + 1);
+    expect(calls.recordsRead - before.recordsRead).toBe(5);
+    // Five repairs, but ONE delete call and ONE put call — a store rewrites its whole document per
+    // call, so a write per record would re-serialize all 500 favorites five times over.
+    expect(calls.del - before.del).toBe(1);
+    expect(calls.put - before.put).toBe(1);
+  });
+
+  test("a per-series grid reads only that series' favorites", async () => {
+    const { store, calls } = countingStore();
+    const lib = new Library(store);
+    await seedLibrary(lib, 100);
+    await lib.favoritePage(
+      { bridgeId: "demo", seriesId: "other", chapterId: "c0", pageIndex: 0 },
+      { seriesTitle: "Other" },
+    );
+    const before = { ...calls };
+
+    const got = await lib.getFavoritePages({ series: "demo:other" });
+    expect(got).toHaveLength(1);
+    expect(calls.listAll).toBe(before.listAll);
+    expect(calls.recordsRead - before.recordsRead).toBe(1);
+  });
+
+  test("deleting a collection cascades in a single batched write", async () => {
+    const { store, calls } = countingStore();
+    const lib = new Library(store);
+    await seedLibrary(lib, 50);
+    const collection = await lib.createFavoriteCollection("Panels");
+    for (const page of (await lib.getFavoritePages()).slice(0, 20)) {
+      await lib.setFavoritePageCollections(page.id, [collection.id]);
+    }
+    const before = { ...calls };
+
+    await lib.deleteFavoriteCollection(collection.id);
+
+    // 20 members stripped, one write. (The full listing here is inherent — a cascade must consider
+    // every favorite, since collections span series.)
+    expect(calls.put - before.put).toBe(1);
+    expect(calls.recordsWritten - before.recordsWritten).toBe(20);
   });
 });

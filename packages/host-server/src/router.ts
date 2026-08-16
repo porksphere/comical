@@ -30,7 +30,7 @@ import type {
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
-import { entryKey, type ChapterPageRef, type FavoritePageCoord, type FavoritePagesQuery, type Library } from "@comical/library";
+import { entryKey, type FavoritePageCoord, type FavoritePagesQuery, type Library } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
@@ -860,20 +860,22 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       ),
     );
 
-    // Re-anchor a chapter's favorites against a freshly-fetched page list, returning the indices to
-    // trust. The reader already holds that list when a chapter opens, so this repairs favorites the
-    // source shifted (a page inserted ahead of them) at no extra fetch — and reports the ones it
-    // could not locate instead of letting them silently point at the wrong page. Same request the
-    // GET above serves, so a reader that has the page list should POST here instead.
+    // Re-anchor ONE chapter's favorites against its freshly-fetched page list, returning the indices
+    // to trust. The reader already holds that list when a chapter opens, so this repairs favorites
+    // the source shifted (a page inserted ahead of them) with no extra fetch — and reports the ones
+    // it could not locate instead of letting them silently point at the wrong page.
+    //
+    // Lazy and per-chapter by design: a wrong `pageIndex` only shows up when a chapter is open or a
+    // grid tile is tapped, so there is never a reason to sweep a series. Opening one chapter of a
+    // 2,000-chapter series touches that chapter's favorites and nothing else. Same answer the GET
+    // above gives, so a reader holding the page list should POST here instead of GETting.
     app.post("/library/favorite-pages/chapter/:bridgeId/:seriesId/:chapterId", async (c) => {
-      const b = await body<{ pages?: ChapterPageRef[] }>(c);
+      const b = await body<{ pages?: unknown }>(c);
       if (!Array.isArray(b?.pages)) return c.json({ error: "pages is required" }, 400);
-      // Position in the array is the page index; tolerate junk entries rather than rejecting a
-      // whole chapter's reconcile over one odd element.
-      const pages: ChapterPageRef[] = b.pages.map((p) => ({
-        ...(typeof p?.sourceUrl === "string" && { sourceUrl: p.sourceUrl }),
-        ...(typeof p?.contentHash === "string" && { contentHash: p.contentHash }),
-      }));
+      // A bare URL array: position IS the page index, which keeps the body small enough to stay
+      // cheap even for a chapterless series carrying thousands of pages. Non-strings become "" —
+      // one odd element must not reject a whole chapter's reconcile, and the LENGTH still counts.
+      const pages: string[] = b.pages.map((p) => (typeof p === "string" ? p : ""));
       return c.json(
         await lib.reconcileChapterFavorites(
           c.req.param("bridgeId"),
@@ -928,14 +930,13 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.put("/library/favorite-pages/:bridgeId/:seriesId/:chapterId/:pageIndex", async (c) => {
       const coord = favoriteCoord(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("chapterId"), c.req.param("pageIndex"));
       if (!coord) return c.json({ error: "pageIndex must be a non-negative integer" }, 400);
-      const b = await body<{ seriesTitle?: string; chapterName?: string; pageCount?: number; sourceUrl?: string; contentHash?: string }>(c);
+      const b = await body<{ seriesTitle?: string; chapterName?: string; pageCount?: number; sourceUrl?: string }>(c);
       if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
       const page = await lib.favoritePage(coord, {
         seriesTitle: b.seriesTitle,
         ...(b.chapterName !== undefined && { chapterName: b.chapterName }),
         ...(b.pageCount !== undefined && { pageCount: b.pageCount }),
         ...(b.sourceUrl !== undefined && { sourceUrl: b.sourceUrl }),
-        ...(b.contentHash !== undefined && { contentHash: b.contentHash }),
       });
       return c.json(page);
     });

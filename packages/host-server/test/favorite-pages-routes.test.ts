@@ -5,8 +5,8 @@
  * bridge-account per-series `favorites` capability under `/bridges/:id/favorites`, which is why they
  * live under `/library` — a fact the "namespaces stay separate" test below pins down.
  *
- * No page bytes are stored anywhere: a favorite is coordinates plus a display snapshot plus the two
- * re-anchor signals (`sourceUrl`, `contentHash`) that let a drifted chapter be repaired.
+ * No page bytes are stored anywhere: a favorite is coordinates plus a display snapshot plus the
+ * `sourceUrl` that lets a drifted chapter be repaired.
  */
 import { rmSync } from "node:fs";
 import { join } from "node:path";
@@ -43,7 +43,6 @@ interface FavoriteBody {
   chapterName?: string;
   pageCount?: number;
   sourceUrl?: string;
-  contentHash?: string;
   stale?: boolean;
   favoritedAt: number;
   collectionIds: string[];
@@ -88,13 +87,12 @@ afterAll(() => {
 });
 
 describe("favoriting pages", () => {
-  test("PUT favorites a page with both re-anchor signals, DELETE removes it", async () => {
+  test("PUT favorites a page with its re-anchor URL, DELETE removes it", async () => {
     const put = await send("PUT", "/library/favorite-pages/demo/s1/c1/3", {
       seriesTitle: "Series One",
       chapterName: "Ch 1",
       pageCount: 20,
       sourceUrl: "https://cdn.example/3.png",
-      contentHash: "sha256-of-page-3",
     });
     expect(put.status).toBe(200);
     expect(await json<FavoriteBody>(put)).toMatchObject({
@@ -106,7 +104,6 @@ describe("favoriting pages", () => {
       chapterName: "Ch 1",
       pageCount: 20,
       sourceUrl: "https://cdn.example/3.png",
-      contentHash: "sha256-of-page-3",
       collectionIds: [],
     });
 
@@ -192,23 +189,16 @@ describe("chapter indices route", () => {
 });
 
 describe("reconcile route — chapter drift", () => {
-  const p = (sourceUrl: string, contentHash: string) => ({ sourceUrl, contentHash });
-
   test("repairs a shifted favorite and returns the indices to trust", async () => {
     await send("PUT", "/library/favorite-pages/demo/drift/c1/2", {
       seriesTitle: "Drifty",
       pageCount: 4,
       sourceUrl: "https://cdn/p2.png",
-      contentHash: "hash-p2",
     });
 
+    // A bare URL array — position is the page index.
     const res = await send("POST", "/library/favorite-pages/chapter/demo/drift/c1", {
-      pages: [
-        p("https://cdn/new.png", "hash-new"),
-        p("https://cdn/p0.png", "hash-p0"),
-        p("https://cdn/p1.png", "hash-p1"),
-        p("https://cdn/p2.png", "hash-p2"),
-      ],
+      pages: ["https://cdn/new.png", "https://cdn/p0.png", "https://cdn/p1.png", "https://cdn/p2.png"],
     });
     expect(res.status).toBe(200);
     expect(await json<ReconcileBody>(res)).toEqual({ indices: [3], repaired: 1, stale: 0 });
@@ -222,12 +212,12 @@ describe("reconcile route — chapter drift", () => {
     await send("PUT", "/library/favorite-pages/demo/gone/c1/1", {
       seriesTitle: "Replaced",
       pageCount: 3,
-      contentHash: "hash-old",
+      sourceUrl: "https://cdn/old-1.png",
     });
 
     const res = await json<ReconcileBody>(
       await send("POST", "/library/favorite-pages/chapter/demo/gone/c1", {
-        pages: [p("https://cdn/v2-0.png", "hash-v2-0"), p("https://cdn/v2-1.png", "hash-v2-1")],
+        pages: ["https://cdn/v2-0.png", "https://cdn/v2-1.png"],
       }),
     );
     expect(res).toEqual({ indices: [], repaired: 0, stale: 1 });
@@ -252,9 +242,10 @@ describe("reconcile route — chapter drift", () => {
   test("requires a pages array, and tolerates junk entries within it", async () => {
     expect((await send("POST", "/library/favorite-pages/chapter/demo/s1/c1", {})).status).toBe(400);
     expect((await send("POST", "/library/favorite-pages/chapter/demo/s1/c1", { pages: "nope" })).status).toBe(400);
-    // One odd element must not reject an entire chapter's reconcile.
+    // One odd element must not reject an entire chapter's reconcile — non-strings become "",
+    // which still counts toward the length.
     const ok = await send("POST", "/library/favorite-pages/chapter/demo/s1/c1", {
-      pages: [null, { sourceUrl: 5 }, { sourceUrl: "https://cdn/ok.png" }],
+      pages: [null, 5, "https://cdn/ok.png"],
     });
     expect(ok.status).toBe(200);
   });
@@ -365,7 +356,6 @@ describe("listing", () => {
     await send("PUT", "/library/favorite-pages/demo/s1/c7/0", {
       seriesTitle: "S",
       sourceUrl: "https://cdn.example/7.png",
-      contentHash: "hash-7",
     });
     const after = await json<{ diskBytes: number }>(await get("/library/usage"));
     // A JSON record, not a page image: kilobytes at most, never the hundreds of KB a page runs to.
