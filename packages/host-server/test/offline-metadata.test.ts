@@ -89,6 +89,42 @@ describe("cover bytes", () => {
     expect(existsSync(join(COVERS_DIR, "example", "sherlock.png"))).toBe(false);
   });
 
+  /**
+   * The cover blob's path lives in the offline detail doc, which the removal cascade deletes — so
+   * every route that can zero a series has to read the pointer BEFORE removing, or the blob is
+   * stranded on disk with nothing left referencing it. Since the library dissolved into
+   * collections, two membership routes can do that as well as the explicit DELETE.
+   */
+  test("un-filing a series from its last collection unlinks the cover too", async () => {
+    const shelf = (await (await post("/library/collections", { name: "Shelf" })).json()) as { id: string };
+    await put("/library/collected/series/example/jekyll", {
+      seriesTitle: "Jekyll",
+      thumbnailUrl: `${fixtureUrl}/img/jekyll-cover.png`,
+      collectionIds: [shelf.id],
+    });
+    expect((await waitForOk(() => get("/library/collected/series/example/jekyll/cover"))).ok).toBe(true);
+    expect(existsSync(join(COVERS_DIR, "example", "jekyll.png"))).toBe(true);
+
+    const res = await put("/library/collected/series/example/jekyll/collections", { collectionIds: [] });
+    expect(await res.json()).toEqual({ removed: true });
+    expect(existsSync(join(COVERS_DIR, "example", "jekyll.png"))).toBe(false);
+  });
+
+  test("deleting a series' last collection unlinks the cover too", async () => {
+    const shelf = (await (await post("/library/collections", { name: "Shelf 2" })).json()) as { id: string };
+    await put("/library/collected/series/example/frankenstein", {
+      seriesTitle: "Frankenstein",
+      thumbnailUrl: `${fixtureUrl}/img/frankenstein-cover.png`,
+      collectionIds: [shelf.id],
+    });
+    expect((await waitForOk(() => get("/library/collected/series/example/frankenstein/cover"))).ok).toBe(true);
+    expect(existsSync(join(COVERS_DIR, "example", "frankenstein.png"))).toBe(true);
+
+    await fetch(`${baseUrl}/library/collections/${shelf.id}`, { method: "DELETE" });
+    expect((await get("/library/collected/series/example/frankenstein/cover")).status).toBe(404);
+    expect(existsSync(join(COVERS_DIR, "example", "frankenstein.png"))).toBe(false);
+  });
+
   test("a changed cover URL re-captures; an unchanged one doesn't", async () => {
     const key = "example:moby-dick";
     const urlA = `${fixtureUrl}/img/moby-cover-a.png`;

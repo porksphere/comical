@@ -131,3 +131,20 @@ Chapter re-anchoring rides inside `syncChapters`, which only runs for library se
 favorited on a series never added to the library rots silently if the source re-uploads it. Accepted
 in the collections plan; the fix, if ever needed, is a reconcile-style route the app calls with a
 fresh chapter list when it happens to have one.
+
+
+## 8. Tracker links outlive the series they belong to
+
+`removeSeries` drops progress, activity, the offline detail and chapter caches, and the group
+membership — but not the series' tracker links. That was already true when removal meant "remove
+from library"; the library dissolution just makes it easier to reach, since un-filing a series from
+its last collection now runs the same cascade.
+
+Left as-is deliberately: a link is a mapping between a series and an external id, and re-collecting
+the series restores it intact. Dropping it would silently discard the one piece of state the user
+cannot re-derive locally, in exchange for tidying a document nothing reads while the series is gone.
+
+Revisit if orphaned links ever become visible — a tracker pull that surfaces a link with no series
+behind it, or a storage figure that counts them. The fix is one `deleteTrackerLink` loop inside
+`removeSeries`; the decision to make first is whether a re-collect should be able to get the link
+back.

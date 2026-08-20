@@ -33,14 +33,16 @@ and carries no collision.
    collection item already carried** (two snapshots, free to drift) plus tracking machinery plus an
    implicit membership bit. So `CollectionSeriesItem` **absorbs** the machinery — `knownChapters`,
    `chaptersSyncedAt`, `revision`, `lastRead*`, `seriesGroupId`, `externalIds` — and `LibraryEntry`,
-   `entries.json`, `addSeries`/`removeSeries`/`isInLibrary` are deleted.
+   `entries.json` and `addSeries`/`isInLibrary` are deleted (`removeSeries` survives as the
+   cascade helper every zeroing path routes through).
    **"In the library" := a series item exists**, which under pure collections means ≥1 membership
    (a fresh item may be transiently uncollected until its first filing). The "default" collection an
    app files into is app policy with zero core support, exactly like the reader's heart collection.
    Satellite docs (progress, cached detail/chapters, tracker links, activity) stay keyed by
-   `(bridge, series)`; only their lifecycle re-hooks from the entry to the series item.
+   `(bridge, series)`; only their lifecycle re-hooks from the entry to the series item. Tracker
+   links are the one exception — they survive removal, as they always have (followups §8).
    **The edge to accept:** removing a series from its LAST collection is removing it from the
-   library — progress, resume, tracker links, offline cache and cover all cascade, exactly as
+   library — progress, resume, activity, offline cache and cover all cascade, exactly as
    remove-from-library does today, but now reachable by unchecking a box. Core performs the cascade
    on every path that can zero a series item (`collections: []`, collection delete, explicit
    delete); the app should confirm before the last-membership removal of a series.
