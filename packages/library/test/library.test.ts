@@ -4,6 +4,8 @@ import type { Chapter } from "@comical/contract";
 import { entryKey, InMemoryLibraryStore, Library, normalizeTitle } from "../src/index.ts";
 
 const SERIES = { bridgeId: "demo", seriesId: "s1", title: "Series One" };
+const COORD = { bridgeId: SERIES.bridgeId, seriesId: SERIES.seriesId };
+const SNAP = { seriesTitle: SERIES.title };
 const KEY = entryKey(SERIES.bridgeId, SERIES.seriesId);
 
 /** A monotonic clock so history/order assertions are deterministic. */
@@ -28,26 +30,26 @@ function makeLibrary() {
 }
 
 describe("collection", () => {
-  test("add / isInLibrary / remove (clears progress)", async () => {
+  test("collect / isCollected / remove (clears progress)", async () => {
     const lib = makeLibrary();
-    expect(await lib.isInLibrary(KEY)).toBe(false);
-    await lib.addSeries(SERIES);
-    expect(await lib.isInLibrary(KEY)).toBe(true);
+    expect(await lib.isCollected(KEY)).toBe(false);
+    await lib.collectSeries(COORD, SNAP);
+    expect(await lib.isCollected(KEY)).toBe(true);
 
     await lib.markRead(KEY, "c1", true);
     expect(await lib.getProgress(KEY)).toHaveLength(1);
 
     await lib.removeSeries(KEY);
-    expect(await lib.isInLibrary(KEY)).toBe(false);
+    expect(await lib.isCollected(KEY)).toBe(false);
     expect(await lib.getProgress(KEY)).toHaveLength(0);
   });
 
-  test("re-adding keeps the original addedAt but refreshes title", async () => {
+  test("re-collecting keeps the original collectedAt but refreshes the title", async () => {
     const lib = makeLibrary();
-    const first = await lib.addSeries(SERIES);
-    const again = await lib.addSeries({ ...SERIES, title: "Renamed" });
-    expect(again.entry.addedAt).toBe(first.entry.addedAt);
-    expect(again.entry.title).toBe("Renamed");
+    const first = await lib.collectSeries(COORD, SNAP);
+    const again = await lib.collectSeries(COORD, { seriesTitle: "Renamed" });
+    expect(again.item.collectedAt).toBe(first.item.collectedAt);
+    expect(again.item.seriesTitle).toBe("Renamed");
   });
 });
 
@@ -57,7 +59,7 @@ describe("offline metadata cache", () => {
     const info = { id: "s1", title: "Series One", description: "A tale.", author: "A. Author", genres: ["Fantasy"] };
 
     await lib.cacheSeriesDetail(KEY, info); // not in library yet
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     expect(await lib.getCachedDetail(KEY)).toBeUndefined();
 
     await lib.cacheSeriesDetail(KEY, info);
@@ -68,7 +70,7 @@ describe("offline metadata cache", () => {
 
   test("syncChapters writes the full renderable chapter list through to the cache", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
 
     const cached = await lib.getCachedChapters(KEY);
@@ -78,7 +80,7 @@ describe("offline metadata cache", () => {
 
   test("a detail refresh preserves the coverFile pointer; setCachedCover records it", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One" });
 
     await lib.setCachedCover(KEY, "demo/s1.jpg");
@@ -93,7 +95,7 @@ describe("offline metadata cache", () => {
 
   test("setCachedCover records the source URL; cacheSeriesDetail preserves both cover fields", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One" });
     await lib.setCachedCover(KEY, "demo/s1.jpg", "https://cdn.example/cover-v1.jpg");
 
@@ -105,7 +107,7 @@ describe("offline metadata cache", () => {
 
   test("refreshSnapshot reconciles changed display fields and merges externalIds", async () => {
     const lib = makeLibrary();
-    await lib.addSeries({ ...SERIES, title: "Old Title", author: "Old Author", externalIds: { anilist: 1 } });
+    await lib.collectSeries(COORD, { seriesTitle: "Old Title", author: "Old Author", externalIds: { anilist: 1 } });
 
     await lib.refreshSnapshot(KEY, {
       id: "s1",
@@ -114,8 +116,8 @@ describe("offline metadata cache", () => {
       author: "New Author",
       externalIds: { mal: 42 },
     });
-    const entry = await lib.getEntry(KEY);
-    expect(entry?.title).toBe("New Title");
+    const entry = await lib.getSeries(KEY);
+    expect(entry?.seriesTitle).toBe("New Title");
     expect(entry?.thumbnailUrl).toBe("https://cdn.example/new-cover.jpg");
     expect(entry?.author).toBe("New Author");
     expect(entry?.externalIds).toEqual({ anilist: 1, mal: 42 }); // merged, never removed
@@ -123,26 +125,26 @@ describe("offline metadata cache", () => {
 
   test("refreshSnapshot is a no-op when nothing changed (updatedAt untouched) or not in library", async () => {
     const lib = makeLibrary();
-    await lib.addSeries({ ...SERIES, author: "A. Author" });
-    const before = await lib.getEntry(KEY);
+    await lib.collectSeries(COORD, { ...SNAP, author: "A. Author" });
+    const before = await lib.getSeries(KEY);
 
     await lib.refreshSnapshot(KEY, { id: "s1", title: SERIES.title, author: "A. Author" });
-    expect((await lib.getEntry(KEY))?.updatedAt).toBe(before!.updatedAt);
+    expect((await lib.getSeries(KEY))?.updatedAt).toBe(before!.updatedAt);
 
     await lib.refreshSnapshot("demo:not-added", { id: "x", title: "X" }); // must not throw or create
-    expect(await lib.getEntry("demo:not-added")).toBeUndefined();
+    expect(await lib.getSeries("demo:not-added")).toBeUndefined();
   });
 
   test("setCachedCover is a no-op without a detail doc", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.setCachedCover(KEY, "demo/s1.jpg");
     expect(await lib.getCachedDetail(KEY)).toBeUndefined();
   });
 
   test("removeSeries cascades away both cached docs", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One" });
     await lib.syncChapters(KEY, [ch("c1", 1)]);
 
@@ -154,7 +156,7 @@ describe("offline metadata cache", () => {
   test("a schema-drifted persisted doc is discarded, not served", async () => {
     const store = new InMemoryLibraryStore();
     const lib = new Library(store, { now: fakeClock() });
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     // Simulate an old/corrupt doc written by a previous version.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await store.putSeriesDetail(KEY, { info: { notATitle: true }, cachedAt: "soon" } as any);
@@ -169,7 +171,7 @@ describe("offline metadata cache", () => {
 describe("read state", () => {
   test("markReadUpTo marks all earlier chapters in reading order, regardless of input order", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     // Supplied newest-first, as many backends do.
     const chapters = [ch("c3", 3), ch("c2", 2), ch("c1", 1)];
     await lib.markReadUpTo(KEY, chapters, "c2");
@@ -179,7 +181,7 @@ describe("read state", () => {
 
   test("setProgress auto-marks read at the last page only", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
 
     await lib.setProgress(KEY, "c1", 5, 20);
     expect((await lib.getProgress(KEY)).find((p) => p.chapterId === "c1")?.read).toBe(false);
@@ -190,7 +192,7 @@ describe("read state", () => {
 
   test("getResume points at the last-read chapter and page", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.setProgress(KEY, "c1", 7, 20);
     expect(await lib.getResume(KEY)).toEqual({ chapterId: "c1", lastPage: 7 });
   });
@@ -199,10 +201,10 @@ describe("read state", () => {
 describe("reconcileRead (external pull)", () => {
   test("marks read flags WITHOUT moving the resume pointer or recency", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     // User is reading locally at chapter 1 (page 3, not finished → c1 not yet read).
     await lib.setProgress(KEY, "c1", 3, 20, "Ch 1");
-    const before = await lib.getEntry(KEY);
+    const before = await lib.getSeries(KEY);
 
     // A tracker says chapters 1–3 are read — reconcile them in.
     const marked = await lib.reconcileRead(KEY, [
@@ -212,7 +214,7 @@ describe("reconcileRead (external pull)", () => {
     ]);
     expect(marked.marked).toBe(3);
 
-    const after = await lib.getEntry(KEY);
+    const after = await lib.getSeries(KEY);
     // Resume + recency are sacred: even reconciling chapters AHEAD must not move the pointer.
     expect(after?.lastReadChapterId).toBe("c1");
     expect(after?.lastReadChapterId).toBe(before?.lastReadChapterId);
@@ -225,7 +227,7 @@ describe("reconcileRead (external pull)", () => {
 
   test("is union — never un-reads an already-read chapter", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.markRead(KEY, "c5", true, "Ch 5", 5);
     // A pull that doesn't include c5 must leave it read.
     await lib.reconcileRead(KEY, [{ chapterId: "c1", number: 1 }]);
@@ -235,7 +237,7 @@ describe("reconcileRead (external pull)", () => {
 
   test("maxReadChapterNumber returns the highest read number, decimals and out-of-order included", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.reconcileRead(KEY, [
       { chapterId: "c10", number: 10 },
       { chapterId: "c2", number: 2 },
@@ -246,18 +248,18 @@ describe("reconcileRead (external pull)", () => {
 
   test("maxReadChapterNumber falls back to the read count when no numbers are recorded", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.markRead(KEY, "c1", true); // no number supplied
     await lib.markRead(KEY, "c2", true);
     expect(await lib.maxReadChapterNumber(KEY)).toBe(2);
   });
 });
 
-describe("getEntryCompletion", () => {
+describe("getSeriesCompletion", () => {
   /** Add the series, sync `chapters`, cache a detail with `status`, and mark `read` chapters read. */
   async function seed(opts: { chapters: Chapter[]; status?: string; read?: Chapter[] }) {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, opts.chapters);
     if (opts.status) {
       await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", status: opts.status as never });
@@ -278,7 +280,7 @@ describe("getEntryCompletion", () => {
     const lib = await seed({ chapters, status: "completed", read: chapters });
 
     expect(await lib.maxReadChapterNumber(KEY)).toBe(65);
-    expect(await lib.getEntryCompletion(KEY)).toEqual({
+    expect(await lib.getSeriesCompletion(KEY)).toEqual({
       fullyRead: true,
       seriesStatus: "completed",
       seriesFinished: true,
@@ -288,7 +290,7 @@ describe("getEntryCompletion", () => {
   test("fully read but still ongoing is caught up, not finished", async () => {
     const chapters = [ch("c1", 1), ch("c2", 2)];
     const lib = await seed({ chapters, status: "ongoing", read: chapters });
-    expect(await lib.getEntryCompletion(KEY)).toEqual({
+    expect(await lib.getSeriesCompletion(KEY)).toEqual({
       fullyRead: true,
       seriesStatus: "ongoing",
       seriesFinished: false,
@@ -298,25 +300,25 @@ describe("getEntryCompletion", () => {
   test("hiatus is not finished — a paused series can resume", async () => {
     const chapters = [ch("c1", 1)];
     const lib = await seed({ chapters, status: "hiatus", read: chapters });
-    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: true, seriesFinished: false });
+    expect(await lib.getSeriesCompletion(KEY)).toMatchObject({ fullyRead: true, seriesFinished: false });
   });
 
   test("cancelled counts as finished — it will gain no more chapters", async () => {
     const chapters = [ch("c1", 1)];
     const lib = await seed({ chapters, status: "cancelled", read: chapters });
-    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: true, seriesFinished: true });
+    expect(await lib.getSeriesCompletion(KEY)).toMatchObject({ fullyRead: true, seriesFinished: true });
   });
 
   test("one unread chapter is not fully read", async () => {
     const chapters = [ch("c1", 1), ch("c2", 2)];
     const lib = await seed({ chapters, status: "completed", read: [chapters[0]!] });
-    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: false, seriesFinished: true });
+    expect(await lib.getSeriesCompletion(KEY)).toMatchObject({ fullyRead: false, seriesFinished: true });
   });
 
   test("no cached detail reads as unknown status, never finished", async () => {
     const chapters = [ch("c1", 1)];
     const lib = await seed({ chapters, read: chapters });
-    expect(await lib.getEntryCompletion(KEY)).toEqual({
+    expect(await lib.getSeriesCompletion(KEY)).toEqual({
       fullyRead: true,
       seriesStatus: "unknown",
       seriesFinished: false,
@@ -327,27 +329,27 @@ describe("getEntryCompletion", () => {
     // The dangerous false positive: a favourites import seeds an entry with an empty chapter list,
     // which would otherwise read as "nothing left to read" the instant it's added.
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", status: "completed" });
-    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: false, seriesFinished: true });
+    expect(await lib.getSeriesCompletion(KEY)).toMatchObject({ fullyRead: false, seriesFinished: true });
 
     // An explicit sync of an empty list is still not evidence of a finished read.
     await lib.syncChapters(KEY, []);
-    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: false });
+    expect(await lib.getSeriesCompletion(KEY)).toMatchObject({ fullyRead: false });
   });
 
   test("two scanlation copies of one chapter count as read when either is read", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [chg("a5", 5, "GroupA", "en"), chg("b5", 5, "GroupB", "en")]);
     await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", status: "completed" });
     await lib.markRead(KEY, "a5", true, "Ch 5", 5);
-    expect(await lib.getEntryCompletion(KEY)).toMatchObject({ fullyRead: true, seriesFinished: true });
+    expect(await lib.getSeriesCompletion(KEY)).toMatchObject({ fullyRead: true, seriesFinished: true });
   });
 
   test("a series not in the library resolves rather than throwing", async () => {
     const lib = makeLibrary();
-    expect(await lib.getEntryCompletion(KEY)).toEqual({
+    expect(await lib.getSeriesCompletion(KEY)).toEqual({
       fullyRead: false,
       seriesStatus: "unknown",
       seriesFinished: false,
@@ -358,7 +360,7 @@ describe("getEntryCompletion", () => {
 describe("new-chapter detection", () => {
   test("first sync establishes a baseline (no 'added'); later syncs report new chapters", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
 
     const first = await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
     expect(first.added).toHaveLength(0);
@@ -369,7 +371,7 @@ describe("new-chapter detection", () => {
 
   test("unreadCount = known chapters without a read record", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
     await lib.markRead(KEY, "c1", true);
 
@@ -383,7 +385,7 @@ describe("source revision (batch update-check baseline)", () => {
 
   test("syncChapters stores the revision the list came with", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)], { latestChapterId: "c1", chapterCount: 1 });
 
     expect((await entryOf(lib)).revision).toEqual({ latestChapterId: "c1", chapterCount: 1 });
@@ -391,7 +393,7 @@ describe("source revision (batch update-check baseline)", () => {
 
   test("a sync with no revision clears any stored one", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)], { latestChapterId: "c1" });
     // A later sync through a path that doesn't know the revision (a series-page refresh, a bridge
     // that dropped the capability): the stored fingerprint no longer describes what we hold, so
@@ -403,7 +405,7 @@ describe("source revision (batch update-check baseline)", () => {
 
   test("markChaptersUnchanged bumps the sync time without touching the chapter list", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)], { chapterCount: 2 });
     const before = await entryOf(lib);
 
@@ -418,7 +420,7 @@ describe("source revision (batch update-check baseline)", () => {
 
   test("markChaptersUnchanged records no activity — nothing happened", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)], { chapterCount: 1 });
     const before = (await lib.getActivity()).length;
 
@@ -430,7 +432,7 @@ describe("source revision (batch update-check baseline)", () => {
 describe("activity feed", () => {
   test("the baseline sync records nothing; later syncs record one item per new chapter", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
 
     await lib.syncChapters(KEY, [ch("c1", 1)]);
     expect(await lib.getActivity()).toHaveLength(0);
@@ -451,7 +453,7 @@ describe("activity feed", () => {
     // alone would flag every pre-existing chapter as "new" on the next fuller sync. Gating on
     // publish time keeps the back-catalogue (published before the series was added) out of the feed.
     const lib = makeLibrary();
-    await lib.addSeries(SERIES); // addedAt = 1001 (fakeClock)
+    await lib.collectSeries(COORD, SNAP); // addedAt = 1001 (fakeClock)
 
     await lib.syncChapters(KEY, []); // partial/empty baseline
     // Fuller sync arrives: many old chapters (published long before add) plus one fresh release.
@@ -467,7 +469,7 @@ describe("activity feed", () => {
 
   test("chapters without a publish date fall back to the diff (still detected)", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)]); // baseline (ch() omits publishedAt)
     const { added } = await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
     expect(added.map((c) => c.id)).toEqual(["c2"]);
@@ -476,7 +478,7 @@ describe("activity feed", () => {
 
   test("feed is newest-first across syncs", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)]); // baseline
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]); // c2 detected first
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]); // c3 detected later
@@ -485,7 +487,7 @@ describe("activity feed", () => {
 
   test("reading a chapter flips its item to read and drops the unread count", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)]);
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
     expect(await lib.unreadActivityCount()).toBe(2);
@@ -497,7 +499,7 @@ describe("activity feed", () => {
 
   test("unreadOnly and limit filter the feed", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)]);
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3), ch("c4", 4)]);
     await lib.markRead(KEY, "c2", true);
@@ -508,7 +510,7 @@ describe("activity feed", () => {
 
   test("removeSeries purges its activity; clearActivity empties the feed", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)]);
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
     expect(await lib.getActivity()).toHaveLength(1);
@@ -517,7 +519,7 @@ describe("activity feed", () => {
     expect(await lib.getActivity()).toHaveLength(0);
 
     // And clearActivity wipes whatever remains.
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)]);
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
     expect(await lib.getActivity()).toHaveLength(1);
@@ -527,8 +529,8 @@ describe("activity feed", () => {
 
   test("clearActivityForEntry drops one series' feed items, leaving others", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Series Two" });
+    await lib.collectSeries(COORD, SNAP);
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s2" }, { seriesTitle: "Series Two" });
     // s1 gets two new chapters (coalesced into one Activity row), s2 gets one.
     await lib.syncChapters(KEY, [ch("c1", 1)]);
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
@@ -544,8 +546,8 @@ describe("activity feed", () => {
 
   test("markActivityRead flips one series' feed items read without touching resume/history", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Series Two" });
+    await lib.collectSeries(COORD, SNAP);
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s2" }, { seriesTitle: "Series Two" });
     await lib.syncChapters(KEY, [ch("c1", 1)]);
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
     await lib.syncChapters(entryKey("demo", "s2"), [ch("b1", 1)]);
@@ -571,7 +573,7 @@ describe("activity feed", () => {
 
   test("since keeps only items detected strictly after the watermark", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)]); // baseline
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
     const c2At = (await lib.getActivity()).find((a) => a.chapterId === "c2")!.detectedAt;
@@ -588,7 +590,7 @@ describe("activity feed", () => {
 
   test("pruneActivity caps the feed at the newest N", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)]); // baseline
     for (let n = 2; n <= 5; n++) {
       // One sync per chapter so each item gets its own (monotonic) detectedAt.
@@ -607,7 +609,7 @@ describe("activity feed", () => {
 describe("logical chapters (multi-scanlator / multi-language)", () => {
   test("unreadCount collapses scanlator copies of one (number, language) but counts languages apart", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [
       chg("c1-a", 1, "A", "en"), // ch1 EN, group A
       chg("c1-b", 1, "B", "en"), // ch1 EN, group B — same logical chapter as c1-a
@@ -626,7 +628,7 @@ describe("logical chapters (multi-scanlator / multi-language)", () => {
 
   test("syncChapters: a new scanlator copy of a known chapter is not 'new'; a new number/language is", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [chg("c1-a", 1, "A", "en")]); // baseline
 
     const r1 = await lib.syncChapters(KEY, [
@@ -647,7 +649,7 @@ describe("logical chapters (multi-scanlator / multi-language)", () => {
 
   test("activity: reading any scanlator copy flips the logical chapter's feed item to read", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [chg("c1-a", 1, "A", "en")]); // baseline
     await lib.syncChapters(KEY, [
       chg("c1-a", 1, "A", "en"),
@@ -667,7 +669,7 @@ describe("logical chapters (multi-scanlator / multi-language)", () => {
 
   test("markReadUpTo stays within the target's language and covers every group of those chapters", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     const chapters = [
       chg("c1-en", 1, "A", "en"),
       chg("c1b-en", 1, "B", "en"), // second group of ch1 EN
@@ -681,7 +683,7 @@ describe("logical chapters (multi-scanlator / multi-language)", () => {
 
   test("a chapter with no number stays its own logical unit", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [
       { id: "x1", name: "Oneshot" },
       { id: "x2", name: "Extra" },
@@ -691,39 +693,13 @@ describe("logical chapters (multi-scanlator / multi-language)", () => {
     await lib.markRead(KEY, "x1", true);
     expect(await unread()).toBe(1);
   });
-
-  test("a legacy entry with no knownChapters field doesn't crash derivations", async () => {
-    // Pre-`knownChapters` documents (persisted before the schema change, never re-validated by the
-    // file store) lack the field entirely. Reading them must degrade gracefully, not throw.
-    const store = new InMemoryLibraryStore();
-    const lib = new Library(store, { now: fakeClock() });
-    await store.putEntry({
-      bridgeId: SERIES.bridgeId,
-      seriesId: SERIES.seriesId,
-      title: SERIES.title,
-      addedAt: 1,
-      updatedAt: 1,
-      // knownChapters intentionally omitted (legacy shape)
-    } as unknown as Parameters<typeof store.putEntry>[0]);
-
-    // toView / unread derivation tolerates the missing field.
-    const view = (await lib.getLibrary()).find((e) => e.seriesId === "s1");
-    expect(view?.unreadCount).toBe(0);
-
-    // A first sync then populates it and subsequent counts are logical.
-    await lib.syncChapters(KEY, [chg("c1-a", 1, "A", "en"), chg("c1-b", 1, "B", "en"), chg("c2-a", 2, "A", "en")]);
-    const unread = async () => (await lib.getLibrary()).find((e) => e.seriesId === "s1")?.unreadCount;
-    expect(await unread()).toBe(2); // (1,en) and (2,en)
-    await lib.markRead(KEY, "c1-a", true);
-    expect(await unread()).toBe(1);
-  });
 });
 
 describe("history", () => {
   test("getHistory is newest-first and one row per series", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Series Two" });
+    await lib.collectSeries(COORD, SNAP);
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s2" }, { seriesTitle: "Series Two" });
 
     await lib.markRead(entryKey("demo", "s2"), "x1", true);
     await lib.markRead(KEY, "c1", true); // s1 read more recently
@@ -737,16 +713,14 @@ describe("history", () => {
 describe("collections filter the library", () => {
   // The old library "lists" retired into collections: memberships live on SERIES favorite items,
   // and getLibrary reads through them. Filing a series = collectSeries + collection membership.
-  async function file(lib: Library, seriesId: string, collectionIds: string[]) {
-    const item = await lib.collectSeries({ bridgeId: "demo", seriesId }, { seriesTitle: seriesId });
-    await lib.setItemCollections(item.id, collectionIds);
-  }
+  const file = (lib: Library, seriesId: string, collectionIds: string[]) =>
+    lib.collectSeries({ bridgeId: "demo", seriesId }, { seriesTitle: seriesId, collectionIds });
 
   test("filing a series into a collection filters the library by it", async () => {
     const lib = makeLibrary();
     const reading = await lib.createCollection("Reading");
-    await lib.addSeries(SERIES);
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Two" });
+    await lib.collectSeries(COORD, SNAP);
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s2" }, { seriesTitle: "Two" });
     await file(lib, "s1", [reading.id]);
 
     const inReading = await lib.getLibrary({ collection: reading.id });
@@ -756,16 +730,18 @@ describe("collections filter the library", () => {
   test("deleting a collection un-files its members, and the empty series item is pruned", async () => {
     const lib = makeLibrary();
     const temp = await lib.createCollection("Temp");
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await file(lib, "s1", [temp.id]);
 
     await lib.deleteCollection(temp.id);
     expect(await lib.getCollections()).toHaveLength(0);
     expect(await lib.getLibrary({ collection: temp.id })).toHaveLength(0);
-    // A series item only existed as a member — uncollected, it is data litter and goes.
+    // The series existed only as a member, so losing its last one removes it outright — under
+    // pure collections there is no library entry left behind to hold it.
     expect(await lib.getCollectionItems({ type: "series" })).toHaveLength(0);
-    // The LIBRARY entry is untouched; only the grouping went.
-    expect(await lib.getEntry(KEY)).toBeDefined();
+    expect(await lib.getSeries(KEY)).toBeUndefined();
+    // And the cascade took its satellites with it (see Library.removeSeries).
+    expect(await lib.getProgress(KEY)).toHaveLength(0);
   });
 });
 
@@ -780,21 +756,19 @@ describe("getLibrary query (search / sort / filters)", () => {
     const lib = makeLibrary();
     const action = await lib.createCollection("Action");
     const romance = await lib.createCollection("Romance");
-    const file = async (seriesId: string, title: string, collectionIds: string[]) => {
-      const item = await lib.collectSeries({ bridgeId: "demo", seriesId }, { seriesTitle: title });
-      await lib.setItemCollections(item.id, collectionIds);
-    };
+    const file = (seriesId: string, title: string, collectionIds: string[]) =>
+      lib.collectSeries({ bridgeId: "demo", seriesId }, { seriesTitle: title, collectionIds });
 
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s1", title: "Naruto", author: "Kishimoto" });
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "Naruto", author: "Kishimoto" });
     await file("s1", "Naruto", [action.id]);
     await lib.syncChapters(entryKey("demo", "s1"), [ch("a1", 1), ch("a2", 2)]);
 
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s2", title: "Bleach" });
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s2" }, { seriesTitle: "Bleach" });
     await file("s2", "Bleach", [action.id, romance.id]);
     await lib.syncChapters(entryKey("demo", "s2"), [ch("b1", 1)]);
     await lib.markRead(entryKey("demo", "s2"), "b1", true);
 
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s3", title: "Berserk", author: "Miura" });
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s3" }, { seriesTitle: "Berserk", author: "Miura" });
     await lib.syncChapters(entryKey("demo", "s3"), [ch("k1", 1)]);
 
     return { lib, action, romance };
@@ -818,7 +792,7 @@ describe("getLibrary query (search / sort / filters)", () => {
 
   test("sort=title is ascending A–Z", async () => {
     const { lib } = await seeded();
-    expect((await lib.getLibrary({ sort: "title" })).map((e) => e.title)).toEqual(["Berserk", "Bleach", "Naruto"]);
+    expect((await lib.getLibrary({ sort: "title" })).map((e) => e.seriesTitle)).toEqual(["Berserk", "Bleach", "Naruto"]);
   });
 
   test("sort=unread defaults to descending (most unread first)", async () => {
@@ -851,22 +825,17 @@ describe("getLibrary query (search / sort / filters)", () => {
 });
 
 describe("guards", () => {
-  test("mutating a series not in the library throws", async () => {
+  test("mutating a series that is not collected throws", async () => {
     const lib = makeLibrary();
-    await expect(lib.markRead(KEY, "c1", true)).rejects.toThrow("not in library");
+    await expect(lib.markRead(KEY, "c1", true)).rejects.toThrow("series not collected");
   });
 });
 
 describe("series grouping via generic externalIds", () => {
   test("adding two entries with the same externalId auto-links them", async () => {
     const lib = makeLibrary();
-    await lib.addSeries({ ...SERIES, externalIds: { mal: 12345 } });
-    const r2 = await lib.addSeries({
-      bridgeId: "example-bridge",
-      seriesId: "md-1",
-      title: "Series One",
-      externalIds: { mal: 12345 },
-    });
+    await lib.collectSeries(COORD, { ...SNAP, externalIds: { mal: 12345 } });
+    const r2 = await lib.collectSeries({ bridgeId: "example-bridge", seriesId: "md-1" }, { seriesTitle: "Series One", externalIds: { mal: 12345 } });
     expect(r2.autoLinked).toBeDefined();
     expect(r2.autoLinked?.sharedId.service).toBe("mal");
     expect(r2.autoLinked?.sharedId.value).toBe(12345);
@@ -874,8 +843,8 @@ describe("series grouping via generic externalIds", () => {
 
   test("entries with different externalIds do not auto-link", async () => {
     const lib = makeLibrary();
-    await lib.addSeries({ ...SERIES, externalIds: { mal: 1 } });
-    const r2 = await lib.addSeries({ bridgeId: "alt", seriesId: "s2", title: "Other", externalIds: { mal: 2 } });
+    await lib.collectSeries(COORD, { ...SNAP, externalIds: { mal: 1 } });
+    const r2 = await lib.collectSeries({ bridgeId: "alt", seriesId: "s2" }, { seriesTitle: "Other", externalIds: { mal: 2 } });
     expect(r2.autoLinked).toBeUndefined();
   });
 });
@@ -909,10 +878,10 @@ describe("title matching (normalizeTitle / titleIndex)", () => {
 
   test("titleIndex buckets entries across bridges and omits keyless titles", async () => {
     const lib = makeLibrary();
-    await lib.addSeries({ bridgeId: "a", seriesId: "1", title: "Chainsaw Man" });
-    await lib.addSeries({ bridgeId: "b", seriesId: "2", title: "chainsaw-man" });
-    await lib.addSeries({ bridgeId: "a", seriesId: "3", title: "Berserk" });
-    await lib.addSeries({ bridgeId: "a", seriesId: "4", title: "???" });
+    await lib.collectSeries({ bridgeId: "a", seriesId: "1" }, { seriesTitle: "Chainsaw Man" });
+    await lib.collectSeries({ bridgeId: "b", seriesId: "2" }, { seriesTitle: "chainsaw-man" });
+    await lib.collectSeries({ bridgeId: "a", seriesId: "3" }, { seriesTitle: "Berserk" });
+    await lib.collectSeries({ bridgeId: "a", seriesId: "4" }, { seriesTitle: "???" });
 
     const index = await lib.titleIndex();
     expect(index.get(normalizeTitle("Chainsaw Man"))?.map((e) => e.bridgeId).sort()).toEqual(["a", "b"]);
@@ -922,31 +891,32 @@ describe("title matching (normalizeTitle / titleIndex)", () => {
 });
 
 describe("linkEntries", () => {
-  const A = { bridgeId: "a", seriesId: "1", title: "Shared" };
-  const B = { bridgeId: "b", seriesId: "2", title: "Shared" };
-  const C = { bridgeId: "c", seriesId: "3", title: "Shared" };
+  const A = { bridgeId: "a", seriesId: "1" };
+  const B = { bridgeId: "b", seriesId: "2" };
+  const C = { bridgeId: "c", seriesId: "3" };
+  const SHARED = { seriesTitle: "Shared" };
   const kA = entryKey(A.bridgeId, A.seriesId);
   const kB = entryKey(B.bridgeId, B.seriesId);
   const kC = entryKey(C.bridgeId, C.seriesId);
 
   test("creates a group with the EXISTING entry as primary", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(A);
-    await lib.addSeries(B);
+    await lib.collectSeries(A, SHARED);
+    await lib.collectSeries(B, SHARED);
     await lib.linkEntries(kA, kB);
 
     const group = await lib.getGroup(kB);
     expect(group?.primaryKey).toBe(kA);
     expect(group?.memberKeys.sort()).toEqual([kA, kB].sort());
     // Both entries carry the back-pointer.
-    expect((await lib.getEntry(kA))?.seriesGroupId).toBe(group!.id);
+    expect((await lib.getSeries(kA))?.seriesGroupId).toBe(group!.id);
   });
 
   test("a third source joins the existing group rather than starting a new one", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(A);
-    await lib.addSeries(B);
-    await lib.addSeries(C);
+    await lib.collectSeries(A, SHARED);
+    await lib.collectSeries(B, SHARED);
+    await lib.collectSeries(C, SHARED);
     await lib.linkEntries(kA, kB);
     await lib.linkEntries(kA, kC);
 
@@ -958,10 +928,10 @@ describe("linkEntries", () => {
 
   test("linking a key to itself is a no-op; an unknown target throws", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(A);
+    await lib.collectSeries(A, SHARED);
     await lib.linkEntries(kA, kA);
     expect(await lib.listGroups()).toHaveLength(0);
-    await expect(lib.linkEntries("nope:1", kA)).rejects.toThrow("entry not in library");
+    await expect(lib.linkEntries("nope:1", kA)).rejects.toThrow("series not collected");
   });
 });
 
@@ -976,7 +946,7 @@ describe("reading log (non-library history)", () => {
 
   test("library entry takes precedence over log for same series", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.markRead(KEY, "c1", true);
     await lib.recordRead({ bridgeId: SERIES.bridgeId, seriesId: SERIES.seriesId, title: SERIES.title, lastReadAt: 9999 });
 
@@ -986,7 +956,7 @@ describe("reading log (non-library history)", () => {
 
   test("recordRead is a no-op when series is already in library", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.markRead(KEY, "c1", true); // gives it a lastReadAt so it appears in history
     await lib.recordRead({ bridgeId: SERIES.bridgeId, seriesId: SERIES.seriesId, title: SERIES.title, lastReadAt: 9999 });
 
@@ -1026,7 +996,7 @@ describe("reading log (non-library history)", () => {
 
   test("getHistory fills the page and page count from progress for a library read", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.setProgress(KEY, "c1", 5, 20, "Ch 1");
     const item = (await lib.getHistory()).find((h) => h.seriesId === SERIES.seriesId);
     expect(item?.lastReadChapterId).toBe("c1");
@@ -1063,7 +1033,7 @@ describe("reading log (non-library history)", () => {
 
   test("clearHistoryEntry removes a library series from history without removing it from library", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.markRead(KEY, "c1", true);
     await lib.clearHistoryEntry(SERIES.bridgeId, SERIES.seriesId);
 
@@ -1078,7 +1048,7 @@ describe("reading log (non-library history)", () => {
 describe("tracker links", () => {
   test("link / list / update / unlink", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
 
     await lib.linkTracker(KEY, "anilist", 98765);
     const links = await lib.listTrackerLinks(KEY);
@@ -1096,7 +1066,7 @@ describe("tracker links", () => {
 
   test("linking a different tracker id adds a second link", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.linkTracker(KEY, "anilist", 1);
     await lib.linkTracker(KEY, "mal", 2);
     expect(await lib.listTrackerLinks(KEY)).toHaveLength(2);
@@ -1104,7 +1074,7 @@ describe("tracker links", () => {
 
   test("relinking the same tracker updates the externalId", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.linkTracker(KEY, "anilist", 1);
     await lib.linkTracker(KEY, "anilist", 99);
     const links = await lib.listTrackerLinks(KEY);
@@ -1160,7 +1130,7 @@ describe("history tracking opt-out", () => {
 
   test("getHistory hides library reads from a bridge with history disabled", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.markRead(KEY, "c1", true);
     expect((await lib.getHistory()).some((h) => h.seriesId === SERIES.seriesId)).toBe(true);
 
@@ -1181,7 +1151,7 @@ describe("history tracking opt-out", () => {
 
   test("re-enabling history restores previously-hidden library reads", async () => {
     const lib = makeLibrary();
-    await lib.addSeries(SERIES);
+    await lib.collectSeries(COORD, SNAP);
     await lib.markRead(KEY, "c1", true);
     await lib.setBridgePrefs(SERIES.bridgeId, { historyDisabled: true });
     expect(await lib.getHistory()).toHaveLength(0);

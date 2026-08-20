@@ -3,13 +3,12 @@
  * fallback for hosts without durable storage. Deep-clones on the way in and out so callers can't
  * mutate stored objects by reference.
  */
-import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type Collection, type CollectionItem, type CollectionItemScope, type HistoryItem, type LibraryEntry, type SeriesGroup, type TrackerLink } from "./models.ts";
+import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type Collection, type CollectionItem, type CollectionItemScope, type HistoryItem, type SeriesGroup, type TrackerLink } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
 const clone = <T>(v: T): T => structuredClone(v);
 
 export class InMemoryLibraryStore implements LibraryStore {
-  private entries = new Map<string, LibraryEntry>();
   private progress = new Map<string, Map<string, ChapterProgress>>();
   private groups = new Map<string, SeriesGroup>();
   private trackerLinks = new Map<string, Map<string, TrackerLink>>();
@@ -20,20 +19,6 @@ export class InMemoryLibraryStore implements LibraryStore {
   private chaptersCache = new Map<string, CachedChapters>();
   private collectionItems = new Map<string, CollectionItem>();
   private collections: Collection[] = [];
-
-  async listEntries(): Promise<LibraryEntry[]> {
-    return [...this.entries.values()].map(clone);
-  }
-  async getEntry(key: string): Promise<LibraryEntry | undefined> {
-    const e = this.entries.get(key);
-    return e ? clone(e) : undefined;
-  }
-  async putEntry(entry: LibraryEntry): Promise<void> {
-    this.entries.set(entryKeyOf(entry), clone(entry));
-  }
-  async deleteEntry(key: string): Promise<void> {
-    this.entries.delete(key);
-  }
 
   async getSeriesDetail(key: string): Promise<CachedSeriesDetail | undefined> {
     const d = this.details.get(key);
@@ -154,8 +139,4 @@ export class InMemoryLibraryStore implements LibraryStore {
   async clearActivity(): Promise<void> {
     this.activity.clear();
   }
-}
-
-function entryKeyOf(entry: LibraryEntry): string {
-  return `${entry.bridgeId}:${entry.seriesId}`;
 }

@@ -31,41 +31,29 @@ import {
   type CollectionPageItem,
   type PageItemSnapshot,
   type SeriesItemCoord,
-  type CollectionSeriesItem,
   type SeriesItemSnapshot,
+  type CollectionSeriesItem,
   type HistoryItem,
   type KnownChapter,
-  type LibraryEntry,
-  type LibraryEntryView,
+  type CollectionSeriesItemView,
   type ResumePoint,
   type SeriesGroup,
   type TrackerLink,
 } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
 
-/** A series snapshot supplied when adding to the library (cached for offline rendering). */
-export interface SeriesSnapshot {
-  bridgeId: string;
-  seriesId: string;
-  title: string;
-  thumbnailUrl?: string;
-  author?: string;
-  /** Cross-service ids from `SeriesInfo.externalIds`, keyed by tracker id — persisted for auto-grouping + sync. */
-  externalIds?: Record<string, string | number>;
-}
-
-/** Returned when adding a series. `autoLinked` is set when the new entry was automatically grouped with an existing one via a shared external id. */
-export interface AddSeriesResult {
-  entry: LibraryEntry;
-  /** Present when the new entry was automatically grouped with an existing library entry via a shared external id. */
+/** Returned when collecting a series. `autoLinked` is set when a NEW series was automatically
+ *  grouped with an already-collected one via a shared external id. */
+export interface CollectSeriesResult {
+  item: CollectionSeriesItem;
   autoLinked?: {
     matchedKey: string;
     sharedId: { service: string; value: number | string };
   };
 }
 
-/** Whether an entry is finished, and the evidence for it. See {@link Library.getEntryCompletion}. */
-export interface EntryCompletion {
+/** Whether a collected series is finished, and the evidence for it. See {@link Library.getSeriesCompletion}. */
+export interface SeriesCompletion {
   /** No known logical chapter `(number, language)` is missing a read copy. False when nothing is synced. */
   fullyRead: boolean;
   /** Publication status from the cached series detail; "unknown" when nothing is cached. */
@@ -86,13 +74,14 @@ export type LibrarySort = "added" | "title" | "lastRead" | "unread";
 export interface LibraryQuery {
   /** Single-collection filter. Prefer `collections`. */
   collection?: string;
-  /** Filter to entries whose series is in ANY of these collections. Empty/absent means all. */
+  /** Filter to series in ANY of these collections. Empty/absent means all. */
   collections?: string[];
-  /** Only entries whose series is in no collection. Takes precedence over `collection`/`collections`. */
+  /** Only series in no collection — a transient state between a collect and its first filing.
+   *  Takes precedence over `collection`/`collections`. */
   uncollected?: boolean;
   /** Case-insensitive substring search over title + author. */
   q?: string;
-  /** Only entries with at least one unread chapter. */
+  /** Only series with at least one unread chapter. */
   unreadOnly?: boolean;
   /** Sort key. Defaults to `"added"`. */
   sort?: LibrarySort;
@@ -152,17 +141,17 @@ function compareCollectionItems(a: CollectionItem, b: CollectionItem, sort: Coll
   }
 }
 
-/** Compare two entry views by `sort` key in ascending order (callers apply direction). */
-function compareEntries(a: LibraryEntryView, b: LibraryEntryView, sort: LibrarySort): number {
+/** Compare two collected-series views by `sort` key in ascending order (callers apply direction). */
+function compareSeries(a: CollectionSeriesItemView, b: CollectionSeriesItemView, sort: LibrarySort): number {
   switch (sort) {
     case "title":
-      return a.title.localeCompare(b.title);
+      return a.seriesTitle.localeCompare(b.seriesTitle);
     case "lastRead":
       return (a.lastReadAt ?? 0) - (b.lastReadAt ?? 0);
     case "unread":
       return a.unreadCount - b.unreadCount;
     case "added":
-      return a.addedAt - b.addedAt;
+      return a.collectedAt - b.collectedAt;
   }
 }
 
@@ -176,31 +165,80 @@ export class Library {
     this.now = opts.now ?? Date.now;
   }
 
-  // ── Collection ─────────────────────────────────────────────────────────────
+  // ── Collected series ───────────────────────────────────────────────────────
+  // A tracked series IS a `CollectionSeriesItem`: there is no separate library entry. "In the
+  // library" means the item exists, which under pure collections means it is in at least one
+  // collection (a freshly-collected series is transiently uncollected until the caller files it).
+  // Satellite documents — progress, cached detail/chapters, tracker links, activity — hang off it.
 
-  async addSeries(snap: SeriesSnapshot): Promise<AddSeriesResult> {
-    const key = entryKey(snap.bridgeId, snap.seriesId);
-    const existing = await this.store.getEntry(key);
+  /** The derived id of a series item, from its `entryKey`. */
+  private seriesItemId(key: string): string {
+    const { bridgeId, seriesId } = parseEntryKey(key);
+    return collectionItemId({ type: "series", bridgeId, seriesId });
+  }
+
+  private async getSeriesItem(key: string): Promise<CollectionSeriesItem | undefined> {
+    const item = await this.store.getCollectionItem(this.seriesItemId(key));
+    return item?.type === "series" ? item : undefined;
+  }
+
+  private async putSeriesItem(item: CollectionSeriesItem): Promise<void> {
+    await this.store.putCollectionItems([item]);
+  }
+
+  private async listSeriesItems(): Promise<CollectionSeriesItem[]> {
+    return (await this.store.listCollectionItems({ type: "series" })).filter(
+      (i): i is CollectionSeriesItem => i.type === "series",
+    );
+  }
+
+  /**
+   * Collect a series — the operation that used to be "add to library". IDEMPOTENT and MERGING, like
+   * every other item PUT: a supplied snapshot field wins as the fresher value, an omitted one is
+   * preserved, and `collectedAt` / `collectionIds` / all tracking state carry over.
+   *
+   * `snap.collectionIds` files the series in the SAME call — the common case, since under pure
+   * collections a series nobody filed is only transiently collected. Unknown ids are dropped, and a
+   * list that resolves empty leaves the memberships alone rather than deleting what was just
+   * collected; `setItemCollections` remains the way to empty them deliberately.
+   */
+  async collectSeries(coord: SeriesItemCoord, snap: SeriesItemSnapshot): Promise<CollectSeriesResult> {
+    const key = entryKey(coord.bridgeId, coord.seriesId);
+    const existing = await this.getSeriesItem(key);
     const t = this.now();
-    const entry: LibraryEntry = existing
-      ? { ...existing, title: snap.title, updatedAt: t }
-      : {
-          bridgeId: snap.bridgeId,
-          seriesId: snap.seriesId,
-          title: snap.title,
-          addedAt: t,
-          updatedAt: t,
-          knownChapters: [],
-        };
-    // Optional snapshot fields: only set when provided (exactOptionalPropertyTypes-friendly).
-    if (snap.thumbnailUrl !== undefined) entry.thumbnailUrl = snap.thumbnailUrl;
-    if (snap.author !== undefined) entry.author = snap.author;
-    if (snap.externalIds !== undefined) entry.externalIds = snap.externalIds;
-    await this.store.putEntry(entry);
+    let filed: string[] | undefined;
+    if (snap.collectionIds?.length) {
+      const known = new Set((await this.store.listCollections()).map((c) => c.id));
+      const resolved = [...new Set(snap.collectionIds)].filter((c) => known.has(c));
+      if (resolved.length > 0) filed = resolved;
+    }
+    const thumbnailUrl = snap.thumbnailUrl ?? existing?.thumbnailUrl;
+    const author = snap.author ?? existing?.author;
+    const externalIds = snap.externalIds ?? existing?.externalIds;
+    const item: CollectionSeriesItem = {
+      type: "series",
+      ...coord,
+      id: this.seriesItemId(key),
+      collectedAt: existing?.collectedAt ?? t,
+      collectionIds: filed ?? existing?.collectionIds ?? [],
+      seriesTitle: snap.seriesTitle,
+      updatedAt: t,
+      knownChapters: existing?.knownChapters ?? [],
+      ...(thumbnailUrl !== undefined && { thumbnailUrl }),
+      ...(author !== undefined && { author }),
+      ...(externalIds !== undefined && { externalIds }),
+      ...(existing?.chaptersSyncedAt !== undefined && { chaptersSyncedAt: existing.chaptersSyncedAt }),
+      ...(existing?.revision !== undefined && { revision: existing.revision }),
+      ...(existing?.lastReadChapterId !== undefined && { lastReadChapterId: existing.lastReadChapterId }),
+      ...(existing?.lastReadChapterName !== undefined && { lastReadChapterName: existing.lastReadChapterName }),
+      ...(existing?.lastReadAt !== undefined && { lastReadAt: existing.lastReadAt }),
+      ...(existing?.seriesGroupId !== undefined && { seriesGroupId: existing.seriesGroupId }),
+    };
+    await this.putSeriesItem(item);
 
-    // Auto-link: for new entries with externalIds, find any existing entry that shares an id
-    // and automatically create/join a group. No user action required.
-    let autoLinked: AddSeriesResult["autoLinked"];
+    // Auto-link: a NEWLY collected series carrying externalIds joins any already-collected series
+    // that shares one. No user action required.
+    let autoLinked: CollectSeriesResult["autoLinked"];
     if (!existing && snap.externalIds) {
       const match = await this.findExternalIdMatch(key, snap.externalIds);
       if (match) {
@@ -209,16 +247,40 @@ export class Library {
       }
     }
 
-    return { entry, ...(autoLinked !== undefined && { autoLinked }) };
+    return { item, ...(autoLinked !== undefined && { autoLinked }) };
   }
 
+  /**
+   * Remove a series from the library: drop its item and every satellite document.
+   *
+   * This is what "uncollecting" a series means, and every path that can zero a series item routes
+   * here — an explicit delete, emptying its memberships, or deleting its last collection. The blast
+   * radius is deliberate and identical to the old remove-from-library: progress, resume, activity,
+   * offline detail and chapter cache all go. Clients should confirm before the last one.
+   */
   async removeSeries(key: string): Promise<void> {
     await this.leaveGroup(key);
-    await this.store.deleteEntry(key);
+    await this.store.deleteCollectionItems([this.seriesItemId(key)]);
     await this.store.deleteProgressForEntry(key);
     await this.store.deleteActivityForEntry(key);
     await this.store.deleteSeriesDetail(key);
     await this.store.deleteCachedChapters(key);
+  }
+
+  /**
+   * Delete item records, cascading each series item through {@link removeSeries}.
+   *
+   * A series item is the only record that owns progress, activity, offline detail, the chapter
+   * cache and a group membership, so dropping one by any route has to take those with it. Chapter
+   * and page items own nothing, so they are one batched delete. Their records SURVIVE their
+   * series being uncollected — a page's membership is its own, not a lease on the series'.
+   */
+  private async dropItems(items: CollectionItem[]): Promise<void> {
+    const plain = items.filter((i) => i.type !== "series");
+    if (plain.length > 0) await this.store.deleteCollectionItems(plain.map((i) => i.id));
+    for (const item of items) {
+      if (item.type === "series") await this.removeSeries(entryKey(item.bridgeId, item.seriesId));
+    }
   }
 
   /** The bytes the library's persisted documents occupy, when the store can measure them. */
@@ -228,15 +290,15 @@ export class Library {
 
   // ── Offline metadata cache ─────────────────────────────────────────────────────
   // The series page's offline data: the full SeriesInfo and the full renderable chapter list,
-  // captured from fetches the system makes anyway (add-to-library, browsing, background sync) and
-  // served back by the router when the bridge can't answer. See `cachedSeriesDetailSchema`.
+  // captured from fetches the system makes anyway (collect, browsing, background sync) and served
+  // back by the router when the bridge can't answer. See `cachedSeriesDetailSchema`.
 
   /**
-   * Cache the full series detail for offline rendering. No-op unless the series is in the library.
+   * Cache the full series detail for offline rendering. No-op unless the series is collected.
    * Preserves the existing cover pointer fields — detail refreshes must never orphan captured covers.
    */
   async cacheSeriesDetail(key: string, info: SeriesInfo): Promise<void> {
-    if (!(await this.isInLibrary(key))) return;
+    if (!(await this.isCollected(key))) return;
     const existing = await this.store.getSeriesDetail(key);
     const doc: CachedSeriesDetail = { info, cachedAt: this.now() };
     if (existing?.coverFile !== undefined) doc.coverFile = existing.coverFile;
@@ -244,7 +306,7 @@ export class Library {
     await this.store.putSeriesDetail(key, doc);
   }
 
-  /** Record where the host stored this entry's cover bytes (and the URL they came from, for the
+  /** Record where the host stored this series' cover bytes (and the URL they came from, for the
    *  staleness check). No-op without a cached detail doc. */
   async setCachedCover(key: string, coverFile: string, coverSourceUrl?: string): Promise<void> {
     const doc = await this.store.getSeriesDetail(key);
@@ -255,39 +317,39 @@ export class Library {
   }
 
   /**
-   * Reconcile the entry's display snapshot (what the library grid/history render) with a fresh,
-   * successful `SeriesInfo` — the source is authoritative for its own metadata, so a renamed series
-   * or changed cover/author heals on the next browse instead of staying frozen at add time. New
-   * `externalIds` merge in (never removed); `addedAt`/progress/memberships are untouched. No-op when
-   * nothing changed or the series isn't in the library.
+   * Reconcile the series item's display snapshot (what the library grid/history render) with a
+   * fresh, successful `SeriesInfo` — the source is authoritative for its own metadata, so a renamed
+   * series or changed cover/author heals on the next browse instead of staying frozen at collect
+   * time. New `externalIds` merge in (never removed); `collectedAt`/progress/memberships are
+   * untouched. No-op when nothing changed or the series isn't collected.
    */
   async refreshSnapshot(key: string, info: SeriesInfo): Promise<void> {
-    const entry = await this.store.getEntry(key);
-    if (!entry) return;
+    const item = await this.getSeriesItem(key);
+    if (!item) return;
     let changed = false;
-    if (info.title && info.title !== entry.title) {
-      entry.title = info.title;
+    if (info.title && info.title !== item.seriesTitle) {
+      item.seriesTitle = info.title;
       changed = true;
     }
-    if (info.thumbnailUrl !== undefined && info.thumbnailUrl !== entry.thumbnailUrl) {
-      entry.thumbnailUrl = info.thumbnailUrl;
+    if (info.thumbnailUrl !== undefined && info.thumbnailUrl !== item.thumbnailUrl) {
+      item.thumbnailUrl = info.thumbnailUrl;
       changed = true;
     }
-    if (info.author !== undefined && info.author !== entry.author) {
-      entry.author = info.author;
+    if (info.author !== undefined && info.author !== item.author) {
+      item.author = info.author;
       changed = true;
     }
     if (info.externalIds) {
       for (const [tracker, id] of Object.entries(info.externalIds)) {
-        if (entry.externalIds?.[tracker] !== id) {
-          entry.externalIds = { ...entry.externalIds, [tracker]: id };
+        if (item.externalIds?.[tracker] !== id) {
+          item.externalIds = { ...item.externalIds, [tracker]: id };
           changed = true;
         }
       }
     }
     if (!changed) return;
-    entry.updatedAt = this.now();
-    await this.store.putEntry(entry);
+    item.updatedAt = this.now();
+    await this.putSeriesItem(item);
   }
 
   /** The cached detail, or undefined (not captured / schema-drifted doc, which is discarded). */
@@ -306,56 +368,54 @@ export class Library {
     return parsed.success ? parsed.data : undefined;
   }
 
-  async isInLibrary(key: string): Promise<boolean> {
-    return (await this.store.getEntry(key)) !== undefined;
+  /** Whether this series is collected — the successor to `isCollected`. */
+  async isCollected(key: string): Promise<boolean> {
+    return (await this.getSeriesItem(key)) !== undefined;
   }
 
-  async getEntry(key: string): Promise<LibraryEntry | undefined> {
-    return this.store.getEntry(key);
+  /** The collected series record, or undefined. */
+  async getSeries(key: string): Promise<CollectionSeriesItem | undefined> {
+    return this.getSeriesItem(key);
   }
 
   /**
-   * Query the library: filter by list/search/read-state and sort, each entry carrying a derived
-   * `unreadCount`. All options are optional; with none, returns every entry sorted newest-added-first.
+   * Query the library: filter by collection/search/read-state and sort, each series carrying a
+   * derived `unreadCount`. All options are optional; with none, returns every collected series
+   * sorted newest-collected-first.
    */
-  async getLibrary(opts: LibraryQuery = {}): Promise<LibraryEntryView[]> {
-    const entries = await this.store.listEntries();
+  async getLibrary(opts: LibraryQuery = {}): Promise<CollectionSeriesItemView[]> {
+    let filtered = await this.listSeriesItems();
 
-    // Collection scope: memberships live on SERIES favorite items (the one grouping system), so the
-    // filter reads through them. The type-scoped listing is small — bounded by how many series the
-    // user has filed, never by page favorites — and only runs when a collection filter is present.
+    // Memberships live on the item itself now — the collection filter is a field test, not a join.
     const collectionIds = opts.collections ?? (opts.collection !== undefined ? [opts.collection] : undefined);
-    let filtered = entries;
-    if (opts.uncollected || (collectionIds && collectionIds.length > 0)) {
-      const seriesItems = await this.store.listCollectionItems({ type: "series" });
-      const memberships = new Map(seriesItems.map((i) => [entryKey(i.bridgeId, i.seriesId), i.collectionIds]));
-      const of = (e: LibraryEntry) => memberships.get(entryKey(e.bridgeId, e.seriesId)) ?? [];
-      if (opts.uncollected) filtered = filtered.filter((e) => of(e).length === 0);
-      else filtered = filtered.filter((e) => of(e).some((id) => collectionIds!.includes(id)));
+    if (opts.uncollected) {
+      filtered = filtered.filter((i) => i.collectionIds.length === 0);
+    } else if (collectionIds && collectionIds.length > 0) {
+      filtered = filtered.filter((i) => i.collectionIds.some((id) => collectionIds.includes(id)));
     }
 
     // Free-text search: case-insensitive substring over title + author.
     const q = opts.q?.trim().toLowerCase();
     if (q) {
       filtered = filtered.filter(
-        (e) => e.title.toLowerCase().includes(q) || (e.author?.toLowerCase().includes(q) ?? false),
+        (i) => i.seriesTitle.toLowerCase().includes(q) || (i.author?.toLowerCase().includes(q) ?? false),
       );
     }
 
-    let views = await Promise.all(filtered.map((e) => this.toView(e)));
+    let views = await Promise.all(filtered.map((i) => this.toView(i)));
     if (opts.unreadOnly) views = views.filter((v) => v.unreadCount > 0);
 
     // Sort. Title defaults to ascending (A–Z); the recency/count keys default to descending
     // (newest / most-unread first) since that's the useful direction.
     const sort = opts.sort ?? "added";
     const sign = (opts.dir ?? (sort === "title" ? "asc" : "desc")) === "asc" ? 1 : -1;
-    views.sort((a, b) => sign * compareEntries(a, b, sort));
+    views.sort((a, b) => sign * compareSeries(a, b, sort));
     return views;
   }
 
-  private async toView(entry: LibraryEntry): Promise<LibraryEntryView> {
-    const progress = await this.store.listProgress(entryKey(entry.bridgeId, entry.seriesId));
-    return { ...entry, unreadCount: unreadLogicalCount(entry, progress) };
+  private async toView(item: CollectionSeriesItem): Promise<CollectionSeriesItemView> {
+    const progress = await this.store.listProgress(entryKey(item.bridgeId, item.seriesId));
+    return { ...item, unreadCount: unreadLogicalCount(item, progress) };
   }
 
   // ── New-chapter detection ────────────────────────────────────────────────────
@@ -365,10 +425,10 @@ export class Library {
    * are new since the previous sync (empty on the first sync — there's no baseline to diff against).
    */
   async syncChapters(key: string, chapters: Chapter[], revision?: SeriesRevision): Promise<{ added: Chapter[] }> {
-    const entry = await this.requireEntry(key);
+    const entry = await this.requireSeries(key);
     // Diff by logical chapter `(number, language)` — a fresh scanlation-group copy of a chapter we
     // already know is NOT a new chapter.
-    const known = new Set((entry.knownChapters ?? []).map((c) => logicalChapterKey(c, c.id)));
+    const known = new Set(entry.knownChapters.map((c) => logicalChapterKey(c, c.id)));
     const firstSync = entry.chaptersSyncedAt === undefined;
     // A logical chapter is "added" once: dedupe both against what we knew AND within this batch, so
     // two scanlation-group copies of the same new chapter yield a single new-chapter event.
@@ -379,13 +439,13 @@ export class Library {
           const lk = logicalChapterKey(c, c.id);
           if (known.has(lk) || seenLogical.has(lk)) return false;
           seenLogical.add(lk);
-          // A chapter only counts as "new" if it was published after the series joined the library.
+          // A chapter only counts as "new" if it was published after the series was collected.
           // The `firstSync` baseline assumes the very first list we see is complete; in practice it
           // often isn't (favorites import adds without syncing, a paginated/empty first fetch), and a
           // later fuller sync would otherwise flag the entire back-catalogue as new. Gating on publish
           // time keeps old chapters out of the feed regardless of baseline completeness. Chapters with
           // no `publishedAt` fall back to the diff alone (best effort for bridges that omit dates).
-          if (c.publishedAt !== undefined && c.publishedAt <= entry.addedAt) return false;
+          if (c.publishedAt !== undefined && c.publishedAt <= entry.collectedAt) return false;
           return true;
         });
     // Re-anchor this series' chapter/page favorites BEFORE the baseline is overwritten — the
@@ -408,7 +468,7 @@ export class Library {
     // describes would let a later check match and skip a fetch that never actually happened.
     if (revision !== undefined) entry.revision = revision;
     else delete entry.revision;
-    await this.store.putEntry(entry);
+    await this.putSeriesItem(entry);
 
     // Write the full renderable list through to the offline cache — one sync now produces both
     // artifacts (unread reconciliation above + the series page's offline chapter list).
@@ -421,7 +481,7 @@ export class Library {
         bridgeId: entry.bridgeId,
         seriesId: entry.seriesId,
         chapterId: c.id,
-        title: entry.title,
+        title: entry.seriesTitle,
         detectedAt: t,
       };
       if (entry.thumbnailUrl !== undefined) item.thumbnailUrl = entry.thumbnailUrl;
@@ -445,10 +505,10 @@ export class Library {
    * budget re-checking the same entries while newer ones starve.
    */
   async markChaptersUnchanged(key: string, revision: SeriesRevision): Promise<void> {
-    const entry = await this.requireEntry(key);
+    const entry = await this.requireSeries(key);
     entry.chaptersSyncedAt = this.now();
     entry.revision = revision;
-    await this.store.putEntry(entry);
+    await this.putSeriesItem(entry);
   }
 
   // ── Read state ────────────────────────────────────────────────────────────────
@@ -515,7 +575,7 @@ export class Library {
     key: string,
     chapters: Array<{ chapterId: string; number?: number }>,
   ): Promise<{ marked: number }> {
-    await this.requireEntry(key);
+    await this.requireSeries(key);
     const read = new Set((await this.store.listProgress(key)).filter((p) => p.read).map((p) => p.chapterId));
     let marked = 0;
     for (const { chapterId, number } of chapters) {
@@ -553,12 +613,12 @@ export class Library {
    * "0 unread" — a favourites import seeds exactly that — so a synced, non-empty `knownChapters` is
    * required before `fullyRead` can be true at all.
    */
-  async getEntryCompletion(key: string): Promise<EntryCompletion> {
+  async getSeriesCompletion(key: string): Promise<SeriesCompletion> {
     const seriesStatus = (await this.getCachedDetail(key))?.info.status ?? "unknown";
     // "hiatus" can resume, and "unknown" is what bridges that don't report status map to — neither
     // is evidence the series is over. Those entries complete via the tracker's own chapter count.
     const seriesFinished = seriesStatus === "completed" || seriesStatus === "cancelled";
-    const entry = await this.store.getEntry(key);
+    const entry = await this.getSeriesItem(key);
     if (!entry || entry.chaptersSyncedAt === undefined || (entry.knownChapters ?? []).length === 0) {
       return { fullyRead: false, seriesStatus, seriesFinished };
     }
@@ -572,7 +632,7 @@ export class Library {
 
   /** Where to resume: the last-read chapter and the page within it. */
   async getResume(key: string): Promise<ResumePoint | undefined> {
-    const entry = await this.store.getEntry(key);
+    const entry = await this.getSeriesItem(key);
     if (entry?.lastReadChapterId) {
       const progress = await this.store.listProgress(key);
       const p = progress.find((x) => x.chapterId === entry.lastReadChapterId);
@@ -589,10 +649,10 @@ export class Library {
 
   /** Recently-read series, newest first (one row per series for v1). */
   async getHistory(limit = 50): Promise<HistoryItem[]> {
-    const entries = await this.store.listEntries();
+    const entries = await this.listSeriesItems();
     const libraryItems = await Promise.all(
       entries
-        .filter((e): e is LibraryEntry & { lastReadAt: number } => e.lastReadAt !== undefined)
+        .filter((e): e is CollectionSeriesItem & { lastReadAt: number } => e.lastReadAt !== undefined)
         .map(async (e): Promise<HistoryItem> => {
           // Surface the resume page/count for the last-read chapter so history renders "page X / N".
           const p = e.lastReadChapterId === undefined
@@ -602,7 +662,7 @@ export class Library {
           return {
             bridgeId: e.bridgeId,
             seriesId: e.seriesId,
-            title: e.title,
+            title: e.seriesTitle,
             lastReadAt: e.lastReadAt,
             ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
             ...(e.lastReadChapterId !== undefined && { lastReadChapterId: e.lastReadChapterId }),
@@ -638,7 +698,7 @@ export class Library {
 
   /** Record a non-library read. Ignored if the series is already in the library (setProgress handles those). */
   async recordRead(item: HistoryItem): Promise<void> {
-    const existing = await this.store.getEntry(entryKey(item.bridgeId, item.seriesId));
+    const existing = await this.getSeriesItem(entryKey(item.bridgeId, item.seriesId));
     if (existing) return;
     if ((await this.getBridgePrefs(item.bridgeId)).historyDisabled) return;
     await this.store.upsertReadingLog(item);
@@ -647,10 +707,10 @@ export class Library {
   /** Remove a series from reading history. For library entries, clears last-read fields; for log entries, deletes the record. */
   async clearHistoryEntry(bridgeId: string, seriesId: string): Promise<void> {
     const key = entryKey(bridgeId, seriesId);
-    const existing = await this.store.getEntry(key);
+    const existing = await this.getSeriesItem(key);
     if (existing) {
       const { lastReadAt: _a, lastReadChapterId: _b, lastReadChapterName: _c, ...rest } = existing;
-      await this.store.putEntry({ ...rest, updatedAt: this.now() });
+      await this.putSeriesItem({ ...rest, updatedAt: this.now() });
     } else {
       await this.store.deleteReadingLog(bridgeId, seriesId);
     }
@@ -754,26 +814,6 @@ export class Library {
   // one field NOT carried is `stale` — the user is looking at the target as they tap, so its
   // coordinates are current by definition.
 
-  async collectSeries(coord: SeriesItemCoord, snap: SeriesItemSnapshot): Promise<CollectionSeriesItem> {
-    const id = collectionItemId({ type: "series", ...coord });
-    const prev = await this.store.getCollectionItem(id);
-    const existing = prev?.type === "series" ? prev : undefined;
-    const thumbnailUrl = snap.thumbnailUrl ?? existing?.thumbnailUrl;
-    const author = snap.author ?? existing?.author;
-    const item: CollectionSeriesItem = {
-      type: "series",
-      ...coord,
-      id,
-      collectedAt: existing?.collectedAt ?? this.now(),
-      collectionIds: existing?.collectionIds ?? [],
-      seriesTitle: snap.seriesTitle,
-      ...(thumbnailUrl !== undefined && { thumbnailUrl }),
-      ...(author !== undefined && { author }),
-    };
-    await this.store.putCollectionItems([item]);
-    return item;
-  }
-
   async collectChapter(coord: ChapterItemCoord, snap: ChapterItemSnapshot): Promise<CollectionChapterItem> {
     const id = collectionItemId({ type: "chapter", ...coord });
     const prev = await this.store.getCollectionItem(id);
@@ -826,11 +866,11 @@ export class Library {
     return this.deleteCollectionItem(collectionItemId(coord));
   }
 
-  /** Unfavorite by derived id. Returns the removed record, or undefined if there was none. */
+  /** Uncollect by derived id. Returns the removed record, or undefined if there was none. */
   async deleteCollectionItem(id: string): Promise<CollectionItem | undefined> {
     const existing = await this.store.getCollectionItem(id);
     if (!existing) return undefined;
-    await this.store.deleteCollectionItems([id]);
+    await this.dropItems([existing]);
     return existing;
   }
 
@@ -1141,7 +1181,7 @@ export class Library {
     const known = new Set((await this.store.listCollections()).map((c) => c.id));
     const resolved = [...new Set(collectionIds)].filter((c) => known.has(c));
     if (resolved.length === 0) {
-      await this.store.deleteCollectionItems([id]);
+      await this.dropItems([item]);
       return undefined;
     }
     const next: CollectionItem = { ...item, collectionIds: resolved };
@@ -1194,7 +1234,7 @@ export class Library {
     // items document once per member.
     const members = (await this.store.listCollectionItems()).filter((i) => i.collectionIds.includes(id));
     const stripped = members.map((i) => ({ ...i, collectionIds: i.collectionIds.filter((c) => c !== id) }));
-    await this.store.deleteCollectionItems(stripped.filter((i) => i.collectionIds.length === 0).map((i) => i.id));
+    await this.dropItems(stripped.filter((i) => i.collectionIds.length === 0));
     await this.store.putCollectionItems(stripped.filter((i) => i.collectionIds.length > 0));
   }
 
@@ -1208,20 +1248,20 @@ export class Library {
   async createGroup(memberKeys: string[], primaryKey: string): Promise<SeriesGroup> {
     if (!memberKeys.includes(primaryKey)) throw new Error("primaryKey must be in memberKeys");
     if (memberKeys.length < 2) throw new Error("a group requires at least 2 members");
-    const primary = await this.store.getEntry(primaryKey);
-    if (!primary) throw new Error(`entry not in library: ${primaryKey}`);
+    const primary = await this.getSeriesItem(primaryKey);
+    if (!primary) throw new Error(`series not collected: ${primaryKey}`);
     const deduped = [...new Set(memberKeys)];
     const group: SeriesGroup = {
       id: crypto.randomUUID(),
-      title: primary.title,
+      title: primary.seriesTitle,
       primaryKey,
       memberKeys: deduped,
       createdAt: this.now(),
     };
     await this.store.putGroup(group);
     for (const key of deduped) {
-      const e = await this.store.getEntry(key);
-      if (e) await this.store.putEntry({ ...e, seriesGroupId: group.id, updatedAt: this.now() });
+      const e = await this.getSeriesItem(key);
+      if (e) await this.putSeriesItem({ ...e, seriesGroupId: group.id, updatedAt: this.now() });
     }
     return group;
   }
@@ -1231,14 +1271,14 @@ export class Library {
    * has one, else create a two-member group with the EXISTING entry as primary. It was there first,
    * so it's the one carrying progress — the newcomer must never hijack the reading source.
    *
-   * Both the external-id auto-link in {@link addSeries} and the user-confirmed title match in a
+   * Both the external-id auto-link in {@link collectSeries} and the user-confirmed title match in a
    * favorites import go through here, so "linking" means exactly one thing. No-op when both keys
    * are already in the same group (or are the same key).
    */
   async linkEntries(existingKey: string, newKey: string): Promise<void> {
     if (existingKey === newKey) return;
-    const existing = await this.store.getEntry(existingKey);
-    if (!existing) throw new Error(`entry not in library: ${existingKey}`);
+    const existing = await this.getSeriesItem(existingKey);
+    if (!existing) throw new Error(`series not collected: ${existingKey}`);
     if (existing.seriesGroupId) {
       await this.joinGroup(existing.seriesGroupId, newKey);
     } else {
@@ -1247,15 +1287,15 @@ export class Library {
   }
 
   /**
-   * Every library entry bucketed by {@link normalizeTitle} — the index for spotting the same work
+   * Every collected series bucketed by {@link normalizeTitle} — the index for spotting the same work
    * already present from another bridge. Built in one pass so a caller classifying a whole favorites
    * list scans the library once rather than once per candidate. Entries whose title normalizes to
    * nothing (punctuation only) are omitted rather than bucketed together under "".
    */
-  async titleIndex(): Promise<Map<string, LibraryEntry[]>> {
-    const index = new Map<string, LibraryEntry[]>();
-    for (const entry of await this.store.listEntries()) {
-      const key = normalizeTitle(entry.title);
+  async titleIndex(): Promise<Map<string, CollectionSeriesItem[]>> {
+    const index = new Map<string, CollectionSeriesItem[]>();
+    for (const entry of await this.listSeriesItems()) {
+      const key = normalizeTitle(entry.seriesTitle);
       if (!key) continue;
       const bucket = index.get(key);
       if (bucket) bucket.push(entry);
@@ -1272,8 +1312,8 @@ export class Library {
     if (group.memberKeys.includes(key)) return;
     group.memberKeys = [...group.memberKeys, key];
     await this.store.putGroup(group);
-    const entry = await this.store.getEntry(key);
-    if (entry) await this.store.putEntry({ ...entry, seriesGroupId: groupId, updatedAt: this.now() });
+    const entry = await this.getSeriesItem(key);
+    if (entry) await this.putSeriesItem({ ...entry, seriesGroupId: groupId, updatedAt: this.now() });
   }
 
   /**
@@ -1281,10 +1321,10 @@ export class Library {
    * No-op if the entry has no group.
    */
   async leaveGroup(key: string): Promise<void> {
-    const entry = await this.store.getEntry(key);
+    const entry = await this.getSeriesItem(key);
     if (!entry?.seriesGroupId) return;
     const { seriesGroupId: groupId, ...entryWithoutGroup } = entry;
-    await this.store.putEntry({ ...entryWithoutGroup, updatedAt: this.now() });
+    await this.putSeriesItem({ ...entryWithoutGroup, updatedAt: this.now() });
 
     const groups = await this.store.listGroups();
     const group = groups.find((g) => g.id === groupId);
@@ -1294,10 +1334,10 @@ export class Library {
       // Dissolve — remove groupId from the last remaining member too.
       await this.store.deleteGroup(groupId);
       for (const rk of remaining) {
-        const re = await this.store.getEntry(rk);
+        const re = await this.getSeriesItem(rk);
         if (re) {
           const { seriesGroupId: _drop, ...rest } = re;
-          await this.store.putEntry({ ...rest, updatedAt: this.now() });
+          await this.putSeriesItem({ ...rest, updatedAt: this.now() });
         }
       }
     } else {
@@ -1309,7 +1349,7 @@ export class Library {
 
   /** Get the group this entry belongs to, if any. */
   async getGroup(key: string): Promise<SeriesGroup | undefined> {
-    const entry = await this.store.getEntry(key);
+    const entry = await this.getSeriesItem(key);
     if (!entry?.seriesGroupId) return undefined;
     const groups = await this.store.listGroups();
     return groups.find((g) => g.id === entry.seriesGroupId);
@@ -1342,7 +1382,7 @@ export class Library {
     chapterName?: string,
     opts: { touchResume?: boolean } = {},
   ): Promise<void> {
-    const entry = await this.requireEntry(key);
+    const entry = await this.requireSeries(key);
     const t = this.now();
     const existing = (await this.store.listProgress(key)).find((p) => p.chapterId === chapterId);
     const next: ChapterProgress = {
@@ -1357,7 +1397,7 @@ export class Library {
     // Backfill the logical-chapter metadata from the synced chapter list when the caller didn't
     // supply it, so read state always collapses by `(number, language)` — e.g. a "mark read"
     // checkbox that only sends a chapter id still gets grouped correctly.
-    const meta = (entry.knownChapters ?? []).find((c) => c.id === chapterId);
+    const meta = entry.knownChapters.find((c) => c.id === chapterId);
     const number = patch.number ?? existing?.number ?? meta?.number;
     if (number !== undefined) next.number = number;
     const languageCode = patch.languageCode ?? existing?.languageCode ?? meta?.languageCode;
@@ -1372,24 +1412,24 @@ export class Library {
       if (chapterName !== undefined) entry.lastReadChapterName = chapterName;
       entry.lastReadAt = t;
       entry.updatedAt = t;
-      await this.store.putEntry(entry);
+      await this.putSeriesItem(entry);
     }
   }
 
-  private async requireEntry(key: string): Promise<LibraryEntry> {
-    const entry = await this.store.getEntry(key);
+  private async requireSeries(key: string): Promise<CollectionSeriesItem> {
+    const entry = await this.getSeriesItem(key);
     if (!entry) {
       const { bridgeId, seriesId } = parseEntryKey(key);
-      throw new Error(`series not in library: ${bridgeId}/${seriesId}`);
+      throw new Error(`series not collected: ${bridgeId}/${seriesId}`);
     }
     return entry;
   }
 
   private async findExternalIdMatch(
     newKey: string,
-    ids: NonNullable<SeriesSnapshot["externalIds"]>,
-  ): Promise<AddSeriesResult["autoLinked"]> {
-    const entries = await this.store.listEntries();
+    ids: NonNullable<SeriesItemSnapshot["externalIds"]>,
+  ): Promise<CollectSeriesResult["autoLinked"]> {
+    const entries = await this.listSeriesItems();
     for (const e of entries) {
       const ek = entryKey(e.bridgeId, e.seriesId);
       if (ek === newKey || !e.externalIds) continue;
@@ -1405,7 +1445,7 @@ export class Library {
   // ── Tracker links ─────────────────────────────────────────────────────────────
 
   async linkTracker(key: string, trackerId: string, externalId: string | number): Promise<void> {
-    await this.requireEntry(key);
+    await this.requireSeries(key);
     const existing = (await this.store.listTrackerLinks(key)).find((l) => l.trackerId === trackerId);
     const link: TrackerLink = { ...existing, trackerId, externalId };
     await this.store.putTrackerLink(key, link);
@@ -1457,12 +1497,12 @@ function logicalChapterKey(c: { number?: number | undefined; languageCode?: stri
 
 /**
  * Known logical chapters `(number, language)` with no read copy in any scanlation group. Shared by
- * the library view's `unreadCount` and by `getEntryCompletion`, so "0 unread" can never mean two
+ * the library view's `unreadCount` and by `getSeriesCompletion`, so "0 unread" can never mean two
  * different things depending on which one asked.
  */
-function unreadLogicalCount(entry: LibraryEntry, progress: ChapterProgress[]): number {
+function unreadLogicalCount(item: CollectionSeriesItem, progress: ChapterProgress[]): number {
   const readLogical = new Set(progress.filter((p) => p.read).map((p) => logicalChapterKey(p, p.chapterId)));
-  const knownLogical = new Set((entry.knownChapters ?? []).map((c) => logicalChapterKey(c, c.id)));
+  const knownLogical = new Set(item.knownChapters.map((c) => logicalChapterKey(c, c.id)));
   return [...knownLogical].filter((k) => !readLogical.has(k)).length;
 }
 

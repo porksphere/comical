@@ -398,7 +398,10 @@ describe("series and chapter favorites over HTTP", () => {
   test("each type has its own coordinate-addressed PUT/DELETE and membership route", async () => {
     const shelf = await json<CollectionBody>(await send("POST", "/library/collections", { name: "Shelf" }));
 
-    const series = await json<FavoriteBody>(
+    // Collecting a series answers with the runtime's result envelope, not the bare item: it also
+    // reports any auto-link the external ids triggered. Chapter and page PUTs have nothing to add,
+    // so they answer with the item itself.
+    const { item: series } = await json<{ item: FavoriteBody }>(
       await send("PUT", "/library/collected/series/demo/s9", { seriesTitle: "Nine", author: "A" }),
     );
     expect(series).toMatchObject({ type: "series", seriesId: "s9", seriesTitle: "Nine" });
@@ -424,7 +427,7 @@ describe("series and chapter favorites over HTTP", () => {
 
   test("series/chapter PUTs merge like page PUTs do", async () => {
     await send("PUT", "/library/collected/series/demo/s9", { seriesTitle: "Nine", author: "A" });
-    const again = await json<FavoriteBody & { author?: string }>(
+    const { item: again } = await json<{ item: FavoriteBody & { author?: string } }>(
       await send("PUT", "/library/collected/series/demo/s9", { seriesTitle: "Nine Renamed" }),
     );
     expect(again).toMatchObject({ seriesTitle: "Nine Renamed", author: "A" }); // omitted preserved

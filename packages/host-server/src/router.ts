@@ -55,13 +55,13 @@ export interface RouterOptions {
   registry?: RegistryProvider;
   /** Local library service — enables the optional `/library` tracking endpoints when provided. */
   library?: Library;
-  /** Runtime orchestration layer — required alongside `library` for read-sync and richer addToLibrary. */
+  /** Runtime orchestration layer — required alongside `library` for read-sync and richer series collection. */
   runtime?: ComicalRuntime;
   /**
    * Cover byte cache for library entries — with it (alongside `library`), the host captures each
    * entry's cover image into `blobs` (fetched through `fetchPage`, the same seam the download
    * engine uses, so `/img-proxy` referer rules are reused) and serves it back at
-   * `/library/entries/:b/:s/cover`; the offline details fallback then points `thumbnailUrl` at that
+   * `/library/collected/series/:b/:s/cover`; the offline details fallback then points `thumbnailUrl` at that
    * route, making covers render with the source unreachable.
    */
   covers?: { blobs: BlobStore; fetchPage: PageFetcher };
@@ -574,7 +574,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       const key = entryKey(bridgeId, seriesId);
       const detail = await libMeta.getCachedDetail(key);
       if (!detail) return; // no doc to hang the pointer on
-      const url = (await libMeta.getEntry(key))?.thumbnailUrl;
+      const url = (await libMeta.getSeries(key))?.thumbnailUrl;
       if (!url) return;
       if (detail.coverFile && detail.coverSourceUrl === url) return; // captured and still current
       const fetched = await covers.fetchPage({ bridgeId, seriesId, chapterId: "__cover__" }, { index: 0, sourceUrl: url });
@@ -623,7 +623,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     const info = cached.coverFile
       ? {
           ...cached.info,
-          thumbnailUrl: `/library/entries/${encodeURIComponent(c.req.param("id"))}/${encodeURIComponent(c.req.param("seriesId"))}/cover`,
+          thumbnailUrl: `/library/collected/series/${encodeURIComponent(c.req.param("id"))}/${encodeURIComponent(c.req.param("seriesId"))}/cover`,
         }
       : cached.info;
     return c.json({ ...info, cached: true, cachedAt: cached.cachedAt });
@@ -895,22 +895,50 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     // coordinates, a supplied snapshot field wins as the fresher value, an omitted one is
     // preserved (see Library.collectPage's doc for why partial PUTs are a supported pattern).
 
+    // Collecting a series is what "add to library" used to be, so this route carries what POST
+    // /library/entries did. The body is optional where a runtime is attached: a missing
+    // `seriesTitle` is resolved from the bridge along with the thumbnail, author and external ids,
+    // and the offline detail + chapter seed are captured. A library-only host supplies it itself.
     app.put("/library/collected/series/:bridgeId/:seriesId", async (c) => {
-      const b = await body<{ seriesTitle?: string; thumbnailUrl?: string; author?: string }>(c);
-      if (!b?.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
-      return c.json(
-        await lib.collectSeries(
-          { bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") },
-          {
-            seriesTitle: b.seriesTitle,
-            ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
-            ...(b.author !== undefined && { author: b.author }),
-          },
-        ),
-      );
+      const bridgeId = c.req.param("bridgeId");
+      const seriesId = c.req.param("seriesId");
+      const b =
+        (await body<{
+          seriesTitle?: string;
+          thumbnailUrl?: string;
+          author?: string;
+          externalIds?: Record<string, string | number>;
+          collectionIds?: string[];
+        }>(c)) ?? {};
+      const snap = {
+        ...(b.seriesTitle !== undefined && { seriesTitle: b.seriesTitle }),
+        ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
+        ...(b.author !== undefined && { author: b.author }),
+        ...(b.externalIds !== undefined && { externalIds: b.externalIds }),
+        ...(b.collectionIds !== undefined && { collectionIds: b.collectionIds }),
+      };
+      if (!runtime) {
+        if (!b.seriesTitle) return c.json({ error: "seriesTitle is required" }, 400);
+        return c.json(await lib.collectSeries({ bridgeId, seriesId }, { ...snap, seriesTitle: b.seriesTitle }));
+      }
+      try {
+        const result = await runtime.collectSeries(bridgeId, seriesId, snap);
+        // Guaranteed-offline cover: capture the collected series' cover bytes (fire-and-forget).
+        captureCover(bridgeId, seriesId);
+        return c.json(result);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
+      }
     });
+
+    // Uncollecting a series takes its satellite documents with it (see Library.removeSeries) —
+    // including the offline detail that holds the cover pointer, so the blob is read first and
+    // unlinked after. Its chapter and page items are NOT touched: those memberships are their own.
     app.delete("/library/collected/series/:bridgeId/:seriesId", async (c) => {
+      const coverFile = covers ? (await lib.getCachedDetail(keyOf(c)))?.coverFile : undefined;
       await lib.uncollectItem({ type: "series", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") });
+      if (coverFile) await covers!.blobs.remove([coverFile]).catch(() => {});
       return c.json({ ok: true });
     });
 
@@ -1038,36 +1066,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ diskBytes: docs + coverBytes });
     });
 
-    // Entries
-    app.post("/library/entries", async (c) => {
-      const b = await body<{
-        bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string;
-        author?: string;
-        externalIds?: Record<string, string | number>;
-      }>(c);
-      if (!b?.bridgeId || !b.seriesId) {
-        return c.json({ error: "bridgeId and seriesId are required" }, 400);
-      }
-      try {
-        const result = await runtime!.addToLibrary(b.bridgeId, b.seriesId, {
-          ...(b.title !== undefined && { title: b.title }),
-          ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
-          ...(b.author !== undefined && { author: b.author }),
-          ...(b.externalIds !== undefined && { externalIds: b.externalIds }),
-        });
-        // Guaranteed-offline cover: capture the new entry's cover bytes (fire-and-forget).
-        captureCover(b.bridgeId, b.seriesId);
-        return c.json(result, 201);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return c.json({ error: msg }, msg.includes("not found") ? 404 : 500);
-      }
-    });
-
     // The captured cover bytes for a library entry — the offline details fallback points
     // `thumbnailUrl` here. Moderate caching: unlike downloaded pages, a cover can change.
     if (covers?.blobs.read) {
-      app.get("/library/entries/:bridgeId/:seriesId/cover", async (c) => {
+      app.get("/library/collected/series/:bridgeId/:seriesId/cover", async (c) => {
         const detail = await lib.getCachedDetail(keyOf(c));
         if (!detail?.coverFile) return c.json({ error: "no cover captured" }, 404);
         const data = await covers.blobs.read!(detail.coverFile);
@@ -1078,37 +1080,29 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       });
     }
 
-    app.get("/library/entries/:bridgeId/:seriesId", async (c) => {
+    app.get("/library/collected/series/:bridgeId/:seriesId", async (c) => {
       const key = keyOf(c);
-      const entry = await lib.getEntry(key);
-      if (!entry) return c.json({ error: "not in library" }, 404);
+      const entry = await lib.getSeries(key);
+      if (!entry) return c.json({ error: "series not collected" }, 404);
       return c.json({ entry, progress: await lib.getProgress(key), resume: await lib.getResume(key) });
     });
 
-    app.delete("/library/entries/:bridgeId/:seriesId", async (c) => {
-      // Read the cover pointer before the cascade wipes the detail doc, then unlink the blob.
-      const coverFile = covers ? (await lib.getCachedDetail(keyOf(c)))?.coverFile : undefined;
-      await lib.removeSeries(keyOf(c));
-      if (coverFile) await covers!.blobs.remove([coverFile]).catch(() => {});
-      return c.json({ ok: true });
-    });
-
-    app.post("/library/entries/:bridgeId/:seriesId/sync", async (c) => {
+    app.post("/library/collected/series/:bridgeId/:seriesId/sync", async (c) => {
       const b = await body<{ chapters?: Chapter[] }>(c);
       if (!b?.chapters) return c.json({ error: "chapters is required" }, 400);
-      return withLibraryEntry(c, () => lib.syncChapters(keyOf(c), b.chapters!));
+      return withCollectedSeries(c, () => lib.syncChapters(keyOf(c), b.chapters!));
     });
 
-    app.get("/library/entries/:bridgeId/:seriesId/progress", async (c) =>
+    app.get("/library/collected/series/:bridgeId/:seriesId/progress", async (c) =>
       c.json(await lib.getProgress(keyOf(c))),
     );
 
-    app.put("/library/entries/:bridgeId/:seriesId/progress/:chapterId", async (c) => {
+    app.put("/library/collected/series/:bridgeId/:seriesId/progress/:chapterId", async (c) => {
       const b = (await body<{ read?: boolean; lastPage?: number; pageCount?: number; chapterName?: string; number?: number }>(c)) ?? {};
       const chapterId = c.req.param("chapterId");
       const bridgeId = c.req.param("bridgeId");
       const seriesId = c.req.param("seriesId");
-      return withLibraryEntry(c, () => {
+      return withCollectedSeries(c, () => {
         if (b.lastPage !== undefined) {
           return runtime!.setProgress(bridgeId, seriesId, chapterId, b.lastPage, b.pageCount, b.chapterName, b.number);
         }
@@ -1116,12 +1110,12 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       });
     });
 
-    app.post("/library/entries/:bridgeId/:seriesId/read-up-to", async (c) => {
+    app.post("/library/collected/series/:bridgeId/:seriesId/read-up-to", async (c) => {
       const b = await body<{ chapters?: Chapter[]; chapterId?: string }>(c);
       if (!b?.chapters || !b.chapterId) return c.json({ error: "chapters and chapterId are required" }, 400);
       const bridgeId = c.req.param("bridgeId");
       const seriesId = c.req.param("seriesId");
-      return withLibraryEntry(c, () => runtime!.markReadUpTo(bridgeId, seriesId, b.chapters!, b.chapterId!));
+      return withCollectedSeries(c, () => runtime!.markReadUpTo(bridgeId, seriesId, b.chapters!, b.chapterId!));
     });
 
     // Groups
@@ -1149,14 +1143,14 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
     });
 
-    app.post("/library/entries/:bridgeId/:seriesId/join-group", async (c) => {
+    app.post("/library/collected/series/:bridgeId/:seriesId/join-group", async (c) => {
       const b = await body<{ groupId?: string }>(c);
       if (!b?.groupId) return c.json({ error: "groupId is required" }, 400);
       try { await lib.joinGroup(b.groupId, keyOf(c)); return c.json({ ok: true }); }
       catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 400); }
     });
 
-    app.delete("/library/entries/:bridgeId/:seriesId/leave-group", async (c) => {
+    app.delete("/library/collected/series/:bridgeId/:seriesId/leave-group", async (c) => {
       await lib.leaveGroup(keyOf(c));
       return c.json({ ok: true });
     });
@@ -1202,7 +1196,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     // `runtime ? … : lib` fallback (rather than the `runtime!` those routes use) is deliberate: this
     // route predates the runtime requirement, so a library-only host must keep its 200.
     app.post("/library/activity/:bridgeId/:seriesId/read", async (c) =>
-      withLibraryEntry(c, () =>
+      withCollectedSeries(c, () =>
         runtime
           ? runtime.markActivityRead(c.req.param("bridgeId"), c.req.param("seriesId"))
           : lib.markActivityRead(c.req.param("bridgeId"), c.req.param("seriesId")),
@@ -1210,21 +1204,21 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     );
 
     // Tracker links — per-entry associations to external tracker services
-    app.get("/library/entries/:bridgeId/:seriesId/tracker-links", async (c) =>
+    app.get("/library/collected/series/:bridgeId/:seriesId/tracker-links", async (c) =>
       c.json(await lib.listTrackerLinks(keyOf(c))),
     );
 
-    app.post("/library/entries/:bridgeId/:seriesId/tracker-links", async (c) => {
+    app.post("/library/collected/series/:bridgeId/:seriesId/tracker-links", async (c) => {
       const b = await body<{ trackerId?: string; externalId?: string | number }>(c);
       if (!b?.trackerId || b.externalId === undefined) {
         return c.json({ error: "trackerId and externalId are required" }, 400);
       }
-      return withLibraryEntry(c, () =>
+      return withCollectedSeries(c, () =>
         runtime!.linkTracker(c.req.param("bridgeId"), c.req.param("seriesId"), b.trackerId!, b.externalId!),
       );
     });
 
-    app.delete("/library/entries/:bridgeId/:seriesId/tracker-links/:trackerId", async (c) => {
+    app.delete("/library/collected/series/:bridgeId/:seriesId/tracker-links/:trackerId", async (c) => {
       await lib.unlinkTracker(keyOf(c), c.req.param("trackerId"));
       return c.json({ ok: true });
     });
@@ -1232,7 +1226,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     // Two-way sync of one entry's link with its tracker (manual "Sync" action on a single row):
     // whichever side has read further wins — see `syncEntryWithTracker`. The scoped counterpart to
     // POST /trackers/:id/sync, which is still a whole-library PULL.
-    app.post("/library/entries/:bridgeId/:seriesId/tracker-links/:trackerId/sync", async (c) => {
+    app.post("/library/collected/series/:bridgeId/:seriesId/tracker-links/:trackerId/sync", async (c) => {
       try {
         return c.json(
           await runtime!.syncEntryWithTracker(c.req.param("bridgeId"), c.req.param("seriesId"), c.req.param("trackerId")),
@@ -1902,7 +1896,7 @@ async function withBridge(
 }
 
 /** Run a library mutation, mapping a missing-entry error to 404 and a void result to `{ ok: true }`. */
-async function withLibraryEntry(
+async function withCollectedSeries(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   c: any,
   fn: () => Promise<unknown>,
@@ -1912,7 +1906,7 @@ async function withLibraryEntry(
     return c.json(result === undefined ? { ok: true } : result);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    const code = msg.includes("not in library") || msg.includes("not found") ? 404 : 500;
+    const code = msg.includes("not collected") || msg.includes("not found") ? 404 : 500;
     return c.json({ error: msg }, code);
   }
 }

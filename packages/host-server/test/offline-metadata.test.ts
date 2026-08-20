@@ -29,6 +29,8 @@ const COVERS_DIR = join(DATA_DIR, "library", "covers");
 const get = (p: string) => fetch(`${baseUrl}${p}`);
 const post = (p: string, body: unknown) =>
   fetch(`${baseUrl}${p}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+const put = (p: string, body: unknown) =>
+  fetch(`${baseUrl}${p}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 beforeAll(async () => {
   rmSync(DATA_DIR, { recursive: true, force: true });
@@ -69,24 +71,21 @@ async function waitForOk(probe: () => Promise<Response>, timeoutMs = 5_000): Pro
 
 describe("cover bytes", () => {
   test("captured on library-add, served back, removed with the entry", async () => {
-    const res = await post("/library/entries", {
-      bridgeId: "example",
-      seriesId: "sherlock",
-      title: "Sherlock",
-      thumbnailUrl: `${fixtureUrl}/img/sherlock-cover.png`,
+    const res = await put("/library/collected/series/example/sherlock", { seriesTitle: "Sherlock",
+      thumbnailUrl: `${fixtureUrl }/img/sherlock-cover.png`,
     });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
 
     // Capture is fire-and-forget — poll the cover route until the bytes land.
-    const cover = await waitForOk(() => get("/library/entries/example/sherlock/cover"));
+    const cover = await waitForOk(() => get("/library/collected/series/example/sherlock/cover"));
     expect(cover.ok).toBe(true);
     expect(cover.headers.get("Content-Type")).toBe("image/png");
     expect((await cover.arrayBuffer()).byteLength).toBeGreaterThan(0);
     expect(existsSync(join(COVERS_DIR, "example"))).toBe(true);
 
     // Removing the entry unlinks the blob and the route 404s again.
-    await fetch(`${baseUrl}/library/entries/example/sherlock`, { method: "DELETE" });
-    expect((await get("/library/entries/example/sherlock/cover")).status).toBe(404);
+    await fetch(`${baseUrl}/library/collected/series/example/sherlock`, { method: "DELETE" });
+    expect((await get("/library/collected/series/example/sherlock/cover")).status).toBe(404);
     expect(existsSync(join(COVERS_DIR, "example", "sherlock.png"))).toBe(false);
   });
 
@@ -95,21 +94,21 @@ describe("cover bytes", () => {
     const urlA = `${fixtureUrl}/img/moby-cover-a.png`;
     const urlB = `${fixtureUrl}/img/moby-cover-b.png`;
 
-    await post("/library/entries", { bridgeId: "example", seriesId: "moby-dick", title: "Moby-Dick", thumbnailUrl: urlA });
-    await waitForOk(() => get("/library/entries/example/moby-dick/cover"));
+    await put("/library/collected/series/example/moby-dick", { seriesTitle: "Moby-Dick", thumbnailUrl: urlA  });
+    await waitForOk(() => get("/library/collected/series/example/moby-dick/cover"));
     expect((await lib.getCachedDetail(key))?.coverSourceUrl).toBe(urlA);
 
     // The source changed its cover art (surfacing here as a refreshed snapshot thumbnail) — the
     // next capture trigger sees the mismatch and re-captures from the new URL.
-    await post("/library/entries", { bridgeId: "example", seriesId: "moby-dick", title: "Moby-Dick", thumbnailUrl: urlB });
+    await put("/library/collected/series/example/moby-dick", { seriesTitle: "Moby-Dick", thumbnailUrl: urlB  });
     const deadline = Date.now() + 5_000;
     while ((await lib.getCachedDetail(key))?.coverSourceUrl !== urlB && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
     }
     expect((await lib.getCachedDetail(key))?.coverSourceUrl).toBe(urlB);
-    expect((await get("/library/entries/example/moby-dick/cover")).ok).toBe(true);
+    expect((await get("/library/collected/series/example/moby-dick/cover")).ok).toBe(true);
 
-    await fetch(`${baseUrl}/library/entries/example/moby-dick`, { method: "DELETE" });
+    await fetch(`${baseUrl}/library/collected/series/example/moby-dick`, { method: "DELETE" });
   });
 });
 
@@ -127,16 +126,16 @@ describe("entry snapshot reconciliation", () => {
     const base = `http://localhost:${srv.port}`;
     try {
       // Seed a deliberately stale snapshot (wrong title/author).
-      await lib2.addSeries({ bridgeId: "example", seriesId: "dracula", title: "Wrong Old Title", author: "Nobody" });
+      await lib2.collectSeries({ bridgeId: "example", seriesId: "dracula" }, { seriesTitle: "Wrong Old Title", author: "Nobody" });
 
       // A live series-page visit write-throughs the fresh info and reconciles the snapshot.
       expect((await fetch(`${base}/bridges/example/series/dracula`)).ok).toBe(true);
       const deadline = Date.now() + 5_000;
-      while ((await lib2.getEntry("example:dracula"))?.title !== "Dracula" && Date.now() < deadline) {
+      while ((await lib2.getSeries("example:dracula"))?.seriesTitle !== "Dracula" && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 50));
       }
-      const entry = await lib2.getEntry("example:dracula");
-      expect(entry?.title).toBe("Dracula");
+      const entry = await lib2.getSeries("example:dracula");
+      expect(entry?.seriesTitle).toBe("Dracula");
       expect(entry?.author).toBe("Bram Stoker");
     } finally {
       srv.stop(true);
@@ -146,19 +145,16 @@ describe("entry snapshot reconciliation", () => {
 
 describe("offline metadata fallback", () => {
   test("library series stay renderable after the source goes away; non-library series keep erroring", async () => {
-    // Add to library — addToLibrary captures the detail + seeds the chapter list, and the cover
+    // Collect the series — collectSeries captures the detail + seeds the chapter list, and the cover
     // (supplied here as a fixture-local URL so no test traffic leaves the machine) is captured too.
     expect(
       (
-        await post("/library/entries", {
-          bridgeId: "example",
-          seriesId: "alice",
-          title: "Alice's Adventures in Wonderland",
-          thumbnailUrl: `${fixtureUrl}/img/alice-cover.png`,
+        await put("/library/collected/series/example/alice", { seriesTitle: "Alice's Adventures in Wonderland",
+          thumbnailUrl: `${fixtureUrl }/img/alice-cover.png`,
         })
       ).status,
-    ).toBe(201);
-    await waitForOk(() => get("/library/entries/example/alice/cover"));
+    ).toBe(200);
+    await waitForOk(() => get("/library/collected/series/example/alice/cover"));
 
     // Live visits still work and (re)write the cache through.
     const liveDetail = (await (await get("/bridges/example/series/alice")).json()) as { title: string; cached?: boolean };
@@ -178,8 +174,8 @@ describe("offline metadata fallback", () => {
     expect(cachedDetail.title.length).toBeGreaterThan(0);
     // The captured cover replaces the (now unreachable) live thumbnail with this host's own route,
     // which still serves the bytes from disk with the source down.
-    expect(cachedDetail.thumbnailUrl).toBe("/library/entries/example/alice/cover");
-    expect((await get("/library/entries/example/alice/cover")).ok).toBe(true);
+    expect(cachedDetail.thumbnailUrl).toBe("/library/collected/series/example/alice/cover");
+    expect((await get("/library/collected/series/example/alice/cover")).ok).toBe(true);
 
     const cachedChaptersRes = await get("/bridges/example/series/alice/chapters");
     expect(cachedChaptersRes.status).toBe(200);
@@ -197,7 +193,7 @@ describe("offline metadata fallback", () => {
   test("a library entry survives its bridge being uninstalled entirely", async () => {
     // Seed cache docs for a bridge id that doesn't exist on this host — the "uninstalled" case,
     // where withContentBridge 404s before any bridge call.
-    await lib.addSeries({ bridgeId: "ghost", seriesId: "g1", title: "Ghost Series" });
+    await lib.collectSeries({ bridgeId: "ghost", seriesId: "g1" }, { seriesTitle: "Ghost Series" });
     await lib.cacheSeriesDetail("ghost:g1", { id: "g1", title: "Ghost Series", description: "Still here." });
     await lib.syncChapters("ghost:g1", [{ id: "c1", name: "Ch 1", number: 1 }]);
 

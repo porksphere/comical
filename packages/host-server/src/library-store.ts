@@ -2,7 +2,6 @@
  * Filesystem-backed `LibraryStore`. Mirrors `SettingsStore`'s style: an in-memory cache with
  * write-through to JSON under `{dir}/`:
  *
- *   {dir}/entries.json                  → { [entryKey]: LibraryEntry }
  *   {dir}/collection-items/{key}.json     → { [collectionItemId]: CollectionItem }
  *   {dir}/progress/{encoded-key}.json   → { [chapterId]: ChapterProgress }
  *
@@ -10,7 +9,7 @@
  */
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { activityKey, entryKey, parseCollectionItemId, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type Collection, type CollectionItem, type CollectionItemScope, type HistoryItem, type LibraryEntry, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
+import { activityKey, entryKey, parseCollectionItemId, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type Collection, type CollectionItem, type CollectionItemScope, type HistoryItem, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -21,7 +20,6 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
 }
 
 export class FileLibraryStore implements LibraryStore {
-  private entriesCache?: Map<string, LibraryEntry>;
   private groupsCache?: Map<string, SeriesGroup>;
   private progressCache = new Map<string, Map<string, ChapterProgress>>();
   private trackerLinksCache?: Map<string, TrackerLink[]>;
@@ -32,9 +30,6 @@ export class FileLibraryStore implements LibraryStore {
 
   constructor(private readonly dir: string) {}
 
-  private get entriesPath(): string {
-    return join(this.dir, "entries.json");
-  }
   private get groupsPath(): string {
     return join(this.dir, "groups.json");
   }
@@ -61,38 +56,6 @@ export class FileLibraryStore implements LibraryStore {
   }
   private cachedChaptersPath(key: string): string {
     return join(this.dir, "chapters-cache", `${encodeURIComponent(key)}.json`);
-  }
-
-  // ── Entries ──────────────────────────────────────────────────────────────────
-
-  private async entries(): Promise<Map<string, LibraryEntry>> {
-    if (!this.entriesCache) {
-      // Stray keys from retired schema fields (`categoryIds`, `listIds`) may linger in old
-      // documents; they are inert and simply carried, never read.
-      const obj = await readJson<Record<string, LibraryEntry>>(this.entriesPath, {});
-      this.entriesCache = new Map(Object.entries(obj));
-    }
-    return this.entriesCache;
-  }
-
-  private async flushEntries(): Promise<void> {
-    const obj = Object.fromEntries((await this.entries()).entries());
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.entriesPath, JSON.stringify(obj, null, 2), "utf8");
-  }
-
-  async listEntries(): Promise<LibraryEntry[]> {
-    return [...(await this.entries()).values()];
-  }
-  async getEntry(key: string): Promise<LibraryEntry | undefined> {
-    return (await this.entries()).get(key);
-  }
-  async putEntry(entry: LibraryEntry): Promise<void> {
-    (await this.entries()).set(`${entry.bridgeId}:${entry.seriesId}`, entry);
-    await this.flushEntries();
-  }
-  async deleteEntry(key: string): Promise<void> {
-    if ((await this.entries()).delete(key)) await this.flushEntries();
   }
 
   // ── Disk usage ───────────────────────────────────────────────────────────────

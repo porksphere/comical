@@ -95,11 +95,11 @@ describe("library routes absent without Library service", () => {
     expect((await fetch(`${baseUrl}/library`)).status).toBe(404);
   });
 
-  test("POST /library/entries → 404 when no library is wired", async () => {
-    const res = await fetch(`${baseUrl}/library/entries`, {
-      method: "POST",
+  test("PUT /library/collected/series/… → 404 when no library is wired", async () => {
+    const res = await fetch(`${baseUrl}/library/collected/series/x/y`, {
+      method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ bridgeId: "x", seriesId: "y" }),
+      body: JSON.stringify({ seriesTitle: "T" }),
     });
     expect(res.status).toBe(404);
   });

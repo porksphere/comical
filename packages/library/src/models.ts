@@ -5,9 +5,10 @@
  * collection and reading progress. It spans every installed bridge — an entry is keyed by the pair
  * `(bridgeId, seriesId)` — and is deliberately independent of any bridge's backend `favorites`.
  *
- * A `LibraryEntry` caches a small display snapshot (title/thumbnail/author) of the series so the
- * library and history render without re-hitting the bridge, and so entries survive a bridge being
- * uninstalled (they grey out rather than vanish).
+ * A `CollectionSeriesItem` caches a small display snapshot (title/thumbnail/author) of the series so
+ * the library and history render without re-hitting the bridge, and so collected series survive a
+ * bridge being uninstalled (they grey out rather than vanish). There is no separate library entry:
+ * being "in the library" IS having a series item.
  */
 import { z } from "zod";
 import { chapterSchema, seriesInfoSchema, seriesRevisionSchema } from "@comical/contract";
@@ -54,16 +55,16 @@ export const cachedSeriesDetailSchema = z.object({
    *  pointer for guaranteed-offline covers (the bytes themselves live in a host `BlobStore`).
    *  Absent until the host captures the cover. */
   coverFile: z.string().optional(),
-  /** The URL `coverFile` was captured from. When the entry's live `thumbnailUrl` no longer matches
+  /** The URL `coverFile` was captured from. When the item's live `thumbnailUrl` no longer matches
    *  (the source changed its cover art), the host re-captures on the next browse. */
   coverSourceUrl: z.string().optional(),
 });
 export type CachedSeriesDetail = z.infer<typeof cachedSeriesDetailSchema>;
 
 /**
- * The full renderable chapter list for offline serving. Lives BESIDE the entry (its own store doc):
- * it's the bulk of the metadata, and `knownChapters` on the entry stays the slim unread-count
- * projection it always was.
+ * The full renderable chapter list for offline serving. Lives BESIDE the series item (its own
+ * store doc): it's the bulk of the metadata, and `knownChapters` on the item stays the slim
+ * unread-count projection it always was.
  */
 export const cachedChaptersSchema = z.object({
   chapters: z.array(chapterSchema),
@@ -71,51 +72,10 @@ export const cachedChaptersSchema = z.object({
 });
 export type CachedChapters = z.infer<typeof cachedChaptersSchema>;
 
-/** One tracked series in the library. */
-export const libraryEntrySchema = z.object({
-  bridgeId: z.string().min(1),
-  seriesId: z.string().min(1),
-  /** Cached display snapshot so the library/history render offline and survive bridge removal. */
-  title: z.string().min(1),
-  thumbnailUrl: z.string().url().optional(),
-  author: z.string().optional(),
-  addedAt: z.number().int(),
-  updatedAt: z.number().int(),
-  /** Resume cache, updated on every read so history/resume need no progress scan. */
-  lastReadChapterId: z.string().optional(),
-  lastReadChapterName: z.string().optional(),
-  lastReadAt: z.number().int().optional(),
-  /**
-   * Chapters known at the last `syncChapters`, for new-chapter detection + unread counts. Carries
-   * each chapter's `number`/`languageCode` so both collapse by logical chapter `(number, language)`.
-   */
-  knownChapters: z.array(knownChapterSchema).default([]),
-  chaptersSyncedAt: z.number().int().optional(),
-  /**
-   * The source's revision fingerprint as of the last successful chapter sync, when the bridge
-   * supports the batch update check. The next check compares against this and skips the full
-   * `getChapters` only when they match exactly. Absent (bridge can't batch, or never synced) means
-   * every check does the full fetch — the safe default, since "unknown" must never read as
-   * "unchanged".
-   */
-  revision: seriesRevisionSchema.optional(),
-  /**
-   * If set, this entry belongs to a `SeriesGroup` (same title from a different bridge). The group
-   * id is the UUID of the group; use the store to resolve it to a `SeriesGroup`.
-   */
-  seriesGroupId: z.string().optional(),
-  /**
-   * Cross-service identifiers persisted from `SeriesInfo.externalIds` at add-time. Keyed by
-   * tracker id (e.g. "anilist", "mal"). Used for auto-linking groups and for tracker sync matching.
-   */
-  externalIds: z.record(z.string(), z.union([z.string().min(1), z.number().int().positive()])).optional(),
-});
-export type LibraryEntry = z.infer<typeof libraryEntrySchema>;
-
 /**
- * A user-created or auto-detected grouping of library entries that represent the same series
- * across different bridges. One entry is the `primary` (preferred source for reading); all are
- * `members`. Progress propagation and library grid deduplication use the group.
+ * A user-created or auto-detected grouping of collected series that represent the same title
+ * across different bridges. One is the `primary` (preferred source for reading); all are `members`.
+ * Progress propagation and library grid deduplication use the group.
  */
 export const seriesGroupSchema = z.object({
   id: z.string().min(1),
@@ -177,7 +137,7 @@ export interface PageItemCoord extends ChapterItemCoord {
   pageIndex: number;
 }
 
-/** Typed coordinates for any favoritable target. */
+/** Typed coordinates for any collectable target. */
 export type CollectionItemCoord =
   | ({ type: "series" } & SeriesItemCoord)
   | ({ type: "chapter" } & ChapterItemCoord)
@@ -217,13 +177,19 @@ export function parseCollectionItemId(id: string): CollectionItemCoord | undefin
 }
 
 // Display snapshots, supplied by the client when favoriting. Denormalised for the same reason
-// `LibraryEntry` caches one: a tile must render with the bridge uninstalled or the source down,
+// a series item caches one: a tile must render with the bridge uninstalled or the source down,
 // long after the coordinates stop resolving.
 
 export const seriesItemSnapshotSchema = z.object({
   seriesTitle: z.string().min(1),
   thumbnailUrl: z.string().url().optional(),
   author: z.string().optional(),
+  /** Cross-service ids from `SeriesInfo.externalIds`, keyed by tracker id — persisted for
+   *  auto-grouping and tracker sync matching. */
+  externalIds: z.record(z.string(), z.union([z.string().min(1), z.number().int().positive()])).optional(),
+  /** Collections to file the series into, for callers that collect and file in one step. NOT stored
+   *  on the item as a snapshot field — memberships are `collectionIds` on the item itself. */
+  collectionIds: z.array(z.string()).optional(),
 });
 export type SeriesItemSnapshot = z.infer<typeof seriesItemSnapshotSchema>;
 
@@ -283,6 +249,15 @@ const collectionItemBase = {
   stale: z.boolean().optional(),
 };
 
+/**
+ * A collected series — and the ONLY record of a tracked series. There is no separate library entry:
+ * being "in the library" IS having a series item (which under pure collections means being in at
+ * least one collection). It therefore carries both the display snapshot and every piece of tracking
+ * machinery: read state cache, chapter baseline, tracker identity, grouping.
+ *
+ * Satellite documents (progress, cached detail/chapters, tracker links, activity) stay keyed by
+ * `(bridgeId, seriesId)` beside it; their lifecycle hangs off this item.
+ */
 export const collectionSeriesItemSchema = z.object({
   type: z.literal("series"),
   bridgeId: z.string().min(1),
@@ -290,8 +265,45 @@ export const collectionSeriesItemSchema = z.object({
   ...collectionItemBase,
   thumbnailUrl: z.string().url().optional(),
   author: z.string().optional(),
+  updatedAt: z.number().int(),
+  /** Resume cache, updated on every read so history/resume need no progress scan. */
+  lastReadChapterId: z.string().optional(),
+  lastReadChapterName: z.string().optional(),
+  lastReadAt: z.number().int().optional(),
+  /**
+   * Chapters known at the last `syncChapters`, for new-chapter detection + unread counts. Carries
+   * each chapter's `number`/`languageCode` so both collapse by logical chapter `(number, language)`.
+   */
+  knownChapters: z.array(knownChapterSchema).default([]),
+  chaptersSyncedAt: z.number().int().optional(),
+  /**
+   * The source's revision fingerprint as of the last successful chapter sync, when the bridge
+   * supports the batch update check. The next check compares against this and skips the full
+   * `getChapters` only when they match exactly. Absent (bridge can't batch, or never synced) means
+   * every check does the full fetch — the safe default, since "unknown" must never read as
+   * "unchanged".
+   */
+  revision: seriesRevisionSchema.optional(),
+  /**
+   * If set, this series belongs to a `SeriesGroup` (same title from a different bridge). The group
+   * id is the UUID of the group; use the store to resolve it to a `SeriesGroup`.
+   */
+  seriesGroupId: z.string().optional(),
+  /**
+   * Cross-service identifiers persisted from `SeriesInfo.externalIds` at collect time. Keyed by
+   * tracker id (e.g. "anilist", "mal"). Used for auto-linking groups and for tracker sync matching.
+   */
+  externalIds: z.record(z.string(), z.union([z.string().min(1), z.number().int().positive()])).optional(),
 });
 export type CollectionSeriesItem = z.infer<typeof collectionSeriesItemSchema>;
+
+/**
+ * A collected series augmented with derived, non-persisted fields a host renders directly.
+ * `unreadCount` = logical chapters `(number, language)` with no read copy in any scanlation group.
+ */
+export interface CollectionSeriesItemView extends CollectionSeriesItem {
+  unreadCount: number;
+}
 
 export const collectionChapterItemSchema = z.object({
   type: z.literal("chapter"),
@@ -377,14 +389,6 @@ export const collectionSchema = z.object({
   order: z.number(),
 });
 export type Collection = z.infer<typeof collectionSchema>;
-
-/**
- * A library entry augmented with derived, non-persisted fields a host renders directly.
- * `unreadCount` = logical chapters `(number, language)` with no read copy in any scanlation group.
- */
-export interface LibraryEntryView extends LibraryEntry {
-  unreadCount: number;
-}
 
 /** A recently-read series (one row per series for v1), newest first. Derived from entries. */
 export interface HistoryItem {

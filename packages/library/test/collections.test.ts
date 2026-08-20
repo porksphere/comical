@@ -435,20 +435,84 @@ describe("favorite collections", () => {
   });
 });
 
-describe("independence from the library", () => {
-  test("a page can be favorited from a series that was never added to the library", async () => {
+describe("independence from the series item", () => {
+  test("a page can be collected from a series that was never collected itself", async () => {
     const { lib } = makeLibrary();
     await lib.collectPage(coord(), { seriesTitle: "Never Added" });
-    expect(await lib.isInLibrary("demo:s1")).toBe(false);
+    expect(await lib.isCollected("demo:s1")).toBe(false);
     expect(await lib.getCollectionItems()).toHaveLength(1);
   });
 
-  test("removing the series from the library leaves its favorites alone", async () => {
+  test("removing the series leaves its chapter and page items alone", async () => {
     const { lib } = makeLibrary();
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s1", title: "Series One" });
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "Series One" });
     await lib.collectPage(coord(), { seriesTitle: "Series One" });
     await lib.removeSeries("demo:s1");
     expect(await lib.getCollectionItems()).toHaveLength(1);
+  });
+});
+
+/**
+ * Since the library dissolved into collections, a SERIES item is the only record that owns the
+ * series' satellite documents — progress, activity, the offline detail and chapter caches, a group
+ * membership. Every route that can zero one therefore has to run the same cascade, or the store
+ * silently accumulates documents no item points at any more.
+ */
+describe("uncollecting a series cascades to its satellite documents", () => {
+  /** A collected, filed series with progress and both cached documents on it. */
+  async function seedSeries(lib: Library, collectionIds: string[]) {
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "Series One", collectionIds });
+    await lib.cacheSeriesDetail("demo:s1", { id: "s1", title: "Series One" });
+    await lib.syncChapters("demo:s1", [{ id: "c1", name: "Ch 1", number: 1 }]);
+    await lib.markRead("demo:s1", "c1", true);
+    await lib.collectPage(coord(), { seriesTitle: "Series One" });
+  }
+
+  /** Nothing of the series survives except its page item, whose membership is its own. */
+  async function expectCascaded(lib: Library) {
+    expect(await lib.getSeries("demo:s1")).toBeUndefined();
+    expect(await lib.getProgress("demo:s1")).toHaveLength(0);
+    expect(await lib.getCachedDetail("demo:s1")).toBeUndefined();
+    expect(await lib.getCachedChapters("demo:s1")).toBeUndefined();
+    expect((await lib.getCollectionItems()).map((i) => i.type)).toEqual(["page"]);
+  }
+
+  test("an explicit uncollect cascades", async () => {
+    const { lib } = makeLibrary();
+    const shelf = await lib.createCollection("Shelf");
+    await seedSeries(lib, [shelf.id]);
+
+    await lib.uncollectItem({ type: "series", bridgeId: "demo", seriesId: "s1" });
+    await expectCascaded(lib);
+  });
+
+  test("emptying its memberships cascades", async () => {
+    const { lib } = makeLibrary();
+    const shelf = await lib.createCollection("Shelf");
+    await seedSeries(lib, [shelf.id]);
+
+    expect(await lib.setItemCollections(collectionItemId({ type: "series", bridgeId: "demo", seriesId: "s1" }), [])).toBeUndefined();
+    await expectCascaded(lib);
+  });
+
+  test("deleting its last collection cascades", async () => {
+    const { lib } = makeLibrary();
+    const shelf = await lib.createCollection("Shelf");
+    await seedSeries(lib, [shelf.id]);
+
+    await lib.deleteCollection(shelf.id);
+    await expectCascaded(lib);
+  });
+
+  test("losing one of several memberships does NOT cascade", async () => {
+    const { lib } = makeLibrary();
+    const shelf = await lib.createCollection("Shelf");
+    const keep = await lib.createCollection("Keep");
+    await seedSeries(lib, [shelf.id, keep.id]);
+
+    await lib.deleteCollection(shelf.id);
+    expect((await lib.getSeries("demo:s1"))?.collectionIds).toEqual([keep.id]);
+    expect(await lib.getProgress("demo:s1")).toHaveLength(1);
   });
 });
 
@@ -930,12 +994,37 @@ describe("series and chapter favorites", () => {
     const again = await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "Renamed" });
 
     expect(await lib.getCollectionItems({ type: "series" })).toHaveLength(1);
-    expect(again).toMatchObject({
+    expect(again.item).toMatchObject({
       type: "series",
       seriesTitle: "Renamed", // supplied wins
       thumbnailUrl: "https://cdn/a.png", // omitted preserved
       collectedAt: 1_000, // original date survives
     });
+  });
+
+  test("collectSeries files into collections in the same call, dropping unknown ids", async () => {
+    const { lib } = makeLibrary();
+    const shelf = await lib.createCollection("Shelf");
+    const { item } = await lib.collectSeries(
+      { bridgeId: "demo", seriesId: "s1" },
+      { seriesTitle: "One", collectionIds: [shelf.id, "no-such-collection"] },
+    );
+    expect(item.collectionIds).toEqual([shelf.id]);
+    expect((await lib.getLibrary({ collection: shelf.id })).map((v) => v.seriesId)).toEqual(["s1"]);
+  });
+
+  test("a collectionIds list that resolves to nothing leaves existing memberships alone", async () => {
+    // The alternative — treating it as an empty set — would delete the series this very call just
+    // collected. Emptying memberships stays an explicit `setItemCollections` call.
+    const { lib } = makeLibrary();
+    const shelf = await lib.createCollection("Shelf");
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "One", collectionIds: [shelf.id] });
+
+    const { item } = await lib.collectSeries(
+      { bridgeId: "demo", seriesId: "s1" },
+      { seriesTitle: "One", collectionIds: ["gone"] },
+    );
+    expect(item.collectionIds).toEqual([shelf.id]);
   });
 
   test("collectChapter records logical identity and merges like the others", async () => {
@@ -968,7 +1057,7 @@ describe("series and chapter favorites", () => {
   test("a collection can hold all three types, and filters return the mixed union", async () => {
     const { lib } = makeLibrary();
     const mixed = await lib.createCollection("Mixed");
-    const series = await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "S" });
+    const series = (await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "S" })).item;
     const chapter = await lib.collectChapter({ bridgeId: "demo", seriesId: "s1", chapterId: "c1" }, { seriesTitle: "S" });
     const page = await lib.collectPage(coord(), { seriesTitle: "S" });
     for (const item of [series, chapter, page]) await lib.setItemCollections(item.id, [mixed.id]);
@@ -982,7 +1071,7 @@ describe("series and chapter favorites", () => {
     const { lib } = makeLibrary();
     const only = await lib.createCollection("Only");
     const keep = await lib.createCollection("Keep");
-    const series = await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "S" });
+    const series = (await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "S" })).item;
     const chapter = await lib.collectChapter({ bridgeId: "demo", seriesId: "s1", chapterId: "c1" }, { seriesTitle: "S" });
     const both = await lib.collectChapter({ bridgeId: "demo", seriesId: "s1", chapterId: "c2" }, { seriesTitle: "S" });
     const page = await lib.collectPage(coord(), { seriesTitle: "S" });
@@ -1015,7 +1104,7 @@ describe("syncChapters re-anchors chapter and page favorites", () => {
 
   async function seededSeries() {
     const { lib } = makeLibrary();
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s1", title: "One" });
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "One" });
     // Baseline sync — knownChapters carries each chapter's logical identity afterwards.
     await lib.syncChapters("demo:s1", [chp("c1", 1), chp("c2", 2)]);
     return lib;
@@ -1065,7 +1154,7 @@ describe("syncChapters re-anchors chapter and page favorites", () => {
 
   test("a chapter favorited before any sync baseline self-anchors by its own snapshot", async () => {
     const { lib } = makeLibrary();
-    await lib.addSeries({ bridgeId: "demo", seriesId: "s1", title: "One" });
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "One" });
     await lib.syncChapters("demo:s1", [chp("old-c5", 5)]);
     // knownChapters knows old-c5. Favorite it WITHOUT the entry ever having seen the replacement.
     await lib.collectChapter(

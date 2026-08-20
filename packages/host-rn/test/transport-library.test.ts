@@ -14,7 +14,7 @@ import { createEmbeddedTransport } from "../src/transport.ts";
 import type { BridgeProvider, CreateRouter } from "../src/types.ts";
 
 // The `/library*` routes exercised here never touch a bridge (entries are added with a title
-// snapshot, so `addToLibrary` skips the bridge fetch), so a stub provider that throws is enough —
+// snapshot, so `collectSeries` skips the bridge fetch), so a stub provider that throws is enough —
 // it proves the library endpoints resolve purely from the injected store.
 const stubProvider = {
   list: async () => [],
@@ -46,23 +46,23 @@ describe("embedded transport — on-device library", () => {
     expect(await empty.json()).toEqual([]);
 
     // Add a series with a title snapshot (no bridge fetch needed).
-    const added = await t("/library/entries", {
-      method: "POST",
+    const added = await t("/library/collected/series/b1/s1", {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bridgeId: "b1", seriesId: "s1", title: "On-Device Series" }),
+      body: JSON.stringify({ seriesTitle: "On-Device Series" }),
     });
-    expect(added.status).toBe(201);
+    expect(added.status).toBe(200);
 
     // Now the library lists it, with a derived unreadCount the grid renders.
     const listed = await t("/library");
-    const entries = (await listed.json()) as Array<{ seriesId: string; title: string; unreadCount: number }>;
+    const entries = (await listed.json()) as Array<{ seriesId: string; seriesTitle: string; unreadCount: number }>;
     expect(entries).toHaveLength(1);
     expect(entries[0]!.seriesId).toBe("s1");
-    expect(entries[0]!.title).toBe("On-Device Series");
+    expect(entries[0]!.seriesTitle).toBe("On-Device Series");
     expect(entries[0]!.unreadCount).toBe(0);
 
     // Membership check the series screen uses (200 = in library).
-    const member = await t("/library/entries/b1/s1");
+    const member = await t("/library/collected/series/b1/s1");
     expect(member.status).toBe(200);
 
     // A non-library read lands in reading history.

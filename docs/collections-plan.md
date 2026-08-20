@@ -28,7 +28,25 @@ and carries no collision.
    the bridge-account capability** (`/bridges/:id/favorites`). The local surface is collections
    vocabulary throughout — `CollectionItem`, `collectSeries`/`collectChapter`/`collectPage`,
    `collectedAt`, routes at `/library/collected/...`, and no `UNCOLLECTED` sentinel.
-3. **No backwards compatibility, anywhere — including data.** Single-user project; the app and
+3. **The library dissolves into collections too** (amendment, after §2 landed). `LibraryEntry` was
+   the last parallel structure: post-lists-retirement it held a display snapshot **the series
+   collection item already carried** (two snapshots, free to drift) plus tracking machinery plus an
+   implicit membership bit. So `CollectionSeriesItem` **absorbs** the machinery — `knownChapters`,
+   `chaptersSyncedAt`, `revision`, `lastRead*`, `seriesGroupId`, `externalIds` — and `LibraryEntry`,
+   `entries.json`, `addSeries`/`removeSeries`/`isInLibrary` are deleted.
+   **"In the library" := a series item exists**, which under pure collections means ≥1 membership
+   (a fresh item may be transiently uncollected until its first filing). The "default" collection an
+   app files into is app policy with zero core support, exactly like the reader's heart collection.
+   Satellite docs (progress, cached detail/chapters, tracker links, activity) stay keyed by
+   `(bridge, series)`; only their lifecycle re-hooks from the entry to the series item.
+   **The edge to accept:** removing a series from its LAST collection is removing it from the
+   library — progress, resume, tracker links, offline cache and cover all cascade, exactly as
+   remove-from-library does today, but now reachable by unchecking a box. Core performs the cascade
+   on every path that can zero a series item (`collections: []`, collection delete, explicit
+   delete); the app should confirm before the last-membership removal of a series.
+   Reading a series in NO collection still works and still lands in the reading log rather than
+   per-chapter progress — today's library/non-library rule, unchanged, better named.
+4. **No backwards compatibility, anywhere — including data.** Single-user project; the app and
    server move in lockstep with the submodule pin. No route aliases, no deprecated fields, no
    transition cycle, and **no lists migration**: existing `lists.json` / `listIds` data is simply
    abandoned (stray keys in old documents are inert). Collections start empty.
