@@ -468,13 +468,17 @@ describe("uncollecting a series cascades to its satellite documents", () => {
     await lib.collectPage(coord(), { seriesTitle: "Series One" });
   }
 
-  /** Nothing of the series survives except its page item, whose membership is its own. */
+  /**
+   * The caches go; the page item survives (its membership is its own) and so does READ PROGRESS,
+   * which is the whole point — an organizing action must never destroy the one piece of state the
+   * user cannot get back. See `Library.removeSeries`.
+   */
   async function expectCascaded(lib: Library) {
     expect(await lib.getSeries("demo:s1")).toBeUndefined();
-    expect(await lib.getProgress("demo:s1")).toHaveLength(0);
     expect(await lib.getCachedDetail("demo:s1")).toBeUndefined();
     expect(await lib.getCachedChapters("demo:s1")).toBeUndefined();
     expect((await lib.getCollectionItems()).map((i) => i.type)).toEqual(["page"]);
+    expect(await lib.getProgress("demo:s1")).toHaveLength(1);
   }
 
   test("an explicit uncollect cascades", async () => {
@@ -513,6 +517,43 @@ describe("uncollecting a series cascades to its satellite documents", () => {
     await lib.deleteCollection(shelf.id);
     expect((await lib.getSeries("demo:s1"))?.collectionIds).toEqual([keep.id]);
     expect(await lib.getProgress("demo:s1")).toHaveLength(1);
+  });
+
+  test("re-collecting the series puts the reader back where they were", async () => {
+    const { lib } = makeLibrary();
+    const shelf = await lib.createCollection("Shelf");
+    await seedSeries(lib, [shelf.id]);
+    await lib.deleteCollection(shelf.id);
+
+    const next = await lib.createCollection("Next");
+    await lib.collectSeries({ bridgeId: "demo", seriesId: "s1" }, { seriesTitle: "Series One", collectionIds: [next.id] });
+    await lib.syncChapters("demo:s1", [{ id: "c1", name: "Ch 1", number: 1 }]);
+    expect((await lib.getProgress("demo:s1")).find((p) => p.chapterId === "c1")?.read).toBe(true);
+    expect((await lib.getLibrary()).find((v) => v.seriesId === "s1")?.unreadCount).toBe(0);
+  });
+
+  test("resetProgress is the explicit way to destroy read state — orphans included", async () => {
+    const { lib } = makeLibrary();
+    const shelf = await lib.createCollection("Shelf");
+    await seedSeries(lib, [shelf.id]);
+    await lib.deleteCollection(shelf.id);
+    expect(await lib.getProgress("demo:s1")).toHaveLength(1);
+
+    // No series item left, so this is reaching an orphan — which is exactly what it is for.
+    await lib.resetProgress("demo:s1");
+    expect(await lib.getProgress("demo:s1")).toHaveLength(0);
+  });
+
+  test("resetProgress on a collected series clears its resume point too", async () => {
+    const { lib } = makeLibrary();
+    const shelf = await lib.createCollection("Shelf");
+    await seedSeries(lib, [shelf.id]);
+    expect(await lib.getResume("demo:s1")).toBeDefined();
+
+    await lib.resetProgress("demo:s1");
+    expect(await lib.getProgress("demo:s1")).toHaveLength(0);
+    expect(await lib.getResume("demo:s1")).toBeUndefined();
+    expect(await lib.getSeries("demo:s1")).toBeDefined(); // the series itself stays collected
   });
 });
 

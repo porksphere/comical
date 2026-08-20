@@ -30,7 +30,7 @@ function makeLibrary() {
 }
 
 describe("collection", () => {
-  test("collect / isCollected / remove (clears progress)", async () => {
+  test("collect / isCollected / remove (progress survives the removal)", async () => {
     const lib = makeLibrary();
     expect(await lib.isCollected(KEY)).toBe(false);
     await lib.collectSeries(COORD, SNAP);
@@ -41,6 +41,9 @@ describe("collection", () => {
 
     await lib.removeSeries(KEY);
     expect(await lib.isCollected(KEY)).toBe(false);
+    // Read state outlives the collection — only resetProgress destroys it.
+    expect(await lib.getProgress(KEY)).toHaveLength(1);
+    await lib.resetProgress(KEY);
     expect(await lib.getProgress(KEY)).toHaveLength(0);
   });
 

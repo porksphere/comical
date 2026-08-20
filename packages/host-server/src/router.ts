@@ -1121,6 +1121,14 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       c.json(await lib.getProgress(keyOf(c))),
     );
 
+    // Wipe a series' read state on purpose. Uncollecting deliberately preserves progress, so this
+    // is the only route that destroys it — and it works on a series that is no longer collected,
+    // which is how progress orphaned by an uncollect is reclaimed.
+    app.delete("/library/collected/series/:bridgeId/:seriesId/progress", async (c) => {
+      await lib.resetProgress(keyOf(c));
+      return c.json({ ok: true });
+    });
+
     app.put("/library/collected/series/:bridgeId/:seriesId/progress/:chapterId", async (c) => {
       const b = (await body<{ read?: boolean; lastPage?: number; pageCount?: number; chapterName?: string; number?: number }>(c)) ?? {};
       const chapterId = c.req.param("chapterId");

@@ -41,11 +41,17 @@ and carries no collision.
    Satellite docs (progress, cached detail/chapters, tracker links, activity) stay keyed by
    `(bridge, series)`; only their lifecycle re-hooks from the entry to the series item. Tracker
    links are the one exception — they survive removal, as they always have (followups §8).
-   **The edge to accept:** removing a series from its LAST collection is removing it from the
-   library — progress, resume, activity, offline cache and cover all cascade, exactly as
-   remove-from-library does today, but now reachable by unchecking a box. Core performs the cascade
-   on every path that can zero a series item (`collections: []`, collection delete, explicit
-   delete); the app should confirm before the last-membership removal of a series.
+   **The edge, and the limit put on it:** removing a series from its LAST collection removes it from
+   the library, and core runs that cascade on every path that can zero a series item
+   (`collections: []`, collection delete, explicit delete). But the cascade stops short of read
+   state. **Progress and tracker links survive**; only the caches (offline detail, chapter list,
+   cover) and the activity feed go. Destroying read progress as a side effect of an *organizing*
+   action is indefensible — it is the one thing the user cannot re-derive, and deleting a shelf is
+   not a statement about what you have read. Mihon and Suwayomi draw the line in the same place:
+   their `favorite`/`inLibrary` bit is separate from category membership, and chapter read state
+   hangs off the manga row, reaped only by an explicit database clean-up. `resetProgress` is our
+   equivalent explicit lever, and it works on an uncollected series so orphans stay reclaimable.
+   The residual edge the app should still confirm: the series leaves the grid.
    Reading a series in NO collection still works and still lands in the reading log rather than
    per-chapter progress — today's library/non-library rule, unchanged, better named.
 4. **No backwards compatibility, anywhere — including data.** Single-user project; the app and

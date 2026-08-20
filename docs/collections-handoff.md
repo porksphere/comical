@@ -78,7 +78,7 @@ prefix swap, except for the two rows called out below.
 | `DELETE /library/entries/{b}/{s}` | `DELETE /library/collected/series/{b}/{s}` |
 | `GET /library/entries/{b}/{s}/cover` | `GET /library/collected/series/{b}/{s}/cover` |
 | `POST /library/entries/{b}/{s}/sync` | `POST /library/collected/series/{b}/{s}/sync` |
-| `GET /library/entries/{b}/{s}/progress` | `GET /library/collected/series/{b}/{s}/progress` |
+| `GET /library/entries/{b}/{s}/progress` | `GET /library/collected/series/{b}/{s}/progress` (and a new `DELETE` on the same path — §6) |
 | `PUT /library/entries/{b}/{s}/progress/{chapterId}` | `PUT /library/collected/series/{b}/{s}/progress/{chapterId}` |
 | `POST /library/entries/{b}/{s}/read-up-to` | `POST /library/collected/series/{b}/{s}/read-up-to` |
 | `POST /library/entries/{b}/{s}/join-group` | `POST /library/collected/series/{b}/{s}/join-group` |
@@ -236,25 +236,42 @@ granularity. Concretely:
   regardless of which collections hold it. Filter chips are `?collection=`. That is unchanged in
   shape from what you have; only the title field renamed.
 
-## 6. Removing a series now cascades — surface it in the UI
+## 6. Removing a series cascades — but NOT to read state
 
-This is the one change that needs a UX decision rather than a rename. A series item is the only
-record that owns the series' satellite documents, so zeroing one takes **progress, resume,
-activity feed, offline series detail, cached chapter list, cover blob and group membership** with
-it. That was already true of the old "remove from library". What's new is that **three different
-actions can now trigger it**:
+Three different actions can now remove a series, where before there was only one:
 
 1. `DELETE /library/collected/series/{b}/{s}` — the explicit remove.
 2. `PUT …/series/{b}/{s}/collections` with `[]` — un-filing the last collection.
 3. `DELETE /library/collections/{id}` — deleting a collection that was some series' only one.
 
-(3) is the one to be careful with: deleting a collection can silently destroy read progress for
-every series filed only there. Confirm before deleting a collection, and say what goes — the server
-will not ask. Counting the casualties client-side is a `GET /library?collection={id}` plus a
-`collectionIds.length === 1` filter.
+All three run the same cascade, which takes the **offline series detail, cached chapter list, cover
+blob, activity feed and group membership**. Those are all caches or derived state; the next sync
+refills them.
 
-Chapter and page items are **not** taken by the cascade. Their memberships are their own, so
-un-collecting a series leaves its collected pages intact and browsable — favoriting a panel from a
+**Read progress and tracker links survive.** This is deliberate and it is the thing to internalize:
+since deleting a collection can now remove a series, letting the cascade reach read state would
+mean tidying your shelves silently destroys where you were up to. It doesn't. Uncollect a series
+and re-collect it later and the reader is back exactly where it was, chapter read flags intact —
+the behaviour you'd expect from Mihon, where the `favorite` bit and chapter read state are
+independent.
+
+So the collection-delete confirmation does **not** need to warn about losing progress. It should
+still say the series leave the library (they vanish from the grid), which you can count with
+`GET /library?collection={id}` filtered on `collectionIds.length === 1`.
+
+Destroying read state is now only ever explicit:
+
+```
+DELETE /library/collected/series/{b}/{s}/progress    → { ok: true }
+```
+
+New route. Clears every chapter's read state and the resume point. It deliberately works on a
+series that is **no longer collected**, which is how progress left behind by an uncollect gets
+reclaimed — worth wiring into a storage/maintenance screen if you have one, since nothing sweeps
+those automatically (runtime followups §9).
+
+Chapter and page items are **not** taken by the cascade either. Their memberships are their own, so
+un-collecting a series leaves its collected pages intact and browsable — collecting a panel from a
 series you never tracked still works exactly as before.
 
 ## 7. Behaviour you get for free (nothing to build)
@@ -277,7 +294,9 @@ aren't collected get no such detection (followups §7).
   screens.
 - Lists UI replaced by collections UI per §4; add-to-library files into a default collection per
   §5; reader heart backed by a lazily-created ordinary collection.
-- Collection-delete confirmation warns about the cascade per §6.
+- Collection-delete confirmation says series leave the library — and does NOT claim progress is
+  lost, because it isn't (§6). Optionally expose `DELETE …/progress` as an explicit "reset read
+  state" action.
 - Reader flow unchanged in shape: reconcile on chapter open, `contentHash` on collect (from bytes
   already held — `Image.getCachePathAsync`), indices drive the button.
 - Stale affordance extended to chapter items.

@@ -88,6 +88,29 @@ describe("/library lifecycle", () => {
     expect(history.some((h) => h.seriesId === "s1")).toBe(true);
   });
 
+  /**
+   * Uncollecting deliberately preserves read state, so an organizing action can't destroy it — the
+   * only thing that does is this route, which must therefore also reach a series that has already
+   * been uncollected (that is where orphaned progress lives).
+   */
+  test("read state outlives the series; DELETE …/progress is the only thing that destroys it", async () => {
+    await send("PUT", "/library/collected/series/demo/keep-1", { seriesTitle: "Kept" });
+    await send("POST", "/library/collected/series/demo/keep-1/sync", { chapters });
+    await send("PUT", "/library/collected/series/demo/keep-1/progress/c1", { read: true });
+
+    const progressOf = async () =>
+      ((await (await get("/library/collected/series/demo/keep-1/progress")).json()) as unknown[]).length;
+    expect(await progressOf()).toBe(1);
+
+    await send("DELETE", "/library/collected/series/demo/keep-1");
+    expect((await get("/library/collected/series/demo/keep-1")).status).toBe(404);
+    expect(await progressOf()).toBe(1); // survived the uncollect
+
+    // ...and the purge route reaches it even though the series is gone.
+    expect((await send("DELETE", "/library/collected/series/demo/keep-1/progress")).status).toBe(200);
+    expect(await progressOf()).toBe(0);
+  });
+
   test("collections file a series and filter the library; delete un-files it", async () => {
     // The old library "lists" retired into collections: memberships live on a SERIES favorite item.
     const collection = (await (await send("POST", "/library/collections", { name: "Reading" })).json()) as { id: string };

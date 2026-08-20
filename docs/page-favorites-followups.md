@@ -148,3 +148,24 @@ Revisit if orphaned links ever become visible — a tracker pull that surfaces a
 behind it, or a storage figure that counts them. The fix is one `deleteTrackerLink` loop inside
 `removeSeries`; the decision to make first is whether a re-collect should be able to get the link
 back.
+
+(Read progress is now in the same position for the same reason — see §9.)
+
+
+## 9. Orphaned progress documents are never swept automatically
+
+`removeSeries` deliberately leaves a series' chapter progress behind (see its doc comment): an
+organizing action must not destroy read state. A series the user uncollects and never returns to
+therefore leaves one progress document sitting in the store forever.
+
+Accepted: the documents are small, inert (nothing reads them until the series is re-collected), and
+the alternative — reaping them on uncollect — is precisely the behaviour that made this a problem.
+Mihon has the same shape and the same answer: non-favourite rows persist until a manual "clean up
+database".
+
+`resetProgress(key)` / `DELETE /library/collected/series/{b}/{s}/progress` is the per-series lever,
+and works on an uncollected series specifically so orphans are reachable. What does not exist is
+the bulk sweep — "reclaim read state for every series I no longer have" — because it needs a store
+method that enumerates progress keys, which nothing else wants and every host would have to
+implement. Add it when a storage screen can actually show the number; until then a per-series purge
+is the whole story.

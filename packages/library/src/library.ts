@@ -251,17 +251,29 @@ export class Library {
   }
 
   /**
-   * Remove a series from the library: drop its item and every satellite document.
+   * Remove a series from the library: drop its item and the documents that only make sense while it
+   * is collected.
    *
    * This is what "uncollecting" a series means, and every path that can zero a series item routes
-   * here — an explicit delete, emptying its memberships, or deleting its last collection. The blast
-   * radius is deliberate and identical to the old remove-from-library: progress, resume, activity,
-   * offline detail and chapter cache all go. Clients should confirm before the last one.
+   * here — an explicit delete, emptying its memberships, or deleting its last collection.
+   *
+   * **Read progress deliberately SURVIVES**, along with tracker links. Since the library dissolved
+   * into collections, an ordinary organizing action — deleting a collection — can reach this, and
+   * destroying read state as a side effect of tidying shelves is indefensible: it is the one thing
+   * here the user cannot get back, while everything else is a cache the next sync refills. Keeping
+   * it also means re-collecting a series puts the reader back where they were, which is how Mihon
+   * and Suwayomi behave (a non-favourite manga keeps its chapter read state; only an explicit
+   * database clean-up reaps it). The cost is orphaned progress documents for series the user never
+   * returns to — cheap, inert, and swept deliberately rather than silently (followups §9).
+   *
+   * What does go: the offline detail and chapter caches (re-fetchable), the activity feed (noise
+   * for a series nobody is tracking, and rebuilt by the next `syncChapters`), and the group
+   * membership (a member key pointing at no series is broken state, and auto-linking re-forms the
+   * group if the series returns).
    */
   async removeSeries(key: string): Promise<void> {
     await this.leaveGroup(key);
     await this.store.deleteCollectionItems([this.seriesItemId(key)]);
-    await this.store.deleteProgressForEntry(key);
     await this.store.deleteActivityForEntry(key);
     await this.store.deleteSeriesDetail(key);
     await this.store.deleteCachedChapters(key);
@@ -628,6 +640,23 @@ export class Library {
 
   async getProgress(key: string): Promise<ChapterProgress[]> {
     return this.store.listProgress(key);
+  }
+
+  /**
+   * Drop every chapter's read state for a series, and the resume point with it.
+   *
+   * The deliberate counterpart to `removeSeries` keeping progress: destroying read state is now
+   * something the user asks for explicitly, never a side effect of uncollecting or of tidying
+   * collections. It is also how progress left behind by an uncollected series gets reclaimed, so it
+   * does NOT require the series to still be collected — an orphan is exactly what it must be able
+   * to reach.
+   */
+  async resetProgress(key: string): Promise<void> {
+    await this.store.deleteProgressForEntry(key);
+    const item = await this.getSeriesItem(key);
+    if (!item) return; // orphaned progress — nothing left to clear the resume point on
+    const { lastReadAt: _a, lastReadChapterId: _b, lastReadChapterName: _c, ...rest } = item;
+    await this.putSeriesItem({ ...rest, updatedAt: this.now() });
   }
 
   /** Where to resume: the last-read chapter and the page within it. */
