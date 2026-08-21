@@ -1233,6 +1233,54 @@ describe("importLegacyEntries", () => {
     expect((await lib.getLibrary({ collection: first.collectionId })).map((v) => v.seriesId).sort()).toEqual(["s1", "s2"]);
   });
 
+  // A series item written by the PRE-DISSOLUTION build: a thin membership pointer with no
+  // `knownChapters` and no `updatedAt`, because the tracking state lived on `LibraryEntry` then.
+  // Its id did not change, so it survives a version bump untouched.
+  const preDissolutionItem = (over: Record<string, unknown> = {}) =>
+    ({
+      type: "series",
+      id: "series:demo:s1",
+      bridgeId: "demo",
+      seriesId: "s1",
+      seriesTitle: "Filed Before",
+      collectedAt: 100,
+      collectionIds: ["c-existing"],
+      ...over,
+    }) as never;
+
+  test("upgrades a pre-dissolution series item instead of skipping it", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await store.putCollections([{ id: "c-existing", name: "Reading", order: 0 }]);
+    await store.putCollectionItems([preDissolutionItem()]);
+
+    // "Already collected" would strand it forever: it predates every tracking field the entry
+    // carries, so a skip means no unread baseline and no resume point, permanently.
+    const result = await lib.importLegacyEntries([legacy({ lastReadChapterId: "c1", lastReadAt: 550 })]);
+    expect(result).toMatchObject({ imported: 1, skipped: 0 });
+
+    const item = await lib.getSeries(KEY);
+    expect(item?.knownChapters).toEqual([{ id: "c1", number: 1 }]);
+    expect(item?.lastReadChapterId).toBe("c1");
+    // The memberships and collect time came from the NEWER build — real user data, kept.
+    expect(item?.collectionIds).toEqual(["c-existing"]);
+    expect(item?.collectedAt).toBe(100);
+  });
+
+  test("lists a pre-dissolution item the import can't reach, rather than failing the library", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    // Filed into a collection but never in the library — a legal state before the dissolution, so
+    // there is no legacy entry row to upgrade it from. One of these used to 500 `GET /library`
+    // outright, taking every other series down with it.
+    await store.putCollectionItems([preDissolutionItem()]);
+
+    const views = await lib.getLibrary({ sort: "lastRead" });
+    expect(views).toHaveLength(1);
+    expect(views[0]).toMatchObject({ seriesId: "s1", unreadCount: 0, updatedAt: 100 });
+    expect(views[0]?.knownChapters).toEqual([]);
+  });
+
   test("is idempotent — a re-run never clobbers the live record", async () => {
     const lib = makeLibrary();
     await lib.importLegacyEntries([legacy()]);

@@ -180,7 +180,7 @@ export class Library {
 
   private async getSeriesItem(key: string): Promise<CollectionSeriesItem | undefined> {
     const item = await this.store.getCollectionItem(this.seriesItemId(key));
-    return item?.type === "series" ? item : undefined;
+    return item?.type === "series" ? hydrateSeriesItem(item) : undefined;
   }
 
   private async putSeriesItem(item: CollectionSeriesItem): Promise<void> {
@@ -188,9 +188,9 @@ export class Library {
   }
 
   private async listSeriesItems(): Promise<CollectionSeriesItem[]> {
-    return (await this.store.listCollectionItems({ type: "series" })).filter(
-      (i): i is CollectionSeriesItem => i.type === "series",
-    );
+    return (await this.store.listCollectionItems({ type: "series" }))
+      .filter((i): i is CollectionSeriesItem => i.type === "series")
+      .map(hydrateSeriesItem);
   }
 
   /**
@@ -296,19 +296,26 @@ export class Library {
       }
       const e = parsed.data;
       const id = collectionItemId({ type: "series", bridgeId: e.bridgeId, seriesId: e.seriesId });
-      if (await this.store.getCollectionItem(id)) {
+      const existing = await this.store.getCollectionItem(id);
+      const current = existing?.type === "series" ? existing : undefined;
+      // Already collected under the CURRENT model — never overwrite a live record with a legacy one.
+      if (current?.knownChapters !== undefined) {
         skipped++;
-        continue; // already collected — never overwrite the live record with a legacy one
+        continue;
       }
+      // A pre-dissolution series item (see `hydrateSeriesItem`) is not a live record: it predates
+      // every tracking field below, so skipping it would strand the entry's progress baseline and
+      // resume point forever. Upgrade it instead — keeping the memberships and collect time it
+      // already carries, which ARE real user data from the newer build.
       const item: CollectionSeriesItem = {
         type: "series",
         id,
         bridgeId: e.bridgeId,
         seriesId: e.seriesId,
         seriesTitle: e.title,
-        collectedAt: e.addedAt,
+        collectedAt: current?.collectedAt ?? e.addedAt,
         updatedAt: e.updatedAt,
-        collectionIds: [target.id],
+        collectionIds: current?.collectionIds.length ? current.collectionIds : [target.id],
         knownChapters: e.knownChapters,
         ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
         ...(e.author !== undefined && { author: e.author }),
@@ -1605,6 +1612,33 @@ function logicalChapterKey(c: { number?: number | undefined; languageCode?: stri
  * the library view's `unreadCount` and by `getSeriesCompletion`, so "0 unread" can never mean two
  * different things depending on which one asked.
  */
+/**
+ * A stored series item, hardened against records written BEFORE the library dissolved into
+ * collections.
+ *
+ * Back then a series item was a thin membership pointer — it had `collectedAt`, `collectionIds`
+ * and a title, and nothing else, because the tracking state lived on the separate `LibraryEntry`.
+ * The dissolution added `knownChapters` and `updatedAt` and did NOT change the id (`series:b:s`),
+ * so those old records survive a version bump completely intact and reach code that assumes the
+ * current shape. One of them is enough to fail the entire library listing, which is exactly what
+ * it did: `unreadLogicalCount` dereferenced an absent `knownChapters` and the whole `GET /library`
+ * response 500'd.
+ *
+ * `importLegacyEntries` upgrades the ones it has a legacy row for, but it can't reach a series that
+ * was filed into a collection without ever being in the library — that was a legal state, so this
+ * has to hold regardless. Filling the gaps on read costs a shape check per item and means no single
+ * stale record can take the surface down.
+ */
+function hydrateSeriesItem(item: CollectionSeriesItem): CollectionSeriesItem {
+  if (item.knownChapters !== undefined && item.updatedAt !== undefined) return item;
+  return {
+    ...item,
+    knownChapters: item.knownChapters ?? [],
+    // Never been synced, so the closest honest answer is when it was collected.
+    updatedAt: item.updatedAt ?? item.collectedAt,
+  };
+}
+
 function unreadLogicalCount(item: CollectionSeriesItem, progress: ChapterProgress[]): number {
   const readLogical = new Set(progress.filter((p) => p.read).map((p) => logicalChapterKey(p, p.chapterId)));
   const knownLogical = new Set(item.knownChapters.map((c) => logicalChapterKey(c, c.id)));
