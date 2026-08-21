@@ -41,9 +41,6 @@ full rationale.
 - **Run `bun run build` first on a fresh checkout.** `bridges/*/dist/` is gitignored build output, so
   a clone has no bridge bundles and every test that loads one fails — 51 of them, which looks
   exactly like a broken branch and has been misreported as one. Built: 1052 pass, 0 fail.
-- **Run `bun run build` first on a fresh checkout.** `bridges/*/dist/` is gitignored build output, so
-  a clone has no bridge bundles and every test that loads one fails — 51 of them, which looks
-  exactly like a broken branch and has been misreported as one. Built: 1052 pass, 0 fail.
 - Run `bun test` (full suite) or `bun test packages/host-server` (scoped) to confirm all tests pass.
 - New public APIs must have at least one happy-path and one error/edge-case test.
 
