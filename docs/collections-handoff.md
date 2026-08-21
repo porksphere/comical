@@ -70,8 +70,12 @@ if (raw) {
 
 `importLegacyEntries(rows, collectionName = "Default")`:
 
-- **Idempotent.** Coordinates already collected are skipped, never overwritten — safe to re-run after
-  a crash, and it can't clobber anything written post-migration.
+- **Idempotent.** A series already collected under the CURRENT model is skipped, never overwritten —
+  safe to re-run after a crash, and it can't clobber anything written post-migration. A series item
+  written BEFORE the dissolution is not that: it has no `knownChapters`, so it cannot be a
+  post-migration write, and it is **upgraded** rather than skipped (keeping the memberships and
+  `collectedAt` it already carries). Skipping those stranded the entry's unread baseline and resume
+  point permanently, and silently — the shelf still rendered.
 - **Row-by-row validation.** A malformed entry is skipped and counted in `skipped`; a bad *optional
   field* (say a thumbnail URL that no longer parses) costs that field, not the entry.
 - **Files everything into one collection**, created if absent. It has to: under pure collections an
@@ -80,6 +84,14 @@ if (raw) {
 - Carries `knownChapters`, `revision`, `lastRead*`, `chaptersSyncedAt`, `seriesGroupId` and
   `externalIds` across, so unread counts, resume points, tracker auto-linking and cross-source groups
   all come back intact.
+
+**Also read `hydrateSeriesItem`** (`packages/library/src/library.ts`) before assuming the import is
+the whole story. A device that ran the pre-dissolution collections build has series items in that
+build's shape — a thin membership pointer, no `knownChapters`, no `updatedAt` — and their ids never
+changed, so they survive a version bump intact. One of them 500'd `GET /library` outright.
+The import can't reach them all either: a series could be filed into a collection without ever
+being in the library, so there is no legacy row to rebuild it from. The Library fills the gaps
+wherever it reads a series item, and that has to hold independently of the migration.
 
 Keep the old document around (renamed, as above) until you've confirmed a real device migrated
 cleanly. `host-server` does the same thing with `entries.json` → `entries.migrated.json`, so you can

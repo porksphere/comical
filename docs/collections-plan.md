@@ -62,12 +62,15 @@ and carries no collision.
    in its own document, so the dissolution **orphaned** those rather than deleting them. Rebuilding
    the series items reattaches the lot. Throwing away a library to save thirty lines is not a
    principle, it is an oversight with a rationalization.
-   `Library.importLegacyEntries(rows, collectionName = "Library")` owns it — in the service, not a
+   `Library.importLegacyEntries(rows, collectionName = "Default")` owns it — in the service, not a
    store, so every platform migrates identically; a host only has to find its own legacy document
    and hand the rows over (`migrateLegacyEntries(dir, library)` does that for `host-server`). It is
-   idempotent (already-collected coordinates are skipped, never overwritten), validates rows
-   individually so a partly-corrupt document still yields what it can, and files everything into one
-   collection since an unfiled series would be swept. Delete the importer and
+   idempotent (a series already collected under the current model is skipped, never overwritten —
+   though a PRE-dissolution series item is upgraded rather than skipped, since it cannot be a
+   post-migration write), validates rows individually so a partly-corrupt document still yields what
+   it can, and files everything into one collection since an unfiled series would be swept. Records
+   written by the pre-dissolution build are also hardened on read (`hydrateSeriesItem`), because the
+   import cannot reach a series that was filed into a collection without ever being in the library. Delete the importer and
    `legacyLibraryEntrySchema` once every host has run it.
 
 5. **No backwards compatibility anywhere else — including data.** Single-user project; the app and
