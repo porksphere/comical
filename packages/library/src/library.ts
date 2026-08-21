@@ -11,6 +11,7 @@ import {
   cachedChaptersSchema,
   cachedSeriesDetailSchema,
   entryKey,
+  legacyLibraryEntrySchema,
   collectionItemId,
   parseEntryKey,
   type ActivityItem,
@@ -248,6 +249,81 @@ export class Library {
     }
 
     return { item, ...(autoLinked !== undefined && { autoLinked }) };
+  }
+
+  /**
+   * One-shot import of a host's pre-collections entries document.
+   *
+   * The library dissolving into collections is the project's one exception to "no back-compat, no
+   * data migration". The rule was made for lists and page favorites, which shipped to nothing. The
+   * library is different: it is the user's actual collection, built up over months, and everything
+   * hanging off a series — progress, tracker links, cached detail and chapters, group membership —
+   * is keyed by `entryKey` in its own document, so it all SURVIVED the dissolution and is merely
+   * orphaned. Rebuilding the series items reattaches the lot. Skipping the migration would throw
+   * away a library to avoid writing thirty lines.
+   *
+   * Lives here rather than in each store because it is domain logic, not persistence: a host reads
+   * its own legacy document (only it knows where that lives) and hands the rows over. Rows are
+   * validated individually and bad ones skipped — a partially-corrupt old document should yield
+   * what it can.
+   *
+   * Idempotent: coordinates already collected are left exactly as they are, so a re-run after a
+   * crash is safe and can never clobber post-migration edits.
+   *
+   * Imported series are filed into `collectionName` (reused if it already exists, created
+   * otherwise) because under pure collections an unfiled series would be swept by the next thing
+   * that touches it.
+   */
+  async importLegacyEntries(
+    rows: unknown[],
+    collectionName = "Library",
+  ): Promise<{ imported: number; skipped: number; collectionId: string }> {
+    const collections = await this.store.listCollections();
+    let target = collections.find((c) => c.name === collectionName);
+    if (!target) {
+      const order = collections.reduce((max, c) => Math.max(max, c.order), -1) + 1;
+      target = { id: crypto.randomUUID(), name: collectionName, order };
+      await this.store.putCollections([...collections, target]);
+    }
+
+    const items: CollectionSeriesItem[] = [];
+    let skipped = 0;
+    for (const row of rows) {
+      const parsed = legacyLibraryEntrySchema.safeParse(row);
+      if (!parsed.success) {
+        skipped++;
+        continue;
+      }
+      const e = parsed.data;
+      const id = collectionItemId({ type: "series", bridgeId: e.bridgeId, seriesId: e.seriesId });
+      if (await this.store.getCollectionItem(id)) {
+        skipped++;
+        continue; // already collected — never overwrite the live record with a legacy one
+      }
+      const item: CollectionSeriesItem = {
+        type: "series",
+        id,
+        bridgeId: e.bridgeId,
+        seriesId: e.seriesId,
+        seriesTitle: e.title,
+        collectedAt: e.addedAt,
+        updatedAt: e.updatedAt,
+        collectionIds: [target.id],
+        knownChapters: e.knownChapters,
+        ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
+        ...(e.author !== undefined && { author: e.author }),
+        ...(e.lastReadChapterId !== undefined && { lastReadChapterId: e.lastReadChapterId }),
+        ...(e.lastReadChapterName !== undefined && { lastReadChapterName: e.lastReadChapterName }),
+        ...(e.lastReadAt !== undefined && { lastReadAt: e.lastReadAt }),
+        ...(e.chaptersSyncedAt !== undefined && { chaptersSyncedAt: e.chaptersSyncedAt }),
+        ...(e.revision !== undefined && { revision: e.revision }),
+        ...(e.seriesGroupId !== undefined && { seriesGroupId: e.seriesGroupId }),
+        ...(e.externalIds !== undefined && { externalIds: e.externalIds }),
+      };
+      items.push(item);
+    }
+    if (items.length > 0) await this.store.putCollectionItems(items);
+    return { imported: items.length, skipped, collectionId: target.id };
   }
 
   /**

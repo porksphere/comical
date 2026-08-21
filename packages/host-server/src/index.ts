@@ -7,6 +7,7 @@
  */
 export { BridgeManager } from "./bridge-manager.ts";
 export { FileLibraryStore } from "./library-store.ts";
+export { migrateLegacyEntries, type LegacyEntriesMigration } from "./legacy-entries.ts";
 export { createRouter, type RouterOptions } from "./router.ts";
 export { SettingsStore } from "./settings-store.ts";
 export { createServer, type ServerOptions } from "./server.ts";

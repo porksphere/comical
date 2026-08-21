@@ -11,6 +11,7 @@ import { BridgeManager } from "./bridge-manager.ts";
 import { FileBlobStore } from "./blob-store.ts";
 import { FileDownloadsStore } from "./downloads-store.ts";
 import { FileLibraryStore } from "./library-store.ts";
+import { migrateLegacyEntries } from "./legacy-entries.ts";
 import { createServerPageFetcher, createServerPageResolver } from "./page-fetcher.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
 import { SettingsStore } from "./settings-store.ts";
@@ -87,6 +88,13 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
       ? opts.library.dir
       : join(opts.dataDir, "library");
     const lib = new Library(new FileLibraryStore(dir));
+    // Rebuild series items from a pre-collections entries.json, if one is still there. Everything
+    // else a series owns survived the dissolution orphaned, so this reattaches it. No-op once run.
+    void migrateLegacyEntries(dir, lib)
+      .then((m) => {
+        if (m) console.log(`library: migrated ${m.imported} legacy entries (${m.skipped} skipped)`);
+      })
+      .catch((e: unknown) => console.error("library: legacy entry migration failed", e));
     routerOpts.library = lib;
     routerOpts.runtime = new ComicalRuntime({
       bridges: manager,

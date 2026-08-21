@@ -258,6 +258,43 @@ const collectionItemBase = {
  * Satellite documents (progress, cached detail/chapters, tracker links, activity) stay keyed by
  * `(bridgeId, seriesId)` beside it; their lifecycle hangs off this item.
  */
+/**
+ * MIGRATION ONLY — the pre-collections `LibraryEntry`, as persisted in a host's old entries
+ * document. The library dissolved into collections, so a tracked series is now a
+ * `CollectionSeriesItem`; this shape exists solely so `Library.importLegacyEntries` can read what a
+ * host already had on disk and rebuild it.
+ *
+ * Everything else a series owns — progress, tracker links, cached detail/chapters, groups, activity
+ * — is keyed by `entryKey` in its OWN document, so it survived the dissolution untouched and simply
+ * reattaches once the series item exists again. The entries document is the only casualty, which is
+ * what makes this import worth having despite the project's no-back-compat rule: without it a user
+ * loses their whole library, with it they lose nothing.
+ *
+ * Fields are loose on purpose (`.catch`/optional): a half-parseable old document should yield the
+ * entries it can rather than failing the migration. Delete this schema once every host has migrated.
+ */
+export const legacyLibraryEntrySchema = z.object({
+  bridgeId: z.string().min(1),
+  seriesId: z.string().min(1),
+  title: z.string().min(1),
+  thumbnailUrl: z.string().url().optional().catch(undefined),
+  author: z.string().optional().catch(undefined),
+  addedAt: z.number().int(),
+  updatedAt: z.number().int(),
+  lastReadChapterId: z.string().optional().catch(undefined),
+  lastReadChapterName: z.string().optional().catch(undefined),
+  lastReadAt: z.number().int().optional().catch(undefined),
+  knownChapters: z.array(knownChapterSchema).catch([]).default([]),
+  chaptersSyncedAt: z.number().int().optional().catch(undefined),
+  revision: seriesRevisionSchema.optional().catch(undefined),
+  seriesGroupId: z.string().optional().catch(undefined),
+  externalIds: z
+    .record(z.string(), z.union([z.string().min(1), z.number().int().positive()]))
+    .optional()
+    .catch(undefined),
+});
+export type LegacyLibraryEntry = z.infer<typeof legacyLibraryEntrySchema>;
+
 export const collectionSeriesItemSchema = z.object({
   type: z.literal("series"),
   bridgeId: z.string().min(1),

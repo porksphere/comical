@@ -54,7 +54,23 @@ and carries no collision.
    The residual edge the app should still confirm: the series leaves the grid.
    Reading a series in NO collection still works and still lands in the reading log rather than
    per-chapter progress — today's library/non-library rule, unchanged, better named.
-4. **No backwards compatibility, anywhere — including data.** Single-user project; the app and
+4. **One data migration, and only one: the library.** (Amendment to §5.) Lists and page favorites
+   shipped to nothing, so abandoning their data costs nothing. The library is not that — it is the
+   user's actual collection, built up over months. And the cost of abandoning it is unusually low to
+   avoid: everything a series owns EXCEPT its entry row (`progress/`, `details/`,
+   `chapters-cache/`, `tracker-links.json`, `groups.json`, `activity.json`) is keyed by `entryKey`
+   in its own document, so the dissolution **orphaned** those rather than deleting them. Rebuilding
+   the series items reattaches the lot. Throwing away a library to save thirty lines is not a
+   principle, it is an oversight with a rationalization.
+   `Library.importLegacyEntries(rows, collectionName = "Library")` owns it — in the service, not a
+   store, so every platform migrates identically; a host only has to find its own legacy document
+   and hand the rows over (`migrateLegacyEntries(dir, library)` does that for `host-server`). It is
+   idempotent (already-collected coordinates are skipped, never overwritten), validates rows
+   individually so a partly-corrupt document still yields what it can, and files everything into one
+   collection since an unfiled series would be swept. Delete the importer and
+   `legacyLibraryEntrySchema` once every host has run it.
+
+5. **No backwards compatibility anywhere else — including data.** Single-user project; the app and
    server move in lockstep with the submodule pin. No route aliases, no deprecated fields, no
    transition cycle, and **no lists migration**: existing `lists.json` / `listIds` data is simply
    abandoned (stray keys in old documents are inert). Collections start empty.

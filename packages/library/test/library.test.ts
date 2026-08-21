@@ -1163,3 +1163,99 @@ describe("history tracking opt-out", () => {
     expect((await lib.getHistory()).some((h) => h.seriesId === SERIES.seriesId)).toBe(true);
   });
 });
+
+/**
+ * The library dissolving into collections is the one place this project migrates data. It earns the
+ * exception because everything a series owns EXCEPT its entry row is keyed by `entryKey` in a
+ * separate document and survived untouched — so rebuilding the series items reattaches progress,
+ * tracker links, caches and groups that are otherwise orphaned forever.
+ */
+describe("importLegacyEntries", () => {
+  const legacy = (over: Record<string, unknown> = {}) => ({
+    bridgeId: "demo",
+    seriesId: "s1",
+    title: "Series One",
+    addedAt: 500,
+    updatedAt: 600,
+    knownChapters: [{ id: "c1", number: 1 }],
+    ...over,
+  });
+
+  test("rebuilds a series item and reattaches the orphaned progress behind it", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    // Progress written before the dissolution outlives its entry — it is keyed by entryKey, not by
+    // anything in the entries document.
+    await store.putProgress(KEY, { chapterId: "c1", read: true, number: 1, updatedAt: 1 });
+
+    const result = await lib.importLegacyEntries([legacy()]);
+    expect(result).toMatchObject({ imported: 1, skipped: 0 });
+
+    const item = await lib.getSeries(KEY);
+    expect(item).toMatchObject({ seriesTitle: "Series One", collectedAt: 500, updatedAt: 600 });
+    expect(item?.collectionIds).toEqual([result.collectionId]);
+    // The whole point: the library renders again AND the read state is back on it.
+    const view = (await lib.getLibrary()).find((v) => v.seriesId === "s1");
+    expect(view?.unreadCount).toBe(0);
+    expect(await lib.getProgress(KEY)).toHaveLength(1);
+  });
+
+  test("carries the tracking machinery across, not just the display fields", async () => {
+    const lib = makeLibrary();
+    await lib.importLegacyEntries([
+      legacy({
+        thumbnailUrl: "https://cdn.example/c.png",
+        author: "A. Author",
+        lastReadChapterId: "c1",
+        lastReadChapterName: "Ch 1",
+        lastReadAt: 550,
+        chaptersSyncedAt: 540,
+        externalIds: { anilist: 7 },
+      }),
+    ]);
+    expect(await lib.getSeries(KEY)).toMatchObject({
+      thumbnailUrl: "https://cdn.example/c.png",
+      author: "A. Author",
+      lastReadChapterId: "c1",
+      lastReadAt: 550,
+      chaptersSyncedAt: 540,
+      externalIds: { anilist: 7 },
+    });
+    expect(await lib.getResume(KEY)).toBeDefined();
+  });
+
+  test("files everything into one collection, reused on a second run", async () => {
+    const lib = makeLibrary();
+    const first = await lib.importLegacyEntries([legacy()]);
+    const second = await lib.importLegacyEntries([legacy({ seriesId: "s2" })]);
+    expect(second.collectionId).toBe(first.collectionId);
+    expect(await lib.getCollections()).toHaveLength(1);
+    expect((await lib.getLibrary({ collection: first.collectionId })).map((v) => v.seriesId).sort()).toEqual(["s1", "s2"]);
+  });
+
+  test("is idempotent — a re-run never clobbers the live record", async () => {
+    const lib = makeLibrary();
+    await lib.importLegacyEntries([legacy()]);
+    await lib.collectSeries(COORD, { seriesTitle: "Renamed Since" });
+
+    const again = await lib.importLegacyEntries([legacy()]);
+    expect(again).toMatchObject({ imported: 0, skipped: 1 });
+    expect((await lib.getSeries(KEY))?.seriesTitle).toBe("Renamed Since");
+  });
+
+  test("skips unparseable rows rather than failing the whole migration", async () => {
+    const lib = makeLibrary();
+    const result = await lib.importLegacyEntries([legacy(), { bridgeId: "demo" }, null, legacy({ seriesId: "s3" })]);
+    expect(result).toMatchObject({ imported: 2, skipped: 2 });
+    expect((await lib.getLibrary()).map((v) => v.seriesId).sort()).toEqual(["s1", "s3"]);
+  });
+
+  test("a bad optional field doesn't cost the whole entry", async () => {
+    const lib = makeLibrary();
+    const result = await lib.importLegacyEntries([legacy({ thumbnailUrl: "not-a-url", externalIds: "nonsense" })]);
+    expect(result).toMatchObject({ imported: 1, skipped: 0 });
+    const item = await lib.getSeries(KEY);
+    expect(item?.seriesTitle).toBe("Series One");
+    expect(item?.thumbnailUrl).toBeUndefined();
+  });
+});

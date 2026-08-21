@@ -26,8 +26,9 @@ not extended, three times over:
    library" now means "in at least one collection". `/library/entries/*` is gone as a path prefix —
    the whole family moved under `/library/collected/series/{b}/{s}/*`.
 
-No aliases, no compat, no data migration anywhere (single-user decision; existing lists data,
-entries data, and any favorites data your build wrote are all abandoned).
+No aliases, no compat — and no data migration except **one**: the user's library, which you MUST
+migrate rather than wipe. See §0; do it before anything else. Lists data and any favorites data your
+build wrote are still abandoned.
 
 Most of your behavioural logic still survives: merge-on-PUT (the two-PUT hash flow stays safe),
 reconcile request/response shapes, indices-excludes-stale, sort/dir semantics, `__direct__`,
@@ -36,6 +37,57 @@ the lists feature folding in, the library entry becoming a series item — and t
 changes: **zero memberships removes the item**, and **removing a series item cascades** (§6).
 
 Your app-side `docs/page-favorites-plan.md` is stale again — rewrite or delete it against this.
+
+## 0. Migrate the user's library FIRST — do not wipe it
+
+Everything else in this document is a rename. This is the one thing that destroys user data if you
+skip it.
+
+Your `AsyncStorageLibraryStore` has an entries document holding the user's tracked series. Under the
+new model that document is dead, and a naive "wipe and start clean" leaves the user opening the app
+to an **empty library** — no series, no unread counts, no resume points.
+
+It does not have to. Everything a series owns *other than* the entry row — chapter progress, tracker
+links, the cached detail and chapter list, group membership — is keyed by `entryKey`
+(`{bridgeId}:{seriesId}`) in its **own** document, exactly as before. The dissolution orphaned those;
+it did not delete them. Rebuild the series items and every one of them reattaches automatically.
+
+The runtime does the work; you only have to find your own legacy document and hand the rows over:
+
+```ts
+import { Library } from "@comical/library";
+
+// On startup, once, before the library screen reads anything.
+const raw = await AsyncStorage.getItem("comical:lib:entries");   // whatever your key was
+if (raw) {
+  const parsed = JSON.parse(raw);
+  const rows = Array.isArray(parsed) ? parsed : Object.values(parsed);
+  const { imported, skipped } = await library.importLegacyEntries(rows);   // → files into "Library"
+  await AsyncStorage.setItem("comical:lib:entries.migrated", raw);          // keep it until you're sure
+  await AsyncStorage.removeItem("comical:lib:entries");
+}
+```
+
+`importLegacyEntries(rows, collectionName = "Library")`:
+
+- **Idempotent.** Coordinates already collected are skipped, never overwritten — safe to re-run after
+  a crash, and it can't clobber anything written post-migration.
+- **Row-by-row validation.** A malformed entry is skipped and counted in `skipped`; a bad *optional
+  field* (say a thumbnail URL that no longer parses) costs that field, not the entry.
+- **Files everything into one collection**, created if absent. It has to: under pure collections an
+  unfiled series is swept by the next thing that touches it. That collection is the obvious
+  candidate for the "default" collection §5 tells you to pick — reuse it rather than making a second.
+- Carries `knownChapters`, `revision`, `lastRead*`, `chaptersSyncedAt`, `seriesGroupId` and
+  `externalIds` across, so unread counts, resume points, tracker auto-linking and cross-source groups
+  all come back intact.
+
+Keep the old document around (renamed, as above) until you've confirmed a real device migrated
+cleanly. `host-server` does the same thing with `entries.json` → `entries.migrated.json`, so you can
+cross-check the behaviour against `packages/host-server/src/legacy-entries.ts`.
+
+**What is NOT migrated, deliberately:** lists (`lists.json` / `listIds`) and anything your build
+wrote under the `favorite-pages` keys. Those never carried real user data; collections start empty
+apart from the imported library.
 
 ## 1. Route migration table
 
@@ -185,9 +237,10 @@ Details that matter:
 - **Sharding carries over as-is**: a series item lives in its own series' shard, so one layout
   covers all three types — and the series record now shares a shard with its chapters and pages,
   which is what makes a per-series read one document. Rename keys to
-  `comical:lib:collection-items:{bridgeId}:{seriesId}` and drop any old `favorite-pages` and
-  `entries` keys — record ids changed prefix, so old records are invalid anyway; wipe, don't
-  migrate.
+  `comical:lib:collection-items:{bridgeId}:{seriesId}` and drop any old `favorite-pages` keys —
+  those record ids changed prefix, so old records are invalid anyway; wipe, don't migrate. The
+  **entries** key is the exception: read it once through `importLegacyEntries` (§0) before dropping
+  it.
 - `getCollectionItem(id)` still finds its shard via `parseCollectionItemId(id)` — every coordinate
   type carries bridge+series.
 - **One subtle scope rule**: a `chapterId`-scoped listing must exclude series items (they have no
@@ -286,8 +339,9 @@ aren't collected get no such detection (followups §7).
 
 ## 8. Definition of done, app side
 
-- Item client migrated per §§1–3 (mechanical renames; old stored favorites, lists and entries
-  wiped).
+- **Library migrated via `importLegacyEntries` (§0), verified on a device with a real library** —
+  series, unread counts and resume points all present afterwards. This one is not optional.
+- Item client migrated per §§1–3 (mechanical renames; old stored favorites and lists wiped).
 - Every `/library/entries/*` call repointed at `/library/collected/series/*`; the collect call
   moved to a coordinate-addressed PUT with `seriesTitle`, expecting `200` and `{ item, … }`.
 - `entry.title` → `seriesTitle` and `entry.addedAt` → `collectedAt` swept through the library
