@@ -62,13 +62,13 @@ const raw = await AsyncStorage.getItem("comical:lib:entries");   // whatever you
 if (raw) {
   const parsed = JSON.parse(raw);
   const rows = Array.isArray(parsed) ? parsed : Object.values(parsed);
-  const { imported, skipped } = await library.importLegacyEntries(rows);   // → files into "Library"
+  const { imported, skipped } = await library.importLegacyEntries(rows);   // → files into "Default"
   await AsyncStorage.setItem("comical:lib:entries.migrated", raw);          // keep it until you're sure
   await AsyncStorage.removeItem("comical:lib:entries");
 }
 ```
 
-`importLegacyEntries(rows, collectionName = "Library")`:
+`importLegacyEntries(rows, collectionName = "Default")`:
 
 - **Idempotent.** Coordinates already collected are skipped, never overwritten — safe to re-run after
   a crash, and it can't clobber anything written post-migration.

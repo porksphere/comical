@@ -272,11 +272,14 @@ export class Library {
    *
    * Imported series are filed into `collectionName` (reused if it already exists, created
    * otherwise) because under pure collections an unfiled series would be swept by the next thing
-   * that touches it.
+   * that touches it. It defaults to "Default" rather than "Library" so a host that migrates without
+   * naming one doesn't end up with a collection called "Library" sitting inside a library — which
+   * for a freshly migrated shelf lists exactly what the unfiltered view does, and reads as one list
+   * rendered twice.
    */
   async importLegacyEntries(
     rows: unknown[],
-    collectionName = "Library",
+    collectionName = "Default",
   ): Promise<{ imported: number; skipped: number; collectionId: string }> {
     const collections = await this.store.listCollections();
     let target = collections.find((c) => c.name === collectionName);
