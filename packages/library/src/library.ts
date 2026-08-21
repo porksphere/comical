@@ -1611,11 +1611,6 @@ function logicalChapterKey(c: { number?: number | undefined; languageCode?: stri
 }
 
 /**
- * Known logical chapters `(number, language)` with no read copy in any scanlation group. Shared by
- * the library view's `unreadCount` and by `getSeriesCompletion`, so "0 unread" can never mean two
- * different things depending on which one asked.
- */
-/**
  * A stored series item, hardened against records written BEFORE the library dissolved into
  * collections.
  *
@@ -1642,6 +1637,11 @@ function hydrateSeriesItem(item: CollectionSeriesItem): CollectionSeriesItem {
   };
 }
 
+/**
+ * Known logical chapters `(number, language)` with no read copy in any scanlation group. Shared by
+ * the library view's `unreadCount` and by `getSeriesCompletion`, so "0 unread" can never mean two
+ * different things depending on which one asked.
+ */
 function unreadLogicalCount(item: CollectionSeriesItem, progress: ChapterProgress[]): number {
   const readLogical = new Set(progress.filter((p) => p.read).map((p) => logicalChapterKey(p, p.chapterId)));
   const knownLogical = new Set(item.knownChapters.map((c) => logicalChapterKey(c, c.id)));
