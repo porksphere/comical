@@ -2,15 +2,14 @@
  * Filesystem-backed `LibraryStore`. Mirrors `SettingsStore`'s style: an in-memory cache with
  * write-through to JSON under `{dir}/`:
  *
- *   {dir}/entries.json                  → { [entryKey]: LibraryEntry }
- *   {dir}/lists.json                    → LibraryList[]
+ *   {dir}/collection-items/{key}.json     → { [collectionItemId]: CollectionItem }
  *   {dir}/progress/{encoded-key}.json   → { [chapterId]: ChapterProgress }
  *
  * Single-user, local scale: small files, full read/parse on first touch, then cached.
  */
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { activityKey, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type HistoryItem, type LibraryEntry, type LibraryList, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
+import { activityKey, entryKey, parseCollectionItemId, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type Collection, type CollectionItem, type CollectionItemScope, type HistoryItem, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
@@ -21,23 +20,16 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
 }
 
 export class FileLibraryStore implements LibraryStore {
-  private entriesCache?: Map<string, LibraryEntry>;
-  private listsCache?: LibraryList[];
   private groupsCache?: Map<string, SeriesGroup>;
   private progressCache = new Map<string, Map<string, ChapterProgress>>();
   private trackerLinksCache?: Map<string, TrackerLink[]>;
   private readingLogCache?: Map<string, HistoryItem>;
   private bridgePrefsCache?: Map<string, BridgePrefs>;
   private activityCache?: Map<string, ActivityItem>;
+  private collectionsCache?: Collection[];
 
   constructor(private readonly dir: string) {}
 
-  private get entriesPath(): string {
-    return join(this.dir, "entries.json");
-  }
-  private get listsPath(): string {
-    return join(this.dir, "lists.json");
-  }
   private get groupsPath(): string {
     return join(this.dir, "groups.json");
   }
@@ -53,6 +45,9 @@ export class FileLibraryStore implements LibraryStore {
   private get activityPath(): string {
     return join(this.dir, "activity.json");
   }
+  private get collectionsPath(): string {
+    return join(this.dir, "collections.json");
+  }
   private progressPath(key: string): string {
     return join(this.dir, "progress", `${encodeURIComponent(key)}.json`);
   }
@@ -63,55 +58,13 @@ export class FileLibraryStore implements LibraryStore {
     return join(this.dir, "chapters-cache", `${encodeURIComponent(key)}.json`);
   }
 
-  // ── Entries ──────────────────────────────────────────────────────────────────
-
-  private async entries(): Promise<Map<string, LibraryEntry>> {
-    if (!this.entriesCache) {
-      const obj = await readJson<Record<string, LibraryEntry & { categoryIds?: unknown }>>(this.entriesPath, {});
-      // One-time migration: entries written before the "categories → lists" rename carry
-      // `categoryIds` and no `listIds`. Give them an empty `listIds` (memberships are dropped — the
-      // list ids were regenerated) and drop the stale field, persisting the fix so it runs once.
-      let migrated = false;
-      for (const entry of Object.values(obj)) {
-        if (entry.listIds === undefined || "categoryIds" in entry) {
-          entry.listIds ??= [];
-          delete entry.categoryIds;
-          migrated = true;
-        }
-      }
-      this.entriesCache = new Map(Object.entries(obj));
-      if (migrated) await this.flushEntries();
-    }
-    return this.entriesCache;
-  }
-
-  private async flushEntries(): Promise<void> {
-    const obj = Object.fromEntries((await this.entries()).entries());
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.entriesPath, JSON.stringify(obj, null, 2), "utf8");
-  }
-
-  async listEntries(): Promise<LibraryEntry[]> {
-    return [...(await this.entries()).values()];
-  }
-  async getEntry(key: string): Promise<LibraryEntry | undefined> {
-    return (await this.entries()).get(key);
-  }
-  async putEntry(entry: LibraryEntry): Promise<void> {
-    (await this.entries()).set(`${entry.bridgeId}:${entry.seriesId}`, entry);
-    await this.flushEntries();
-  }
-  async deleteEntry(key: string): Promise<void> {
-    if ((await this.entries()).delete(key)) await this.flushEntries();
-  }
-
   // ── Disk usage ───────────────────────────────────────────────────────────────
 
   /** Actual bytes under the library dir, EXCLUDING the covers subdir — the covers `BlobStore` is
    *  rooted inside it (`{dir}/covers`) and reports its own usage; counting it here would double. */
   async diskUsage(): Promise<number> {
     let total = 0;
-    const walk = async (dir: string, skipCovers: boolean): Promise<void> => {
+    const walk = async (dir: string, atRoot: boolean): Promise<void> => {
       let entries;
       try {
         entries = await readdir(dir, { withFileTypes: true });
@@ -119,7 +72,7 @@ export class FileLibraryStore implements LibraryStore {
         return; // dir missing / transient — report what we could see
       }
       for (const entry of entries) {
-        if (skipCovers && entry.isDirectory() && entry.name === "covers") continue;
+        if (atRoot && entry.isDirectory() && entry.name === "covers") continue;
         const path = join(dir, entry.name);
         if (entry.isDirectory()) await walk(path, false);
         else total += (await stat(path).catch(() => null))?.size ?? 0;
@@ -183,35 +136,6 @@ export class FileLibraryStore implements LibraryStore {
     await this.flushProgress(key);
   }
 
-  // ── Lists ────────────────────────────────────────────────────────────────────────
-
-  private async lists(): Promise<LibraryList[]> {
-    if (!this.listsCache) {
-      this.listsCache = await readJson<LibraryList[]>(this.listsPath, []);
-    }
-    return this.listsCache;
-  }
-
-  private async flushLists(): Promise<void> {
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.listsPath, JSON.stringify(await this.lists(), null, 2), "utf8");
-  }
-
-  async listLists(): Promise<LibraryList[]> {
-    return [...(await this.lists())];
-  }
-  async putList(list: LibraryList): Promise<void> {
-    const lists = await this.lists();
-    const idx = lists.findIndex((c) => c.id === list.id);
-    if (idx === -1) lists.push(list);
-    else lists[idx] = list;
-    await this.flushLists();
-  }
-  async deleteList(id: string): Promise<void> {
-    this.listsCache = (await this.lists()).filter((c) => c.id !== id);
-    await this.flushLists();
-  }
-
   // ── Groups ───────────────────────────────────────────────────────────────────────
 
   private async groups(): Promise<Map<string, SeriesGroup>> {
@@ -237,6 +161,129 @@ export class FileLibraryStore implements LibraryStore {
   }
   async deleteGroup(id: string): Promise<void> {
     if ((await this.groups()).delete(id)) await this.flushGroups();
+  }
+
+  // ── Collection items (series / chapter / page) ────────────────────────────────
+  // Sharded per series (`collection-items/{bridge:series}.json`), the same shape `progress/` and
+  // `details/` already use here — and for the same reason. Items are the one data set with no
+  // natural ceiling, and every flush rewrites a whole document: as ONE document, opening a chapter
+  // of a heavily-collected library re-serialized every item the user had. Sharded, a write
+  // costs one series' items no matter how many the library holds, and the reader's paths
+  // (chapter open, reconcile) are naturally scoped to a single shard. A series ANCHOR lives in its
+  // own series' shard, so the layout covers all three item types.
+
+  private itemShards = new Map<string, Map<string, CollectionItem>>();
+  /** Set once every shard has been read, so an unscoped listing doesn't re-scan the directory. */
+  private allItemShardsLoaded = false;
+
+  private get itemsDir(): string {
+    return join(this.dir, "collection-items");
+  }
+  private itemShardPath(shard: string): string {
+    return join(this.itemsDir, `${encodeURIComponent(shard)}.json`);
+  }
+  /** Which shard an item belongs to. Derivable from the id alone (every coord type carries
+   *  bridge+series), which is what lets `getCollectionItem` be a keyed lookup rather than a scan. */
+  private static itemShardOf(item: { bridgeId: string; seriesId: string }): string {
+    return entryKey(item.bridgeId, item.seriesId);
+  }
+
+  private async itemShard(shard: string): Promise<Map<string, CollectionItem>> {
+    let map = this.itemShards.get(shard);
+    if (!map) {
+      const obj = await readJson<Record<string, CollectionItem>>(this.itemShardPath(shard), {});
+      map = new Map(Object.entries(obj));
+      this.itemShards.set(shard, map);
+    }
+    return map;
+  }
+
+  /** Load every shard — only for genuinely cross-series work (the full grid, a collection cascade). */
+  private async allItemShards(): Promise<Map<string, Map<string, CollectionItem>>> {
+    if (!this.allItemShardsLoaded) {
+      let files: string[] = [];
+      try {
+        files = await readdir(this.itemsDir);
+      } catch {
+        files = []; // never written to yet
+      }
+      for (const file of files) {
+        if (!file.endsWith(".json")) continue;
+        await this.itemShard(decodeURIComponent(file.slice(0, -".json".length)));
+      }
+      this.allItemShardsLoaded = true;
+    }
+    return this.itemShards;
+  }
+
+  private async flushFavoriteShard(shard: string): Promise<void> {
+    const map = await this.itemShard(shard);
+    if (map.size === 0) {
+      await rm(this.itemShardPath(shard), { force: true });
+      return;
+    }
+    await mkdir(this.itemsDir, { recursive: true });
+    await writeFile(this.itemShardPath(shard), JSON.stringify(Object.fromEntries(map), null, 2), "utf8");
+  }
+
+  async listCollectionItems(scope?: CollectionItemScope): Promise<CollectionItem[]> {
+    // A bridge+series scope names exactly one shard — the whole point of the layout. Anything
+    // broader has to consider every series.
+    const shards =
+      scope?.bridgeId !== undefined && scope.seriesId !== undefined
+        ? [await this.itemShard(entryKey(scope.bridgeId, scope.seriesId))]
+        : [...(await this.allItemShards()).values()];
+    const out: CollectionItem[] = [];
+    for (const map of shards) {
+      for (const item of map.values()) {
+        if (scope?.type !== undefined && item.type !== scope.type) continue;
+        if (scope?.bridgeId !== undefined && item.bridgeId !== scope.bridgeId) continue;
+        if (scope?.seriesId !== undefined && item.seriesId !== scope.seriesId) continue;
+        if (scope?.chapterId !== undefined && (item.type === "series" || item.chapterId !== scope.chapterId)) continue;
+        out.push(item);
+      }
+    }
+    return out;
+  }
+
+  async getCollectionItem(id: string): Promise<CollectionItem | undefined> {
+    const coord = parseCollectionItemId(id);
+    if (!coord) return undefined;
+    return (await this.itemShard(FileLibraryStore.itemShardOf(coord))).get(id);
+  }
+
+  /** One flush per SERIES touched — a reconcile repairs a chapter, so that is a single write. */
+  async putCollectionItems(items: CollectionItem[]): Promise<void> {
+    const touched = new Set<string>();
+    for (const item of items) {
+      const shard = FileLibraryStore.itemShardOf(item);
+      (await this.itemShard(shard)).set(item.id, item);
+      touched.add(shard);
+    }
+    for (const shard of touched) await this.flushFavoriteShard(shard);
+  }
+
+  async deleteCollectionItems(ids: string[]): Promise<void> {
+    const touched = new Set<string>();
+    for (const id of ids) {
+      const coord = parseCollectionItemId(id);
+      if (!coord) continue;
+      const shard = FileLibraryStore.itemShardOf(coord);
+      if ((await this.itemShard(shard)).delete(id)) touched.add(shard);
+    }
+    for (const shard of touched) await this.flushFavoriteShard(shard);
+  }
+
+  async listCollections(): Promise<Collection[]> {
+    if (!this.collectionsCache) {
+      this.collectionsCache = await readJson<Collection[]>(this.collectionsPath, []);
+    }
+    return [...this.collectionsCache];
+  }
+  async putCollections(collections: Collection[]): Promise<void> {
+    this.collectionsCache = [...collections];
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(this.collectionsPath, JSON.stringify(collections, null, 2), "utf8");
   }
 
   // ── Tracker links ─────────────────────────────────────────────────────────────

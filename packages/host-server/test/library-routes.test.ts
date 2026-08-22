@@ -54,27 +54,27 @@ afterAll(() => {
 describe("/library lifecycle", () => {
   test("add → sync(baseline) → progress → unreadCount → read-up-to → new-chapter → history", async () => {
     // add
-    const add = await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "s1", title: "Series One" });
-    expect(add.status).toBe(201);
+    const add = await send("PUT", "/library/collected/series/demo/s1", { seriesTitle: "Series One" });
+    expect(add.status).toBe(200);
 
     // first sync is a baseline (nothing "added")
-    const sync1 = (await (await send("POST", "/library/entries/demo/s1/sync", { chapters })).json()) as { added: unknown[] };
+    const sync1 = (await (await send("POST", "/library/collected/series/demo/s1/sync", { chapters })).json()) as { added: unknown[] };
     expect(sync1.added).toHaveLength(0);
 
     // mark c1 read
-    expect((await send("PUT", "/library/entries/demo/s1/progress/c1", { read: true })).status).toBe(200);
+    expect((await send("PUT", "/library/collected/series/demo/s1/progress/c1", { read: true })).status).toBe(200);
 
     // library list shows unreadCount = 2 (c2, c3)
     const lib = (await (await get("/library")).json()) as Array<{ seriesId: string; unreadCount: number }>;
     expect(lib.find((e) => e.seriesId === "s1")?.unreadCount).toBe(2);
 
     // read up to c2 → unread 1
-    expect((await send("POST", "/library/entries/demo/s1/read-up-to", { chapters, chapterId: "c2" })).status).toBe(200);
+    expect((await send("POST", "/library/collected/series/demo/s1/read-up-to", { chapters, chapterId: "c2" })).status).toBe(200);
     const lib2 = (await (await get("/library")).json()) as Array<{ seriesId: string; unreadCount: number }>;
     expect(lib2.find((e) => e.seriesId === "s1")?.unreadCount).toBe(1);
 
     // a later sync surfaces a genuinely new chapter
-    const sync2 = (await (await send("POST", "/library/entries/demo/s1/sync", { chapters: [...chapters, { id: "c4", name: "Ch 4", number: 4 }] })).json()) as { added: { id: string }[] };
+    const sync2 = (await (await send("POST", "/library/collected/series/demo/s1/sync", { chapters: [...chapters, { id: "c4", name: "Ch 4", number: 4 }] })).json()) as { added: { id: string }[] };
     expect(sync2.added.map((c) => c.id)).toEqual(["c4"]);
 
     // the new chapter shows up in the activity feed (unread), and the badge count reflects it
@@ -88,28 +88,58 @@ describe("/library lifecycle", () => {
     expect(history.some((h) => h.seriesId === "s1")).toBe(true);
   });
 
-  test("lists: create → reorder → assign → filter → delete strips membership", async () => {
-    const list = (await (await send("POST", "/library/lists", { name: "Reading" })).json()) as { id: string };
-    expect(list.id).toBeTruthy();
+  /**
+   * Uncollecting deliberately preserves read state, so an organizing action can't destroy it — the
+   * only thing that does is this route, which must therefore also reach a series that has already
+   * been uncollected (that is where orphaned progress lives).
+   */
+  test("read state outlives the series; DELETE …/progress is the only thing that destroys it", async () => {
+    await send("PUT", "/library/collected/series/demo/keep-1", { seriesTitle: "Kept" });
+    await send("POST", "/library/collected/series/demo/keep-1/sync", { chapters });
+    await send("PUT", "/library/collected/series/demo/keep-1/progress/c1", { read: true });
 
-    // reorder is a no-op with a single list but exercises the endpoint.
-    expect((await send("POST", "/library/lists/reorder", { orderedIds: [list.id] })).status).toBe(200);
+    const progressOf = async () =>
+      ((await (await get("/library/collected/series/demo/keep-1/progress")).json()) as unknown[]).length;
+    expect(await progressOf()).toBe(1);
 
-    await send("PUT", "/library/entries/demo/s1/lists", { listIds: [list.id] });
-    const inList = (await (await get(`/library?list=${list.id}`)).json()) as Array<{ seriesId: string }>;
-    expect(inList.map((e) => e.seriesId)).toEqual(["s1"]);
+    await send("DELETE", "/library/collected/series/demo/keep-1");
+    expect((await get("/library/collected/series/demo/keep-1")).status).toBe(404);
+    expect(await progressOf()).toBe(1); // survived the uncollect
 
-    await send("DELETE", `/library/lists/${list.id}`);
-    const entry = (await (await get("/library/entries/demo/s1")).json()) as { entry: { listIds: string[] } };
-    expect(entry.entry.listIds).toEqual([]);
+    // ...and the purge route reaches it even though the series is gone.
+    expect((await send("DELETE", "/library/collected/series/demo/keep-1/progress")).status).toBe(200);
+    expect(await progressOf()).toBe(0);
   });
 
-  test("query params: search (title/author), unreadOnly, sort, unlisted", async () => {
-    // s1 ("Series One", 2 unread, now unlisted after the prior test deleted its list).
-    // Add s2: a fully-read-free, unlisted, authored series.
-    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "s2", title: "Other Tale", author: "Zed" });
+  test("collections file a series and filter the library; delete un-files it", async () => {
+    // The old library "lists" retired into collections: memberships live on a SERIES favorite item.
+    const collection = (await (await send("POST", "/library/collections", { name: "Reading" })).json()) as { id: string };
+    expect(collection.id).toBeTruthy();
 
-    const titles = async (p: string) => ((await (await get(p)).json()) as Array<{ title: string }>).map((e) => e.title);
+    // reorder is a no-op with a single collection but exercises the endpoint.
+    expect((await send("POST", "/library/collections/reorder", { orderedIds: [collection.id] })).status).toBe(200);
+
+    await send("PUT", "/library/collected/series/demo/s1", { seriesTitle: "Series One" });
+    await send("PUT", "/library/collected/series/demo/s1/collections", { collectionIds: [collection.id] });
+    const filed = (await (await get(`/library?collection=${collection.id}`)).json()) as Array<{ seriesId: string }>;
+    expect(filed.map((e) => e.seriesId)).toEqual(["s1"]);
+
+    await send("DELETE", `/library/collections/${collection.id}`);
+    expect(((await (await get(`/library?collection=${collection.id}`)).json()) as unknown[]).length).toBe(0);
+    // The series existed only as a member, so its last membership going took the series with it.
+    expect((await get("/library/collected/series/demo/s1")).status).toBe(404);
+  });
+
+  test("query params: search (title/author), unreadOnly, sort, uncollected", async () => {
+    // The prior test's collection delete took s1 with it (its last membership), so re-collect it
+    // and restore the 2-unread state. Both series are then collected but unfiled.
+    await send("PUT", "/library/collected/series/demo/s1", { seriesTitle: "Series One" });
+    await send("POST", "/library/collected/series/demo/s1/sync", { chapters });
+    await send("PUT", "/library/collected/series/demo/s1/progress/c1", { read: true });
+    // s2: a fully-read-free, uncollected, authored series.
+    await send("PUT", "/library/collected/series/demo/s2", { seriesTitle: "Other Tale", author: "Zed" });
+
+    const titles = async (p: string) => ((await (await get(p)).json()) as Array<{ seriesTitle: string }>).map((e) => e.seriesTitle);
     const idsOf = async (p: string) => ((await (await get(p)).json()) as Array<{ seriesId: string }>).map((e) => e.seriesId);
 
     // q matches title (s1) vs author (s2), case-insensitively.
@@ -122,16 +152,16 @@ describe("/library lifecycle", () => {
     // sort=title is ascending.
     expect(await titles("/library?sort=title")).toEqual(["Other Tale", "Series One"]);
 
-    // both are unlisted.
-    expect(await idsOf("/library?unlisted=true&sort=title")).toEqual(["s2", "s1"]);
+    // both are uncollected.
+    expect(await idsOf("/library?uncollected=true&sort=title")).toEqual(["s2", "s1"]);
 
     // clean up so the later "activity purged" assertion stays unaffected.
-    await send("DELETE", "/library/entries/demo/s2");
+    await send("DELETE", "/library/collected/series/demo/s2");
   });
 
   test("remove → entry is gone (404) and its activity is purged", async () => {
-    expect((await send("DELETE", "/library/entries/demo/s1")).status).toBe(200);
-    expect((await get("/library/entries/demo/s1")).status).toBe(404);
+    expect((await send("DELETE", "/library/collected/series/demo/s1")).status).toBe(200);
+    expect((await get("/library/collected/series/demo/s1")).status).toBe(404);
     expect(await (await get("/library/activity")).json()).toEqual([]);
   });
 
@@ -153,17 +183,29 @@ describe("/library lifecycle", () => {
     expect(history2.find((h) => h.seriesId === "ext-1")?.lastPage).toBe(14);
   });
 
-  test("validation: add without bridgeId is 400", async () => {
-    expect((await send("POST", "/library/entries", { seriesId: "x", title: "T" })).status).toBe(400);
+  test("validation: a library-only host must be told the title, since it can't ask a bridge", async () => {
+    const manager = new BridgeManager({ bridgesDir: BRIDGES_DIR, dataDir: DATA_DIR, settings: new SettingsStore(DATA_DIR) });
+    const library = new Library(new FileLibraryStore(join(DATA_DIR, "library-only")));
+    const srv = Bun.serve({ port: 0, fetch: createRouter(manager, { library }).fetch });
+    try {
+      const res = await fetch(`http://localhost:${srv.port}/library/collected/series/demo/untitled`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(400);
+    } finally {
+      srv.stop(true);
+    }
   });
 });
 
 describe("sync + activity-count params", () => {
   test("activity/count?since= counts only items detected after the watermark", async () => {
     // Self-contained entry (prior tests removed theirs and purged the feed).
-    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "act-1", title: "Active" });
-    await send("POST", "/library/entries/demo/act-1/sync", { chapters: [chapters[0]!] }); // baseline
-    await send("POST", "/library/entries/demo/act-1/sync", { chapters }); // c2, c3 detected
+    await send("PUT", "/library/collected/series/demo/act-1", { seriesTitle: "Active" });
+    await send("POST", "/library/collected/series/demo/act-1/sync", { chapters: [chapters[0]!] }); // baseline
+    await send("POST", "/library/collected/series/demo/act-1/sync", { chapters }); // c2, c3 detected
 
     const feed = (await (await get("/library/activity")).json()) as Array<{ detectedAt: number }>;
     expect(feed).toHaveLength(2);
@@ -178,12 +220,12 @@ describe("sync + activity-count params", () => {
 
   test("DELETE /library/activity/:bridgeId/:seriesId clears one series' feed only", async () => {
     // Two library entries, each with a fresh new chapter in the feed.
-    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "clr-1", title: "Clear One" });
-    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "clr-2", title: "Clear Two" });
-    await send("POST", "/library/entries/demo/clr-1/sync", { chapters: [chapters[0]!] });
-    await send("POST", "/library/entries/demo/clr-1/sync", { chapters }); // clr-1: c2, c3 detected
-    await send("POST", "/library/entries/demo/clr-2/sync", { chapters: [chapters[0]!] });
-    await send("POST", "/library/entries/demo/clr-2/sync", { chapters: [chapters[0]!, chapters[1]!] }); // clr-2: c2
+    await send("PUT", "/library/collected/series/demo/clr-1", { seriesTitle: "Clear One" });
+    await send("PUT", "/library/collected/series/demo/clr-2", { seriesTitle: "Clear Two" });
+    await send("POST", "/library/collected/series/demo/clr-1/sync", { chapters: [chapters[0]!] });
+    await send("POST", "/library/collected/series/demo/clr-1/sync", { chapters }); // clr-1: c2, c3 detected
+    await send("POST", "/library/collected/series/demo/clr-2/sync", { chapters: [chapters[0]!] });
+    await send("POST", "/library/collected/series/demo/clr-2/sync", { chapters: [chapters[0]!, chapters[1]!] }); // clr-2: c2
 
     const seriesOf = async () =>
       ((await (await get("/library/activity")).json()) as Array<{ seriesId: string }>).map((a) => a.seriesId);
@@ -197,12 +239,12 @@ describe("sync + activity-count params", () => {
 
   test("POST /library/activity/:bridgeId/:seriesId/read marks one series' feed read, resume untouched", async () => {
     // Two entries, each with new chapters in the feed (mrk-2 is the untouched control).
-    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "mrk-1", title: "Mark One" });
-    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "mrk-2", title: "Mark Two" });
-    await send("POST", "/library/entries/demo/mrk-1/sync", { chapters: [chapters[0]!] });
-    await send("POST", "/library/entries/demo/mrk-1/sync", { chapters }); // mrk-1: c2, c3 detected
-    await send("POST", "/library/entries/demo/mrk-2/sync", { chapters: [chapters[0]!] });
-    await send("POST", "/library/entries/demo/mrk-2/sync", { chapters: [chapters[0]!, chapters[1]!] }); // mrk-2: c2
+    await send("PUT", "/library/collected/series/demo/mrk-1", { seriesTitle: "Mark One" });
+    await send("PUT", "/library/collected/series/demo/mrk-2", { seriesTitle: "Mark Two" });
+    await send("POST", "/library/collected/series/demo/mrk-1/sync", { chapters: [chapters[0]!] });
+    await send("POST", "/library/collected/series/demo/mrk-1/sync", { chapters }); // mrk-1: c2, c3 detected
+    await send("POST", "/library/collected/series/demo/mrk-2/sync", { chapters: [chapters[0]!] });
+    await send("POST", "/library/collected/series/demo/mrk-2/sync", { chapters: [chapters[0]!, chapters[1]!] }); // mrk-2: c2
 
     const res = await send("POST", "/library/activity/demo/mrk-1/read");
     expect(res.status).toBe(200);
@@ -214,10 +256,10 @@ describe("sync + activity-count params", () => {
     expect(feed.find((a) => a.seriesId === "mrk-2")?.read).toBe(false);
 
     // Dismissing is not reading: no resume point on the entry.
-    const entry = (await (await get("/library/entries/demo/mrk-1")).json()) as { resume?: unknown };
+    const entry = (await (await get("/library/collected/series/demo/mrk-1")).json()) as { resume?: unknown };
     expect(entry.resume ?? null).toBeNull();
 
-    // Unknown series → 404 (withLibraryEntry mapping).
+    // Unknown series → 404 (withCollectedSeries mapping).
     expect((await send("POST", "/library/activity/demo/nope/read")).status).toBe(404);
   });
 
@@ -276,7 +318,7 @@ describe("activity mark-read reaches trackers", () => {
   test("clearing a series' feed pushes its progress to the linked tracker", async () => {
     const srv = makeServer({ withRuntime: true });
     try {
-      await srv.library.addSeries({ bridgeId: "demo", seriesId: "trk-1", title: "Tracked" });
+      await srv.library.collectSeries({ bridgeId: "demo", seriesId: "trk-1" }, { seriesTitle: "Tracked" });
       await srv.library.linkTracker("demo:trk-1", "anilist", 111);
       await srv.library.syncChapters("demo:trk-1", [chapters[0]!]);
       await srv.library.syncChapters("demo:trk-1", chapters); // c2, c3 land in the feed
@@ -295,7 +337,7 @@ describe("activity mark-read reaches trackers", () => {
   test("a library-only host (no runtime) still returns 200 on the route", async () => {
     const srv = makeServer({ withRuntime: false });
     try {
-      await srv.library.addSeries({ bridgeId: "demo", seriesId: "trk-2", title: "Untracked" });
+      await srv.library.collectSeries({ bridgeId: "demo", seriesId: "trk-2" }, { seriesTitle: "Untracked" });
       await srv.library.syncChapters("demo:trk-2", [chapters[0]!]);
       await srv.library.syncChapters("demo:trk-2", chapters);
 

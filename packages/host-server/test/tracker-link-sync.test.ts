@@ -1,6 +1,6 @@
 /**
  * Tests the scoped per-entry TWO-WAY sync route:
- * POST /library/entries/:bridgeId/:seriesId/tracker-links/:trackerId/sync
+ * POST /library/collected/series/:bridgeId/:seriesId/tracker-links/:trackerId/sync
  *
  * Whichever side has read further wins: the tracker's state is applied locally when it's ahead,
  * and the local count is pushed to the tracker when *it* is ahead.
@@ -91,24 +91,24 @@ afterAll(() => {
   rmSync(DATA_DIR, { recursive: true, force: true });
 });
 
-describe("POST /library/entries/:bridgeId/:seriesId/tracker-links/:trackerId/sync", () => {
+describe("POST /library/collected/series/:bridgeId/:seriesId/tracker-links/:trackerId/sync", () => {
   test("404s when the entry has no link for that tracker", async () => {
-    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "sync-1", title: "Series" });
+    await send("PUT", "/library/collected/series/demo/sync-1", { seriesTitle: "Series" });
 
-    const res = await send("POST", "/library/entries/demo/sync-1/tracker-links/anilist/sync");
+    const res = await send("POST", "/library/collected/series/demo/sync-1/tracker-links/anilist/sync");
     expect(res.status).toBe(404);
   });
 
   test("pulls and applies the linked entry's tracker state", async () => {
-    await send("POST", "/library/entries/demo/sync-1/tracker-links", { trackerId: "anilist", externalId: 111 });
+    await send("POST", "/library/collected/series/demo/sync-1/tracker-links", { trackerId: "anilist", externalId: 111 });
     anilistEntries = [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 3 }];
 
-    const res = await send("POST", "/library/entries/demo/sync-1/tracker-links/anilist/sync");
+    const res = await send("POST", "/library/collected/series/demo/sync-1/tracker-links/anilist/sync");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { updated: boolean; readSynced: number };
     expect(body.updated).toBe(true);
 
-    const links = (await (await get("/library/entries/demo/sync-1/tracker-links")).json()) as Array<{
+    const links = (await (await get("/library/collected/series/demo/sync-1/tracker-links")).json()) as Array<{
       trackerId: string;
       status: string;
       chaptersRead?: number;
@@ -118,7 +118,7 @@ describe("POST /library/entries/:bridgeId/:seriesId/tracker-links/:trackerId/syn
 
   test("returns updated:false (not an error) when neither side has anything to move", async () => {
     anilistEntries = []; // tracker's list no longer contains externalId 111
-    const res = await send("POST", "/library/entries/demo/sync-1/tracker-links/anilist/sync");
+    const res = await send("POST", "/library/collected/series/demo/sync-1/tracker-links/anilist/sync");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ updated: false, readSynced: 0, pushed: false, chaptersRead: 0 });
   });
@@ -126,11 +126,11 @@ describe("POST /library/entries/:bridgeId/:seriesId/tracker-links/:trackerId/syn
   // Linking AFTER reading is what leaves local genuinely ahead — and the link itself reconciles the
   // two sides, so a push-only tracker is current before the user ever presses Sync.
   test("linking a series you've already read pushes the local count straight away", async () => {
-    await send("POST", "/library/entries", { bridgeId: "demo", seriesId: "sync-2", title: "Pushed" });
-    await send("PUT", "/library/entries/demo/sync-2/progress/c4", { read: true, chapterName: "Ch 4", number: 4 });
+    await send("PUT", "/library/collected/series/demo/sync-2", { seriesTitle: "Pushed" });
+    await send("PUT", "/library/collected/series/demo/sync-2/progress/c4", { read: true, chapterName: "Ch 4", number: 4 });
     malUpdates.length = 0;
 
-    await send("POST", "/library/entries/demo/sync-2/tracker-links", { trackerId: "mal", externalId: 222 });
+    await send("POST", "/library/collected/series/demo/sync-2/tracker-links", { trackerId: "mal", externalId: 222 });
 
     expect(malUpdates).toEqual([{ externalId: 222, chaptersRead: 4 }]);
   });
@@ -140,16 +140,16 @@ describe("POST /library/entries/:bridgeId/:seriesId/tracker-links/:trackerId/syn
   test("does not re-push when the tracker already holds the local count", async () => {
     malUpdates.length = 0;
 
-    const res = await send("POST", "/library/entries/demo/sync-2/tracker-links/mal/sync");
+    const res = await send("POST", "/library/collected/series/demo/sync-2/tracker-links/mal/sync");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ updated: true, readSynced: 0, pushed: false, chaptersRead: 4 });
     expect(malUpdates).toEqual([]);
   });
 
   test("400s when the linked tracker can neither pull nor push", async () => {
-    await send("POST", "/library/entries/demo/sync-1/tracker-links", { trackerId: "inert", externalId: 333 });
+    await send("POST", "/library/collected/series/demo/sync-1/tracker-links", { trackerId: "inert", externalId: 333 });
 
-    const res = await send("POST", "/library/entries/demo/sync-1/tracker-links/inert/sync");
+    const res = await send("POST", "/library/collected/series/demo/sync-1/tracker-links/inert/sync");
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/neither library-sync nor status-sync/);

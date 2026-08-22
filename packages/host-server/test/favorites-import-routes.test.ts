@@ -38,7 +38,7 @@ type Preview = {
     seriesId: string;
     title: string;
     status: "new" | "in-library" | "duplicate";
-    matches?: Array<{ key: string; bridgeId: string; title: string }>;
+    matches?: Array<{ key: string; bridgeId: string; seriesId: string; title: string }>;
   }>;
   truncated: boolean;
 };
@@ -93,7 +93,7 @@ describe("GET …/favorites/preview", () => {
   });
 
   test("marks a favorite already added from this bridge as in-library", async () => {
-    await library.addSeries({ bridgeId: "example", seriesId: favoriteIds[0]!, title: "whatever" });
+    await library.collectSeries({ bridgeId: "example", seriesId: favoriteIds[0]! }, { seriesTitle: "whatever" });
 
     const preview = (await get(PREVIEW).then((r) => r.json())) as Preview;
     const item = preview.items.find((i) => i.seriesId === favoriteIds[0]);
@@ -103,7 +103,7 @@ describe("GET …/favorites/preview", () => {
   test("marks a title held on another bridge as a duplicate, naming the match", async () => {
     const first = (await get(PREVIEW).then((r) => r.json())) as Preview;
     const title = first.items[0]!.title;
-    await library.addSeries({ bridgeId: "other", seriesId: "x9", title: title.toUpperCase() });
+    await library.collectSeries({ bridgeId: "other", seriesId: "x9" }, { seriesTitle: title.toUpperCase() });
 
     const preview = (await get(PREVIEW).then((r) => r.json())) as Preview;
     const item = preview.items.find((i) => i.seriesId === first.items[0]!.seriesId);
@@ -147,7 +147,7 @@ describe("POST …/favorites", () => {
   test("linkTo groups the import with the existing entry, which stays primary", async () => {
     const preview = (await get(PREVIEW).then((r) => r.json())) as Preview;
     const candidate = preview.items[0]!;
-    await library.addSeries({ bridgeId: "other", seriesId: "x9", title: candidate.title });
+    await library.collectSeries({ bridgeId: "other", seriesId: "x9" }, { seriesTitle: candidate.title });
     const existingKey = entryKey("other", "x9");
 
     const result = await post(IMPORT, {

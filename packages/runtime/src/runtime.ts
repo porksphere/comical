@@ -5,7 +5,7 @@
  * optional Library, then calls runtime.* instead of manually coordinating the two. The key
  * responsibilities that are NOT in the library or in a bridge individually:
  *
- *   - addToLibrary: fetches SeriesInfo from the bridge (for externalIds auto-linking) so callers
+ *   - collectSeries: fetches SeriesInfo from the bridge (for externalIds auto-linking) so callers
  *     only need a bridgeId + seriesId — no separate getSeriesDetails call required.
  *   - markRead / setProgress / markReadUpTo: write library state first, then fire bridge read-sync
  *     if the bridge declares the "read-sync" capability (best-effort — bridge errors are swallowed).
@@ -24,11 +24,11 @@ import type { LoadedTracker } from "@comical/core/tracker-loader";
 import {
   entryKey,
   normalizeTitle,
-  type AddSeriesResult,
+  type CollectSeriesResult,
   type Library,
-  type LibraryEntry,
-  type LibraryEntryView,
-  type SeriesSnapshot,
+  type CollectionSeriesItem,
+  type CollectionSeriesItemView,
+  type SeriesItemSnapshot,
   type TrackerLink,
 } from "@comical/library";
 
@@ -89,8 +89,8 @@ export interface FavoritesImportItem {
   linkTo?: string;
 }
 
-/** Extends AddSeriesResult with tracker suggestions when no externalId match was found. */
-export interface RuntimeAddResult extends AddSeriesResult {
+/** Extends CollectSeriesResult with tracker suggestions when no externalId match was found. */
+export interface RuntimeAddResult extends CollectSeriesResult {
   /** Candidate tracker matches found by title search for trackers that couldn't be auto-linked. */
   trackerSuggestions?: Array<{ trackerId: string; result: TrackerSearchResult }>;
 }
@@ -272,24 +272,28 @@ export class ComicalRuntime {
     this.log = opts.log;
   }
 
-  // ── addToLibrary ──────────────────────────────────────────────────────────────
+  // ── collectSeries ─────────────────────────────────────────────────────────────
 
   /**
-   * Add a series to the library. If `snap.title` is absent the runtime calls
+   * Collect a series — what "add to library" means now, since being in the library IS having a
+   * series collection item. If `snap.seriesTitle` is absent the runtime calls
    * `bridge.getSeriesDetails()` to populate title, thumbnailUrl, author, and externalIds —
    * so callers only need bridgeId + seriesId when they don't already have the series detail.
    *
    * `externalIds` from SeriesInfo are always included in the snapshot so the library's
-   * auto-linking logic can fire.
+   * auto-linking logic can fire. `collectionIds` is passed straight through to the library, which
+   * files the series in the same write: under pure collections a series that is never filed stays
+   * only transiently, so a client adding to "the library" should pass whichever collection its UI
+   * treats as the default.
    */
-  async addToLibrary(
+  async collectSeries(
     bridgeId: string,
     seriesId: string,
-    snap?: Partial<Omit<SeriesSnapshot, "bridgeId" | "seriesId">>,
+    snap?: Partial<SeriesItemSnapshot>,
   ): Promise<RuntimeAddResult> {
     const lib = this.requireLibrary();
 
-    let title = snap?.title;
+    let title = snap?.seriesTitle;
     let thumbnailUrl = snap?.thumbnailUrl;
     let author = snap?.author;
     let externalIds = snap?.externalIds;
@@ -306,13 +310,13 @@ export class ComicalRuntime {
       }
     }
 
-    const full: SeriesSnapshot = { bridgeId, seriesId, title };
+    const full: SeriesItemSnapshot = { seriesTitle: title };
     if (thumbnailUrl !== undefined) full.thumbnailUrl = thumbnailUrl;
     if (author !== undefined) full.author = author;
-    if (snap?.listIds !== undefined) full.listIds = snap.listIds;
     if (externalIds !== undefined) full.externalIds = externalIds;
+    if (snap?.collectionIds !== undefined) full.collectionIds = snap.collectionIds;
 
-    const result = await lib.addSeries(full);
+    const result = await lib.collectSeries({ bridgeId, seriesId }, full);
 
     const key = entryKey(bridgeId, seriesId);
 
@@ -468,14 +472,14 @@ export class ComicalRuntime {
 
   private async classifyFavorite(
     lib: Library,
-    byTitle: Map<string, LibraryEntry[]>,
+    byTitle: Map<string, CollectionSeriesItem[]>,
     bridgeId: string,
     entry: SeriesEntry,
   ): Promise<FavoritesImportCandidate> {
     const candidate: FavoritesImportCandidate = { seriesId: entry.id, title: entry.title, status: "new" };
     if (entry.thumbnailUrl !== undefined) candidate.thumbnailUrl = entry.thumbnailUrl;
 
-    if (await lib.getEntry(entryKey(bridgeId, entry.id))) {
+    if (await lib.getSeries(entryKey(bridgeId, entry.id))) {
       candidate.status = "in-library";
       return candidate;
     }
@@ -488,7 +492,7 @@ export class ComicalRuntime {
         key: entryKey(e.bridgeId, e.seriesId),
         bridgeId: e.bridgeId,
         seriesId: e.seriesId,
-        title: e.title,
+        title: e.seriesTitle,
       }));
     }
     return candidate;
@@ -517,10 +521,10 @@ export class ComicalRuntime {
     let linked = 0;
     for (const item of items) {
       const key = entryKey(bridgeId, item.seriesId);
-      if (await lib.getEntry(key)) { skipped++; continue; }
-      const snap: SeriesSnapshot = { bridgeId, seriesId: item.seriesId, title: item.title };
+      if (await lib.getSeries(key)) { skipped++; continue; }
+      const snap: SeriesItemSnapshot = { seriesTitle: item.title };
       if (item.thumbnailUrl !== undefined) snap.thumbnailUrl = item.thumbnailUrl;
-      await lib.addSeries(snap);
+      await lib.collectSeries({ bridgeId, seriesId: item.seriesId }, snap);
       imported++;
       if (item.linkTo) {
         // Best-effort: a link target the user removed between preview and confirm must not lose the
@@ -661,11 +665,11 @@ export class ComicalRuntime {
    * missed; the worst case is the per-entry behavior that predates it.
    */
   private async batchCheckRevisions(
-    candidates: LibraryEntryView[],
+    candidates: CollectionSeriesItemView[],
     deadlineAt: number | undefined,
   ): Promise<Map<string, UpdateCheckOutcome>> {
     const out = new Map<string, UpdateCheckOutcome>();
-    const byBridge = new Map<string, LibraryEntryView[]>();
+    const byBridge = new Map<string, CollectionSeriesItemView[]>();
     for (const e of candidates) {
       const list = byBridge.get(e.bridgeId);
       if (list) list.push(e);
@@ -711,7 +715,7 @@ export class ComicalRuntime {
    * detail staleness.
    */
   private async syncOneEntry(
-    entry: LibraryEntryView,
+    entry: CollectionSeriesItemView,
     counters: { updated: number; newChapters: number; readSynced: number; unchanged: number },
     detailStaleMs?: number,
     check?: UpdateCheckOutcome,
@@ -873,7 +877,7 @@ export class ComicalRuntime {
    * the entries this can't (see {@link decideTrackerPush}).
    */
   private async isFinishedLocally(key: string): Promise<boolean> {
-    const { fullyRead, seriesFinished } = await this.requireLibrary().getEntryCompletion(key);
+    const { fullyRead, seriesFinished } = await this.requireLibrary().getSeriesCompletion(key);
     return fullyRead && seriesFinished;
   }
 
@@ -1132,7 +1136,7 @@ export class ComicalRuntime {
 
   /**
    * Link an existing entry to any configured tracker whose externalId is already on the entry but
-   * not yet linked — the re-link counterpart to the auto-link `addToLibrary` does, for entries that
+   * not yet linked — the re-link counterpart to the auto-link `collectSeries` does, for series that
    * predate a tracker being configured. Best-effort; never throws.
    */
   /** Push a "read up to here" range to the bridge's own backend, if it supports read-sync. */

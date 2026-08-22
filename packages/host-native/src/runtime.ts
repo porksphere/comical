@@ -82,7 +82,7 @@ export function installComicalHarness(makeHost: MakeHost): void {
     if (typeof fn !== "function") throw new Error(`bridge has no method: ${method}`);
     const result = await (fn as (...a: unknown[]) => unknown).apply(bridge, args);
     // Honor the `Promise<string>` contract for EVERY result. A void method (addFavorite,
-    // removeFavorite, addToLibrary, putBridgeSettings, recordChapterProgress, …) resolves to
+    // removeFavorite, collectSeries, putBridgeSettings, recordChapterProgress, …) resolves to
     // `undefined`, and `JSON.stringify(undefined)` is the VALUE `undefined` — not a string — which
     // the native layer then coerces to the literal string "undefined", an invalid-JSON payload the
     // caller's `JSON.parse` chokes on ("Unexpected character 'u'"). `?? null` makes void serialize as

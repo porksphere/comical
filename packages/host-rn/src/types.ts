@@ -48,7 +48,7 @@ export interface EmbeddedDownloadsEngineConfig {
 
 /**
  * The device seams for guaranteed-offline library covers: where cover bytes land (`blobs`, a covers-
- * rooted store WITH `read` — the router serves them back at `/library/entries/:b/:s/cover`) and how
+ * rooted store WITH `read` — the router serves them back at `/library/collected/series/:b/:s/cover`) and how
  * a cover URL becomes bytes (`fetchPage`, typically the same fetcher the download engine uses).
  */
 export interface EmbeddedCoversConfig {
@@ -78,7 +78,7 @@ export type CreateRouter = (
     registry?: RegistryProvider;
     /** Local library service — enables the `/library*` endpoints when provided. */
     library?: Library;
-    /** Runtime orchestration layer — paired with `library` for addToLibrary / read-sync / sync. */
+    /** Runtime orchestration layer — paired with `library` for collectSeries / read-sync / sync. */
     runtime?: ComicalRuntime;
     /** Downloads service — enables the `/downloads*` offline-manifest endpoints when provided. */
     downloads?: Downloads;

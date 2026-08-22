@@ -60,7 +60,7 @@ export interface EmbeddedRuntimeConfig {
   downloadsEngine?: EmbeddedDownloadsEngineConfig;
   /** Optional device seams for guaranteed-offline library covers (a covers-rooted blob store with
    *  `read`, plus the page fetcher). Supplied alongside `libraryStore`; the reused router captures
-   *  covers on library-add/browse and serves them at `/library/entries/:b/:s/cover`. */
+   *  covers on library-add/browse and serves them at `/library/collected/series/:b/:s/cover`. */
   covers?: EmbeddedCoversConfig;
   /** The embedder's transport setter — passed the embedded transport (or `null` to restore remote). */
   setTransport: (transport: EmbeddedTransport | null) => void;

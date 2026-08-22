@@ -4,17 +4,13 @@
  * platform backends be efficient: a filesystem store writes JSON, a browser store uses IndexedDB,
  * a native store uses SQLite — each implements exactly these methods.
  *
- * Keys are `entryKey(bridgeId, seriesId)`.
+ * Per-series documents are keyed by `entryKey(bridgeId, seriesId)`; collection items by their
+ * derived `collectionItemId`. There is no separate "entries" document — a tracked series IS a
+ * `CollectionSeriesItem`.
  */
-import type { ActivityItem, BridgePrefs, CachedChapters, CachedSeriesDetail, ChapterProgress, HistoryItem, LibraryEntry, LibraryList, SeriesGroup, TrackerLink } from "./models.ts";
+import type { ActivityItem, BridgePrefs, CachedChapters, CachedSeriesDetail, ChapterProgress, Collection, CollectionItem, CollectionItemScope, HistoryItem, SeriesGroup, TrackerLink } from "./models.ts";
 
 export interface LibraryStore {
-  // ── Entries ──────────────────────────────────────────────────────────────
-  listEntries(): Promise<LibraryEntry[]>;
-  getEntry(key: string): Promise<LibraryEntry | undefined>;
-  putEntry(entry: LibraryEntry): Promise<void>;
-  deleteEntry(key: string): Promise<void>;
-
   /** Optional: the ACTUAL bytes this store's documents occupy (files on disk, AsyncStorage blobs…).
    *  Powers the Storage screen's library figure; excludes cover blobs (the host's covers `BlobStore`
    *  reports those itself). */
@@ -34,15 +30,33 @@ export interface LibraryStore {
   /** Drop all progress for a series (called when an entry is removed). */
   deleteProgressForEntry(key: string): Promise<void>;
 
-  // ── Lists ─────────────────────────────────────────────────────────────────────
-  listLists(): Promise<LibraryList[]>;
-  putList(list: LibraryList): Promise<void>;
-  deleteList(id: string): Promise<void>;
-
   // ── Series groups ────────────────────────────────────────────────────────
   listGroups(): Promise<SeriesGroup[]>;
   putGroup(group: SeriesGroup): Promise<void>;
   deleteGroup(id: string): Promise<void>;
+
+  // ── Collection items (series / chapter / page) ────────────────────────────
+  // Keyed by the derived `collectionItemId`. Deliberately scoped + batched rather than
+  // list-everything/write-one: items are the one data set here with no natural ceiling (a heavy
+  // user of a long-running series accumulates thousands), and both the reader's chapter-open path
+  // and a reconcile would otherwise cost a full load and a write per record.
+
+  /** Items matching `scope`; every item when it is omitted. Stores MUST honour the scope —
+   *  it is what keeps opening a chapter off the whole-library path. */
+  listCollectionItems(scope?: CollectionItemScope): Promise<CollectionItem[]>;
+  /** One item by its derived id — the keyed lookup that makes "is this collected" O(1)
+   *  rather than a scan. */
+  getCollectionItem(id: string): Promise<CollectionItem | undefined>;
+  /** Upsert a batch (the derived id makes each idempotent). One call must cost ONE durable write,
+   *  however many records it carries — a reconcile repairs a whole chapter through it. */
+  putCollectionItems(items: CollectionItem[]): Promise<void>;
+  /** Delete a batch. Same one-write-per-call expectation as `putCollectionItems`. */
+  deleteCollectionItems(ids: string[]): Promise<void>;
+
+  /** Collections are a small ordered array — the whole document is read and written at once, so a
+   *  reorder or a cascading delete is a single write rather than N racing read-modify-writes. */
+  listCollections(): Promise<Collection[]>;
+  putCollections(collections: Collection[]): Promise<void>;
 
   // ── Tracker links ─────────────────────────────────────────────────────────
   listTrackerLinks(key: string): Promise<TrackerLink[]>;

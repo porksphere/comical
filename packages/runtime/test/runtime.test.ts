@@ -116,7 +116,7 @@ function mockTrackerProvider(trackers: Tracker[]): TrackerProvider {
 
 // ── Offline metadata capture ─────────────────────────────────────────────────
 
-describe("addToLibrary — offline metadata capture", () => {
+describe("collectSeries — offline metadata capture", () => {
   test("caches the full series detail and seeds the chapter list at add time", async () => {
     const lib = makeLib();
     const bridge = syncBridge({
@@ -125,7 +125,7 @@ describe("addToLibrary — offline metadata capture", () => {
     });
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
 
     const detail = await lib.getCachedDetail("test:s1");
     expect(detail?.info.description).toBe("Pirates.");
@@ -138,7 +138,7 @@ describe("addToLibrary — offline metadata capture", () => {
     const bridge = syncBridge({ details: { id: "s1", title: "One Piece", description: "Pirates." } });
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
 
-    await runtime.addToLibrary("test", "s1", { title: "One Piece" });
+    await runtime.collectSeries("test", "s1", { seriesTitle: "One Piece" });
 
     expect((await lib.getCachedDetail("test:s1"))?.info.description).toBe("Pirates.");
   });
@@ -151,16 +151,16 @@ describe("addToLibrary — offline metadata capture", () => {
     };
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
 
-    await runtime.addToLibrary("test", "s1", { title: "Known Title" });
+    await runtime.collectSeries("test", "s1", { seriesTitle: "Known Title" });
 
-    expect(await lib.isInLibrary("test:s1")).toBe(true);
+    expect(await lib.isCollected("test:s1")).toBe(true);
     expect(await lib.getCachedDetail("test:s1")).toBeUndefined();
   });
 });
 
 // ── Auto-link via externalIds ─────────────────────────────────────────────────
 
-describe("addToLibrary — auto-link via externalIds", () => {
+describe("collectSeries — auto-link via externalIds", () => {
   test("links tracker when bridge externalId matches loaded tracker id", async () => {
     const lib = makeLib();
     const bridge = mockBridge({ id: "s1", title: "One Piece", externalIds: { anilist: 123 } });
@@ -171,7 +171,7 @@ describe("addToLibrary — auto-link via externalIds", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
 
     const links = await lib.listTrackerLinks("test:s1");
     expect(links).toHaveLength(1);
@@ -188,8 +188,8 @@ describe("addToLibrary — auto-link via externalIds", () => {
       trackers: mockTrackerProvider([mockTracker("anilist")]),
     });
 
-    await runtime.addToLibrary("test", "s1");
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
+    await runtime.collectSeries("test", "s1");
 
     expect(await lib.listTrackerLinks("test:s1")).toHaveLength(1);
   });
@@ -204,7 +204,7 @@ describe("addToLibrary — auto-link via externalIds", () => {
       trackers: mockTrackerProvider([mockTracker("anilist"), malTracker]),
     });
 
-    const result = await runtime.addToLibrary("test", "s1");
+    const result = await runtime.collectSeries("test", "s1");
 
     // anilist was auto-linked; mal goes through search → suggestion
     const links = await lib.listTrackerLinks("test:s1");
@@ -217,7 +217,7 @@ describe("addToLibrary — auto-link via externalIds", () => {
 
 // ── Title-search suggestions ─────────────────────────────────────────────────
 
-describe("addToLibrary — title-search suggestions", () => {
+describe("collectSeries — title-search suggestions", () => {
   test("returns tracker suggestions when no externalIds are available", async () => {
     const lib = makeLib();
     const bridge = mockBridge({ id: "s1", title: "Berserk" }); // no externalIds
@@ -228,7 +228,7 @@ describe("addToLibrary — title-search suggestions", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    const result = await runtime.addToLibrary("test", "s1");
+    const result = await runtime.collectSeries("test", "s1");
 
     expect(result.trackerSuggestions).toHaveLength(1);
     expect(result.trackerSuggestions![0]!.trackerId).toBe("anilist");
@@ -247,7 +247,7 @@ describe("addToLibrary — title-search suggestions", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    const result = await runtime.addToLibrary("test", "s1");
+    const result = await runtime.collectSeries("test", "s1");
 
     expect(result.trackerSuggestions).toBeUndefined();
   });
@@ -257,7 +257,7 @@ describe("addToLibrary — title-search suggestions", () => {
     const bridge = mockBridge({ id: "s1", title: "Series" });
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
 
-    const result = await runtime.addToLibrary("test", "s1");
+    const result = await runtime.collectSeries("test", "s1");
 
     expect(result.trackerSuggestions).toBeUndefined();
   });
@@ -277,7 +277,7 @@ describe("syncEntryToTrackers", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await lib.syncChapters("test:s1", [{ id: "c1", name: "Ch 1", number: 1 }]);
     await runtime.markRead("test", "s1", "c1", true, "Ch 1");
 
@@ -296,7 +296,7 @@ describe("syncEntryToTrackers", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await lib.syncChapters("test:s1", [{ id: "c1", name: "Ch 1", number: 1 }]);
     await runtime.markRead("test", "s1", "c1", true, "Ch 1");
 
@@ -313,7 +313,7 @@ describe("syncEntryToTrackers", () => {
       trackers: mockTrackerProvider([mockTracker("anilist", { updateCalls })]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     // Three chapters read, but the highest number is 2.5 — a count (3) would be wrong.
     await runtime.markReadUpTo("test", "s1", [ch("c1", 1), ch("c2", 2), ch("c2_5", 2.5)], "c2_5");
 
@@ -330,7 +330,7 @@ describe("syncEntryToTrackers", () => {
       trackers: mockTrackerProvider([mockTracker("anilist", { updateCalls })]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await runtime.markRead("test", "s1", "c2", true, "Ch 2", 2);
     await runtime.markRead("test", "s1", "c1", true, "Ch 1", 1); // re-reading an earlier chapter
     await runtime.markRead("test", "s1", "c2", true, "Ch 2", 2); // and re-marking the same one
@@ -357,7 +357,7 @@ describe("syncEntryToTrackers", () => {
       log: { debug() {}, info() {}, warn: (...args) => { warns.push(args); }, error() {} },
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await lib.syncChapters("test:s1", [{ id: "c1", name: "Ch 1", number: 1 }]);
 
     // The read itself still succeeds…
@@ -390,7 +390,7 @@ describe("syncEntryToTrackers", () => {
       log: { debug() {}, info() {}, warn: (...args) => { warns.push(args); }, error() {} },
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await lib.syncChapters("test:s1", [{ id: "c1", name: "Ch 1", number: 1 }]);
     await runtime.markRead("test", "s1", "c1", true, "Ch 1");
 
@@ -417,7 +417,7 @@ describe("syncEntryToTrackers", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await lib.syncChapters("test:s1", [{ id: "c1", name: "Ch 1", number: 1 }]);
     await runtime.markRead("test", "s1", "c1", true, "Ch 1");
 
@@ -437,7 +437,7 @@ describe("syncEntryToTrackers", () => {
       trackers: mockTrackerProvider([tracker]),
     }); // no log configured — must still not throw
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await lib.syncChapters("test:s1", [{ id: "c1", name: "Ch 1", number: 1 }]);
     await runtime.markRead("test", "s1", "c1", true, "Ch 1");
 
@@ -476,7 +476,7 @@ describe("syncEntryToTrackers — status", () => {
       library: lib,
       trackers: mockTrackerProvider([mockTracker("anilist", { updateCalls })]),
     });
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111, caches the detail + chapters
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111, caches the detail + chapters
     if (opts.link) await lib.updateTrackerLink("test:s1", "anilist", opts.link);
     // Seeded through the library, not the runtime, so the pushes under test are the only ones.
     for (const c of opts.read ?? []) await lib.markRead("test:s1", c.id, true, c.name, c.number);
@@ -681,7 +681,7 @@ describe("syncEntryToTrackers — status", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await lib.updateTrackerLink("test:s1", "anilist", { chaptersRead: 3 });
     for (const c of CH) await lib.markRead("test:s1", c.id, true, c.name, c.number);
 
@@ -712,7 +712,7 @@ describe("syncEntryToTrackers — status", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await runtime.syncFromTracker("anilist");
 
     expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({
@@ -737,7 +737,7 @@ describe("markActivityRead", () => {
       library: lib,
       trackers: mockTrackerProvider([tracker]),
     });
-    await runtime.addToLibrary("test", "s1"); // baseline sync — no activity yet
+    await runtime.collectSeries("test", "s1"); // baseline sync — no activity yet
     await lib.syncChapters("test:s1", [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
     return { lib, runtime };
   }
@@ -788,7 +788,7 @@ describe("backgroundSync — tracker read-pull", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
     // User is reading locally — last local read is chapter 1.
     await runtime.markRead("test", "s1", "c1", true, "Ch 1", 1);
 
@@ -799,7 +799,7 @@ describe("backgroundSync — tracker read-pull", () => {
     expect(read).toEqual(new Set(["c1", "c2", "c3"]));
     expect(res.readSynced).toBe(2);
     // But the resume pointer stays on the locally-read chapter — the pull never moved it.
-    const entry = await lib.getEntry("test:s1");
+    const entry = await lib.getSeries("test:s1");
     expect(entry?.lastReadChapterId).toBe("c1");
     expect(await lib.getResume("test:s1")).toEqual({ chapterId: "c1", lastPage: 0 });
   });
@@ -845,7 +845,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
@@ -872,7 +872,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
     // Read locally without going through the runtime, so the only push is the one under test.
     await lib.markRead("test:s1", "c3", true, "Ch 3", 3);
 
@@ -903,7 +903,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
     await lib.markRead("test:s1", "c2", true, "Ch 2", 2);
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
@@ -931,7 +931,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
     await lib.markRead("test:s1", "c1", true, "Ch 1", 1);
     await lib.markRead("test:s1", "c2", true, "Ch 2", 2);
 
@@ -960,7 +960,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
     await lib.markRead("test:s1", "c2", true, "Ch 2", 2);
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
@@ -989,7 +989,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
     await lib.markRead("test:s1", "c3", true, "Ch 3", 3);
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
@@ -1012,7 +1012,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // no externalIds on this series → no auto-link
+    await runtime.collectSeries("test", "s1"); // no externalIds on this series → no auto-link
 
     await expect(runtime.syncEntryWithTracker("test", "s1", "anilist")).rejects.toThrow(/no anilist link/);
   });
@@ -1027,7 +1027,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
 
     await expect(runtime.syncEntryWithTracker("test", "s1", "anilist")).rejects.toThrow(
       /neither library-sync nor status-sync/,
@@ -1044,7 +1044,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
@@ -1076,7 +1076,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
@@ -1110,7 +1110,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
     await lib.markRead("test:s1", "c12", true, "Ch 12", 12);
     await lib.markRead("test:s1", "c12.5", true, "Ch 12.5", 12.5);
 
@@ -1141,7 +1141,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1"); // auto-links anilist:111
+    await runtime.collectSeries("test", "s1"); // auto-links anilist:111
     await lib.markRead("test:s1", "c12.5", true, "Ch 12.5", 12.5);
     await runtime.syncEntryWithTracker("test", "s1", "anilist"); // pushes 12.5, watermark := 12.5
 
@@ -1175,7 +1175,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     for (const c of chapters) await lib.markRead("test:s1", c.id, true, c.name, c.number);
     await lib.updateTrackerLink("test:s1", "anilist", { chaptersRead: 3 });
 
@@ -1219,7 +1219,7 @@ describe("syncEntryWithTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     for (const c of chapters) await lib.markRead("test:s1", c.id, true, c.name, c.number);
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
@@ -1267,7 +1267,7 @@ describe("linkTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     expect(await lib.listTrackerLinks("test:s1")).toHaveLength(0);
     await lib.markRead("test:s1", "c1", true, "Ch 1", 1);
 
@@ -1296,7 +1296,7 @@ describe("linkTracker", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     for (const c of [ch("c1", 1), ch("c2", 2), ch("c3", 3)]) {
       await lib.markRead("test:s1", c.id, true, c.name, c.number);
     }
@@ -1323,7 +1323,7 @@ describe("linkTracker", () => {
       log: { info() {}, warn: (msg: string) => { warnings.push(msg); }, error() {}, debug() {} },
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await runtime.linkTracker("test", "s1", "anilist", 111);
 
     expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ externalId: 111 });
@@ -1335,7 +1335,7 @@ describe("linkTracker", () => {
     const lib = makeLib();
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(unlinkedBridge()), library: lib });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await runtime.linkTracker("test", "s1", "anilist", 111);
 
     expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ externalId: 111 });
@@ -1351,7 +1351,7 @@ describe("backgroundSync — re-link", () => {
 
     // Added BEFORE any tracker existed → no link, but externalIds are persisted.
     const noTrackers = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
-    await noTrackers.addToLibrary("test", "s1");
+    await noTrackers.collectSeries("test", "s1");
     expect(await lib.listTrackerLinks("test:s1")).toHaveLength(0);
 
     // A tracker is configured later; backgroundSync wires up the existing entry.
@@ -1390,7 +1390,7 @@ describe("backgroundSync — best-effort", () => {
       trackers: mockTrackerProvider([tracker]),
     });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
 
     // Should resolve cleanly despite both sources failing.
     const res = await runtime.backgroundSync();
@@ -1427,7 +1427,7 @@ function instrumentedBridge(opts: { delayMs?: number } = {}) {
 /** Seed `n` entries directly through the library so chaptersSyncedAt stays unset (= stale). */
 async function seedStaleEntries(lib: Library, n: number): Promise<void> {
   for (let i = 0; i < n; i++) {
-    await lib.addSeries({ bridgeId: "test", seriesId: `s${i}`, title: `Series ${i}` });
+    await lib.collectSeries({ bridgeId: "test", seriesId: `s${i}` }, { seriesTitle: `Series ${i}` });
   }
 }
 
@@ -1437,8 +1437,8 @@ describe("backgroundSync — staleness window", () => {
     const { bridge, calls } = instrumentedBridge();
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
 
-    // addToLibrary seeds chapters → chaptersSyncedAt is fresh.
-    await runtime.addToLibrary("test", "s1");
+    // collectSeries seeds chapters → chaptersSyncedAt is fresh.
+    await runtime.collectSeries("test", "s1");
     expect(calls.get("s1")).toBe(1);
 
     const res = await runtime.backgroundSync();
@@ -1640,7 +1640,7 @@ describe("backgroundSync — series-detail refresh", () => {
     const { bridge, calls } = statusBridge(() => status);
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     expect(calls()).toBe(1);
 
     // Inside the window, the cached answer stands — this is the common path, and re-fetching here
@@ -1661,7 +1661,7 @@ describe("backgroundSync — series-detail refresh", () => {
     const { bridge, calls } = statusBridge(() => "completed");
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
 
-    await runtime.addToLibrary("test", "s1");
+    await runtime.collectSeries("test", "s1");
     await runtime.backgroundSync({ force: true, detailStaleMs: 0 });
 
     expect(calls()).toBe(1);
@@ -1673,7 +1673,7 @@ describe("backgroundSync — series-detail refresh", () => {
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
 
     // Seeded straight into the library (a favourites import), so nothing was ever cached.
-    await lib.addSeries({ bridgeId: "test", seriesId: "s1", title: "Series" });
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "Series" });
     expect(await lib.getCachedDetail("test:s1")).toBeUndefined();
 
     await runtime.backgroundSync();
@@ -1690,12 +1690,12 @@ describe("backgroundSync — series-detail refresh", () => {
       async getChapters() { return [ch("c1", 1), ch("c2", 2)]; },
     };
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
-    await lib.addSeries({ bridgeId: "test", seriesId: "s1", title: "Series" });
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "Series" });
 
     const res = await runtime.backgroundSync();
 
     expect(res).toMatchObject({ updated: 1 });
-    expect((await lib.getEntry("test:s1"))?.knownChapters).toHaveLength(2);
+    expect((await lib.getSeries("test:s1"))?.knownChapters).toHaveLength(2);
   });
 });
 
@@ -1848,8 +1848,8 @@ describe("previewBridgeFavoritesImport", () => {
   test("classifies each favorite as new / in-library / duplicate", async () => {
     const lib = makeLib();
     // Already here from THIS bridge → in-library. Already here from ANOTHER bridge → duplicate.
-    await lib.addSeries({ bridgeId: "test", seriesId: "s2", title: "Second" });
-    await lib.addSeries({ bridgeId: "other", seriesId: "x9", title: "third!" });
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s2" }, { seriesTitle: "Second" });
+    await lib.collectSeries({ bridgeId: "other", seriesId: "x9" }, { seriesTitle: "third!" });
 
     const runtime = favoritesRuntime(
       favoritesBridge([
@@ -1871,7 +1871,7 @@ describe("previewBridgeFavoritesImport", () => {
 
   test("a same-bridge title twin is NOT a duplicate — it is a different series", async () => {
     const lib = makeLib();
-    await lib.addSeries({ bridgeId: "test", seriesId: "already", title: "Twin" });
+    await lib.collectSeries({ bridgeId: "test", seriesId: "already" }, { seriesTitle: "Twin" });
 
     const runtime = favoritesRuntime(favoritesBridge([{ id: "fresh", title: "Twin" }]), lib);
     const preview = await runtime.previewBridgeFavoritesImport("test");
@@ -1881,8 +1881,8 @@ describe("previewBridgeFavoritesImport", () => {
 
   test("reports every matching source when a title exists on several bridges", async () => {
     const lib = makeLib();
-    await lib.addSeries({ bridgeId: "a", seriesId: "1", title: "Shared Title" });
-    await lib.addSeries({ bridgeId: "b", seriesId: "2", title: "shared-title" });
+    await lib.collectSeries({ bridgeId: "a", seriesId: "1" }, { seriesTitle: "Shared Title" });
+    await lib.collectSeries({ bridgeId: "b", seriesId: "2" }, { seriesTitle: "shared-title" });
 
     const runtime = favoritesRuntime(favoritesBridge([{ id: "c1", title: "SHARED TITLE" }]), lib);
     const preview = await runtime.previewBridgeFavoritesImport("test");
@@ -1916,7 +1916,7 @@ describe("previewBridgeFavoritesImport", () => {
 describe("importBridgeFavorites", () => {
   test("with no selection, imports every favorite not already present", async () => {
     const lib = makeLib();
-    await lib.addSeries({ bridgeId: "test", seriesId: "s2", title: "Second" });
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s2" }, { seriesTitle: "Second" });
     const runtime = favoritesRuntime(
       favoritesBridge([{ id: "s1", title: "First" }, { id: "s2", title: "Second" }, { id: "s3", title: "Third" }], 2),
       lib,
@@ -1943,12 +1943,12 @@ describe("importBridgeFavorites", () => {
     ]);
     expect(result).toEqual({ imported: 1, skipped: 0, linked: 0 });
     expect(fetches).toBe(0);
-    expect((await lib.getEntry(entryKey("test", "s1")))?.thumbnailUrl).toBe("http://x/1.jpg");
+    expect((await lib.getSeries(entryKey("test", "s1")))?.thumbnailUrl).toBe("http://x/1.jpg");
   });
 
   test("linkTo groups the new source with the existing entry, which stays primary", async () => {
     const lib = makeLib();
-    await lib.addSeries({ bridgeId: "other", seriesId: "x9", title: "Shared" });
+    await lib.collectSeries({ bridgeId: "other", seriesId: "x9" }, { seriesTitle: "Shared" });
     const existingKey = entryKey("other", "x9");
 
     const result = await favoritesRuntime(favoritesBridge([]), lib).importBridgeFavorites("test", [
@@ -1967,12 +1967,12 @@ describe("importBridgeFavorites", () => {
       { seriesId: "s1", title: "Shared", linkTo: entryKey("other", "gone") },
     ]);
     expect(result).toEqual({ imported: 1, skipped: 0, linked: 0 });
-    expect(await lib.isInLibrary(entryKey("test", "s1"))).toBe(true);
+    expect(await lib.isCollected(entryKey("test", "s1"))).toBe(true);
   });
 
   test("skips a selected series that is already in the library", async () => {
     const lib = makeLib();
-    await lib.addSeries({ bridgeId: "test", seriesId: "s1", title: "First" });
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "First" });
     const result = await favoritesRuntime(favoritesBridge([]), lib).importBridgeFavorites("test", [
       { seriesId: "s1", title: "First" },
     ]);
