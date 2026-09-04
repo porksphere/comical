@@ -14,6 +14,7 @@
  */
 import type { SettingDescriptor, SettingValue } from "@comical/contract";
 import type { LoadedBridge } from "@comical/core/loader";
+import { storedSecretKeys } from "@comical/core/settings";
 import { methodsForBridge } from "./capabilities.ts";
 import { KeyedQueue } from "./keyed-queue.ts";
 import { buildProxyBridge } from "./proxy-bridge.ts";
@@ -185,15 +186,19 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
     const hasSettings = (b.info.capabilities ?? []).includes("settings");
     let descriptors: SettingDescriptor[] = [];
     let missingRequired: string[] = [];
+    let secretsSet: string[] = [];
     if (hasSettings) {
       descriptors = (await this.load(b.info.id)).descriptors;
-      missingRequired = missingRequiredFor(descriptors, await this.deps.settings.get(b.info.id));
+      const stored = await this.deps.settings.get(b.info.id);
+      missingRequired = missingRequiredFor(descriptors, stored);
+      secretsSet = storedSecretKeys(descriptors, stored);
     }
     return {
       info: b.info,
       settings: descriptors,
       configured: missingRequired.length === 0,
       missingRequired,
+      secretsSet,
       source: b.source,
       ...(b.availableVersion !== undefined ? { availableVersion: b.availableVersion } : {}),
       ...(b.discontinued ? { discontinued: true } : {}),

@@ -374,6 +374,23 @@ describe("GET /img-proxy", () => {
 });
 
 describe("PUT /bridges/:id/settings", () => {
+  test("GET /bridges reports which secret keys are set, never their values", async () => {
+    const before = await fetch(`${baseUrl}/bridges`).then(r => r.json()) as Array<{ info: { id: string }; secretsSet: string[] }>;
+    expect(before.find(b => b.info.id === "example")?.secretsSet).toEqual([]);
+
+    const res = await fetch(`${baseUrl}/bridges/example/settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionToken: "tok-123" }),
+    });
+    expect(res.ok).toBe(true);
+
+    const after = await fetch(`${baseUrl}/bridges`).then(r => r.json()) as Array<{ info: { id: string }; secretsSet: string[]; settings: unknown[] }>;
+    const example = after.find(b => b.info.id === "example");
+    expect(example?.secretsSet).toEqual(["sessionToken"]);
+    expect(JSON.stringify(example)).not.toContain("tok-123");
+  });
+
   test("updates settings and bridges re-use new config", async () => {
     const res = await fetch(`${baseUrl}/bridges/example/settings`, {
       method: "PUT",

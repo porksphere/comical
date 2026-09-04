@@ -1,3 +1,4 @@
 {
-  "baseUrl": "http://updated.example"
+  "baseUrl": "http://updated.example",
+  "sessionToken": "tok-123"
 }

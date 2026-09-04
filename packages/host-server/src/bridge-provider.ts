@@ -18,6 +18,10 @@ export interface BridgeSummary {
   configured: boolean;
   /** Required setting keys with neither a value nor a default — the bridge can't serve content yet. */
   missingRequired: string[];
+  /** Secret setting keys that hold a value (see `storedSecretKeys`). A favorites bridge declares its
+   *  login as OPTIONAL secrets — browsing works without an account — so this, not `missingRequired`,
+   *  is how a client tells a logged-in bridge from one whose account features will fail. */
+  secretsSet: string[];
   source: BridgeSource;
   /** Version available in the registry, if newer than installed. */
   availableVersion?: string;

@@ -90,7 +90,10 @@ function makeFakeNative(): NativeBridgeRuntime {
 const CONFIGURABLE_INFO = { ...BRIDGE_INFO, id: "cfg", capabilities: ["search", "settings"] };
 const CONFIGURABLE_BUNDLE = `module.exports = { default: (host) => ({
   info: ${JSON.stringify(CONFIGURABLE_INFO)},
-  getSettings: () => [{ type: "string", key: "baseUrl", label: "Base URL", required: true }],
+  getSettings: () => [
+    { type: "string", key: "baseUrl", label: "Base URL", required: true },
+    { type: "string", key: "token", label: "Token", secret: true },
+  ],
   getSeriesDetails: async (id) => ({ id, title: id }),
   getSearchResults: async () => ({ items: [] }),
 }) };`;
@@ -232,10 +235,13 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
       info: { id: string };
       configured: boolean;
       missingRequired: string[];
+      secretsSet: string[];
     }[];
     const cfg = summaries.find((s) => s.info.id === "cfg");
     expect(cfg?.configured).toBe(false);
     expect(cfg?.missingRequired).toEqual(["baseUrl"]);
+    // The optional secret isn't required, so it's not "missing" — it's simply not set yet.
+    expect(cfg?.secretsSet).toEqual([]);
 
     // A content call is refused (400) while required settings are missing.
     expect((await transport("/bridges/cfg/search?q=x")).status).toBe(400);
@@ -244,6 +250,13 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
     await settings.set("cfg", { baseUrl: "https://api.example" });
     provider.invalidate("cfg");
     expect((await transport("/bridges/cfg/search?q=x")).status).toBe(200);
+
+    // A stored secret shows up by KEY in the summary (the value never leaves the provider).
+    await settings.set("cfg", { baseUrl: "https://api.example", token: "s3cret" });
+    provider.invalidate("cfg");
+    const after = (await (await transport("/bridges")).json()) as { info: { id: string }; secretsSet: string[] }[];
+    expect(after.find((s) => s.info.id === "cfg")?.secretsSet).toEqual(["token"]);
+    expect(JSON.stringify(after)).not.toContain("s3cret");
   });
 
   test("concurrent get() calls for the same id share one in-flight load (no duplicate native init)", async () => {
@@ -289,7 +302,7 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
     const res = await transport("/bridges/cfg");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { settings: { key: string }[]; missingRequired: string[] };
-    expect(body.settings.map((d) => d.key)).toEqual(["baseUrl"]);
+    expect(body.settings.map((d) => d.key)).toEqual(["baseUrl", "token"]);
     expect(body.missingRequired).toEqual(["baseUrl"]);
   });
 });
