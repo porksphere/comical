@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { HostCapabilities, SettingDescriptor, SettingValue } from "@comical/contract";
-import { BridgeSettingsError, loadBridge, redactSettingSecrets, resolveSettings, validateSettingsInput } from "../src/index.ts";
+import { BridgeSettingsError, loadBridge, redactSettingSecrets, resolveSettings, storedSecretKeys, validateSettingsInput } from "../src/index.ts";
 
 function mockHost(settings: Record<string, SettingValue>): HostCapabilities {
   const store = new Map<string, string>();
@@ -144,6 +144,25 @@ describe("redactSettingSecrets", () => {
       { type: "oauth-callback", key: "token", label: "Account", authUrlTemplate: "https://x", exchange: { url: "https://x/token", clientIdKey: "clientId" } },
     ];
     expect(redactSettingSecrets(descriptors)).toEqual(descriptors);
+  });
+});
+
+describe("storedSecretKeys", () => {
+  const descriptors: SettingDescriptor[] = [
+    { type: "string", key: "baseUrl", label: "URL", required: true },
+    { type: "string", key: "sessionToken", label: "Token", secret: true },
+    { type: "oauth-pin", key: "account", label: "Account", authUrl: "https://example.com/pin" },
+  ];
+
+  test("lists only the secret keys that hold a value", () => {
+    expect(storedSecretKeys(descriptors, { baseUrl: "https://x", sessionToken: "tok" })).toEqual(["sessionToken"]);
+    expect(storedSecretKeys(descriptors, { sessionToken: "tok", account: "oauth-token" })).toEqual(["sessionToken", "account"]);
+  });
+
+  test("an empty or absent secret is not set, and a non-secret value never counts", () => {
+    expect(storedSecretKeys(descriptors, { baseUrl: "https://x" })).toEqual([]);
+    expect(storedSecretKeys(descriptors, { sessionToken: "" })).toEqual([]);
+    expect(storedSecretKeys([], { sessionToken: "tok" })).toEqual([]);
   });
 });
 

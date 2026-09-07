@@ -58,6 +58,7 @@ class MockManager implements BridgeProvider {
       settings: [],
       configured: true,
       missingRequired: [],
+      secretsSet: [],
       source: "local",
     }));
   }

@@ -98,6 +98,7 @@ function makeManager(specs: Record<string, FakeBridgeSpec>): BridgeProvider {
         info: bridges.get(id)!.info as BridgeInfo,
         settings: [],
         configured: (spec.missingRequired ?? []).length === 0,
+        secretsSet: [],
         missingRequired: spec.missingRequired ?? [],
         source: "registry" as const,
       })),
