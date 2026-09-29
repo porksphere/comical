@@ -774,8 +774,12 @@ export class Library {
     return undefined;
   }
 
-  /** Recently-read series, newest first (one row per series for v1). */
-  async getHistory(limit = 50): Promise<HistoryItem[]> {
+  /**
+   * Recently-read series, newest first (one row per series for v1). `includeHidden` keeps reading-log
+   * rows swiped out of history, flagged `hidden`, for a client that resolves resume points from this
+   * list and filters them out of its history view itself.
+   */
+  async getHistory(limit = 50, opts: { includeHidden?: boolean } = {}): Promise<HistoryItem[]> {
     const entries = await this.listSeriesItems();
     const libraryItems = await Promise.all(
       entries
@@ -802,8 +806,8 @@ export class Library {
 
     const libraryKeys = new Set(libraryItems.map((i) => `${i.bridgeId}:${i.seriesId}`));
     const logItems = (await this.store.listReadingLog())
-      .filter((i) => !i.hidden && !libraryKeys.has(`${i.bridgeId}:${i.seriesId}`))
-      .map(({ hidden: _h, ...i }) => i);
+      .filter((i) => (opts.includeHidden || !i.hidden) && !libraryKeys.has(`${i.bridgeId}:${i.seriesId}`))
+      .map(({ hidden, ...i }) => (opts.includeHidden && hidden ? { ...i, hidden } : i));
 
     const merged = [...libraryItems, ...logItems];
     // Drop reads from bridges whose history tracking is turned off (covers both library and log rows).

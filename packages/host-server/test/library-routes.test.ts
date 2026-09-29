@@ -86,6 +86,8 @@ describe("/library read state for an uncollected series", () => {
     expect((await send("DELETE", "/library/history/demo/loose-2")).status).toBe(200);
     const history = (await (await get("/library/history")).json()) as Array<{ seriesId: string }>;
     expect(history.some((h) => h.seriesId === "loose-2")).toBe(false);
+    const all = (await (await get("/library/history?includeHidden=1")).json()) as Array<{ seriesId: string; hidden?: boolean }>;
+    expect(all.find((h) => h.seriesId === "loose-2")?.hidden).toBe(true);
 
     await send("PUT", "/library/collected/series/demo/loose-2", { seriesTitle: "Loose Two" });
     const detail = (await (await get("/library/collected/series/demo/loose-2")).json()) as {

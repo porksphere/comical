@@ -1145,6 +1145,17 @@ describe("reading log (non-library history)", () => {
     expect(history.some((h) => h.seriesId === "ext1")).toBe(false);
   });
 
+  test("getHistory includeHidden returns swiped-away log rows, flagged", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ bridgeId: "demo", seriesId: "ext1", title: "External Series", lastReadChapterId: "c4", lastReadAt: 1000 });
+    await lib.recordRead({ bridgeId: "demo", seriesId: "ext2", title: "Other", lastReadAt: 900 });
+    await lib.clearHistoryEntry("demo", "ext1");
+    const all = await lib.getHistory(50, { includeHidden: true });
+    expect(all.find((h) => h.seriesId === "ext1")).toMatchObject({ hidden: true, lastReadChapterId: "c4" });
+    expect(all.find((h) => h.seriesId === "ext2")).not.toHaveProperty("hidden");
+    expect((await lib.getHistory()).map((h) => h.seriesId)).toEqual(["ext2"]);
+  });
+
   test("clearHistoryEntry keeps a log-only series' resume point, and the next read restores the row", async () => {
     const lib = makeLibrary();
     const key = entryKey("demo", "ext1");
