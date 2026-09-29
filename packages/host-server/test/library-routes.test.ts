@@ -51,6 +51,53 @@ afterAll(() => {
   rmSync(DATA_DIR, { recursive: true, force: true });
 });
 
+describe("/library read state for an uncollected series", () => {
+  test("progress writes succeed and read back without collecting", async () => {
+    const base = "/library/collected/series/demo/loose-1";
+    await send("POST", "/reading-history", {
+      bridgeId: "demo",
+      seriesId: "loose-1",
+      title: "Loose",
+      chapterId: "c1",
+      lastPage: 0,
+      pageCount: 10,
+    });
+    expect((await send("PUT", `${base}/progress/c1`, { lastPage: 9, pageCount: 10, chapterName: "Ch 1" })).status).toBe(200);
+    expect((await send("PUT", `${base}/progress/c2`, { read: true })).status).toBe(200);
+    expect((await send("POST", `${base}/read-up-to`, { chapters, chapterId: "c3" })).status).toBe(200);
+
+    const progress = (await (await get(`${base}/progress`)).json()) as Array<{ chapterId: string; read: boolean }>;
+    expect(progress.filter((p) => p.read).map((p) => p.chapterId).sort()).toEqual(["c1", "c2", "c3"]);
+    expect((await get(base)).status).toBe(404);
+
+    const history = (await (await get("/library/history")).json()) as Array<{ seriesId: string; lastReadChapterId?: string }>;
+    expect(history.find((h) => h.seriesId === "loose-1")?.lastReadChapterId).toBe("c3");
+  });
+
+  test("swiping a history row away keeps the resume point for collecting later", async () => {
+    await send("POST", "/reading-history", {
+      bridgeId: "demo",
+      seriesId: "loose-2",
+      title: "Loose Two",
+      chapterId: "c2",
+      lastPage: 4,
+      pageCount: 10,
+    });
+    expect((await send("DELETE", "/library/history/demo/loose-2")).status).toBe(200);
+    const history = (await (await get("/library/history")).json()) as Array<{ seriesId: string }>;
+    expect(history.some((h) => h.seriesId === "loose-2")).toBe(false);
+    const all = (await (await get("/library/history?includeHidden=1")).json()) as Array<{ seriesId: string; hidden?: boolean }>;
+    expect(all.find((h) => h.seriesId === "loose-2")?.hidden).toBe(true);
+
+    await send("PUT", "/library/collected/series/demo/loose-2", { seriesTitle: "Loose Two" });
+    const detail = (await (await get("/library/collected/series/demo/loose-2")).json()) as {
+      resume?: { chapterId: string; lastPage: number };
+    };
+    expect(detail.resume).toEqual({ chapterId: "c2", lastPage: 4 });
+    await send("DELETE", "/library/collected/series/demo/loose-2");
+  });
+});
+
 describe("/library lifecycle", () => {
   test("add → sync(baseline) → progress → unreadCount → read-up-to → new-chapter → history", async () => {
     // add

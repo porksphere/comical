@@ -759,7 +759,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
 
     app.get("/library/history", async (c) => {
       const limit = c.req.query("limit");
-      return c.json(await lib.getHistory(limit ? Number(limit) : undefined));
+      const includeHidden = c.req.query("includeHidden") === "1";
+      return c.json(await lib.getHistory(limit ? Number(limit) : undefined, { includeHidden }));
     });
 
     app.delete("/library/history/:bridgeId/:seriesId", async (c) => {

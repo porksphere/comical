@@ -52,8 +52,10 @@ and carries no collision.
    hangs off the manga row, reaped only by an explicit database clean-up. `resetProgress` is our
    equivalent explicit lever, and it works on an uncollected series so orphans stay reclaimable.
    The residual edge the app should still confirm: the series leaves the grid.
-   Reading a series in NO collection still works and still lands in the reading log rather than
-   per-chapter progress — today's library/non-library rule, unchanged, better named.
+   Reading a series in NO collection records per-chapter progress like any other read — progress
+   is keyed by `entryKey`, not by the item. Its resume point lives on the reading-log row instead
+   of an item; swiping that row out of history only hides it, and collecting the series folds it
+   into the new item.
 4. **One data migration, and only one: the library.** (Amendment to §5.) Lists and page favorites
    shipped to nothing, so abandoning their data costs nothing. The library is not that — it is the
    user's actual collection, built up over months. And the cost of abandoning it is unusually low to

@@ -443,6 +443,11 @@ export interface HistoryItem {
   lastPage?: number;
   pageCount?: number;
   lastReadAt: number;
+  /**
+   * Reading-log rows only: swiped out of history. The row stays because it is the only resume
+   * point an uncollected series has; the next read un-hides it.
+   */
+  hidden?: boolean;
 }
 
 /** Where to resume a series: its last-read chapter and page. */
