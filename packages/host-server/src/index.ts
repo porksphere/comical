@@ -11,3 +11,5 @@ export { migrateLegacyEntries, type LegacyEntriesMigration } from "./legacy-entr
 export { createRouter, type RouterOptions } from "./router.ts";
 export { SettingsStore } from "./settings-store.ts";
 export { createServer, type ServerOptions } from "./server.ts";
+export { createSyncRoutes } from "./sync-routes.ts";
+export { FileSegmentStore } from "./sync-segment-store.ts";

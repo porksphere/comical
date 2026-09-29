@@ -31,18 +31,31 @@ export {
   deviceIdSchema,
   envelopeSchema,
   hlcSchema,
+  MAX_PULL_LIMIT,
+  parsePullRequest,
+  parsePullResult,
+  parsePushRefusal,
   parseSegment,
   parseVersionVector,
+  pullRequestSchema,
+  pullResultSchema,
+  pushRefusalSchema,
   segmentSchema,
+  SYNC_PULL_PATH,
+  SYNC_PUSH_PATH,
   syncRecordSchema,
   versionVectorSchema,
+  type PullRequest,
   type PullResult,
+  type PushRefusal,
   type Segment,
   type SyncRecord,
   type VersionVector,
 } from "./wire.ts";
 export { ChangeLog, DEFAULT_PULL_LIMIT, SeqConflictError, SeqGapError } from "./log.ts";
 export { MemoryBackend, type SyncBackend } from "./backend.ts";
+export { MemorySegmentStore, SyncHub, type SegmentStore } from "./hub.ts";
+export { HttpBackend, SyncHttpError, type HttpBackendOptions } from "./http.ts";
 export type { ProgressValue, SyncStore } from "./store.ts";
 export {
   SyncEngine,

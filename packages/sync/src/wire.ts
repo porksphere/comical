@@ -80,3 +80,42 @@ function parseWith<T>(schema: z.ZodTypeAny, input: unknown, fallback: string): P
 export const parseSegment = (input: unknown): Parsed<Segment> => parseWith(segmentSchema, input, "invalid segment");
 export const parseVersionVector = (input: unknown): Parsed<VersionVector> =>
   parseWith(versionVectorSchema, input, "invalid version vector");
+
+// ── Over HTTP ────────────────────────────────────────────────────────────────
+// A hub serves `POST {base}/sync/push` (a `Segment`, answered 204) and `POST {base}/sync/pull`
+// (a `PullRequest`, answered with a `PullResult`). A vector names every device ever seen, so pull
+// is a POST rather than a query string that grows without bound.
+
+export const SYNC_PUSH_PATH = "/sync/push";
+export const SYNC_PULL_PATH = "/sync/pull";
+
+/** A hub answers at most this many records per pull, whatever a client asks for. */
+export const MAX_PULL_LIMIT = 10_000;
+
+export type PullRequest = { have: VersionVector; limit?: number };
+
+/**
+ * A refused push, as a hub reports it (409). `conflict` is a seq reused for different content, which
+ * the pusher recovers from by rotating its device id; `gap` is a skipped seq, which it can't.
+ */
+export type PushRefusal = { error: "seq-conflict" | "seq-gap"; device: string; seq: number; head: number };
+
+export const pullRequestSchema = z.object({
+  have: versionVectorSchema,
+  limit: z.number().int().positive().max(MAX_PULL_LIMIT).optional(),
+});
+
+export const pullResultSchema = z.object({ segments: z.array(segmentSchema), more: z.boolean() });
+
+export const pushRefusalSchema = z.object({
+  error: z.enum(["seq-conflict", "seq-gap"]),
+  device: deviceIdSchema,
+  seq: z.number().int().positive(),
+  head: z.number().int().nonnegative(),
+});
+
+export const parsePullRequest = (input: unknown): Parsed<PullRequest> =>
+  parseWith(pullRequestSchema, input, "invalid pull request");
+export const parsePullResult = (input: unknown): Parsed<PullResult> => parseWith(pullResultSchema, input, "invalid pull result");
+export const parsePushRefusal = (input: unknown): Parsed<PushRefusal> =>
+  parseWith(pushRefusalSchema, input, "invalid push refusal");

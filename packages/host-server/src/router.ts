@@ -39,6 +39,8 @@ import type { BridgeProvider } from "./bridge-provider.ts";
 import type { RegistryProvider } from "./registry-provider.ts";
 import { TagLabelCache } from "./tag-label-cache.ts";
 import type { TrackerProvider } from "./tracker-provider.ts";
+import type { SyncBackend } from "@comical/sync";
+import { createSyncRoutes } from "./sync-routes.ts";
 export interface RouterOptions {
   /** CORS origin(s) allowed. Defaults to '*' for LAN use. */
   origin?: string;
@@ -86,6 +88,8 @@ export interface RouterOptions {
    * Omit to send no explicit UA (the fetch implementation's own default).
    */
   userAgent?: string;
+  /** A sync hub — mounts `/sync/push` and `/sync/pull` (see `createSyncRoutes`) when provided. */
+  sync?: SyncBackend;
 }
 
 // ── OAuth callback state ──────────────────────────────────────────────────────
@@ -135,6 +139,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.use("/trackers/*", guard as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     app.use("/downloads/*", guard as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    app.use("/sync/*", guard as any);
   }
 
   app.use("*", async (c, next) => {
@@ -145,6 +151,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   // ── Health ──────────────────────────────────────────────────────────────────
 
   app.get("/health", (c) => c.json({ ok: true }));
+
+  if (opts.sync) app.route("/sync", createSyncRoutes(opts.sync));
 
   // ── Test sprite sheet ────────────────────────────────────────────────────────
   // A local SVG sprite sheet used by the test-sprites bridge to verify CSS sprite
