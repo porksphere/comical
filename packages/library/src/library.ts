@@ -207,6 +207,12 @@ export class Library {
     const key = entryKey(coord.bridgeId, coord.seriesId);
     const existing = await this.getSeriesItem(key);
     const t = this.now();
+    // A series read before it was collected brings its resume point along, so collecting it doesn't
+    // send the user back to the start. A row hidden from history stays out of it.
+    const log = existing ? undefined : await this.getReadingLog(key);
+    const lastReadChapterId = existing?.lastReadChapterId ?? log?.lastReadChapterId;
+    const lastReadChapterName = existing ? existing.lastReadChapterName : log?.lastReadChapterName;
+    const lastReadAt = existing ? existing.lastReadAt : log?.hidden ? undefined : log?.lastReadAt;
     let filed: string[] | undefined;
     if (snap.collectionIds?.length) {
       const known = new Set((await this.store.listCollections()).map((c) => c.id));
@@ -230,12 +236,13 @@ export class Library {
       ...(externalIds !== undefined && { externalIds }),
       ...(existing?.chaptersSyncedAt !== undefined && { chaptersSyncedAt: existing.chaptersSyncedAt }),
       ...(existing?.revision !== undefined && { revision: existing.revision }),
-      ...(existing?.lastReadChapterId !== undefined && { lastReadChapterId: existing.lastReadChapterId }),
-      ...(existing?.lastReadChapterName !== undefined && { lastReadChapterName: existing.lastReadChapterName }),
-      ...(existing?.lastReadAt !== undefined && { lastReadAt: existing.lastReadAt }),
+      ...(lastReadChapterId !== undefined && { lastReadChapterId }),
+      ...(lastReadChapterName !== undefined && { lastReadChapterName }),
+      ...(lastReadAt !== undefined && { lastReadAt }),
       ...(existing?.seriesGroupId !== undefined && { seriesGroupId: existing.seriesGroupId }),
     };
     await this.putSeriesItem(item);
+    if (log) await this.adoptReadingLog(key, log);
 
     // Auto-link: a NEWLY collected series carrying externalIds joins any already-collected series
     // that shares one. No user action required.
@@ -740,7 +747,12 @@ export class Library {
   async resetProgress(key: string): Promise<void> {
     await this.store.deleteProgressForEntry(key);
     const item = await this.getSeriesItem(key);
-    if (!item) return; // orphaned progress — nothing left to clear the resume point on
+    if (!item) {
+      // Uncollected: its resume point is the reading-log row.
+      const { bridgeId, seriesId } = parseEntryKey(key);
+      await this.store.deleteReadingLog(bridgeId, seriesId);
+      return;
+    }
     const { lastReadAt: _a, lastReadChapterId: _b, lastReadChapterName: _c, ...rest } = item;
     await this.putSeriesItem({ ...rest, updatedAt: this.now() });
   }
@@ -789,9 +801,9 @@ export class Library {
     );
 
     const libraryKeys = new Set(libraryItems.map((i) => `${i.bridgeId}:${i.seriesId}`));
-    const logItems = (await this.store.listReadingLog()).filter(
-      (i) => !libraryKeys.has(`${i.bridgeId}:${i.seriesId}`),
-    );
+    const logItems = (await this.store.listReadingLog())
+      .filter((i) => !i.hidden && !libraryKeys.has(`${i.bridgeId}:${i.seriesId}`))
+      .map(({ hidden: _h, ...i }) => i);
 
     const merged = [...libraryItems, ...logItems];
     // Drop reads from bridges whose history tracking is turned off (covers both library and log rows).
@@ -819,7 +831,8 @@ export class Library {
     await this.store.upsertReadingLog(item);
   }
 
-  /** Remove a series from reading history. For library entries, clears last-read fields; for log entries, deletes the record. */
+  /** Remove a series from reading history. For library entries, clears last-read fields; a log entry
+   *  is only HIDDEN, since it is the uncollected series' one resume point. */
   async clearHistoryEntry(bridgeId: string, seriesId: string): Promise<void> {
     const key = entryKey(bridgeId, seriesId);
     const existing = await this.getSeriesItem(key);
@@ -827,7 +840,8 @@ export class Library {
       const { lastReadAt: _a, lastReadChapterId: _b, lastReadChapterName: _c, ...rest } = existing;
       await this.putSeriesItem({ ...rest, updatedAt: this.now() });
     } else {
-      await this.store.deleteReadingLog(bridgeId, seriesId);
+      const log = await this.getReadingLog(key);
+      if (log && !log.hidden) await this.store.upsertReadingLog({ ...log, hidden: true });
     }
   }
 
@@ -1497,7 +1511,9 @@ export class Library {
     chapterName?: string,
     opts: { touchResume?: boolean } = {},
   ): Promise<void> {
-    const entry = await this.requireSeries(key);
+    // Progress is keyed by series, not by its item, so an uncollected series keeps read state too:
+    // reading it is what the user did, whether or not they filed it anywhere.
+    const entry = await this.getSeriesItem(key);
     const t = this.now();
     const existing = (await this.store.listProgress(key)).find((p) => p.chapterId === chapterId);
     const next: ChapterProgress = {
@@ -1512,7 +1528,7 @@ export class Library {
     // Backfill the logical-chapter metadata from the synced chapter list when the caller didn't
     // supply it, so read state always collapses by `(number, language)` — e.g. a "mark read"
     // checkbox that only sends a chapter id still gets grouped correctly.
-    const meta = entry.knownChapters.find((c) => c.id === chapterId);
+    const meta = entry?.knownChapters.find((c) => c.id === chapterId);
     const number = patch.number ?? existing?.number ?? meta?.number;
     if (number !== undefined) next.number = number;
     const languageCode = patch.languageCode ?? existing?.languageCode ?? meta?.languageCode;
@@ -1522,13 +1538,53 @@ export class Library {
     // Advancing a LOCAL read (marking read, or recording a page) makes this the resume/history
     // point. Pulled-in reads pass touchResume:false so a sync can't move where the user is.
     const touchResume = opts.touchResume ?? true;
-    if (touchResume && (next.read || patch.lastPage !== undefined)) {
+    if (!touchResume || !(next.read || patch.lastPage !== undefined)) return;
+    if (entry) {
       entry.lastReadChapterId = chapterId;
       if (chapterName !== undefined) entry.lastReadChapterName = chapterName;
       entry.lastReadAt = t;
       entry.updatedAt = t;
       await this.putSeriesItem(entry);
+      return;
     }
+    // Uncollected: the resume point lives on the reading-log row. Only an existing one is moved —
+    // `recordRead` creates it, since a row needs the title and cover this call doesn't carry.
+    const log = await this.getReadingLog(key);
+    if (!log) return;
+    const { hidden: _h, lastPage: _p, pageCount: _c, lastReadChapterName: _n, ...rest } = log;
+    const name = chapterName ?? (log.lastReadChapterId === chapterId ? log.lastReadChapterName : undefined);
+    await this.store.upsertReadingLog({
+      ...rest,
+      lastReadChapterId: chapterId,
+      ...(name !== undefined && { lastReadChapterName: name }),
+      ...(next.lastPage !== undefined && { lastPage: next.lastPage }),
+      ...(next.pageCount !== undefined && { pageCount: next.pageCount }),
+      lastReadAt: t,
+    });
+  }
+
+  /** Fold a reading-log row into the series item that replaces it. The log's page predates per-chapter
+   *  progress for uncollected series, so it seeds the chapter's page only where progress has none. */
+  private async adoptReadingLog(key: string, log: HistoryItem): Promise<void> {
+    if (log.lastReadChapterId !== undefined && log.lastPage !== undefined) {
+      const existing = (await this.store.listProgress(key)).find((p) => p.chapterId === log.lastReadChapterId);
+      if (existing?.lastPage === undefined) {
+        await this.store.putProgress(key, {
+          ...existing,
+          chapterId: log.lastReadChapterId,
+          read: existing?.read ?? false,
+          lastPage: log.lastPage,
+          ...(log.pageCount !== undefined && existing?.pageCount === undefined && { pageCount: log.pageCount }),
+          updatedAt: this.now(),
+        });
+      }
+    }
+    await this.store.deleteReadingLog(log.bridgeId, log.seriesId);
+  }
+
+  private async getReadingLog(key: string): Promise<HistoryItem | undefined> {
+    const { bridgeId, seriesId } = parseEntryKey(key);
+    return (await this.store.listReadingLog()).find((i) => i.bridgeId === bridgeId && i.seriesId === seriesId);
   }
 
   private async requireSeries(key: string): Promise<CollectionSeriesItem> {

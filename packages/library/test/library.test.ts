@@ -830,7 +830,118 @@ describe("getLibrary query (search / sort / filters)", () => {
 describe("guards", () => {
   test("mutating a series that is not collected throws", async () => {
     const lib = makeLibrary();
-    await expect(lib.markRead(KEY, "c1", true)).rejects.toThrow("series not collected");
+    await expect(lib.reconcileRead(KEY, [{ chapterId: "c1" }])).rejects.toThrow("series not collected");
+  });
+});
+
+describe("read state for an uncollected series", () => {
+  const LOG = { bridgeId: SERIES.bridgeId, seriesId: SERIES.seriesId, title: SERIES.title, lastReadAt: 1 };
+
+  test("markRead and setProgress record progress without a series item", async () => {
+    const lib = makeLibrary();
+    await lib.markRead(KEY, "c1", true, "Ch 1", 1);
+    await lib.setProgress(KEY, "c2", 4, 10);
+    await lib.setProgress(KEY, "c3", 9, 10);
+    const progress = await lib.getProgress(KEY);
+    expect(progress.find((p) => p.chapterId === "c1")).toMatchObject({ read: true, number: 1 });
+    expect(progress.find((p) => p.chapterId === "c2")).toMatchObject({ read: false, lastPage: 4, pageCount: 10 });
+    expect(progress.find((p) => p.chapterId === "c3")?.read).toBe(true);
+    expect(await lib.getLibrary()).toHaveLength(0);
+  });
+
+  test("markReadUpTo works without a series item", async () => {
+    const lib = makeLibrary();
+    await lib.markReadUpTo(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)], "c2");
+    const read = (await lib.getProgress(KEY)).filter((p) => p.read).map((p) => p.chapterId).sort();
+    expect(read).toEqual(["c1", "c2"]);
+  });
+
+  test("a progress write moves the reading-log resume point", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ ...LOG, lastReadChapterId: "c1", lastReadChapterName: "Ch 1", lastPage: 3, pageCount: 20 });
+    await lib.setProgress(KEY, "c2", 5, 18, "Ch 2");
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c2", lastPage: 5 });
+    expect((await lib.getHistory())[0]).toMatchObject({
+      lastReadChapterId: "c2",
+      lastReadChapterName: "Ch 2",
+      lastPage: 5,
+      pageCount: 18,
+    });
+  });
+
+  test("a nameless write to a different chapter drops the stale chapter name", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ ...LOG, lastReadChapterId: "c1", lastReadChapterName: "Ch 1" });
+    await lib.markRead(KEY, "c2", true);
+    const [row] = await lib.getHistory();
+    expect(row?.lastReadChapterId).toBe("c2");
+    expect(row?.lastReadChapterName).toBeUndefined();
+  });
+
+  test("a progress write creates no reading-log row", async () => {
+    const lib = makeLibrary();
+    await lib.markRead(KEY, "c1", true);
+    expect(await lib.getHistory()).toHaveLength(0);
+    expect(await lib.getResume(KEY)).toBeUndefined();
+  });
+
+  test("resetProgress clears the progress and the reading-log resume point", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ ...LOG, lastReadChapterId: "c1", lastPage: 3 });
+    await lib.markRead(KEY, "c1", true);
+    await lib.resetProgress(KEY);
+    expect(await lib.getProgress(KEY)).toHaveLength(0);
+    expect(await lib.getResume(KEY)).toBeUndefined();
+    expect(await lib.getHistory()).toHaveLength(0);
+  });
+});
+
+describe("collecting a series that was read first", () => {
+  const LOG = { bridgeId: SERIES.bridgeId, seriesId: SERIES.seriesId, title: SERIES.title, lastReadAt: 500 };
+
+  test("carries the reading-log resume point onto the series item", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ ...LOG, lastReadChapterId: "c2", lastReadChapterName: "Ch 2", lastPage: 7, pageCount: 20 });
+    const { item } = await lib.collectSeries(COORD, SNAP);
+    expect(item).toMatchObject({ lastReadChapterId: "c2", lastReadChapterName: "Ch 2", lastReadAt: 500 });
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c2", lastPage: 7 });
+    const history = await lib.getHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ lastReadChapterId: "c2", lastPage: 7, pageCount: 20 });
+  });
+
+  test("keeps a recorded page over the log's", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ ...LOG, lastReadChapterId: "c2", lastPage: 1 });
+    await lib.setProgress(KEY, "c2", 9, 20);
+    await lib.collectSeries(COORD, SNAP);
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c2", lastPage: 9 });
+  });
+
+  test("keeps the read state recorded before collecting", async () => {
+    const lib = makeLibrary();
+    await lib.markRead(KEY, "c1", true);
+    await lib.collectSeries(COORD, SNAP);
+    expect((await lib.getProgress(KEY)).find((p) => p.chapterId === "c1")?.read).toBe(true);
+  });
+
+  test("a row hidden from history carries the resume point but stays out of history", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ ...LOG, lastReadChapterId: "c2", lastPage: 7 });
+    await lib.clearHistoryEntry(SERIES.bridgeId, SERIES.seriesId);
+    const { item } = await lib.collectSeries(COORD, SNAP);
+    expect(item.lastReadChapterId).toBe("c2");
+    expect(item.lastReadAt).toBeUndefined();
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c2", lastPage: 7 });
+    expect(await lib.getHistory()).toHaveLength(0);
+  });
+
+  test("re-collecting leaves an existing item's resume point alone", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.setProgress(KEY, "c3", 2, 10);
+    await lib.collectSeries(COORD, { seriesTitle: "Renamed" });
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c3", lastPage: 2 });
   });
 });
 
@@ -1032,6 +1143,20 @@ describe("reading log (non-library history)", () => {
 
     const history = await lib.getHistory();
     expect(history.some((h) => h.seriesId === "ext1")).toBe(false);
+  });
+
+  test("clearHistoryEntry keeps a log-only series' resume point, and the next read restores the row", async () => {
+    const lib = makeLibrary();
+    const key = entryKey("demo", "ext1");
+    const row = { bridgeId: "demo", seriesId: "ext1", title: "External Series", lastReadChapterId: "c4", lastPage: 6 };
+    await lib.recordRead({ ...row, lastReadAt: 1000 });
+    await lib.clearHistoryEntry("demo", "ext1");
+    expect(await lib.getResume(key)).toEqual({ chapterId: "c4", lastPage: 6 });
+
+    await lib.setProgress(key, "c5", 0, 12);
+    const history = await lib.getHistory();
+    expect(history.find((h) => h.seriesId === "ext1")).toMatchObject({ lastReadChapterId: "c5", lastPage: 0 });
+    expect(history.find((h) => h.seriesId === "ext1")).not.toHaveProperty("hidden");
   });
 
   test("clearHistoryEntry removes a library series from history without removing it from library", async () => {
