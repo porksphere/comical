@@ -1,0 +1,13 @@
+{
+  "name": "@comical/sync",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Cross-device sync: per-device change logs, the merge every device agrees on, and the engine that drives them",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}
