@@ -8,6 +8,7 @@
   },
   "types": "./src/index.ts",
   "dependencies": {
+    "@comical/library": "workspace:*",
     "zod": "^3.23.8"
   }
 }

@@ -1,0 +1,151 @@
+import { describe, expect, test } from "bun:test";
+import { entryKey, InMemoryLibraryStore, Library, type CollectionSeriesItem } from "@comical/library";
+import { adoptLibrary, librarySyncStore, MemoryBackend, SyncEngine, wrapLibraryStore, type SyncBackend } from "../src/index.ts";
+
+let wall = 1_700_000_000_000;
+const now = () => (wall += 10);
+const KEY = entryKey("bridge-a", "s1");
+
+function device(backend: SyncBackend, name: string, inner = new InMemoryLibraryStore()) {
+  const engine = new SyncEngine({ store: librarySyncStore(inner, now), backend, device: name, newDeviceId: () => `${name}-2`, now });
+  const store = wrapLibraryStore(inner, engine);
+  return { inner, engine, store, library: new Library(store, { now }) };
+}
+
+async function collect(lib: Library, collectionIds: string[] = []) {
+  return lib.collectSeries({ bridgeId: "bridge-a", seriesId: "s1" }, { seriesTitle: "One", collectionIds });
+}
+
+const series = async (d: ReturnType<typeof device>) =>
+  (await d.inner.getCollectionItem("series:bridge-a:s1")) as CollectionSeriesItem | undefined;
+
+describe("library sync", () => {
+  test("a collection and its series reach the other device", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    const c = await a.library.createCollection("Reading");
+    await collect(a.library, [c.id]);
+    await a.engine.sync();
+    await b.engine.sync();
+    expect((await b.library.getCollections()).map((x) => x.name)).toEqual(["Reading"]);
+    expect((await series(b))?.collectionIds).toEqual([c.id]);
+  });
+
+  test("reading on one device doesn't undo a collection edit made on another", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    const c1 = await a.library.createCollection("One");
+    await collect(a.library, [c1.id]);
+    await a.engine.sync();
+    await b.engine.sync();
+
+    const c2 = await b.library.createCollection("Two");
+    await b.library.setItemCollections("series:bridge-a:s1", [c1.id, c2.id]);
+    await a.library.setProgress(KEY, "ch1", 3, 20, "Chapter 1");
+    await b.engine.sync();
+    await a.engine.sync();
+    await b.engine.sync();
+
+    for (const d of [a, b]) {
+      const item = await series(d);
+      expect(item?.collectionIds).toEqual([c1.id, c2.id]);
+      expect(item?.lastReadChapterId).toBe("ch1");
+      expect((await d.library.getProgress(KEY))[0]).toMatchObject({ chapterId: "ch1", lastPage: 3 });
+    }
+  });
+
+  test("a device's own chapter baseline survives a remote edit to the item", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    const c = await a.library.createCollection("One");
+    await collect(a.library, [c.id]);
+    await a.engine.sync();
+    await b.engine.sync();
+
+    await b.library.syncChapters(KEY, [{ id: "ch1", name: "Chapter 1", number: 1 } as never]);
+    const baseline = (await series(b))?.knownChapters;
+    expect(baseline?.length).toBe(1);
+    expect(b.engine.hasUnsent()).toBe(false);
+
+    await a.library.renameCollection(c.id, "Renamed");
+    const c2 = await a.library.createCollection("Two");
+    await a.library.setItemCollections("series:bridge-a:s1", [c.id, c2.id]);
+    await a.engine.sync();
+    await b.engine.sync();
+    expect((await series(b))?.collectionIds).toEqual([c.id, c2.id]);
+    expect((await series(b))?.knownChapters).toEqual(baseline!);
+  });
+
+  test("marking a chapter unread syncs over an earlier read", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    await collect(a.library, [(await a.library.createCollection("One")).id]);
+    await a.library.markRead(KEY, "ch1", true);
+    await a.engine.sync();
+    await b.engine.sync();
+    expect((await b.library.getProgress(KEY))[0]?.read).toBe(true);
+
+    await b.library.markRead(KEY, "ch1", false);
+    await b.engine.sync();
+    await a.engine.sync();
+    expect((await a.library.getProgress(KEY))[0]?.read).toBe(false);
+  });
+
+  test("removing a series removes it everywhere, with its local satellites", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    await collect(a.library, [(await a.library.createCollection("One")).id]);
+    await a.engine.sync();
+    await b.engine.sync();
+    await b.inner.putSeriesDetail(KEY, { cachedAt: 1 } as never);
+
+    await a.library.removeSeries(KEY);
+    await a.engine.sync();
+    await b.engine.sync();
+    expect(await series(b)).toBeUndefined();
+    expect(await b.inner.getSeriesDetail(KEY)).toBeUndefined();
+  });
+
+  test("an existing library adopted after a first pull keeps what the others hold", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const c = await a.library.createCollection("From a");
+    await collect(a.library, [c.id]);
+    await a.engine.sync();
+
+    const inner = new InMemoryLibraryStore();
+    await inner.putCollections([{ id: c.id, name: "Stale", order: 0 }, { id: "local", name: "Only on b", order: 1 }]);
+    const b = device(hub, "b", inner);
+    await b.engine.sync();
+    await adoptLibrary(inner, b.engine);
+    await b.engine.sync();
+    await a.engine.sync();
+
+    for (const d of [a, b]) {
+      expect((await d.library.getCollections()).map((x) => x.name).sort()).toEqual(["From a", "Only on b"]);
+    }
+  });
+
+  test("a write that only moves device-local fields sends nothing", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    await collect(a.library, [(await a.library.createCollection("One")).id]);
+    await a.engine.sync();
+    await a.library.syncChapters(KEY, [{ id: "ch1", name: "Chapter 1", number: 1 } as never]);
+    expect(a.engine.hasUnsent()).toBe(false);
+  });
+
+  test("a remote record that doesn't validate is dropped, not applied", async () => {
+    const inner = new InMemoryLibraryStore();
+    const store = librarySyncStore(inner);
+    await store.write("collections", "c", { id: "c", name: "" });
+    await store.write("groups", "g", { id: "other" });
+    expect(await inner.listCollections()).toEqual([]);
+    expect(await inner.listGroups()).toEqual([]);
+  });
+});

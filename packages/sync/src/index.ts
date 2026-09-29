@@ -51,3 +51,4 @@ export {
   type SyncStateSnapshot,
   type SyncStats,
 } from "./engine.ts";
+export { adoptLibrary, LIBRARY_TABLES, librarySyncStore, wrapLibraryStore } from "./library.ts";

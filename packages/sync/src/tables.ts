@@ -7,16 +7,18 @@
  */
 export type Strategy = "register" | "set" | "progress";
 
+/** Declaration order is apply order within a segment: referents before what refers to them. */
 export const TABLE_STRATEGY = {
+  registries: "set",
+  installed: "set",
+  bridgePrefs: "register",
+  groups: "register",
   collections: "register",
   collectionItems: "register",
+  seriesResume: "register",
   progress: "progress",
   readingLog: "register",
   trackerLinks: "register",
-  groups: "register",
-  bridgePrefs: "register",
-  registries: "set",
-  installed: "set",
 } as const satisfies Record<string, Strategy>;
 
 export type TableId = keyof typeof TABLE_STRATEGY;

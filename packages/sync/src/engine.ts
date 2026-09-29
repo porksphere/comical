@@ -12,7 +12,7 @@ import { envelopeChanges, mergeEnvelope, type Envelope, type Progress } from "./
 import { SeqConflictError } from "./log.ts";
 import type { SyncBackend } from "./backend.ts";
 import type { ProgressValue, SyncStore } from "./store.ts";
-import { recordKey, splitRecordKey, TABLE_STRATEGY, type TableId } from "./tables.ts";
+import { ALL_TABLES, recordKey, splitRecordKey, TABLE_STRATEGY, type TableId } from "./tables.ts";
 import type { Segment, SyncRecord, VersionVector } from "./wire.ts";
 
 export type Stamp = { hlc: string; reset?: string };
@@ -101,6 +101,15 @@ export class SyncEngine {
     this.opts.onTouch?.();
   }
 
+  /**
+   * `touch`, but only for a record sync has never seen. Hydrating a store that already has data
+   * AFTER a first pull makes what the other devices hold win, and adds only what they lack — rather
+   * than a fresh stamp on every local copy beating everything they have.
+   */
+  adopt(table: TableId, id: string): void {
+    if (!this.stamps.has(recordKey(table, id))) this.touch(table, id);
+  }
+
   hasUnsent(): boolean {
     return this.dirty.size > 0 || this.pending !== null;
   }
@@ -149,7 +158,9 @@ export class SyncEngine {
     if (this.dirty.size === 0) return null;
     const size = this.opts.segmentSize ?? DEFAULT_SEGMENT_SIZE;
     const records: SyncRecord[] = [];
-    for (const key of this.dirty) {
+    // Table order, so a record lands after what it refers to — an item after its collection, a
+    // series' resume point after the series.
+    for (const key of [...this.dirty].sort(byTableOrder)) {
       if (records.length >= size) break;
       this.dirty.delete(key);
       const stamp = this.stamps.get(key);
@@ -228,6 +239,10 @@ export class SyncEngine {
     await this.opts.persist?.(this.snapshot());
   }
 }
+
+const TABLE_ORDER = new Map<string, number>(ALL_TABLES.map((t, i) => [t, i]));
+const byTableOrder = (a: string, b: string): number =>
+  TABLE_ORDER.get(splitRecordKey(a).table)! - TABLE_ORDER.get(splitRecordKey(b).table)!;
 
 function toEnvelope(table: TableId, value: unknown, stamp: Stamp): Envelope {
   switch (TABLE_STRATEGY[table]) {
