@@ -96,9 +96,20 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
     let store: LibraryStore = new FileLibraryStore(dir);
     if (opts.sync) {
       const syncDir = typeof opts.sync === "object" && opts.sync.dir ? opts.sync.dir : join(opts.dataDir, "sync");
-      const host = createSyncHost({ dir: syncDir, store });
+      const host = createSyncHost({
+        dir: syncDir,
+        store,
+        registry,
+        lists: {
+          registries: () => manifest.allRegistries(),
+          installed: () => manifest.allInstalled(),
+          installedTrackers: () => manifest.allInstalledTrackers(),
+        },
+      });
       store = host.store;
       routerOpts.sync = host.backend;
+      // The router's installs are recorded; the managers keep the plain one, they only read.
+      routerOpts.registry = host.registry;
     }
     const lib = new Library(store);
     // Rebuild series items from a pre-collections entries.json, if one is still there. Everything

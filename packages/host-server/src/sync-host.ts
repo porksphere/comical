@@ -14,10 +14,18 @@ import { join } from "node:path";
 import type { LibraryStore } from "@comical/library";
 import {
   adoptLibrary,
+  adoptRegistry,
+  composeSyncStores,
+  LIBRARY_TABLES,
   librarySyncStore,
+  REGISTRY_TABLES,
+  registrySyncStore,
   SyncEngine,
   SyncHub,
   wrapLibraryStore,
+  wrapRegistryProvider,
+  type RegistryLists,
+  type RegistryMutations,
   type Segment,
   type SyncBackend,
   type SyncStateSnapshot,
@@ -25,9 +33,11 @@ import {
 } from "@comical/sync";
 import { FileSegmentStore } from "./sync-segment-store.ts";
 
-export interface SyncHost {
+export interface SyncHost<R extends RegistryMutations = RegistryMutations> {
   /** The store to build the server's `Library` over; writes through it are recorded. */
   store: LibraryStore;
+  /** The registry to hand the router; installs and adds through it are recorded. */
+  registry: R;
   /** What `/sync` serves. A push through it also brings this server's own library up to date. */
   backend: SyncBackend;
   engine: SyncEngine;
@@ -37,15 +47,22 @@ export interface SyncHost {
   flush(): Promise<void>;
 }
 
-export interface SyncHostOptions {
+export interface SyncHostOptions<R extends RegistryMutations> {
   dir: string;
   store: LibraryStore;
+  /**
+   * The server's registry manager: a phone's install is performed here too, and an install here
+   * reaches the phones. Its network failures are retried on later rounds.
+   */
+  registry: R;
+  /** What that manager holds, read from its manifest. */
+  lists: RegistryLists;
   /** How long a burst of local writes or pushes is gathered before this server syncs. */
   debounceMs?: number;
   log?: Pick<Console, "error">;
 }
 
-export function createSyncHost(opts: SyncHostOptions): SyncHost {
+export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOptions<R>): SyncHost<R> {
   mkdirSync(opts.dir, { recursive: true });
   const statePath = join(opts.dir, "state.json");
   const log = opts.log ?? console;
@@ -56,8 +73,13 @@ export function createSyncHost(opts: SyncHostOptions): SyncHost {
   };
 
   const state = readState(statePath, log);
+  const registry = { ...opts.lists, ...bind(opts.registry) };
+  const registryStore = registrySyncStore(registry, { log });
   const engine = new SyncEngine({
-    store: librarySyncStore(opts.store),
+    store: composeSyncStores([
+      [LIBRARY_TABLES, librarySyncStore(opts.store)],
+      [REGISTRY_TABLES, registryStore],
+    ]),
     backend: hub,
     ...(state ? { state } : { device: `hub-${crypto.randomUUID()}` }),
     newDeviceId: () => `hub-${crypto.randomUUID()}`,
@@ -67,10 +89,10 @@ export function createSyncHost(opts: SyncHostOptions): SyncHost {
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const run = (): Promise<void> =>
-    engine.sync().then(
-      () => undefined,
-      (err: unknown) => log.error("sync: round failed", err),
-    );
+    engine
+      .sync()
+      .then(() => registryStore.retry())
+      .catch((err: unknown) => log.error("sync: round failed", err));
   function schedule(): void {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
@@ -85,10 +107,12 @@ export function createSyncHost(opts: SyncHostOptions): SyncHost {
     ? run()
     : run()
         .then(() => adoptLibrary(opts.store, engine))
+        .then(() => adoptRegistry(opts.lists, engine))
         .then(run);
 
   return {
     store: wrapLibraryStore(opts.store, engine),
+    registry: wrapRegistryProvider(opts.registry, opts.lists, engine),
     backend: {
       push: async (s) => {
         await hub.push(s);
@@ -104,6 +128,18 @@ export function createSyncHost(opts: SyncHostOptions): SyncHost {
       await ready;
       await run();
     },
+  };
+}
+
+// The manager's mutations, callable off their instance.
+function bind(reg: RegistryMutations): RegistryMutations {
+  return {
+    add: (url, o) => reg.add(url, o),
+    remove: (url) => reg.remove(url),
+    install: (url, id) => reg.install(url, id),
+    uninstall: (id) => reg.uninstall(id),
+    installTracker: (url, id) => reg.installTracker(url, id),
+    uninstallTracker: (id) => reg.uninstallTracker(id),
   };
 }
 

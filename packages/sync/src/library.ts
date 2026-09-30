@@ -34,7 +34,7 @@ import {
 } from "@comical/library";
 import { z } from "zod";
 import type { SyncEngine } from "./engine.ts";
-import type { ProgressValue, SyncStore } from "./store.ts";
+import { stableJson, type ProgressValue, type SyncStore } from "./store.ts";
 import { compositeId, splitCompositeId, type TableId } from "./tables.ts";
 
 export const LIBRARY_TABLES = [
@@ -232,16 +232,6 @@ export function librarySyncStore(store: LibraryStore, now: () => number = Date.n
 }
 
 type Target = readonly [TableId, string];
-
-function stableJson(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
-  if (v && typeof v === "object") {
-    const entries = Object.entries(v).filter(([, x]) => x !== undefined);
-    entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, x]) => `${JSON.stringify(k)}:${stableJson(x)}`).join(",")}}`;
-  }
-  return JSON.stringify(v) ?? "undefined";
-}
 
 /**
  * The store to hand a `Library`: every write goes through to `inner` and is recorded with the engine

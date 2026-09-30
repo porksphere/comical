@@ -11,6 +11,7 @@ export type Strategy = "register" | "set" | "progress";
 export const TABLE_STRATEGY = {
   registries: "set",
   installed: "set",
+  installedTrackers: "set",
   bridgePrefs: "register",
   groups: "register",
   collections: "register",

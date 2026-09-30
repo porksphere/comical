@@ -56,7 +56,7 @@ export { ChangeLog, DEFAULT_PULL_LIMIT, SeqConflictError, SeqGapError } from "./
 export { MemoryBackend, type SyncBackend } from "./backend.ts";
 export { MemorySegmentStore, SyncHub, type SegmentStore } from "./hub.ts";
 export { HttpBackend, SyncHttpError, type HttpBackendOptions } from "./http.ts";
-export type { ProgressValue, SyncStore } from "./store.ts";
+export { composeSyncStores, type ProgressValue, type SyncStore } from "./store.ts";
 export {
   SyncEngine,
   type Stamp,
@@ -65,3 +65,14 @@ export {
   type SyncStats,
 } from "./engine.ts";
 export { adoptLibrary, LIBRARY_TABLES, librarySyncStore, wrapLibraryStore } from "./library.ts";
+export {
+  adoptRegistry,
+  REGISTRY_TABLES,
+  registrySyncStore,
+  wrapRegistryProvider,
+  type RegistryLists,
+  type RegistryMutations,
+  type RegistrySyncOptions,
+  type RegistrySyncStore,
+  type SyncedRegistry,
+} from "./registry.ts";
