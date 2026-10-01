@@ -230,6 +230,10 @@ export class RegistryManager {
     return installed?.bundlePath ?? null;
   }
 
+  async allInstalled() {
+    return this.opts.manifest.allInstalled();
+  }
+
   // ── Tracker browsing ────────────────────────────────────────────────────────
 
   async browseTrackers(rawUrl: string): Promise<AvailableTracker[]> {

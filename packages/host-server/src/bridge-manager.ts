@@ -68,17 +68,20 @@ export class BridgeManager implements BridgeProvider {
 
   async list(): Promise<BridgeSummary[]> {
     const results: BridgeSummary[] = [];
+    const localIds = new Set<string>();
 
     // Local bridges.
     for (const d of await this.discover()) {
+      localIds.add(d.id);
       const bridge = await this.get(d.id);
       const userSettings = await this.opts.settings.get(d.id);
       const descriptors = bridge.getSettings?.() ?? [];
+      const missingRequired = await this.missingRequired(d.id);
       results.push({
         info: bridge.info,
         settings: redactSettingSecrets(descriptors),
-        configured: Object.keys(userSettings).length > 0,
-        missingRequired: await this.missingRequired(d.id),
+        configured: missingRequired.length === 0,
+        missingRequired,
         secretsSet: storedSecretKeys(descriptors, userSettings as Record<string, SettingValue>),
         source: "local",
       });
@@ -89,14 +92,35 @@ export class BridgeManager implements BridgeProvider {
       const updates = await this.opts.registry.checkUpdates();
       const updateMap = new Map(updates.map((u) => [u.id, u.availableVersion]));
 
-      const allInstalled = await this.opts.registry.resolveBundle("__nonexistent__")
-        .then(() => [] as string[])
-        .catch(() => [] as string[]);
-
       // Add update info to already-listed local bridges.
       for (const summary of results) {
         const av = updateMap.get(summary.info.id);
         if (av) summary.availableVersion = av;
+      }
+
+      // Registry bridges are manifest-owned, not discoverable from `bridgesDir`: their bundles
+      // live under the registry cache. Read the manifest and load each pinned bundle directly so a
+      // successful install appears in GET /bridges immediately (and remains listable offline).
+      for (const installed of await this.opts.registry.allInstalled()) {
+        if (localIds.has(installed.id)) continue;
+        try {
+          const bridge = await this.get(installed.id);
+          const userSettings = await this.opts.settings.get(installed.id);
+          const descriptors = bridge.getSettings?.() ?? [];
+          const availableVersion = updateMap.get(installed.id);
+          const missingRequired = await this.missingRequired(installed.id);
+          results.push({
+            info: bridge.info,
+            settings: redactSettingSecrets(descriptors),
+            configured: missingRequired.length === 0,
+            missingRequired,
+            secretsSet: storedSecretKeys(descriptors, userSettings as Record<string, SettingValue>),
+            source: "registry",
+            ...(availableVersion ? { availableVersion } : {}),
+          });
+        } catch {
+          // One broken or orphaned registry bridge must not hide every other installed bridge.
+        }
       }
     }
 
