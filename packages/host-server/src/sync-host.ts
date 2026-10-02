@@ -59,6 +59,11 @@ export interface SyncHostOptions<R extends RegistryMutations> {
   lists: RegistryLists;
   /** How long a burst of local writes or pushes is gathered before this server syncs. */
   debounceMs?: number;
+  /**
+   * Called after a round changed this server's own library or registry from another device's
+   * records — the moment anything showing them is out of date.
+   */
+  onApplied?: () => void;
   log?: Pick<Console, "error">;
 }
 
@@ -91,7 +96,10 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
   const run = (): Promise<void> =>
     engine
       .sync()
-      .then(() => registryStore.retry())
+      .then(async (stats) => {
+        await registryStore.retry();
+        if (stats.applied > 0) opts.onApplied?.();
+      })
       .catch((err: unknown) => log.error("sync: round failed", err));
   function schedule(): void {
     if (timer) clearTimeout(timer);

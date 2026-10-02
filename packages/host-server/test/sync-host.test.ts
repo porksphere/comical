@@ -170,4 +170,25 @@ describe("createSyncHost", () => {
     await host.flush();
     expect(await opts.lists.installed()).toEqual([{ id: "bridge-one", registryUrl: REG }]);
   });
+
+  test("onApplied fires when another device's records change this server, not for its own writes", async () => {
+    let applied = 0;
+    const host = createSyncHost({ ...hostOptions(), onApplied: () => applied++ });
+    const serverLib = new Library(host.store);
+    await host.ready;
+
+    await serverLib.createCollection("Mine");
+    await host.flush();
+    expect(applied).toBe(0);
+
+    const p = phone(host.backend);
+    await p.engine.sync();
+    await host.flush();
+    expect(applied).toBe(0);
+
+    await p.library.createCollection("From phone");
+    await p.engine.sync();
+    await host.flush();
+    expect(applied).toBe(1);
+  });
 });
