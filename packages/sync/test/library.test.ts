@@ -131,6 +131,78 @@ describe("library sync", () => {
     }
   });
 
+  test("a first sync doesn't delete what this device already held", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    // The other device once had the same series and collection, and removed both.
+    const gone = await a.library.createCollection("Shelved");
+    await collect(a.library, [gone.id]);
+    await a.engine.sync();
+    await a.library.removeSeries(KEY);
+    await a.library.deleteCollection(gone.id);
+    await a.engine.sync();
+
+    // This one had them all along, before it ever synced.
+    const inner = new InMemoryLibraryStore();
+    const before = new Library(inner, { now });
+    await inner.putCollections([{ id: gone.id, name: "Shelved", order: 0 }]);
+    await collect(before, [gone.id]);
+
+    const b = device(hub, "b", inner);
+    await b.engine.sync();
+    expect(await series(b)).toBeDefined();
+    await adoptLibrary(inner, b.engine);
+    await b.engine.sync();
+    await a.engine.sync();
+
+    // Kept here, and back on the device that had dropped it — its delete never knew of this copy.
+    for (const d of [a, b]) {
+      expect((await d.library.getCollections()).map((x) => x.name)).toEqual(["Shelved"]);
+      expect((await series(d))?.collectionIds).toEqual([gone.id]);
+    }
+  });
+
+  test("a series removed elsewhere after the first sync is removed here too", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    await collect(a.library, [(await a.library.createCollection("One")).id]);
+    await a.engine.sync();
+
+    const inner = new InMemoryLibraryStore();
+    await collect(new Library(inner, { now }));
+    const b = device(hub, "b", inner);
+    await b.engine.sync();
+    await adoptLibrary(inner, b.engine);
+    await b.engine.sync();
+
+    // Both devices now hold the one record; removing it is a decision about this copy as well.
+    await a.engine.sync();
+    await a.library.removeSeries(KEY);
+    await a.engine.sync();
+    await b.engine.sync();
+    expect(await series(b)).toBeUndefined();
+  });
+
+  test("a delete still removes a copy that arrived by sync", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const inner = new InMemoryLibraryStore();
+    const b = device(hub, "b", inner);
+    const c = await a.library.createCollection("One");
+    await collect(a.library, [c.id]);
+    await a.engine.sync();
+    await b.engine.sync();
+    await adoptLibrary(inner, b.engine);
+
+    await a.library.removeSeries(KEY);
+    await a.library.deleteCollection(c.id);
+    await a.engine.sync();
+    await b.engine.sync();
+
+    expect(await series(b)).toBeUndefined();
+    expect(await b.library.getCollections()).toEqual([]);
+  });
+
   test("adopting carries read state that has no library item or history row to find it by", async () => {
     const hub = new MemoryBackend();
     const a = device(hub, "a");

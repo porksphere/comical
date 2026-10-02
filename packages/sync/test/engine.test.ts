@@ -283,6 +283,83 @@ describe("SyncEngine", () => {
     expect(a.get("groups", "g")).toBe("from b");
   });
 
+  test("a delete in the history first pulled doesn't remove a copy that was already here", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    // `kept`'s creation and deletion reach the hub as two segments; `brief` only ever as a delete.
+    await a.put("collections", "kept", { id: "kept", name: "From a" });
+    await a.engine.sync();
+    await a.put("collections", "kept", undefined);
+    await a.put("collections", "brief", undefined);
+    await a.engine.sync();
+
+    // Held before sync was ever on, so unstamped.
+    await b.store.write("collections", "kept", { id: "kept", name: "From b" });
+    await b.store.write("collections", "brief", { id: "brief", name: "Only b" });
+    await b.engine.sync();
+    expect(b.get("collections", "kept")).toBeDefined();
+    expect(b.get("collections", "brief")).toEqual({ id: "brief", name: "Only b" });
+
+    // And they go back out as new writes, rather than staying a silent disagreement.
+    await b.engine.sync();
+    await a.engine.sync();
+    expect(a.get("collections", "kept")).toEqual(b.get("collections", "kept"));
+    expect(a.get("collections", "brief")).toEqual({ id: "brief", name: "Only b" });
+  });
+
+  test("once that pull is done, a delete of the same record applies", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    await a.put("collections", "c1", { id: "c1", name: "From a" });
+    await a.engine.sync();
+    await b.store.write("collections", "c1", { id: "c1", name: "From b" });
+    await b.engine.sync();
+    expect(b.get("collections", "c1")).toEqual({ id: "c1", name: "From a" });
+    expect(b.saved()?.held).toBeUndefined();
+
+    await a.put("collections", "c1", undefined);
+    await a.engine.sync();
+    await b.engine.sync();
+    expect(b.get("collections", "c1")).toBeUndefined();
+  });
+
+  test("a first pull cut short keeps protecting the copy when it resumes", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    await a.put("collections", "c1", { id: "c1", name: "From a" });
+    await a.engine.sync();
+    await a.put("collections", "c1", undefined);
+    await a.engine.sync();
+
+    const store = new MemoryStore();
+    await store.write("collections", "c1", { id: "c1", name: "From b" });
+    let saved: SyncStateSnapshot | undefined;
+    const persist = async (s: SyncStateSnapshot) => void (saved = structuredClone(s));
+    // One segment a page, and the connection drops after the first.
+    let pulls = 0;
+    const dropping: SyncBackend = {
+      push: (s) => hub.push(s),
+      async pull(have: VersionVector) {
+        if (pulls++ === 1) throw new Error("offline");
+        return hub.pull(have, 1);
+      },
+    };
+    const first = new SyncEngine({ store, backend: dropping, device: "b", newDeviceId: () => "z", persist });
+    await expect(first.sync()).rejects.toThrow("offline");
+    expect(saved?.held).toEqual([recordKey("collections", "c1")]);
+
+    // The app restarts: a new engine over the saved state.
+    const resumed = new SyncEngine({ store, backend: hub, state: saved!, newDeviceId: () => "z", persist });
+    await resumed.sync();
+    expect(await store.read("collections", "c1")).toEqual({ id: "c1", name: "From a" });
+    expect(saved?.held).toBeUndefined();
+    await resumed.sync();
+    await a.engine.sync();
+    expect(a.get("collections", "c1")).toEqual({ id: "c1", name: "From a" });
+  });
+
   test("a device id is required on first run", () => {
     expect(() => new SyncEngine({ store: new MemoryStore(), backend: new MemoryBackend(), newDeviceId: () => "x" })).toThrow(
       /device id/,

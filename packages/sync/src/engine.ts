@@ -8,7 +8,7 @@
  * crash mid-apply re-pulls that page, which the merge makes harmless.
  */
 import { Clock, comparePacked } from "./hlc.ts";
-import { envelopeChanges, mergeEnvelope, type Envelope, type Progress } from "./crdt.ts";
+import { envelopeChanges, isLive, mergeEnvelope, type Envelope, type Progress } from "./crdt.ts";
 import { SeqConflictError } from "./log.ts";
 import type { SyncBackend } from "./backend.ts";
 import type { ProgressValue, SyncStore } from "./store.ts";
@@ -26,6 +26,8 @@ export type SyncStateSnapshot = {
   stamps: Record<string, Stamp>;
   dirty: string[];
   pending: Segment | null;
+  /** Records protected from deletion until the pull in progress completes (see `applyRecord`). */
+  held?: string[];
 };
 
 export type SyncStats = { pushed: number; pulled: number; applied: number };
@@ -56,6 +58,7 @@ export class SyncEngine {
   private readonly vector: VersionVector;
   private readonly stamps: Map<string, Stamp>;
   private readonly dirty: Set<string>;
+  private readonly held: Set<string>;
   private pending: Segment | null;
   private lock: Promise<unknown> = Promise.resolve();
   private running: Promise<SyncStats> | null = null;
@@ -70,6 +73,7 @@ export class SyncEngine {
     this.vector = { ...s?.vector };
     this.stamps = new Map(Object.entries(s?.stamps ?? {}));
     this.dirty = new Set(s?.dirty);
+    this.held = new Set(s?.held);
     this.pending = s?.pending ?? null;
   }
 
@@ -124,6 +128,7 @@ export class SyncEngine {
       stamps: Object.fromEntries(this.stamps),
       dirty: [...this.dirty],
       pending: this.pending,
+      ...(this.held.size > 0 && { held: [...this.held] }),
     };
   }
 
@@ -150,6 +155,10 @@ export class SyncEngine {
       }
       stats.pulled += segments.reduce((n, s) => n + s.records.length, 0);
       if (!more || segments.length === 0) break;
+    }
+    if (this.held.size > 0) {
+      this.held.clear();
+      await this.persist();
     }
     return stats;
   }
@@ -218,6 +227,17 @@ export class SyncEngine {
 
     if (env.kind !== "progress") {
       if (stamp && comparePacked(stamp.hlc, env.hlc) >= 0) return false;
+      // A delete can only be about a copy sync has seen. An unstamped one was here before this
+      // device first synced, so a delete in the history being pulled was of some other device's
+      // copy, made without knowing of this one: it is refused, and this copy goes back out as a
+      // new write. The record is held for the rest of the pull, not just this once — the log
+      // replays the record's whole life, and its creation arrives (and stamps it) before its
+      // deletion does.
+      if (!stamp && (await store.read(table, id)) !== undefined) this.held.add(key);
+      if (this.held.has(key) && !isLive(env)) {
+        this.touch(table, id);
+        return false;
+      }
       await store.write(table, id, fromEnvelope(env));
       this.stamps.set(key, { hlc: env.hlc });
       // Ours lost, so there is nothing of ours left to send.
