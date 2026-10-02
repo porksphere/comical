@@ -140,13 +140,11 @@ export class SyncEngine {
     return this.running;
   }
 
+  // Pull first. The merge doesn't care which way round — every record is settled on its own stamp
+  // when applied — but nothing of this device's leaves until the hub has answered, which over a
+  // sealed channel is the hub proving itself; and a write that would have lost is never sent.
   private async round(): Promise<SyncStats> {
     const stats: SyncStats = { pushed: 0, pulled: 0, applied: 0 };
-    for (;;) {
-      const seg = this.pending ?? (await this.exclusive(() => this.buildSegment()));
-      if (!seg) break;
-      stats.pushed += await this.pushPending(seg);
-    }
     for (;;) {
       const { segments, more } = await this.opts.backend.pull({ ...this.vector }, this.opts.pullLimit);
       if (segments.length > 0) {
@@ -155,6 +153,11 @@ export class SyncEngine {
       }
       stats.pulled += segments.reduce((n, s) => n + s.records.length, 0);
       if (!more || segments.length === 0) break;
+    }
+    for (;;) {
+      const seg = this.pending ?? (await this.exclusive(() => this.buildSegment()));
+      if (!seg) break;
+      stats.pushed += await this.pushPending(seg);
     }
     if (this.held.size > 0) {
       this.held.clear();

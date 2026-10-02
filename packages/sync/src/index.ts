@@ -55,7 +55,8 @@ export {
 export { ChangeLog, DEFAULT_PULL_LIMIT, SeqConflictError, SeqGapError } from "./log.ts";
 export { MemoryBackend, type SyncBackend } from "./backend.ts";
 export { MemorySegmentStore, SyncHub, type SegmentStore } from "./hub.ts";
-export { HttpBackend, SyncHttpError, type HttpBackendOptions } from "./http.ts";
+export { HttpBackend, SyncHttpError, SyncSealError, type HttpBackendOptions } from "./http.ts";
+export { sealedChannel, type SealedChannel, type SealedEnvelope } from "./seal.ts";
 export { composeSyncStores, type ProgressValue, type SyncStore } from "./store.ts";
 export {
   SyncEngine,
