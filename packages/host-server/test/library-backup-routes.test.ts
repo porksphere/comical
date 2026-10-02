@@ -1,8 +1,9 @@
 /**
  * The library backup routes: the export a client saves to a file, and the restore that reads one
  * back. The library's own merge rules are covered in `packages/library/test/backup.test.ts`; what
- * is pinned here is the HTTP surface and the part only a host knows — the registries and installs
- * that ride along. Also asserts both routes are ABSENT when the router has no library wired in.
+ * is pinned here is the HTTP surface and the part only a host knows — the note of registries and
+ * installs written out with it, and that a restore acts on none of it. Also asserts both routes are
+ * ABSENT when the router has no library wired in.
  */
 import { rmSync } from "node:fs";
 import { join } from "node:path";
@@ -17,29 +18,22 @@ const BRIDGES_DIR = join(import.meta.dir, "..", "..", "..", "bridges");
 const DATA_DIR = join(import.meta.dir, ".tmp-library-backup");
 const REGISTRY = "https://registry.example/index.json";
 
-type RestoreResult = {
-  restored: LibraryRestoreCounts;
-  skipped: number;
-  failed: Array<{ kind: "registry" | "bridge" | "tracker"; id: string; error: string }>;
-};
+type RestoreResult = { restored: LibraryRestoreCounts; skipped: number };
 
-/** A registry that records what it was asked to do. `broken` ids fail to install. */
+/** A registry that records what it was asked to do. */
 function mockRegistry() {
   const state = {
     registries: [] as Array<{ url: string; requireSignature?: boolean }>,
     bridges: [] as Array<{ id: string; registryUrl: string | null }>,
     trackers: [] as Array<{ id: string; registryUrl: string | null }>,
-    broken: new Set<string>(),
   };
   const install = (list: Array<{ id: string; registryUrl: string | null }>) => async (registryUrl: string, id: string) => {
-    if (state.broken.has(id)) throw new Error(`not in registry: ${id}`);
     list.push({ id, registryUrl });
     return { id };
   };
   const manager = {
     list: async () => state.registries,
     add: async (url: string, opts: { requireSignature?: boolean } = {}) => {
-      if (state.broken.has(url)) throw new Error(`unreachable: ${url}`);
       const saved = { url, ...opts };
       state.registries.push(saved);
       return saved;
@@ -116,8 +110,9 @@ describe("GET /library/backup", () => {
     registry.state.trackers.push({ id: "anilist", registryUrl: REGISTRY });
 
     expect((await exported()).sources).toEqual({
-      registries: [{ url: REGISTRY, requireSignature: true }],
-      // A bridge that didn't come from a registry can't be installed again from one.
+      // The url alone: whether its signature is required is not a file's to say.
+      registries: [{ url: REGISTRY }],
+      // A bridge that didn't come from a registry has no registry to name.
       bridges: [{ id: "demo", registryUrl: REGISTRY }],
       trackers: [{ id: "anilist", registryUrl: REGISTRY }],
     });
@@ -141,7 +136,6 @@ describe("POST /library/backup/restore", () => {
     expect(result).toEqual({
       restored: { collections: 0, items: 1, progress: 2, groups: 0, trackerLinks: 0, readingLog: 1, bridgePrefs: 0 },
       skipped: 0,
-      failed: [],
     });
     expect(await library.isCollected(entryKey("demo", "kept"))).toBe(true);
     expect((await library.getProgress(entryKey("demo", "passing")))[0]).toMatchObject({ chapterId: "p1", lastPage: 2 });
@@ -158,58 +152,25 @@ describe("POST /library/backup/restore", () => {
     expect((await library.getLibrary()).map((s) => s.seriesId).sort()).toEqual(["kept", "newer"]);
   });
 
-  test("adds the registries and installs the bridges and trackers this host lacks", async () => {
-    registry.state.registries.push({ url: REGISTRY });
-    registry.state.bridges.push({ id: "demo", registryUrl: REGISTRY });
+  test("adds no registry and installs nothing a backup names", async () => {
+    await seed(library);
+    registry.state.registries.push({ url: REGISTRY, requireSignature: true });
     const other = "https://other.example/index.json";
     const backup = {
       ...(await exported()),
       sources: {
-        registries: [{ url: REGISTRY }, { url: other, requireSignature: true }],
-        bridges: [{ id: "demo", registryUrl: REGISTRY }, { id: "extra", registryUrl: other }],
-        trackers: [{ id: "anilist", registryUrl: REGISTRY }],
-      },
-    };
-
-    const result = (await (await post(baseUrl, backup)).json()) as RestoreResult;
-
-    expect(result.failed).toEqual([]);
-    // Already-present ones are left alone, not added or installed a second time.
-    expect(registry.state.registries).toEqual([{ url: REGISTRY }, { url: other, requireSignature: true }]);
-    expect(registry.state.bridges).toEqual([{ id: "demo", registryUrl: REGISTRY }, { id: "extra", registryUrl: other }]);
-    expect(registry.state.trackers).toEqual([{ id: "anilist", registryUrl: REGISTRY }]);
-  });
-
-  test("reports a source it couldn't bring back and still restores the library", async () => {
-    await seed(library);
-    const backup = {
-      ...(await exported()),
-      sources: {
-        registries: [{ url: "https://gone.example/index.json" }, { url: REGISTRY }],
-        bridges: [{ id: "vanished", registryUrl: REGISTRY }, { id: "demo", registryUrl: REGISTRY }],
-        trackers: [{ id: "retired", registryUrl: REGISTRY }],
+        registries: [{ url: REGISTRY }, { url: other, requireSignature: false }],
+        bridges: [{ id: "extra", registryUrl: other }],
+        trackers: [{ id: "anilist", registryUrl: other }],
       },
     };
     Reflect.set(library, "store", new InMemoryLibraryStore());
-    registry.state.broken = new Set(["https://gone.example/index.json", "vanished", "retired"]);
 
-    const result = (await (await post(baseUrl, backup)).json()) as RestoreResult;
+    const res = await post(baseUrl, backup);
 
-    expect(result.failed).toEqual([
-      { kind: "registry", id: "https://gone.example/index.json", error: "unreachable: https://gone.example/index.json" },
-      { kind: "bridge", id: "vanished", error: "not in registry: vanished" },
-      { kind: "tracker", id: "retired", error: "not in registry: retired" },
-    ]);
-    expect(registry.state.bridges.map((b) => b.id)).toEqual(["demo"]);
-    expect(result.restored.items).toBe(1);
-    expect(await library.isCollected(entryKey("demo", "kept"))).toBe(true);
-  });
-
-  test("ignores a backup's sources on a host without a registry", async () => {
-    const backup = { ...(await exported(noRegistryUrl)), sources: { registries: [{ url: REGISTRY }], bridges: [], trackers: [] } };
-    const result = (await (await post(noRegistryUrl, backup)).json()) as RestoreResult;
-    expect(result.failed).toEqual([]);
-    expect(registry.state.registries).toEqual([]);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as RestoreResult).restored.items).toBe(1);
+    expect(registry.state).toEqual({ registries: [{ url: REGISTRY, requireSignature: true }], bridges: [], trackers: [] });
   });
 
   test("counts the records it had to leave out", async () => {

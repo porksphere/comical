@@ -289,14 +289,14 @@ describe("readLibraryBackup", () => {
     expect(backup.readingLog).toHaveLength(1);
   });
 
-  test("keeps the sources a host added", () => {
+  test("keeps the sources a host added, and no trust setting a file carries", () => {
     const sources = {
-      registries: [{ url: "https://example.com/index.json", requireSignature: true }],
+      registries: [{ url: "https://example.com/index.json", requireSignature: false }],
       bridges: [{ id: "demo", registryUrl: "https://example.com/index.json" }],
       trackers: [],
     };
     const { backup } = readLibraryBackup({ format: LIBRARY_BACKUP_FORMAT, version: 1, exportedAt: 0, sources });
-    expect(backup.sources).toEqual(sources);
+    expect(backup.sources).toEqual({ ...sources, registries: [{ url: "https://example.com/index.json" }] });
   });
 });
 

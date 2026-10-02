@@ -32,12 +32,13 @@ export const LIBRARY_BACKUP_VERSION = 1;
 
 /**
  * Where the library's series came from: the registries a host had saved and what it had installed
- * from them. The library knows nothing of registries — a host adds this on the way out and acts on
- * it on the way in — but it belongs in the same file, since a restored series whose bridge is
- * missing can't be opened.
+ * from them. A NOTE, never an instruction — a host adds it on the way out, and nothing acts on it
+ * on the way in. Restoring a file installs no code and saves no registry; this is only so a client
+ * can say where a bridge the backup needs was got from. For the same reason it carries no trust
+ * setting: whether a registry's signature is required is decided where the registry is added.
  */
 export interface LibraryBackupSources {
-  registries: Array<{ url: string; requireSignature?: boolean | undefined }>;
+  registries: Array<{ url: string }>;
   bridges: Array<{ id: string; registryUrl: string }>;
   trackers: Array<{ id: string; registryUrl: string }>;
 }
@@ -93,7 +94,7 @@ const envelopeSchema = z.object({
   bridgePrefs: z.array(z.unknown()).default([]),
   sources: z
     .object({
-      registries: z.array(z.object({ url: id, requireSignature: z.boolean().optional() })).default([]),
+      registries: z.array(z.object({ url: id })).default([]),
       bridges: installed.default([]),
       trackers: installed.default([]),
     })
