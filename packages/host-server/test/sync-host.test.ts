@@ -191,4 +191,27 @@ describe("createSyncHost", () => {
     await host.flush();
     expect(applied).toBe(1);
   });
+
+  test("stop drops the pending round and a later push schedules none, but the change survives for the next run", async () => {
+    let applied = 0;
+    const host = createSyncHost({ ...hostOptions(), onApplied: () => applied++, debounceMs: 10 });
+    await host.ready;
+    const p = phone(host.backend);
+
+    await p.library.createCollection("From phone");
+    await p.engine.sync(); // the push schedules the host's round
+    host.stop();
+    await p.library.createCollection("After stop");
+    await p.engine.sync();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(applied).toBe(0);
+
+    const again = createSyncHost({ ...hostOptions(), onApplied: () => applied++ });
+    await again.ready;
+    expect((await new Library(again.store).getCollections()).map((c) => c.name).sort()).toEqual([
+      "After stop",
+      "From phone",
+    ]);
+    expect(applied).toBe(1);
+  });
 });

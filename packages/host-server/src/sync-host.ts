@@ -45,6 +45,12 @@ export interface SyncHost<R extends RegistryMutations = RegistryMutations> {
   ready: Promise<void>;
   /** Sync now, rather than after the usual debounce. */
   flush(): Promise<void>;
+  /**
+   * Drop the pending round and schedule no more — for shutdown, so a write that lands inside the
+   * debounce window doesn't start a round against a store that is closing. A round already underway
+   * finishes; an unsent change is simply pushed by the next run's first round.
+   */
+  stop(): void;
 }
 
 export interface SyncHostOptions<R extends RegistryMutations> {
@@ -93,6 +99,7 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
   });
 
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
   const run = (): Promise<void> =>
     engine
       .sync()
@@ -103,6 +110,7 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
       .catch((err: unknown) => log.error("sync: round failed", err));
   function schedule(): void {
     if (timer) clearTimeout(timer);
+    if (stopped) return;
     timer = setTimeout(() => {
       timer = undefined;
       void run();
@@ -135,6 +143,11 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
       timer = undefined;
       await ready;
       await run();
+    },
+    stop: () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
     },
   };
 }
