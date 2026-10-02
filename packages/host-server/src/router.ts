@@ -30,7 +30,7 @@ import type {
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
-import { entryKey, collectionItemId, type ChapterPageRef, type CollectionItemsQuery, type CollectionItemType, type Library } from "@comical/library";
+import { entryKey, collectionItemId, LibraryBackupError, readLibraryBackup, type ChapterPageRef, type CollectionItemsQuery, type CollectionItemType, type Library, type LibraryBackupSources } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
@@ -1089,6 +1089,82 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         return c.json(await runtime!.importBridgeFavorites(c.req.param("id"), items));
       }),
     );
+
+    // ── Backup ──────────────────────────────────────────────────────────────────
+    // The library as one document, and the way back from one. The library's part is `Library`'s;
+    // what this adds is where its series came from — the saved registries and what was installed
+    // from them — since a restored series whose bridge is missing can't be opened.
+
+    const backupSources = async (): Promise<LibraryBackupSources | undefined> => {
+      const registry = opts.registry;
+      if (!registry) return undefined;
+      const fromRegistry = (list: Array<{ id: string; registryUrl: string | null }>) =>
+        list.flatMap((i) => (i.registryUrl ? [{ id: i.id, registryUrl: i.registryUrl }] : []));
+      return {
+        registries: (await registry.list()).map((r) => ({ url: r.url, requireSignature: r.requireSignature })),
+        bridges: fromRegistry(await registry.allInstalled()),
+        trackers: fromRegistry(await registry.allInstalledTrackers()),
+      };
+    };
+
+    /** Add and install what the backup names and this host lacks. Each is a network operation that
+     *  can fail on its own, so a failure is reported and the rest — and the library — still go in. */
+    type SourceFailure = { kind: "registry" | "bridge" | "tracker"; id: string; error: string };
+    const restoreSources = async (sources: LibraryBackupSources): Promise<SourceFailure[]> => {
+      const registry = opts.registry;
+      if (!registry) return [];
+      const failed: SourceFailure[] = [];
+      const attempt = async (kind: SourceFailure["kind"], id: string, run: () => Promise<unknown>) => {
+        try {
+          await run();
+        } catch (e) {
+          failed.push({ kind, id, error: e instanceof Error ? e.message : String(e) });
+        }
+      };
+
+      const saved = new Set((await registry.list()).map((r) => r.url));
+      for (const r of sources.registries) {
+        if (saved.has(r.url)) continue;
+        await attempt("registry", r.url, () =>
+          registry.add(r.url, r.requireSignature === undefined ? {} : { requireSignature: r.requireSignature }),
+        );
+      }
+      const bridges = new Set((await registry.allInstalled()).map((b) => b.id));
+      for (const b of sources.bridges) {
+        if (bridges.has(b.id)) continue;
+        await attempt("bridge", b.id, async () => {
+          await registry.install(b.registryUrl, b.id);
+          manager.invalidate(b.id);
+        });
+      }
+      const trackers = new Set((await registry.allInstalledTrackers()).map((t) => t.id));
+      for (const t of sources.trackers) {
+        if (trackers.has(t.id)) continue;
+        await attempt("tracker", t.id, async () => {
+          await registry.installTracker(t.registryUrl, t.id);
+          trackerMgr?.invalidate(t.id);
+        });
+      }
+      return failed;
+    };
+
+    app.get("/library/backup", async (c) => {
+      const sources = await backupSources();
+      return c.json({ ...(await lib.exportBackup()), ...(sources && { sources }) });
+    });
+
+    app.post("/library/backup/restore", async (c) => {
+      let parsed: ReturnType<typeof readLibraryBackup>;
+      try {
+        parsed = readLibraryBackup(await body<unknown>(c));
+      } catch (e) {
+        if (e instanceof LibraryBackupError) return c.json({ error: e.message }, 400);
+        throw e;
+      }
+      const failed = parsed.backup.sources ? await restoreSources(parsed.backup.sources) : [];
+      const restored = await lib.restoreBackup(parsed.backup);
+      return c.json({ restored, skipped: parsed.skipped, failed });
+    });
 
     // The bytes the library occupies on this host — store documents plus captured cover blobs.
     // Powers the client Storage screen's library figure, host-aware through the transport (device

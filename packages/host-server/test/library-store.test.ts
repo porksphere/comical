@@ -155,3 +155,35 @@ describe("FileLibraryStore favorites", () => {
     expect(await store.diskUsage()).toBe(docsOnly);
   });
 });
+
+describe("FileLibraryStore enumeration", () => {
+  test("listProgressKeys finds every series with progress, across a reopen", async () => {
+    const store = new FileLibraryStore(LIB);
+    expect(await store.listProgressKeys()).toEqual([]);
+
+    // Keys carry characters a filename can't — the listing has to hand back the key, not the name.
+    await store.putProgress("demo:s1", { chapterId: "c1", read: true, lastPage: 3, updatedAt: 1 });
+    await store.putProgress("scope/name:a b?c", { chapterId: "c1", read: false, lastPage: 0, updatedAt: 2 });
+    // Looking a series up doesn't make it one with progress.
+    await store.listProgress("demo:never-read");
+
+    const keys = (await new FileLibraryStore(LIB).listProgressKeys()).sort();
+    expect(keys).toEqual(["demo:s1", "scope/name:a b?c"]);
+    expect((await store.listProgressKeys()).sort()).toEqual(keys);
+    expect(await new FileLibraryStore(LIB).listProgress("scope/name:a b?c")).toHaveLength(1);
+  });
+
+  test("listBridgePrefs returns every bridge's prefs, and nothing before any are set", async () => {
+    const store = new FileLibraryStore(LIB);
+    expect(await store.listBridgePrefs()).toEqual([]);
+
+    await store.setBridgePrefs("demo", { bridgeId: "demo", trackersDisabled: true, historyDisabled: false });
+    await store.setBridgePrefs("quiet", { bridgeId: "quiet", trackersDisabled: false, historyDisabled: true });
+
+    const prefs = (await new FileLibraryStore(LIB).listBridgePrefs()).sort((a, b) => a.bridgeId.localeCompare(b.bridgeId));
+    expect(prefs).toEqual([
+      { bridgeId: "demo", trackersDisabled: true, historyDisabled: false },
+      { bridgeId: "quiet", trackersDisabled: false, historyDisabled: true },
+    ]);
+  });
+});

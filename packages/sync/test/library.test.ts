@@ -131,6 +131,31 @@ describe("library sync", () => {
     }
   });
 
+  test("adopting carries read state that has no library item or history row to find it by", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+
+    // Held before sync was ever on: a series read but never collected, on a bridge with history
+    // off (so no reading-log row either), and that bridge's preferences.
+    const inner = new InMemoryLibraryStore();
+    const before = new Library(inner, { now });
+    await before.setBridgePrefs("quiet", { historyDisabled: true });
+    await before.setProgress(entryKey("quiet", "unlisted"), "ch1", 4, 20);
+    await before.recordRead({ bridgeId: "bridge-a", seriesId: "passing", title: "Passing", lastReadAt: now() });
+    await before.setProgress(entryKey("bridge-a", "passing"), "ch9", 1, 20);
+
+    const b = device(hub, "b", inner);
+    await b.engine.sync();
+    await adoptLibrary(inner, b.engine);
+    await b.engine.sync();
+    await a.engine.sync();
+
+    expect((await a.library.getProgress(entryKey("quiet", "unlisted")))[0]).toMatchObject({ chapterId: "ch1", lastPage: 4 });
+    expect((await a.library.getProgress(entryKey("bridge-a", "passing")))[0]).toMatchObject({ chapterId: "ch9", lastPage: 1 });
+    expect(await a.library.getBridgePrefs("quiet")).toMatchObject({ historyDisabled: true });
+    expect((await a.inner.listReadingLog()).map((h) => h.seriesId)).toEqual(["passing"]);
+  });
+
   test("a write that only moves device-local fields sends nothing", async () => {
     const hub = new MemoryBackend();
     const a = device(hub, "a");

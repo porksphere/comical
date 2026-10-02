@@ -207,6 +207,14 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     this.onChange?.();
   }
 
+  allInstalled() {
+    return this.deps.installed.all();
+  }
+
+  allInstalledTrackers() {
+    return this.deps.installedTrackers.all();
+  }
+
   /**
    * Refresh update/discontinuation annotations across all installed bridges (manual policy — never
    * auto-installs). Persists `availableVersion`/`discontinued` onto each record so `installed()` can

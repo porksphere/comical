@@ -26,12 +26,15 @@ export interface RegistryProvider {
   install(registryUrl: string, bridgeId: string): Promise<InstallResult>;
   update(bridgeId: string): Promise<InstallResult>;
   uninstall(bridgeId: string): Promise<void>;
+  /** What is installed, from the local manifest — no network. */
+  allInstalled(): Promise<Array<{ id: string; registryUrl: string | null }>>;
   checkUpdates(): Promise<RegistryUpdate[]>;
   browseTrackers(rawUrl: string): Promise<AvailableTracker[]>;
   browseAllTrackers(): Promise<AvailableTracker[]>;
   installTracker(registryUrl: string, trackerId: string): Promise<InstallResult>;
   updateTracker(trackerId: string): Promise<InstallResult>;
   uninstallTracker(trackerId: string): Promise<void>;
+  allInstalledTrackers(): Promise<Array<{ id: string; registryUrl: string | null }>>;
   checkTrackerUpdates(): Promise<RegistryUpdate[]>;
   /**
    * Registry moves. A `movedTo`/`movedFrom` claim that can't be verified by key continuity is parked

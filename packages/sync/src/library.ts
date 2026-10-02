@@ -279,6 +279,7 @@ export function wrapLibraryStore(inner: LibraryStore, engine: SyncEngine): Libra
     deleteCachedChapters: (key) => inner.deleteCachedChapters(key),
 
     listProgress: (key) => inner.listProgress(key),
+    listProgressKeys: () => inner.listProgressKeys(),
     putProgress: (key, progress) =>
       recorded([["progress", compositeId.progress(key, progress.chapterId)]], () => inner.putProgress(key, progress)),
     deleteProgressForEntry: (key) =>
@@ -323,6 +324,7 @@ export function wrapLibraryStore(inner: LibraryStore, engine: SyncEngine): Libra
       recorded([["readingLog", entryKey(bridgeId, seriesId)]], () => inner.deleteReadingLog(bridgeId, seriesId)),
 
     getBridgePrefs: (bridgeId) => inner.getBridgePrefs(bridgeId),
+    listBridgePrefs: () => inner.listBridgePrefs(),
     setBridgePrefs: (bridgeId, prefs) => recorded([["bridgePrefs", bridgeId]], () => inner.setBridgePrefs(bridgeId, prefs)),
 
     listActivity: () => inner.listActivity(),
@@ -341,20 +343,19 @@ export async function adoptLibrary(store: LibraryStore, engine: SyncEngine): Pro
     for (const c of await store.listCollections()) engine.adopt("collections", c.id);
     for (const g of await store.listGroups()) engine.adopt("groups", g.id);
 
-    const bridges = new Set<string>();
     for (const item of await store.listCollectionItems()) {
       engine.adopt("collectionItems", item.id);
-      bridges.add(item.bridgeId);
       if (item.type !== "series") continue;
       const key = entryKey(item.bridgeId, item.seriesId);
       if (item.lastReadAt !== undefined) engine.adopt("seriesResume", key);
-      for (const p of await store.listProgress(key)) engine.adopt("progress", compositeId.progress(key, p.chapterId));
       for (const l of await store.listTrackerLinks(key)) engine.adopt("trackerLinks", compositeId.trackerLink(key, l.trackerId));
     }
-    for (const h of await store.listReadingLog()) {
-      engine.adopt("readingLog", entryKey(h.bridgeId, h.seriesId));
-      bridges.add(h.bridgeId);
+    for (const h of await store.listReadingLog()) engine.adopt("readingLog", entryKey(h.bridgeId, h.seriesId));
+    // From the store's own list, not from the items above: an uncollected series keeps its read
+    // state, and so does a bridge its preferences, with no item or history row to find it by.
+    for (const key of await store.listProgressKeys()) {
+      for (const p of await store.listProgress(key)) engine.adopt("progress", compositeId.progress(key, p.chapterId));
     }
-    for (const b of bridges) if (await store.getBridgePrefs(b)) engine.adopt("bridgePrefs", b);
+    for (const p of await store.listBridgePrefs()) engine.adopt("bridgePrefs", p.bridgeId);
   });
 }

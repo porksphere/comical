@@ -44,6 +44,9 @@ export class InMemoryLibraryStore implements LibraryStore {
   async listProgress(key: string): Promise<ChapterProgress[]> {
     return [...(this.progress.get(key)?.values() ?? [])].map(clone);
   }
+  async listProgressKeys(): Promise<string[]> {
+    return [...this.progress.keys()];
+  }
   async putProgress(key: string, progress: ChapterProgress): Promise<void> {
     let map = this.progress.get(key);
     if (!map) this.progress.set(key, (map = new Map()));
@@ -119,6 +122,9 @@ export class InMemoryLibraryStore implements LibraryStore {
   async getBridgePrefs(bridgeId: string): Promise<BridgePrefs | undefined> {
     const p = this.bridgePrefs.get(bridgeId);
     return p ? clone(p) : undefined;
+  }
+  async listBridgePrefs(): Promise<BridgePrefs[]> {
+    return [...this.bridgePrefs.values()].map(clone);
   }
   async setBridgePrefs(bridgeId: string, prefs: BridgePrefs): Promise<void> {
     this.bridgePrefs.set(bridgeId, clone(prefs));

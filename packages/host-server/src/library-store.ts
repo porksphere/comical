@@ -127,6 +127,10 @@ export class FileLibraryStore implements LibraryStore {
   async listProgress(key: string): Promise<ChapterProgress[]> {
     return [...(await this.progress(key)).values()];
   }
+  async listProgressKeys(): Promise<string[]> {
+    const files = await readdir(join(this.dir, "progress")).catch(() => [] as string[]);
+    return files.filter((f) => f.endsWith(".json")).map((f) => decodeURIComponent(f.slice(0, -".json".length)));
+  }
   async putProgress(key: string, progress: ChapterProgress): Promise<void> {
     (await this.progress(key)).set(progress.chapterId, progress);
     await this.flushProgress(key);
@@ -370,6 +374,10 @@ export class FileLibraryStore implements LibraryStore {
 
   async getBridgePrefs(bridgeId: string): Promise<BridgePrefs | undefined> {
     return (await this.bridgePrefs()).get(bridgeId);
+  }
+
+  async listBridgePrefs(): Promise<BridgePrefs[]> {
+    return [...(await this.bridgePrefs()).values()];
   }
 
   async setBridgePrefs(bridgeId: string, prefs: BridgePrefs): Promise<void> {
