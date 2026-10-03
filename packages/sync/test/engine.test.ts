@@ -33,7 +33,7 @@ function device(backend: SyncBackend, name: string, opts: { state?: SyncStateSna
     store,
     backend,
     device: name,
-    name: `${name}'s phone`,
+    name: () => `${name}'s phone`,
     ...(opts.state && { state: opts.state }),
     newDeviceId: () => `${name}-${++ids}`,
     persist: async (s) => {
@@ -56,6 +56,18 @@ function device(backend: SyncBackend, name: string, opts: { state?: SyncStateSna
 }
 
 describe("SyncEngine", () => {
+  test("every pull names the device as it is called now, so a rename needs no restart", async () => {
+    const hub = new MemoryBackend();
+    const asked: string[] = [];
+    const backend: SyncBackend = { push: (s) => hub.push(s), pull: (r) => (asked.push(r.name), hub.pull(r)) };
+    let name = "Before";
+    const engine = new SyncEngine({ store: new MemoryStore(), backend, device: "x", name: () => name, newDeviceId: () => "x2" });
+    await engine.sync();
+    name = "After";
+    await engine.sync();
+    expect(asked).toEqual(["Before", "After"]);
+  });
+
   test("changes reach every other device", async () => {
     const hub = new MemoryBackend();
     const a = device(hub, "a");
@@ -186,7 +198,7 @@ describe("SyncEngine", () => {
       store: a.store,
       backend: hub,
       state: a.engine.snapshot(),
-      name: "a",
+      name: () => "a",
       newDeviceId: () => "x",
       segmentSize: 10,
     });
@@ -194,7 +206,7 @@ describe("SyncEngine", () => {
     expect(hub.log.all().map((s) => s.records.length)).toEqual([10, 10, 5]);
 
     const b = device(hub, "b");
-    const paged = new SyncEngine({ store: b.store, backend: hub, device: "b", name: "b", newDeviceId: () => "y", pullLimit: 10 });
+    const paged = new SyncEngine({ store: b.store, backend: hub, device: "b", name: () => "b", newDeviceId: () => "y", pullLimit: 10 });
     expect(await paged.sync()).toMatchObject({ pulled: 25, applied: 25 });
     expect(paged.snapshot().vector).toEqual({ a: 3 });
   });
@@ -271,7 +283,7 @@ describe("SyncEngine", () => {
         return r;
       },
     };
-    const slow = new SyncEngine({ store: b.store, backend: slowPull, device: "b", name: "b", newDeviceId: () => "z" });
+    const slow = new SyncEngine({ store: b.store, backend: slowPull, device: "b", name: () => "b", newDeviceId: () => "z" });
     const round = slow.sync();
     const local = slow.exclusive(async () => {
       await b.store.write("groups", "g", "from b");
@@ -348,12 +360,12 @@ describe("SyncEngine", () => {
         return hub.pull({ ...request, limit: 1 });
       },
     };
-    const first = new SyncEngine({ store, backend: dropping, device: "b", name: "b", newDeviceId: () => "z", persist });
+    const first = new SyncEngine({ store, backend: dropping, device: "b", name: () => "b", newDeviceId: () => "z", persist });
     await expect(first.sync()).rejects.toThrow("offline");
     expect(saved?.held).toEqual([recordKey("collections", "c1")]);
 
     // The app restarts: a new engine over the saved state.
-    const resumed = new SyncEngine({ store, backend: hub, state: saved!, name: "b", newDeviceId: () => "z", persist });
+    const resumed = new SyncEngine({ store, backend: hub, state: saved!, name: () => "b", newDeviceId: () => "z", persist });
     await resumed.sync();
     expect(await store.read("collections", "c1")).toEqual({ id: "c1", name: "From a" });
     expect(saved?.held).toBeUndefined();
@@ -363,7 +375,7 @@ describe("SyncEngine", () => {
   });
 
   test("a device id is required on first run", () => {
-    expect(() => new SyncEngine({ store: new MemoryStore(), backend: new MemoryBackend(), name: "x", newDeviceId: () => "x" })).toThrow(
+    expect(() => new SyncEngine({ store: new MemoryStore(), backend: new MemoryBackend(), name: () => "x", newDeviceId: () => "x" })).toThrow(
       /device id/,
     );
   });

@@ -59,7 +59,7 @@ function phone(backend: ReturnType<typeof createSyncHost>["backend"], id = "phon
     ]),
     backend,
     device: id,
-    name,
+    name: () => name,
     newDeviceId: () => `${id}-2`,
   });
   return {

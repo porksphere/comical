@@ -55,8 +55,8 @@ describe("/sync over HTTP", () => {
   test("a change pushed by one device is pulled by another", async () => {
     const a = new MapStore();
     const b = new MapStore();
-    const ea = new SyncEngine({ store: a, backend: backend(), device: "http-a", name: "A", newDeviceId: () => "http-a2" });
-    const eb = new SyncEngine({ store: b, backend: backend(), device: "http-b", name: "B", newDeviceId: () => "http-b2" });
+    const ea = new SyncEngine({ store: a, backend: backend(), device: "http-a", name: () => "A", newDeviceId: () => "http-a2" });
+    const eb = new SyncEngine({ store: b, backend: backend(), device: "http-b", name: () => "B", newDeviceId: () => "http-b2" });
     await ea.exclusive(async () => {
       await a.write("collections", "c1", { id: "c1", name: "Faves", order: 0 });
       ea.touch("collections", "c1");

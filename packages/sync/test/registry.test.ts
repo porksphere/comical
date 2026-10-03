@@ -89,7 +89,7 @@ function device(backend: SyncBackend, name: string) {
     store: composeSyncStores([[REGISTRY_TABLES, store]]),
     backend,
     device: name,
-    name,
+    name: () => name,
     newDeviceId: () => `${name}-2`,
     now,
   });

@@ -37,8 +37,9 @@ export type SyncEngineOptions = {
   backend: SyncBackend;
   /** Required on first run; ignored when `state` is given. */
   device?: string;
-  /** What this device calls itself to whoever looks at the hub. Not state: it may be renamed. */
-  name: string;
+  /** What this device calls itself to whoever looks at the hub. Read every round, not state: the
+   *  user may rename it while sync is on, and the next pull is when the hub finds out. */
+  name: () => string;
   state?: SyncStateSnapshot;
   /** A fresh device id, for when this one's numbering can't continue (see `SeqConflictError`). */
   newDeviceId: () => string;
@@ -150,7 +151,7 @@ export class SyncEngine {
     for (;;) {
       const { segments, more } = await this.opts.backend.pull({
         device: this.device,
-        name: this.opts.name,
+        name: this.opts.name(),
         have: { ...this.vector },
         ...(this.opts.pullLimit !== undefined && { limit: this.opts.pullLimit }),
       });

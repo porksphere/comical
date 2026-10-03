@@ -108,7 +108,7 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
     ]),
     backend: hub,
     // Only ever said to itself: this engine's pulls go to `hub` directly, past the roster.
-    name: "hub",
+    name: () => "hub",
     ...(state ? { state } : { device: `hub-${crypto.randomUUID()}` }),
     newDeviceId: () => `hub-${crypto.randomUUID()}`,
     persist: async (s) => writeJson(statePath, s),
