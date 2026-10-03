@@ -7,6 +7,8 @@
  *   - register — the record, or undefined when absent
  *   - set      — the element's metadata (`{}` for none), or undefined when not a member
  *   - progress — a `ProgressValue`, or undefined when the chapter has none
+ *   - event    — the record, or undefined when absent. Absent is not always "removed": a store may
+ *                drop an old event to bound itself, and the engine never brings one back either way
  */
 import type { TableId } from "./tables.ts";
 

@@ -135,13 +135,16 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
   }
 
   // A fresh hub starts from what this server already has; after that its library only changes
-  // through the wrapped store or by applying what the hub holds.
-  const ready = state
-    ? run()
-    : run()
-        .then(() => adoptLibrary(opts.store, engine))
-        .then(() => adoptRegistry(opts.lists, engine))
-        .then(run);
+  // through the wrapped store or by applying what the hub holds. A table that starts to sync later
+  // starts the same way, once.
+  const ready = run().then(async () => {
+    const tables = engine.unadopted();
+    if (tables.length === 0) return;
+    await adoptLibrary(opts.store, engine, tables);
+    await adoptRegistry(opts.lists, engine, tables);
+    engine.markAdopted();
+    await run();
+  });
 
   return {
     store: wrapLibraryStore(opts.store, engine),

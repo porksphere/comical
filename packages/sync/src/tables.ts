@@ -5,7 +5,7 @@
  * Bridge SETTINGS are deliberately absent: they hold logins and cookies, and a change log is a copy
  * of everything it has ever carried.
  */
-export type Strategy = "register" | "set" | "progress";
+export type Strategy = "register" | "set" | "progress" | "event";
 
 /** Declaration order is apply order within a segment: referents before what refers to them. */
 export const TABLE_STRATEGY = {
@@ -20,6 +20,7 @@ export const TABLE_STRATEGY = {
   progress: "progress",
   readingLog: "register",
   trackerLinks: "register",
+  activity: "event",
 } as const satisfies Record<string, Strategy>;
 
 export type TableId = keyof typeof TABLE_STRATEGY;

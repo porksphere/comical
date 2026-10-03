@@ -156,6 +156,28 @@ describe("FileLibraryStore favorites", () => {
   });
 });
 
+describe("FileLibraryStore activity", () => {
+  const item = (chapterId: string, detectedAt = 1) => ({ bridgeId: "demo", seriesId: "s1", chapterId, title: "Series One", detectedAt });
+
+  test("an event is recorded once, and that survives a reopen", async () => {
+    const store = new FileLibraryStore(LIB);
+    expect(await store.putActivity(item("c1"))).toBe(true);
+    expect(await store.putActivity(item("c1", 2))).toBe(false);
+
+    const reopened = new FileLibraryStore(LIB);
+    expect(await reopened.putActivity(item("c1", 3))).toBe(false);
+    expect(await reopened.listActivity()).toEqual([item("c1")]);
+  });
+
+  test("dropActivity removes the events named and leaves the rest, on disk too", async () => {
+    const store = new FileLibraryStore(LIB);
+    for (const id of ["c1", "c2", "c3"]) await store.putActivity(item(id));
+    await store.dropActivity(["demo:s1:c1", "demo:s1:c3", "demo:s1:never"]);
+    expect((await store.listActivity()).map((a) => a.chapterId)).toEqual(["c2"]);
+    expect((await new FileLibraryStore(LIB).listActivity()).map((a) => a.chapterId)).toEqual(["c2"]);
+  });
+});
+
 describe("FileLibraryStore enumeration", () => {
   test("listProgressKeys finds every series with progress, across a reopen", async () => {
     const store = new FileLibraryStore(LIB);

@@ -8,7 +8,7 @@
  * crash mid-apply re-pulls that page, which the merge makes harmless.
  */
 import { Clock, comparePacked } from "./hlc.ts";
-import { envelopeChanges, isLive, mergeEnvelope, type Envelope, type Progress } from "./crdt.ts";
+import { envelopeChanges, isLive, mergeEnvelope, type Envelope, type EventRecord, type Progress } from "./crdt.ts";
 import { SeqConflictError } from "./log.ts";
 import type { SyncBackend } from "./backend.ts";
 import type { ProgressValue, SyncStore } from "./store.ts";
@@ -28,6 +28,8 @@ export type SyncStateSnapshot = {
   pending: Segment | null;
   /** Records protected from deletion until the pull in progress completes (see `applyRecord`). */
   held?: string[];
+  /** The tables whose existing records have been adopted. Absent in a state from before the list. */
+  adopted?: string[];
 };
 
 export type SyncStats = { pushed: number; pulled: number; applied: number };
@@ -54,6 +56,21 @@ export type SyncEngineOptions = {
 
 const DEFAULT_SEGMENT_SIZE = 500;
 
+/** What a state saved without an `adopted` list is taken to have adopted: every table of its day. */
+const TABLES_BEFORE_ADOPTED_LIST: readonly TableId[] = [
+  "registries",
+  "installed",
+  "installedTrackers",
+  "bridgePrefs",
+  "groups",
+  "collections",
+  "collectionItems",
+  "seriesResume",
+  "progress",
+  "readingLog",
+  "trackerLinks",
+];
+
 export class SyncEngine {
   private device: string;
   private clock: Clock;
@@ -62,6 +79,7 @@ export class SyncEngine {
   private readonly stamps: Map<string, Stamp>;
   private readonly dirty: Set<string>;
   private readonly held: Set<string>;
+  private readonly adopted: Set<string>;
   private pending: Segment | null;
   private lock: Promise<unknown> = Promise.resolve();
   private running: Promise<SyncStats> | null = null;
@@ -77,6 +95,7 @@ export class SyncEngine {
     this.stamps = new Map(Object.entries(s?.stamps ?? {}));
     this.dirty = new Set(s?.dirty);
     this.held = new Set(s?.held);
+    this.adopted = new Set(s ? (s.adopted ?? TABLES_BEFORE_ADOPTED_LIST) : []);
     this.pending = s?.pending ?? null;
   }
 
@@ -117,6 +136,24 @@ export class SyncEngine {
     if (!this.stamps.has(recordKey(table, id))) this.touch(table, id);
   }
 
+  /**
+   * The tables whose existing records the host has yet to `adopt`: all of them on a first run, and
+   * on a device that was already syncing, the ones that have started to sync since.
+   */
+  unadopted(): TableId[] {
+    return ALL_TABLES.filter((t) => !this.adopted.has(t));
+  }
+
+  /** For the host to call once it has adopted everything `unadopted()` named. */
+  markAdopted(): void {
+    for (const t of ALL_TABLES) this.adopted.add(t);
+  }
+
+  /** Whether sync has ever held a version of `(table, id)` — written here, or met in a pull. */
+  knows(table: TableId, id: string): boolean {
+    return this.stamps.has(recordKey(table, id));
+  }
+
   hasUnsent(): boolean {
     return this.dirty.size > 0 || this.pending !== null;
   }
@@ -132,6 +169,7 @@ export class SyncEngine {
       dirty: [...this.dirty],
       pending: this.pending,
       ...(this.held.size > 0 && { held: [...this.held] }),
+      adopted: [...this.adopted],
     };
   }
 
@@ -235,6 +273,10 @@ export class SyncEngine {
     const key = recordKey(table, id);
     const stamp = this.stamps.get(key);
     const store = this.opts.store;
+    // Each table's merge is the guarantee its records were written under; a record of another kind
+    // would be applied under the wrong one.
+    if (env.kind !== TABLE_STRATEGY[table]) return false;
+    if (env.kind === "event") return this.applyEvent(table, id, env, stamp);
 
     if (env.kind !== "progress") {
       if (stamp && comparePacked(stamp.hlc, env.hlc) >= 0) return false;
@@ -266,6 +308,30 @@ export class SyncEngine {
     return true;
   }
 
+  /**
+   * The store holds no tombstones, so "removed" is read off the stamp: a key sync knows whose record
+   * is missing has been removed here — or dropped by the store to bound itself, which asks for the
+   * same thing. Nothing brings it back.
+   */
+  private async applyEvent(table: TableId, id: string, env: EventRecord, stamp: Stamp | undefined): Promise<boolean> {
+    const key = recordKey(table, id);
+    const store = this.opts.store;
+    const present = (await store.read(table, id)) !== undefined;
+
+    if (env.deleted) {
+      // No `held` here: a removal is final even over a copy from before this device first synced.
+      if (present) await store.write(table, id, undefined);
+      this.stamps.set(key, { hlc: env.hlc });
+      this.dirty.delete(key);
+      return present;
+    }
+    if (stamp && (!present || comparePacked(stamp.hlc, env.hlc) <= 0)) return false;
+    await store.write(table, id, fromEnvelope(env));
+    this.stamps.set(key, { hlc: env.hlc });
+    this.dirty.delete(key);
+    return true;
+  }
+
   private async persist(): Promise<void> {
     await this.opts.persist?.(this.snapshot());
   }
@@ -281,6 +347,10 @@ function toEnvelope(table: TableId, value: unknown, stamp: Stamp): Envelope {
       return value === undefined
         ? { kind: "register", hlc: stamp.hlc, value: null, deleted: true }
         : { kind: "register", hlc: stamp.hlc, value, deleted: false };
+    case "event":
+      return value === undefined
+        ? { kind: "event", hlc: stamp.hlc, value: null, deleted: true }
+        : { kind: "event", hlc: stamp.hlc, value, deleted: false };
     case "set":
       return value === undefined
         ? { kind: "set", hlc: stamp.hlc, present: false }
@@ -304,6 +374,7 @@ function toEnvelope(table: TableId, value: unknown, stamp: Stamp): Envelope {
 function fromEnvelope(env: Envelope): unknown {
   switch (env.kind) {
     case "register":
+    case "event":
       return env.deleted ? undefined : env.value;
     case "set":
       return env.present ? (env.meta ?? {}) : undefined;

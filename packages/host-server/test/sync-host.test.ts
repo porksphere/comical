@@ -3,7 +3,7 @@
  * lands in it and its own writes reach the phone.
  */
 import { join } from "node:path";
-import { rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, test } from "bun:test";
 import { entryKey, InMemoryLibraryStore, Library, type LibraryStore } from "@comical/library";
 import {
@@ -97,6 +97,31 @@ describe("createSyncHost", () => {
     const p = phone(host.backend);
     await p.engine.sync();
     expect((await p.library.getCollections()).map((x) => x.name)).toEqual(["Already here"]);
+  });
+
+  test("a hub from before a table synced adopts what that table already holds, once", async () => {
+    const inner = new InMemoryLibraryStore();
+    const opts = hostOptions(inner);
+    const first = createSyncHost(opts);
+    await new Library(first.store).collectSeries({ bridgeId: "b", seriesId: "s" }, { seriesTitle: "S" });
+    await first.flush();
+    first.stop();
+
+    // As an older build left things: a feed sync never recorded, and a state that lists no tables.
+    await inner.putActivity({ bridgeId: "b", seriesId: "s", chapterId: "c1", title: "S", detectedAt: 5 });
+    await inner.putCollections([{ id: "unrecorded", name: "Not sync's to send", order: 0 }]);
+    const statePath = join(DIR, "state.json");
+    const { adopted: _, ...old } = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    await writeFile(statePath, JSON.stringify(old));
+
+    const second = createSyncHost(opts);
+    await second.ready;
+    expect(second.engine.unadopted()).toEqual([]);
+    const p = phone(second.backend);
+    await p.engine.sync();
+    expect((await p.inner.listActivity()).map((a) => a.chapterId)).toEqual(["c1"]);
+    // Only the new table: a record of an old one that sync never saw is not swept up with it.
+    expect(await p.library.getCollections()).toEqual([]);
   });
 
   test("a restart carries on as the same device from its saved state", async () => {

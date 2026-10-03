@@ -81,10 +81,19 @@ export interface LibraryStore {
   // ── Activity feed (newly-detected chapters) ────────────────────────────────
   /** Every recorded activity event; keyed internally by `bridgeId:seriesId:chapterId`. */
   listActivity(): Promise<ActivityItem[]>;
-  /** Upsert one event (dedup on its composite key). */
-  putActivity(item: ActivityItem): Promise<void>;
+  /**
+   * Record one event, unless one with its composite key is already there: an event is recorded
+   * once, by whoever saw it first. Resolves whether this call recorded it — a store that syncs also
+   * declines one the user has already removed from the feed on another device.
+   */
+  putActivity(item: ActivityItem): Promise<boolean>;
   /** Drop all activity for a series (called when an entry is removed). */
   deleteActivityForEntry(key: string): Promise<void>;
   /** Drop the entire feed. */
   clearActivity(): Promise<void>;
+  /**
+   * Drop events by composite key WITHOUT it being the user removing them — the feed's cap. A store
+   * that syncs keeps this to itself: each device bounds its own feed.
+   */
+  dropActivity(keys: string[]): Promise<void>;
 }

@@ -237,6 +237,174 @@ describe("library sync", () => {
     expect(a.engine.hasUnsent()).toBe(false);
   });
 
+  describe("activity", () => {
+    const chapter = (n: number) => ({ id: `ch${n}`, name: `Chapter ${n}`, number: n });
+    const chapters = (n: number) => Array.from({ length: n }, (_, i) => chapter(i + 1));
+    const feed = async (d: ReturnType<typeof device>) => (await d.library.getActivity()).map((x) => x.chapterId);
+
+    /** Both devices hold the series, each with its own one-chapter baseline. */
+    async function paired() {
+      const hub = new MemoryBackend();
+      const a = device(hub, "a");
+      const b = device(hub, "b");
+      await collect(a.library);
+      await a.engine.sync();
+      await b.engine.sync();
+      for (const d of [a, b]) await d.library.syncChapters(KEY, chapters(1));
+      return { hub, a, b };
+    }
+
+    test("a new chapter one device noticed is in the other's feed, as it was first recorded", async () => {
+      const { a, b } = await paired();
+      const noticed = await a.library.syncChapters(KEY, chapters(2));
+      expect(noticed.fresh.map((x) => x.id)).toEqual(["ch2"]);
+      const recorded = (await a.inner.listActivity())[0];
+      await a.engine.sync();
+      await b.engine.sync();
+      expect(await b.inner.listActivity()).toEqual([recorded!]);
+
+      // b's own check finds the chapter new against its baseline, and has nothing to announce.
+      const again = await b.library.syncChapters(KEY, chapters(2));
+      expect(again.added.map((x) => x.id)).toEqual(["ch2"]);
+      expect(again.fresh).toEqual([]);
+      expect(await b.inner.listActivity()).toEqual([recorded!]);
+      expect(b.engine.hasUnsent()).toBe(false);
+    });
+
+    test("two devices noticing the same chapter settle on the first record of it", async () => {
+      const { a, b } = await paired();
+      await a.library.syncChapters(KEY, chapters(2));
+      await b.library.syncChapters(KEY, chapters(2));
+      const first = (await a.inner.listActivity())[0]!;
+      expect((await b.inner.listActivity())[0]!.detectedAt).toBeGreaterThan(first.detectedAt);
+      await b.engine.sync();
+      await a.engine.sync();
+      await b.engine.sync();
+      for (const d of [a, b]) expect(await d.inner.listActivity()).toEqual([first]);
+    });
+
+    test("a row swiped away on one device goes from the other, and its check there stays quiet", async () => {
+      const { a, b } = await paired();
+      await a.library.syncChapters(KEY, chapters(2));
+      await a.engine.sync();
+      await b.engine.sync();
+      await a.library.clearActivityForEntry("bridge-a", "s1");
+      await a.engine.sync();
+      await b.engine.sync();
+      expect(await feed(b)).toEqual([]);
+
+      expect((await b.library.syncChapters(KEY, chapters(2))).fresh).toEqual([]);
+      expect(await feed(b)).toEqual([]);
+    });
+
+    test("a chapter dismissed elsewhere before this device ever noticed it is never announced here", async () => {
+      const { a, b } = await paired();
+      await a.library.syncChapters(KEY, chapters(2));
+      await a.library.clearActivity();
+      await a.engine.sync();
+      await b.engine.sync();
+      expect((await b.library.syncChapters(KEY, chapters(2))).fresh).toEqual([]);
+      expect(await feed(b)).toEqual([]);
+    });
+
+    test("clearing the feed clears it everywhere, and leaves later chapters alone", async () => {
+      const { a, b } = await paired();
+      await a.library.syncChapters(KEY, chapters(3));
+      await a.engine.sync();
+      await b.engine.sync();
+      expect((await feed(b)).sort()).toEqual(["ch2", "ch3"]);
+
+      await b.library.clearActivity();
+      await a.library.syncChapters(KEY, chapters(4));
+      await b.engine.sync();
+      await a.engine.sync();
+      await b.engine.sync();
+      for (const d of [a, b]) expect(await feed(d)).toEqual(["ch4"]);
+    });
+
+    test("the cap is each device's own: pruning sends nothing and nothing undoes it", async () => {
+      const { a, b } = await paired();
+      await a.library.syncChapters(KEY, chapters(2));
+      await a.library.syncChapters(KEY, chapters(3));
+      await a.engine.sync();
+      await b.engine.sync();
+
+      expect(await a.library.pruneActivity(1)).toBe(1);
+      expect(a.engine.hasUnsent()).toBe(false);
+      await a.engine.sync();
+      await b.engine.sync();
+      await a.engine.sync();
+      expect(await feed(a)).toEqual(["ch3"]);
+      expect(await feed(b)).toEqual(["ch3", "ch2"]);
+      // Nor does a's own check put the pruned row back.
+      expect((await a.library.syncChapters(KEY, chapters(3))).fresh).toEqual([]);
+      expect(await feed(a)).toEqual(["ch3"]);
+    });
+
+    test("removing a series takes its feed rows with it on every device", async () => {
+      const { a, b } = await paired();
+      await a.library.syncChapters(KEY, chapters(2));
+      await a.engine.sync();
+      await b.engine.sync();
+      await b.library.removeSeries(KEY);
+      await b.engine.sync();
+      await a.engine.sync();
+      for (const d of [a, b]) expect(await d.inner.listActivity()).toEqual([]);
+    });
+
+    test("feeds from before pairing are joined, less what either side had dismissed", async () => {
+      const { hub, a } = await paired();
+      await a.library.syncChapters(KEY, chapters(3));
+      await a.library.clearActivityForEntry("bridge-a", "s1");
+      await a.library.syncChapters(KEY, chapters(4));
+      await a.engine.sync();
+
+      // c held the series and a feed of its own before sync was ever on.
+      const inner = new InMemoryLibraryStore();
+      const solo = new Library(inner, { now });
+      await solo.collectSeries({ bridgeId: "bridge-a", seriesId: "s1" }, { seriesTitle: "One" });
+      await solo.syncChapters(KEY, chapters(1));
+      await solo.syncChapters(KEY, [...chapters(3), chapter(5)]);
+      const c = device(hub, "c", inner);
+      await c.engine.sync();
+      await adoptLibrary(inner, c.engine);
+      await c.engine.sync();
+      await a.engine.sync();
+
+      for (const d of [a, c]) expect((await feed(d)).sort()).toEqual(["ch4", "ch5"]);
+    });
+
+    test("a device already syncing adopts the feed it had when the table began to sync", async () => {
+      const { a, b } = await paired();
+      await a.inner.putActivity({ bridgeId: "bridge-a", seriesId: "s1", chapterId: "ch2", title: "One", detectedAt: 5 });
+      await a.engine.sync();
+      expect(a.engine.hasUnsent()).toBe(false);
+
+      await adoptLibrary(a.inner, a.engine, ["activity"]);
+      await a.engine.sync();
+      await b.engine.sync();
+      expect(await feed(b)).toEqual(["ch2"]);
+    });
+
+    test("a row for a series this library doesn't hold, or one that doesn't validate, is dropped", async () => {
+      const inner = new InMemoryLibraryStore();
+      const store = librarySyncStore(inner);
+      const row = { bridgeId: "bridge-a", seriesId: "s1", chapterId: "ch2", title: "One", detectedAt: 5 };
+      await store.write("activity", "bridge-a:s1:ch2", row);
+      expect(await inner.listActivity()).toEqual([]);
+
+      await new Library(inner, { now }).collectSeries({ bridgeId: "bridge-a", seriesId: "s1" }, { seriesTitle: "One" });
+      await store.write("activity", "bridge-a:s1:ch2", { ...row, detectedAt: "then" });
+      await store.write("activity", "bridge-a:s1:other", row);
+      expect(await inner.listActivity()).toEqual([]);
+
+      await store.write("activity", "bridge-a:s1:ch2", row);
+      expect(await store.read("activity", "bridge-a:s1:ch2")).toEqual(row);
+      await store.write("activity", "bridge-a:s1:ch2", undefined);
+      expect(await inner.listActivity()).toEqual([]);
+    });
+  });
+
   test("a remote record that doesn't validate is dropped, not applied", async () => {
     const inner = new InMemoryLibraryStore();
     const store = librarySyncStore(inner);

@@ -15,8 +15,16 @@
  *
  * Applying keeps the local side of each split and validates the remote side, dropping a record that
  * doesn't parse rather than wedging sync on it.
+ *
+ * The activity feed is the one table of things a device NOTICED rather than things the user did.
+ * Every device notices a new chapter for itself, against its own baseline, so its rows are events
+ * (see `crdt.ts`): whoever saw the chapter first wrote the row, and removing it from the feed
+ * removes it everywhere for good — a device whose own check finds that chapter later is told so by
+ * `putActivity`, and stays quiet about it.
  */
 import {
+  activityItemSchema,
+  activityKey,
   bridgePrefsSchema,
   chapterProgressSchema,
   collectionItemId,
@@ -26,6 +34,7 @@ import {
   parseEntryKey,
   seriesGroupSchema,
   trackerLinkSchema,
+  type ActivityItem,
   type ChapterProgress,
   type CollectionItem,
   type CollectionSeriesItem,
@@ -46,6 +55,7 @@ export const LIBRARY_TABLES = [
   "progress",
   "readingLog",
   "trackerLinks",
+  "activity",
 ] as const satisfies readonly TableId[];
 
 const SERIES_LOCAL = ["knownChapters", "chaptersSyncedAt", "revision", "updatedAt"] as const;
@@ -77,6 +87,8 @@ function pick<T extends object>(obj: T, keys: readonly string[]): Record<string,
   for (const [k, v] of Object.entries(obj)) if (keys.includes(k) && v !== undefined) out[k] = v;
   return out;
 }
+
+const activityId = (a: ActivityItem): string => activityKey(a.bridgeId, a.seriesId, a.chapterId);
 
 const seriesItemIdOf = (key: string): string => collectionItemId({ type: "series", ...parseEntryKey(key) });
 
@@ -134,6 +146,8 @@ export function librarySyncStore(store: LibraryStore, now: () => number = Date.n
         return (await store.listGroups()).find((g) => g.id === id);
       case "bridgePrefs":
         return store.getBridgePrefs(id);
+      case "activity":
+        return (await store.listActivity()).find((a) => activityId(a) === id);
       default:
         return undefined;
     }
@@ -223,6 +237,20 @@ export function librarySyncStore(store: LibraryStore, now: () => number = Date.n
         if (parsed.success && parsed.data.bridgeId === id) await store.setBridgePrefs(id, parsed.data);
         return;
       }
+      case "activity": {
+        if (value === undefined) {
+          await store.dropActivity([id]);
+          return;
+        }
+        const parsed = activityItemSchema.safeParse(value);
+        if (!parsed.success || activityId(parsed.data) !== id) return;
+        // A row for a series this library doesn't hold has nothing to open: it was removed here
+        // while another device was still checking it.
+        if (!(await seriesItem(entryKey(parsed.data.bridgeId, parsed.data.seriesId)))) return;
+        await store.dropActivity([id]);
+        await store.putActivity(parsed.data);
+        return;
+      }
       default:
         return;
     }
@@ -259,6 +287,16 @@ export function wrapLibraryStore(inner: LibraryStore, engine: SyncEngine): Libra
         engine.touch(table, id, { rewind });
       }
       return result;
+    });
+  }
+
+  // What a removal took is the store's to say: the difference in what it lists.
+  function removingActivity(remove: () => Promise<void>): Promise<void> {
+    return engine.exclusive(async () => {
+      const before = (await inner.listActivity()).map(activityId);
+      await remove();
+      const left = new Set((await inner.listActivity()).map(activityId));
+      for (const id of before) if (!left.has(id)) engine.touch("activity", id);
     });
   }
 
@@ -328,34 +366,58 @@ export function wrapLibraryStore(inner: LibraryStore, engine: SyncEngine): Libra
     setBridgePrefs: (bridgeId, prefs) => recorded([["bridgePrefs", bridgeId]], () => inner.setBridgePrefs(bridgeId, prefs)),
 
     listActivity: () => inner.listActivity(),
-    putActivity: (item) => inner.putActivity(item),
-    deleteActivityForEntry: (key) => inner.deleteActivityForEntry(key),
-    clearActivity: () => inner.clearActivity(),
+    putActivity: (item) =>
+      engine.exclusive(async () => {
+        const id = activityId(item);
+        // Sync has met this event: it is in the feed already, or was removed from it — on any device.
+        if (engine.knows("activity", id)) return false;
+        const put = await inner.putActivity(item);
+        if (put) engine.touch("activity", id);
+        return put;
+      }),
+    deleteActivityForEntry: (key) => removingActivity(() => inner.deleteActivityForEntry(key)),
+    clearActivity: () => removingActivity(() => inner.clearActivity()),
+    dropActivity: (keys) => inner.dropActivity(keys),
   };
 }
 
 /**
  * Record everything already in the store that sync hasn't seen. Run it AFTER the first pull from a
  * backend, so records the other devices already hold keep their version (see `SyncEngine.adopt`).
+ * `tables` narrows it to the ones named: `SyncEngine.unadopted()`, for a device that was already
+ * syncing when a table started to.
  */
-export async function adoptLibrary(store: LibraryStore, engine: SyncEngine): Promise<void> {
+export async function adoptLibrary(
+  store: LibraryStore,
+  engine: SyncEngine,
+  tables: readonly TableId[] = LIBRARY_TABLES,
+): Promise<void> {
+  const want = (...t: TableId[]): boolean => t.some((x) => tables.includes(x));
   await engine.exclusive(async () => {
-    for (const c of await store.listCollections()) engine.adopt("collections", c.id);
-    for (const g of await store.listGroups()) engine.adopt("groups", g.id);
+    if (want("collections")) for (const c of await store.listCollections()) engine.adopt("collections", c.id);
+    if (want("groups")) for (const g of await store.listGroups()) engine.adopt("groups", g.id);
 
-    for (const item of await store.listCollectionItems()) {
-      engine.adopt("collectionItems", item.id);
-      if (item.type !== "series") continue;
-      const key = entryKey(item.bridgeId, item.seriesId);
-      if (item.lastReadAt !== undefined) engine.adopt("seriesResume", key);
-      for (const l of await store.listTrackerLinks(key)) engine.adopt("trackerLinks", compositeId.trackerLink(key, l.trackerId));
+    if (want("collectionItems", "seriesResume", "trackerLinks")) {
+      for (const item of await store.listCollectionItems()) {
+        if (want("collectionItems")) engine.adopt("collectionItems", item.id);
+        if (item.type !== "series") continue;
+        const key = entryKey(item.bridgeId, item.seriesId);
+        if (want("seriesResume") && item.lastReadAt !== undefined) engine.adopt("seriesResume", key);
+        if (!want("trackerLinks")) continue;
+        for (const l of await store.listTrackerLinks(key)) engine.adopt("trackerLinks", compositeId.trackerLink(key, l.trackerId));
+      }
     }
-    for (const h of await store.listReadingLog()) engine.adopt("readingLog", entryKey(h.bridgeId, h.seriesId));
+    if (want("readingLog")) {
+      for (const h of await store.listReadingLog()) engine.adopt("readingLog", entryKey(h.bridgeId, h.seriesId));
+    }
     // From the store's own list, not from the items above: an uncollected series keeps its read
     // state, and so does a bridge its preferences, with no item or history row to find it by.
-    for (const key of await store.listProgressKeys()) {
-      for (const p of await store.listProgress(key)) engine.adopt("progress", compositeId.progress(key, p.chapterId));
+    if (want("progress")) {
+      for (const key of await store.listProgressKeys()) {
+        for (const p of await store.listProgress(key)) engine.adopt("progress", compositeId.progress(key, p.chapterId));
+      }
     }
-    for (const p of await store.listBridgePrefs()) engine.adopt("bridgePrefs", p.bridgeId);
+    if (want("bridgePrefs")) for (const p of await store.listBridgePrefs()) engine.adopt("bridgePrefs", p.bridgeId);
+    if (want("activity")) for (const a of await store.listActivity()) engine.adopt("activity", activityId(a));
   });
 }

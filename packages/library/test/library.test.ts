@@ -591,6 +591,35 @@ describe("activity feed", () => {
     expect(await lib.unreadActivityCount()).toBe(1);
   });
 
+  test("fresh is what a sync put in the feed, and a chapter enters the feed once", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    const first = await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+    expect(first.fresh.map((c) => c.id)).toEqual(["c2"]);
+    const recorded = await store.listActivity();
+
+    // The source drops the chapter and lists it again: new against the baseline, old to the feed.
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    const again = await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+    expect(again.added.map((c) => c.id)).toEqual(["c2"]);
+    expect(again.fresh).toEqual([]);
+    expect(await store.listActivity()).toEqual(recorded);
+  });
+
+  test("the store records an event once, and drops the ones named", async () => {
+    const store = new InMemoryLibraryStore();
+    const item = { bridgeId: "demo", seriesId: "s1", chapterId: "c1", title: "Series One", detectedAt: 1 };
+    expect(await store.putActivity(item)).toBe(true);
+    expect(await store.putActivity({ ...item, detectedAt: 2 })).toBe(false);
+    expect(await store.putActivity({ ...item, chapterId: "c2" })).toBe(true);
+    expect((await store.listActivity()).map((a) => a.detectedAt)).toEqual([1, 1]);
+
+    await store.dropActivity(["demo:s1:c1", "demo:s1:never"]);
+    expect((await store.listActivity()).map((a) => a.chapterId)).toEqual(["c2"]);
+  });
+
   test("pruneActivity caps the feed at the newest N", async () => {
     const lib = makeLibrary();
     await lib.collectSeries(COORD, SNAP);

@@ -50,7 +50,14 @@ const progressSchema = z.object({
   languageCode: z.string().optional(),
 });
 
-export const envelopeSchema = z.discriminatedUnion("kind", [registerSchema, setSchema, progressSchema]);
+const eventSchema = z.object({
+  kind: z.literal("event"),
+  hlc: hlcSchema,
+  value: z.unknown(),
+  deleted: z.boolean(),
+});
+
+export const envelopeSchema = z.discriminatedUnion("kind", [registerSchema, setSchema, progressSchema, eventSchema]);
 
 export const syncRecordSchema = z.object({
   table: z.string().refine(isTableId, "unknown sync table"),
