@@ -3,7 +3,7 @@
  * per-device files. The engine never knows which.
  */
 import { ChangeLog } from "./log.ts";
-import type { PullResult, Segment, VersionVector } from "./wire.ts";
+import type { PullRequest, PullResult, Segment } from "./wire.ts";
 
 export interface SyncBackend {
   /**
@@ -12,7 +12,7 @@ export interface SyncBackend {
    */
   push(segment: Segment): Promise<void>;
   /** Other devices' segments past `have`; `more` means call again with the advanced vector. */
-  pull(have: VersionVector, limit?: number): Promise<PullResult>;
+  pull(request: PullRequest): Promise<PullResult>;
 }
 
 export class MemoryBackend implements SyncBackend {
@@ -22,7 +22,7 @@ export class MemoryBackend implements SyncBackend {
     this.log.append(structuredClone(segment));
   }
 
-  async pull(have: VersionVector, limit?: number): Promise<PullResult> {
+  async pull({ have, limit }: PullRequest): Promise<PullResult> {
     return structuredClone(this.log.pull(have, limit));
   }
 }

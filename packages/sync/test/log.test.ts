@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ChangeLog, parseSegment, parseVersionVector, SeqConflictError, SeqGapError, type Segment } from "../src/index.ts";
+import { ChangeLog, parsePullRequest, parseSegment, parseVersionVector, SeqConflictError, SeqGapError, type Segment } from "../src/index.ts";
 
 const HLC = "001700000000000:000000:a";
 const seg = (device: string, seq: number, n = 1, value: unknown = seq): Segment => ({
@@ -63,5 +63,17 @@ describe("wire validation", () => {
   test("version vectors", () => {
     expect(parseVersionVector({ a: 3 })).toEqual({ ok: true, value: { a: 3 } });
     expect(parseVersionVector({ a: -1 }).ok).toBe(false);
+  });
+
+  test("a pull says who is asking, by a safe id and a readable name", () => {
+    expect(parsePullRequest({ device: "app-1", name: "  A phone ", have: { a: 3 }, limit: 10 })).toEqual({
+      ok: true,
+      value: { device: "app-1", name: "A phone", have: { a: 3 }, limit: 10 },
+    });
+    expect(parsePullRequest({ have: {} }).ok).toBe(false);
+    expect(parsePullRequest({ device: "app-1", have: {} }).ok).toBe(false);
+    expect(parsePullRequest({ device: "app-1", name: "   ", have: {} }).ok).toBe(false);
+    expect(parsePullRequest({ device: "app-1", name: "x".repeat(65), have: {} }).ok).toBe(false);
+    expect(parsePullRequest({ device: "../x", name: "A phone", have: {} }).ok).toBe(false);
   });
 });

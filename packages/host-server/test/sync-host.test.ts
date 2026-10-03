@@ -49,7 +49,7 @@ function hostOptions(store: LibraryStore = new InMemoryLibraryStore()): SyncHost
   return { dir: DIR, store, registry, lists: registry, log: quiet };
 }
 
-function phone(backend: ReturnType<typeof createSyncHost>["backend"]) {
+function phone(backend: ReturnType<typeof createSyncHost>["backend"], id = "phone", name = "A phone") {
   const inner = new InMemoryLibraryStore();
   const registry = fakeRegistry();
   const engine = new SyncEngine({
@@ -58,8 +58,9 @@ function phone(backend: ReturnType<typeof createSyncHost>["backend"]) {
       [REGISTRY_TABLES, registrySyncStore(registry, { log: quiet })],
     ]),
     backend,
-    device: "phone",
-    newDeviceId: () => "phone-2",
+    device: id,
+    name,
+    newDeviceId: () => `${id}-2`,
   });
   return {
     inner,
@@ -190,6 +191,38 @@ describe("createSyncHost", () => {
     await p.engine.sync();
     await host.flush();
     expect(applied).toBe(1);
+  });
+
+  test("devices() lists who has synced, most recent first, and survives a restart", async () => {
+    let now = 1_000;
+    const seen: string[][] = [];
+    const opts = { ...hostOptions(), now: () => now, onDevices: (d: { name: string }[]) => seen.push(d.map((x) => x.name)) };
+    const host = createSyncHost(opts);
+    await host.ready;
+    expect(host.devices()).toEqual([]);
+
+    await phone(host.backend, "phone-a", "Phone A").engine.sync();
+    now = 2_000;
+    await phone(host.backend, "phone-b", "Phone B").engine.sync();
+    expect(host.devices()).toEqual([
+      { id: "phone-b", name: "Phone B", firstSeenAt: 2_000, lastSeenAt: 2_000 },
+      { id: "phone-a", name: "Phone A", firstSeenAt: 1_000, lastSeenAt: 1_000 },
+    ]);
+
+    // Back again, renamed: the same device, kept from when it was first seen.
+    now = 3_000;
+    await phone(host.backend, "phone-a", "Phone A, renamed").engine.sync();
+    expect(host.devices()).toEqual([
+      { id: "phone-a", name: "Phone A, renamed", firstSeenAt: 1_000, lastSeenAt: 3_000 },
+      { id: "phone-b", name: "Phone B", firstSeenAt: 2_000, lastSeenAt: 2_000 },
+    ]);
+    expect(seen).toEqual([["Phone A"], ["Phone B", "Phone A"], ["Phone A, renamed", "Phone B"]]);
+    // The server's own engine syncs through the same hub and is not a device of it.
+    expect(host.devices().map((d) => d.id)).not.toContain(host.engine.deviceId);
+
+    const restarted = createSyncHost(opts);
+    await restarted.ready;
+    expect(restarted.devices()).toEqual(host.devices());
   });
 
   test("stop drops the pending round and a later push schedules none, but the change survives for the next run", async () => {

@@ -31,7 +31,7 @@ export function createSyncRoutes(hub: SyncBackend): Hono {
   app.post("/pull", async (c) => {
     const parsed = parsePullRequest(await c.req.json().catch(() => undefined));
     if (!parsed.ok) return c.json({ error: parsed.error }, 400);
-    return c.json(await hub.pull(parsed.value.have, parsed.value.limit));
+    return c.json(await hub.pull(parsed.value));
   });
 
   return app;

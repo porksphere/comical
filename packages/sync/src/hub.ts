@@ -4,7 +4,7 @@
  */
 import type { SyncBackend } from "./backend.ts";
 import { ChangeLog, SeqGapError } from "./log.ts";
-import { MAX_PULL_LIMIT, type PullResult, type Segment, type VersionVector } from "./wire.ts";
+import { MAX_PULL_LIMIT, type PullRequest, type PullResult, type Segment, type VersionVector } from "./wire.ts";
 
 /** Where a hub keeps its segments. Append-only: a held segment is never rewritten. */
 export interface SegmentStore {
@@ -61,7 +61,7 @@ export class SyncHub implements SyncBackend {
     return run;
   }
 
-  async pull(have: VersionVector, limit = MAX_PULL_LIMIT): Promise<PullResult> {
+  async pull({ have, limit = MAX_PULL_LIMIT }: PullRequest): Promise<PullResult> {
     return structuredClone(this.log.pull(have, Math.min(limit, MAX_PULL_LIMIT)));
   }
 }

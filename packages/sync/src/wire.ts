@@ -92,7 +92,14 @@ export const SYNC_PULL_PATH = "/sync/pull";
 /** A hub answers at most this many records per pull, whatever a client asks for. */
 export const MAX_PULL_LIMIT = 10_000;
 
-export type PullRequest = { have: VersionVector; limit?: number };
+/** What a device calls itself to the people looking at the hub ("Tristan's iPhone"). */
+export const deviceNameSchema = z.string().trim().min(1).max(64);
+
+/**
+ * Every round opens with a pull, so the pull is where a device says who it is: a hub keeps the
+ * roster of who has been by from these alone, with nothing extra on the wire.
+ */
+export type PullRequest = { device: string; name: string; have: VersionVector; limit?: number };
 
 /**
  * A refused push, as a hub reports it (409). `conflict` is a seq reused for different content, which
@@ -101,6 +108,8 @@ export type PullRequest = { have: VersionVector; limit?: number };
 export type PushRefusal = { error: "seq-conflict" | "seq-gap"; device: string; seq: number; head: number };
 
 export const pullRequestSchema = z.object({
+  device: deviceIdSchema,
+  name: deviceNameSchema,
   have: versionVectorSchema,
   limit: z.number().int().positive().max(MAX_PULL_LIMIT).optional(),
 });

@@ -29,6 +29,7 @@ export {
 } from "./tables.ts";
 export {
   deviceIdSchema,
+  deviceNameSchema,
   envelopeSchema,
   hlcSchema,
   MAX_PULL_LIMIT,

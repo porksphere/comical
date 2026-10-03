@@ -4,11 +4,11 @@ import {
   recordKey,
   SyncEngine,
   type ProgressValue,
+  type PullRequest,
   type SyncBackend,
   type SyncStateSnapshot,
   type SyncStore,
   type TableId,
-  type VersionVector,
 } from "../src/index.ts";
 
 class MemoryStore implements SyncStore {
@@ -33,6 +33,7 @@ function device(backend: SyncBackend, name: string, opts: { state?: SyncStateSna
     store,
     backend,
     device: name,
+    name: `${name}'s phone`,
     ...(opts.state && { state: opts.state }),
     newDeviceId: () => `${name}-${++ids}`,
     persist: async (s) => {
@@ -185,6 +186,7 @@ describe("SyncEngine", () => {
       store: a.store,
       backend: hub,
       state: a.engine.snapshot(),
+      name: "a",
       newDeviceId: () => "x",
       segmentSize: 10,
     });
@@ -192,7 +194,7 @@ describe("SyncEngine", () => {
     expect(hub.log.all().map((s) => s.records.length)).toEqual([10, 10, 5]);
 
     const b = device(hub, "b");
-    const paged = new SyncEngine({ store: b.store, backend: hub, device: "b", newDeviceId: () => "y", pullLimit: 10 });
+    const paged = new SyncEngine({ store: b.store, backend: hub, device: "b", name: "b", newDeviceId: () => "y", pullLimit: 10 });
     expect(await paged.sync()).toMatchObject({ pulled: 25, applied: 25 });
     expect(paged.snapshot().vector).toEqual({ a: 3 });
   });
@@ -205,7 +207,7 @@ describe("SyncEngine", () => {
         await hub.push(seg);
         if (dropAck) throw new Error("connection reset");
       },
-      pull: (have, limit) => hub.pull(have, limit),
+      pull: (r) => hub.pull(r),
     };
     const a = device(flaky, "a");
     await a.put("groups", "g", 1);
@@ -263,13 +265,13 @@ describe("SyncEngine", () => {
     const gate = new Promise<void>((r) => (release = r));
     const slowPull: SyncBackend = {
       push: (s) => hub.push(s),
-      async pull(have: VersionVector, limit?: number) {
-        const r = await hub.pull(have, limit);
+      async pull(request: PullRequest) {
+        const r = await hub.pull(request);
         await gate;
         return r;
       },
     };
-    const slow = new SyncEngine({ store: b.store, backend: slowPull, device: "b", newDeviceId: () => "z" });
+    const slow = new SyncEngine({ store: b.store, backend: slowPull, device: "b", name: "b", newDeviceId: () => "z" });
     const round = slow.sync();
     const local = slow.exclusive(async () => {
       await b.store.write("groups", "g", "from b");
@@ -341,17 +343,17 @@ describe("SyncEngine", () => {
     let pulls = 0;
     const dropping: SyncBackend = {
       push: (s) => hub.push(s),
-      async pull(have: VersionVector) {
+      async pull(request: PullRequest) {
         if (pulls++ === 1) throw new Error("offline");
-        return hub.pull(have, 1);
+        return hub.pull({ ...request, limit: 1 });
       },
     };
-    const first = new SyncEngine({ store, backend: dropping, device: "b", newDeviceId: () => "z", persist });
+    const first = new SyncEngine({ store, backend: dropping, device: "b", name: "b", newDeviceId: () => "z", persist });
     await expect(first.sync()).rejects.toThrow("offline");
     expect(saved?.held).toEqual([recordKey("collections", "c1")]);
 
     // The app restarts: a new engine over the saved state.
-    const resumed = new SyncEngine({ store, backend: hub, state: saved!, newDeviceId: () => "z", persist });
+    const resumed = new SyncEngine({ store, backend: hub, state: saved!, name: "b", newDeviceId: () => "z", persist });
     await resumed.sync();
     expect(await store.read("collections", "c1")).toEqual({ id: "c1", name: "From a" });
     expect(saved?.held).toBeUndefined();
@@ -361,7 +363,7 @@ describe("SyncEngine", () => {
   });
 
   test("a device id is required on first run", () => {
-    expect(() => new SyncEngine({ store: new MemoryStore(), backend: new MemoryBackend(), newDeviceId: () => "x" })).toThrow(
+    expect(() => new SyncEngine({ store: new MemoryStore(), backend: new MemoryBackend(), name: "x", newDeviceId: () => "x" })).toThrow(
       /device id/,
     );
   });

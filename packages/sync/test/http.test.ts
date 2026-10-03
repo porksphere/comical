@@ -6,9 +6,11 @@ import {
   SeqGapError,
   SyncHub,
   SyncSealError,
+  type PullRequest,
   type Segment,
 } from "../src/index.ts";
 
+const pull = (have: Record<string, number> = {}): PullRequest => ({ device: "phone", name: "A phone", have });
 const SECRET = "abcdefghjkmn";
 const HLC = "001700000000000:000000:a";
 const seg = (device: string, seq: number): Segment => ({
@@ -38,7 +40,7 @@ async function sealedHub(secret: string): Promise<{ fetch: (url: string, init: I
           await hub.push(JSON.parse(request.body) as Segment);
           status = 204;
         } else {
-          body = JSON.stringify(await hub.pull((JSON.parse(request.body) as { have: Record<string, number> }).have));
+          body = JSON.stringify(await hub.pull(JSON.parse(request.body) as PullRequest));
         }
       } catch (err) {
         if (!(err instanceof SeqGapError)) throw err;
@@ -55,7 +57,7 @@ describe("HttpBackend over the sealed channel", () => {
     const hub = await sealedHub(SECRET);
     const backend = new HttpBackend({ baseUrl: "http://hub.test/", fetch: hub.fetch, secret: SECRET });
     await backend.push(seg("phone", 1));
-    const pulled = await backend.pull({});
+    const pulled = await backend.pull(pull());
     expect(pulled.segments.map((s) => `${s.device}${s.seq}`)).toEqual(["phone1"]);
     for (const body of hub.seen) {
       expect(body).not.toContain("phone");
@@ -80,7 +82,7 @@ describe("HttpBackend over the sealed channel", () => {
     ];
     for (const fetch of strangers) {
       const backend = new HttpBackend({ baseUrl: "http://hub.test", fetch, secret: SECRET });
-      await expect(backend.pull({})).rejects.toBeInstanceOf(SyncSealError);
+      await expect(backend.pull(pull())).rejects.toBeInstanceOf(SyncSealError);
       await expect(backend.push(seg("phone", 1))).rejects.toBeInstanceOf(SyncSealError);
     }
   });
@@ -94,10 +96,10 @@ describe("HttpBackend over the sealed channel", () => {
           await hub.push(JSON.parse(init.body) as Segment);
           return new Response(null, { status: 204 });
         }
-        return Response.json(await hub.pull({}));
+        return Response.json(await hub.pull(pull()));
       },
     });
     await backend.push(seg("web", 1));
-    expect((await backend.pull({})).segments).toHaveLength(1);
+    expect((await backend.pull(pull())).segments).toHaveLength(1);
   });
 });

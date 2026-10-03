@@ -55,8 +55,8 @@ describe("/sync over HTTP", () => {
   test("a change pushed by one device is pulled by another", async () => {
     const a = new MapStore();
     const b = new MapStore();
-    const ea = new SyncEngine({ store: a, backend: backend(), device: "http-a", newDeviceId: () => "http-a2" });
-    const eb = new SyncEngine({ store: b, backend: backend(), device: "http-b", newDeviceId: () => "http-b2" });
+    const ea = new SyncEngine({ store: a, backend: backend(), device: "http-a", name: "A", newDeviceId: () => "http-a2" });
+    const eb = new SyncEngine({ store: b, backend: backend(), device: "http-b", name: "B", newDeviceId: () => "http-b2" });
     await ea.exclusive(async () => {
       await a.write("collections", "c1", { id: "c1", name: "Faves", order: 0 });
       ea.touch("collections", "c1");
@@ -79,9 +79,11 @@ describe("/sync over HTTP", () => {
         body: JSON.stringify(body),
       });
     expect((await post("/sync/push", { device: "../x", seq: 1, records: [] })).status).toBe(400);
-    expect((await post("/sync/pull", { have: { a: -1 } })).status).toBe(400);
-    expect((await post("/sync/pull", { have: {} }, "wrong")).status).toBe(401);
-    await expect(backend("wrong").pull({})).rejects.toThrow(/401/);
+    expect((await post("/sync/pull", { device: "x", name: "X", have: { a: -1 } })).status).toBe(400);
+    // Who is pulling is not optional: a hub keeps its roster from these.
+    expect((await post("/sync/pull", { have: {} })).status).toBe(400);
+    expect((await post("/sync/pull", { device: "x", name: "X", have: {} }, "wrong")).status).toBe(401);
+    await expect(backend("wrong").pull({ device: "x", name: "X", have: {} })).rejects.toThrow(/401/);
   });
 
   test("no hub, no routes", async () => {

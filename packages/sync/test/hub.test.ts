@@ -17,7 +17,7 @@ describe("SyncHub", () => {
     await hub.push(seg("b", 1));
     const reopened = await SyncHub.open(store);
     expect(reopened.heads()).toEqual({ a: 2, b: 1 });
-    expect((await reopened.pull({ a: 1 })).segments.map((s) => `${s.device}${s.seq}`)).toEqual(["a2", "b1"]);
+    expect((await reopened.pull({ device: "c", name: "c", have: { a: 1 } })).segments.map((s) => `${s.device}${s.seq}`)).toEqual(["a2", "b1"]);
   });
 
   test("a re-push is stored once; a reused seq and a gap are refused", async () => {

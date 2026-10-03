@@ -37,6 +37,8 @@ export type SyncEngineOptions = {
   backend: SyncBackend;
   /** Required on first run; ignored when `state` is given. */
   device?: string;
+  /** What this device calls itself to whoever looks at the hub. Not state: it may be renamed. */
+  name: string;
   state?: SyncStateSnapshot;
   /** A fresh device id, for when this one's numbering can't continue (see `SeqConflictError`). */
   newDeviceId: () => string;
@@ -146,7 +148,12 @@ export class SyncEngine {
   private async round(): Promise<SyncStats> {
     const stats: SyncStats = { pushed: 0, pulled: 0, applied: 0 };
     for (;;) {
-      const { segments, more } = await this.opts.backend.pull({ ...this.vector }, this.opts.pullLimit);
+      const { segments, more } = await this.opts.backend.pull({
+        device: this.device,
+        name: this.opts.name,
+        have: { ...this.vector },
+        ...(this.opts.pullLimit !== undefined && { limit: this.opts.pullLimit }),
+      });
       if (segments.length > 0) {
         stats.applied += await this.exclusive(() => this.applySegments(segments));
         await this.persist();

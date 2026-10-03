@@ -5,6 +5,7 @@
  *
  *   {dir}/segments/{device}.jsonl   → the hub's log (`FileSegmentStore`)
  *   {dir}/state.json                → this server's own engine state
+ *   {dir}/devices.json              → who has synced with it, and when last
  *
  * Everything is set up synchronously, since `createServer` is: the hub finishes loading behind a
  * promise every call waits on, and the engine state is read with a blocking read.
@@ -24,14 +25,22 @@ import {
   SyncHub,
   wrapLibraryStore,
   wrapRegistryProvider,
+  type PullRequest,
   type RegistryLists,
   type RegistryMutations,
   type Segment,
   type SyncBackend,
   type SyncStateSnapshot,
-  type VersionVector,
 } from "@comical/sync";
 import { FileSegmentStore } from "./sync-segment-store.ts";
+
+/** A device that has synced with this hub. Each pull it makes brings `name` and `lastSeenAt` up to date. */
+export interface SyncDevice {
+  id: string;
+  name: string;
+  firstSeenAt: number;
+  lastSeenAt: number;
+}
 
 export interface SyncHost<R extends RegistryMutations = RegistryMutations> {
   /** The store to build the server's `Library` over; writes through it are recorded. */
@@ -41,6 +50,8 @@ export interface SyncHost<R extends RegistryMutations = RegistryMutations> {
   /** What `/sync` serves. A push through it also brings this server's own library up to date. */
   backend: SyncBackend;
   engine: SyncEngine;
+  /** Every device that has synced through `backend`, most recent first. This server itself is not one. */
+  devices(): SyncDevice[];
   /** Resolves once this server's library has caught up with the hub. Mostly for tests. */
   ready: Promise<void>;
   /** Sync now, rather than after the usual debounce. */
@@ -70,6 +81,9 @@ export interface SyncHostOptions<R extends RegistryMutations> {
    * records — the moment anything showing them is out of date.
    */
   onApplied?: () => void;
+  /** Called when `devices()` has a new answer: a device first seen, renamed, or back for more. */
+  onDevices?: (devices: SyncDevice[]) => void;
+  now?: () => number;
   log?: Pick<Console, "error">;
 }
 
@@ -80,8 +94,9 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
   const hubReady = SyncHub.open(new FileSegmentStore(join(opts.dir, "segments")));
   const hub: SyncBackend = {
     push: async (s: Segment) => (await hubReady).push(s),
-    pull: async (have: VersionVector, limit?: number) => (await hubReady).pull(have, limit),
+    pull: async (request: PullRequest) => (await hubReady).pull(request),
   };
+  const roster = openRoster(join(opts.dir, "devices.json"), opts.now ?? Date.now, log);
 
   const state = readState(statePath, log);
   const registry = { ...opts.lists, ...bind(opts.registry) };
@@ -92,9 +107,11 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
       [REGISTRY_TABLES, registryStore],
     ]),
     backend: hub,
+    // Only ever said to itself: this engine's pulls go to `hub` directly, past the roster.
+    name: "hub",
     ...(state ? { state } : { device: `hub-${crypto.randomUUID()}` }),
     newDeviceId: () => `hub-${crypto.randomUUID()}`,
-    persist: async (s) => writeState(statePath, s),
+    persist: async (s) => writeJson(statePath, s),
     onTouch: () => schedule(),
   });
 
@@ -134,9 +151,14 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
         await hub.push(s);
         schedule();
       },
-      pull: (have, limit) => hub.pull(have, limit),
+      // Noted before the hub answers: a device that reaches it has synced, whatever it then pulls.
+      pull: (request) => {
+        if (roster.seen(request)) opts.onDevices?.(roster.list());
+        return hub.pull(request);
+      },
     },
     engine,
+    devices: () => roster.list(),
     ready,
     flush: async () => {
       if (timer) clearTimeout(timer);
@@ -177,7 +199,45 @@ function readState(path: string, log: Pick<Console, "error">): SyncStateSnapshot
 }
 
 // Written aside and renamed over, so a crash leaves the old state or the new one, never half of each.
-function writeState(path: string, state: SyncStateSnapshot): void {
-  writeFileSync(`${path}.tmp`, JSON.stringify(state));
+function writeJson(path: string, value: unknown): void {
+  writeFileSync(`${path}.tmp`, JSON.stringify(value));
   renameSync(`${path}.tmp`, path);
+}
+
+type Roster = {
+  /** Note a device's pull. True when the answer to `list()` changed by it. */
+  seen(request: Pick<PullRequest, "device" | "name">): boolean;
+  list(): SyncDevice[];
+};
+
+type RosterFile = Record<string, Omit<SyncDevice, "id">>;
+
+/**
+ * Kept in the file whole on every change — it is a few lines per device, and a device pulls once a
+ * round, not once a record. A roster that can't be read starts empty; the devices are back in it
+ * the next time each syncs.
+ */
+function openRoster(path: string, now: () => number, log: Pick<Console, "error">): Roster {
+  let devices: RosterFile = {};
+  if (existsSync(path)) {
+    try {
+      devices = JSON.parse(readFileSync(path, "utf8")) as RosterFile;
+    } catch (err) {
+      log.error("sync: device roster unreadable, starting empty", err);
+    }
+  }
+  return {
+    seen({ device, name }) {
+      const at = now();
+      const known = devices[device];
+      if (known && known.name === name && known.lastSeenAt === at) return false;
+      devices[device] = { name, firstSeenAt: known?.firstSeenAt ?? at, lastSeenAt: at };
+      writeJson(path, devices);
+      return true;
+    },
+    list: () =>
+      Object.entries(devices)
+        .map(([id, d]) => ({ id, ...d }))
+        .sort((a, b) => b.lastSeenAt - a.lastSeenAt),
+  };
 }

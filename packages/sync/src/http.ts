@@ -17,7 +17,6 @@ import {
   type PullRequest,
   type PullResult,
   type Segment,
-  type VersionVector,
 } from "./wire.ts";
 
 export type HttpBackendOptions = {
@@ -71,8 +70,7 @@ export class HttpBackend implements SyncBackend {
     throw new SyncHttpError(status, `sync: push refused (${status}): ${describe(body)}`);
   }
 
-  async pull(have: VersionVector, limit?: number): Promise<PullResult> {
-    const request: PullRequest = limit === undefined ? { have } : { have, limit };
+  async pull(request: PullRequest): Promise<PullResult> {
     const { status, body } = await this.post(SYNC_PULL_PATH, request);
     if (!ok(status)) throw new SyncHttpError(status, `sync: pull refused (${status}): ${describe(body)}`);
     const parsed = parsePullResult(body);

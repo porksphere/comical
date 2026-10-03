@@ -7,7 +7,7 @@ const now = () => (wall += 10);
 const KEY = entryKey("bridge-a", "s1");
 
 function device(backend: SyncBackend, name: string, inner = new InMemoryLibraryStore()) {
-  const engine = new SyncEngine({ store: librarySyncStore(inner, now), backend, device: name, newDeviceId: () => `${name}-2`, now });
+  const engine = new SyncEngine({ store: librarySyncStore(inner, now), backend, device: name, name, newDeviceId: () => `${name}-2`, now });
   const store = wrapLibraryStore(inner, engine);
   return { inner, engine, store, library: new Library(store, { now }) };
 }
