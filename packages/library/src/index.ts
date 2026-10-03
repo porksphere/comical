@@ -7,4 +7,5 @@ export * from "./models.ts";
 export * from "./match.ts";
 export * from "./store.ts";
 export * from "./memory-store.ts";
+export * from "./backup.ts";
 export * from "./library.ts";

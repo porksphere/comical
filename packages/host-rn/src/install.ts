@@ -30,6 +30,7 @@ import type {
   InstalledStore,
   InstalledTrackerStore,
   LibraryStore,
+  RegistryProvider,
   SavedRegistryStore,
   SettingsStore,
 } from "./types.ts";
@@ -88,6 +89,12 @@ export interface EmbeddedRuntimeConfig {
   networkJson?: string;
   /** Fired after an install/update/uninstall so the embedder can refetch data screens (epoch bump). */
   onRegistryChange?: () => void;
+  /**
+   * Wraps the registry provider the router installs through — what `@comical/sync`'s
+   * `wrapRegistryProvider` does, so an install made from the app's own screens is recorded. The
+   * bridge and tracker providers keep the plain one: they only read.
+   */
+  decorateRegistry?: (registry: RegistryProvider) => RegistryProvider;
   /** Optional sink for the embedded runtime's own diagnostics — currently the best-effort tracker
    *  pushes that happen after a read. Those are fire-and-forget by design, so without this a failing
    *  push (expired token, offline) is invisible on-device: nothing in the UI would ever report it.
@@ -220,7 +227,7 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
   transport = createEmbeddedTransport(
     bridgeProvider,
     config.createRouter,
-    registry,
+    config.decorateRegistry ? config.decorateRegistry(registry) : registry,
     embeddedLibrary,
     embeddedDownloads,
     embeddedEngine,

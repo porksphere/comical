@@ -30,7 +30,7 @@ import type {
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
-import { entryKey, collectionItemId, type ChapterPageRef, type CollectionItemsQuery, type CollectionItemType, type Library } from "@comical/library";
+import { entryKey, collectionItemId, LibraryBackupError, readLibraryBackup, type ChapterPageRef, type CollectionItemsQuery, type CollectionItemType, type Library, type LibraryBackupSources } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
@@ -39,6 +39,8 @@ import type { BridgeProvider } from "./bridge-provider.ts";
 import type { RegistryProvider } from "./registry-provider.ts";
 import { TagLabelCache } from "./tag-label-cache.ts";
 import type { TrackerProvider } from "./tracker-provider.ts";
+import type { SyncBackend } from "@comical/sync";
+import { createSyncRoutes } from "./sync-routes.ts";
 export interface RouterOptions {
   /** CORS origin(s) allowed. Defaults to '*' for LAN use. */
   origin?: string;
@@ -86,6 +88,8 @@ export interface RouterOptions {
    * Omit to send no explicit UA (the fetch implementation's own default).
    */
   userAgent?: string;
+  /** A sync hub — mounts `/sync/push` and `/sync/pull` (see `createSyncRoutes`) when provided. */
+  sync?: SyncBackend;
 }
 
 // ── OAuth callback state ──────────────────────────────────────────────────────
@@ -135,6 +139,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.use("/trackers/*", guard as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     app.use("/downloads/*", guard as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    app.use("/sync/*", guard as any);
   }
 
   app.use("*", async (c, next) => {
@@ -145,6 +151,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   // ── Health ──────────────────────────────────────────────────────────────────
 
   app.get("/health", (c) => c.json({ ok: true }));
+
+  if (opts.sync) app.route("/sync", createSyncRoutes(opts.sync));
 
   // ── Test sprite sheet ────────────────────────────────────────────────────────
   // A local SVG sprite sheet used by the test-sprites bridge to verify CSS sprite
@@ -1081,6 +1089,40 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         return c.json(await runtime!.importBridgeFavorites(c.req.param("id"), items));
       }),
     );
+
+    // ── Backup ──────────────────────────────────────────────────────────────────
+    // The library as one document, and the way back from one. The library's part is `Library`'s;
+    // what this adds on the way out is a note of where its series came from, so a client can say
+    // where to get a bridge the backup needs. Restoring acts on none of it: a file can put library
+    // records back, never add a registry or install code.
+
+    const backupSources = async (): Promise<LibraryBackupSources | undefined> => {
+      const registry = opts.registry;
+      if (!registry) return undefined;
+      const fromRegistry = (list: Array<{ id: string; registryUrl: string | null }>) =>
+        list.flatMap((i) => (i.registryUrl ? [{ id: i.id, registryUrl: i.registryUrl }] : []));
+      return {
+        registries: (await registry.list()).map((r) => ({ url: r.url })),
+        bridges: fromRegistry(await registry.allInstalled()),
+        trackers: fromRegistry(await registry.allInstalledTrackers()),
+      };
+    };
+
+    app.get("/library/backup", async (c) => {
+      const sources = await backupSources();
+      return c.json({ ...(await lib.exportBackup()), ...(sources && { sources }) });
+    });
+
+    app.post("/library/backup/restore", async (c) => {
+      let parsed: ReturnType<typeof readLibraryBackup>;
+      try {
+        parsed = readLibraryBackup(await body<unknown>(c));
+      } catch (e) {
+        if (e instanceof LibraryBackupError) return c.json({ error: e.message }, 400);
+        throw e;
+      }
+      return c.json({ restored: await lib.restoreBackup(parsed.backup), skipped: parsed.skipped });
+    });
 
     // The bytes the library occupies on this host — store documents plus captured cover blobs.
     // Powers the client Storage screen's library figure, host-aware through the transport (device

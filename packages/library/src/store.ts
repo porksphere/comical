@@ -26,6 +26,10 @@ export interface LibraryStore {
 
   // ── Per-series chapter progress ────────────────────────────────────────────
   listProgress(key: string): Promise<ChapterProgress[]>;
+  /** Every series key that may hold progress. Nothing else can enumerate them: a series read
+   *  without being collected, on a bridge whose history is turned off, has progress and no other
+   *  record. A key with nothing left under it may be listed. */
+  listProgressKeys(): Promise<string[]>;
   putProgress(key: string, progress: ChapterProgress): Promise<void>;
   /** Drop all progress for a series (called when an entry is removed). */
   deleteProgressForEntry(key: string): Promise<void>;
@@ -71,6 +75,7 @@ export interface LibraryStore {
 
   // ── Bridge preferences ────────────────────────────────────────────────────
   getBridgePrefs(bridgeId: string): Promise<BridgePrefs | undefined>;
+  listBridgePrefs(): Promise<BridgePrefs[]>;
   setBridgePrefs(bridgeId: string, prefs: BridgePrefs): Promise<void>;
 
   // ── Activity feed (newly-detected chapters) ────────────────────────────────

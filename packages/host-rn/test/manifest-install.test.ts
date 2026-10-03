@@ -357,6 +357,18 @@ describe("EmbeddedRegistryProvider", () => {
     expect(rec?.signature).toBe("sig");
   });
 
+  test("allInstalled() / allInstalledTrackers() list what's installed without a fetch", async () => {
+    const { provider, installed } = setup({});
+    expect(await provider.allInstalled()).toEqual([]);
+    expect(await provider.allInstalledTrackers()).toEqual([]);
+
+    // No index is served for REG_A here, so a listing that reached for the network would throw.
+    await installed.add(recordFor({ version: "1.0.0" }));
+    expect((await provider.allInstalled()).map((b) => ({ id: b.id, registryUrl: b.registryUrl }))).toEqual([
+      { id: "demo", registryUrl: REG_A },
+    ]);
+  });
+
   test("install() of an unknown id throws", async () => {
     const { provider } = setup({ [REG_A]: index([entry()]) });
     await expect(provider.install(REG_A, "ghost")).rejects.toThrow(/not found/);

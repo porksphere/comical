@@ -23,6 +23,7 @@
     "@comical/library": "workspace:*",
     "@comical/registry": "workspace:*",
     "@comical/runtime": "workspace:*",
+    "@comical/sync": "workspace:*",
     "hono": "^4.12.23"
   }
 }

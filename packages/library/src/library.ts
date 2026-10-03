@@ -6,6 +6,7 @@
  * fully independent of any bridge's backend `favorites`: adding here never touches a bridge.
  */
 import type { Chapter, SeriesInfo, SeriesRevision, SeriesStatus } from "@comical/contract";
+import { exportLibrary, restoreLibrary, type LibraryBackup, type LibraryRestoreCounts } from "./backup.ts";
 import { normalizeTitle } from "./match.ts";
 import {
   cachedChaptersSchema,
@@ -391,6 +392,18 @@ export class Library {
   /** The bytes the library's persisted documents occupy, when the store can measure them. */
   async diskUsage(): Promise<number | undefined> {
     return this.store.diskUsage?.();
+  }
+
+  // ── Backup ─────────────────────────────────────────────────────────────────────
+
+  /** Everything the user did, as one document. See `backup.ts` for what that covers. */
+  async exportBackup(): Promise<LibraryBackup> {
+    return exportLibrary(this.store, this.now());
+  }
+
+  /** Merge a backup back in — its records win, nothing it lacks is removed. */
+  async restoreBackup(backup: LibraryBackup): Promise<LibraryRestoreCounts> {
+    return restoreLibrary(this.store, backup);
   }
 
   // ── Offline metadata cache ─────────────────────────────────────────────────────

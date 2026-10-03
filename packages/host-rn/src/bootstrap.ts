@@ -11,7 +11,7 @@
  * call before `configureEmbeddedRuntime` or when the native runtime is absent (web) — it simply
  * ensures the remote transport stays active and returns false.
  */
-import { installEmbeddedTransport, uninstallEmbeddedTransport } from "./install.ts";
+import { installEmbeddedTransport, uninstallEmbeddedTransport, type EmbeddedRuntimeConfig } from "./install.ts";
 import { isEmbeddedRuntimeAvailable } from "./native-runtime.ts";
 import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
 import type {
@@ -72,6 +72,8 @@ export interface EmbeddedBootstrapConfig {
   networkJson?: string;
   /** Fired after an install/update/uninstall so the embedder can refetch data screens. */
   onRegistryChange?: () => void;
+  /** See `EmbeddedRuntimeConfig.decorateRegistry`. */
+  decorateRegistry?: EmbeddedRuntimeConfig["decorateRegistry"];
 }
 
 let config: EmbeddedBootstrapConfig | null = null;
@@ -108,5 +110,6 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
     ...(config.onRegistryChange ? { onRegistryChange: config.onRegistryChange } : {}),
+    ...(config.decorateRegistry ? { decorateRegistry: config.decorateRegistry } : {}),
   });
 }

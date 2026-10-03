@@ -4,13 +4,14 @@
 import { join } from "node:path";
 import { DownloadEngine, Downloads } from "@comical/downloads";
 import { DEFAULT_USER_AGENT } from "@comical/host-bun";
-import { Library } from "@comical/library";
+import { Library, type LibraryStore } from "@comical/library";
 import { ManifestStore, RegistryManager } from "@comical/registry";
 import { ComicalRuntime } from "@comical/runtime";
 import { BridgeManager } from "./bridge-manager.ts";
 import { FileBlobStore } from "./blob-store.ts";
 import { FileDownloadsStore } from "./downloads-store.ts";
 import { FileLibraryStore } from "./library-store.ts";
+import { createSyncHost } from "./sync-host.ts";
 import { migrateLegacyEntries } from "./legacy-entries.ts";
 import { createServerPageFetcher, createServerPageResolver } from "./page-fetcher.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
@@ -28,6 +29,11 @@ export interface ServerOptions {
    * pass `{ dir }` to override. Omit to leave the `/library` endpoints unmounted entirely.
    */
   library?: boolean | { dir?: string };
+  /**
+   * Make this server a sync hub (`/sync`) that its own library also syncs through. Needs `library`.
+   * `true` keeps the hub under `{dataDir}/sync`; pass `{ dir }` to override.
+   */
+  sync?: boolean | { dir?: string };
   /**
    * Enable the optional offline-downloads module: the manifest under `{dataDir}/downloads` plus a
    * server-side download engine that fetches page bytes via the server's own bridges and stores them
@@ -87,7 +93,25 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
     const dir = typeof opts.library === "object" && opts.library.dir
       ? opts.library.dir
       : join(opts.dataDir, "library");
-    const lib = new Library(new FileLibraryStore(dir));
+    let store: LibraryStore = new FileLibraryStore(dir);
+    if (opts.sync) {
+      const syncDir = typeof opts.sync === "object" && opts.sync.dir ? opts.sync.dir : join(opts.dataDir, "sync");
+      const host = createSyncHost({
+        dir: syncDir,
+        store,
+        registry,
+        lists: {
+          registries: () => manifest.allRegistries(),
+          installed: () => manifest.allInstalled(),
+          installedTrackers: () => manifest.allInstalledTrackers(),
+        },
+      });
+      store = host.store;
+      routerOpts.sync = host.backend;
+      // The router's installs are recorded; the managers keep the plain one, they only read.
+      routerOpts.registry = host.registry;
+    }
+    const lib = new Library(store);
     // Rebuild series items from a pre-collections entries.json, if one is still there. Everything
     // else a series owns survived the dissolution orphaned, so this reattaches it. No-op once run.
     void migrateLegacyEntries(dir, lib)
@@ -142,6 +166,7 @@ if (import.meta.main) {
     dataDir: process.env.COMICAL_DATA_DIR ?? join(ROOT, ".comical"),
     library: true,
     downloads: true,
+    sync: true,
     ...(process.env.COMICAL_ORIGIN ? { origin: process.env.COMICAL_ORIGIN } : {}),
     ...(process.env.COMICAL_TOKEN ? { token: process.env.COMICAL_TOKEN } : {}),
   });
