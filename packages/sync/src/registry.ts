@@ -205,10 +205,18 @@ export function wrapRegistryProvider<P extends RegistryMutations>(provider: P, l
 }
 
 /** Stamp what this device already holds, for a fresh pairing; run after the first pull. */
-export async function adoptRegistry(lists: RegistryLists, engine: SyncEngine): Promise<void> {
+export async function adoptRegistry(
+  lists: RegistryLists,
+  engine: SyncEngine,
+  tables: readonly TableId[] = REGISTRY_TABLES,
+): Promise<void> {
   await engine.exclusive(async () => {
-    for (const r of await lists.registries()) engine.adopt("registries", r.url);
-    for (const b of await lists.installed()) if (b.registryUrl) engine.adopt("installed", b.id);
-    for (const t of await lists.installedTrackers()) if (t.registryUrl) engine.adopt("installedTrackers", t.id);
+    if (tables.includes("registries")) for (const r of await lists.registries()) engine.adopt("registries", r.url);
+    if (tables.includes("installed")) {
+      for (const b of await lists.installed()) if (b.registryUrl) engine.adopt("installed", b.id);
+    }
+    if (tables.includes("installedTrackers")) {
+      for (const t of await lists.installedTrackers()) if (t.registryUrl) engine.adopt("installedTrackers", t.id);
+    }
   });
 }

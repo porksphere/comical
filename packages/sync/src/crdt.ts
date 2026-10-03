@@ -8,6 +8,10 @@
  *                write carrying an earlier page must not rewind you. `reset` is the way back: marking
  *                a chapter unread stamps a new epoch, and the newer epoch replaces the older one
  *                outright. Without it OR-ing `read` would make "mark unread" impossible to sync.
+ *   - event    — something a device noticed, which every device notices for itself and anyone may
+ *                dismiss. The EARLIEST write is the event, so a device noticing it later changes
+ *                nothing; and a removal is final, whatever its stamp, so a device that notices it
+ *                after it was dismissed elsewhere cannot bring it back.
  */
 import { comparePacked } from "./hlc.ts";
 
@@ -29,7 +33,8 @@ export type Progress = {
   readonly number?: number | undefined;
   readonly languageCode?: string | undefined;
 };
-export type Envelope = Register | SetElement | Progress;
+export type EventRecord = { readonly kind: "event"; readonly hlc: string; readonly value: unknown; readonly deleted: boolean };
+export type Envelope = Register | SetElement | Progress | EventRecord;
 
 export function mergeEnvelope(a: Envelope, b: Envelope): Envelope {
   if (a.kind !== b.kind) {
@@ -41,7 +46,17 @@ export function mergeEnvelope(a: Envelope, b: Envelope): Envelope {
       return comparePacked(a.hlc, b.hlc) >= 0 ? a : b;
     case "progress":
       return mergeProgress(a, b as Progress);
+    case "event":
+      return mergeEvent(a, b as EventRecord);
   }
+}
+
+function mergeEvent(a: EventRecord, b: EventRecord): EventRecord {
+  if (a.deleted !== b.deleted) return a.deleted ? a : b;
+  const order = comparePacked(a.hlc, b.hlc);
+  // Which removal survives changes nothing a store holds; the later one, as everywhere else.
+  if (a.deleted) return order >= 0 ? a : b;
+  return order <= 0 ? a : b;
 }
 
 function mergeProgress(a: Progress, b: Progress): Progress {
@@ -74,6 +89,7 @@ function mergeProgress(a: Progress, b: Progress): Progress {
 export function isLive(env: Envelope): boolean {
   switch (env.kind) {
     case "register":
+    case "event":
       return !env.deleted;
     case "set":
       return env.present;

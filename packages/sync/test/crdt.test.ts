@@ -1,11 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { Clock, envelopeChanges, isLive, mergeEnvelope, type Envelope, type Progress, type Register } from "../src/index.ts";
+import {
+  Clock,
+  envelopeChanges,
+  isLive,
+  mergeEnvelope,
+  type Envelope,
+  type EventRecord,
+  type Progress,
+  type Register,
+} from "../src/index.ts";
 
 let t = 1_700_000_000_000;
 const clock = new Clock("device-a", () => (t += 1000));
 const stamp = () => clock.send();
 
 const reg = (value: unknown, deleted = false): Register => ({ kind: "register", hlc: stamp(), value, deleted });
+const event = (value: unknown, deleted = false): EventRecord => ({ kind: "event", hlc: stamp(), value, deleted });
 const prog = (p: Partial<Progress> = {}): Progress => ({
   kind: "progress",
   hlc: p.hlc ?? stamp(),
@@ -42,6 +52,36 @@ describe("register", () => {
 
   test("refuses to merge different kinds", () => {
     expect(() => mergeEnvelope(reg(1), prog())).toThrow(/refusing/);
+  });
+});
+
+describe("event", () => {
+  test("the first record of it wins, in either order", () => {
+    const first = event("first");
+    const second = event("second");
+    expect((mergeEnvelope(first, second) as EventRecord).value).toBe("first");
+    expect((mergeEnvelope(second, first) as EventRecord).value).toBe("first");
+  });
+
+  test("a removal beats a record of it made before or after", () => {
+    const before = event("before");
+    const removal = event(null, true);
+    const after = event("after");
+    for (const live of [before, after]) {
+      expect(isLive(mergeEnvelope(live, removal))).toBe(false);
+      expect(isLive(mergeEnvelope(removal, live))).toBe(false);
+    }
+  });
+
+  test("the join is commutative and associative", () => {
+    const envs = [event("a"), event(null, true), event("b"), event(null, true), event("c")];
+    const results = permutations(envs).map((p) => JSON.stringify(fold(p)));
+    expect(new Set(results).size).toBe(1);
+    expect(JSON.parse(results[0]!)).toEqual(envs[3]);
+  });
+
+  test("refuses to merge with a register", () => {
+    expect(() => mergeEnvelope(event(1), reg(1))).toThrow(/refusing/);
   });
 });
 

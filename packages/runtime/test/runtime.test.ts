@@ -1546,6 +1546,25 @@ describe("backgroundSync — batch update check", () => {
     expect(res).toMatchObject({ updated: 1, unchanged: 1, newChapters: 1 });
   });
 
+  test("newChapters counts what entered the feed, not what another device's check already had", async () => {
+    const revisions = new Map([["s0", rev(1)]]);
+    // A store that syncs declines an event it has met from elsewhere.
+    class Told extends InMemoryLibraryStore {
+      override async putActivity(): Promise<boolean> {
+        return false;
+      }
+    }
+    const lib = new Library(new Told());
+    const { bridge } = batchCheckBridge({ revisions });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 1);
+    await runtime.backgroundSync();
+
+    revisions.set("s0", rev(2));
+    const res = await runtime.backgroundSync({ force: true });
+    expect(res).toMatchObject({ updated: 1, newChapters: 0 });
+  });
+
   test("a series the bridge won't answer for is fetched rather than assumed unchanged", async () => {
     const revisions = new Map([["s0", rev(1)], ["s1", rev(1)]]);
     const lib = makeLib();

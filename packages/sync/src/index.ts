@@ -12,6 +12,7 @@ export {
   isLive,
   mergeEnvelope,
   type Envelope,
+  type EventRecord,
   type Progress,
   type Register,
   type SetElement,

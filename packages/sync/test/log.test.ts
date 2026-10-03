@@ -52,6 +52,14 @@ describe("wire validation", () => {
     expect(parseSegment(seg("dev_1", 1)).ok).toBe(true);
   });
 
+  test("accepts an event, live or removed, and not one missing its flag", () => {
+    const withEnv = (env: unknown) => parseSegment({ ...seg("a", 1), records: [{ table: "activity", id: "b:s:c", env }] });
+    const hlc = seg("a", 1).records[0]!.env.hlc;
+    expect(withEnv({ kind: "event", hlc, value: { chapterId: "c" }, deleted: false }).ok).toBe(true);
+    expect(withEnv({ kind: "event", hlc, value: null, deleted: true }).ok).toBe(true);
+    expect(withEnv({ kind: "event", hlc, value: { chapterId: "c" } }).ok).toBe(false);
+  });
+
   test("rejects unknown tables, unsafe device ids and unpadded stamps", () => {
     const bad = (patch: (s: Segment) => unknown) => parseSegment(patch(structuredClone(seg("a", 1))));
     expect(bad((s) => ({ ...s, records: [{ ...s.records[0], table: "bridgeSettings" }] })).ok).toBe(false);

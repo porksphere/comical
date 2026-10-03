@@ -133,8 +133,11 @@ export class InMemoryLibraryStore implements LibraryStore {
   async listActivity(): Promise<ActivityItem[]> {
     return [...this.activity.values()].map(clone);
   }
-  async putActivity(item: ActivityItem): Promise<void> {
-    this.activity.set(activityKey(item.bridgeId, item.seriesId, item.chapterId), clone(item));
+  async putActivity(item: ActivityItem): Promise<boolean> {
+    const key = activityKey(item.bridgeId, item.seriesId, item.chapterId);
+    if (this.activity.has(key)) return false;
+    this.activity.set(key, clone(item));
+    return true;
   }
   async deleteActivityForEntry(key: string): Promise<void> {
     const prefix = `${key}:`;
@@ -144,5 +147,8 @@ export class InMemoryLibraryStore implements LibraryStore {
   }
   async clearActivity(): Promise<void> {
     this.activity.clear();
+  }
+  async dropActivity(keys: string[]): Promise<void> {
+    for (const k of keys) this.activity.delete(k);
   }
 }

@@ -9,6 +9,7 @@ import type { Chapter, SeriesInfo, SeriesRevision, SeriesStatus } from "@comical
 import { exportLibrary, restoreLibrary, type LibraryBackup, type LibraryRestoreCounts } from "./backup.ts";
 import { normalizeTitle } from "./match.ts";
 import {
+  activityKey,
   cachedChaptersSchema,
   cachedSeriesDetailSchema,
   entryKey,
@@ -541,8 +542,16 @@ export class Library {
   /**
    * Reconcile a freshly-fetched chapter list against what we last knew. Returns the chapters that
    * are new since the previous sync (empty on the first sync — there's no baseline to diff against).
+   *
+   * `fresh` is the part of `added` this call put in the feed, and so the part worth announcing. The
+   * baseline is this device's own, so with a library that syncs a chapter can be new against it and
+   * already old news: in the feed from another device's check, or removed from the feed there.
    */
-  async syncChapters(key: string, chapters: Chapter[], revision?: SeriesRevision): Promise<{ added: Chapter[] }> {
+  async syncChapters(
+    key: string,
+    chapters: Chapter[],
+    revision?: SeriesRevision,
+  ): Promise<{ added: Chapter[]; fresh: Chapter[] }> {
     const entry = await this.requireSeries(key);
     // Diff by logical chapter `(number, language)` — a fresh scanlation-group copy of a chapter we
     // already know is NOT a new chapter.
@@ -594,6 +603,7 @@ export class Library {
 
     // Record each newly-detected chapter as an activity event (the "new chapters" feed). Snapshots
     // the series display fields so the feed renders offline / after the bridge is removed.
+    const fresh: Chapter[] = [];
     for (const c of added) {
       const item: ActivityItem = {
         bridgeId: entry.bridgeId,
@@ -607,10 +617,10 @@ export class Library {
       if (c.number !== undefined) item.number = c.number;
       if (c.languageCode !== undefined) item.languageCode = c.languageCode;
       if (c.publishedAt !== undefined) item.publishedAt = c.publishedAt;
-      await this.store.putActivity(item);
+      if (await this.store.putActivity(item)) fresh.push(c);
     }
 
-    return { added };
+    return { added, fresh };
   }
 
   /**
@@ -938,10 +948,9 @@ export class Library {
   async pruneActivity(keepNewest = 500): Promise<number> {
     const items = await this.store.listActivity();
     if (items.length <= keepNewest) return 0;
-    const keep = items.sort((a, b) => b.detectedAt - a.detectedAt).slice(0, keepNewest);
-    await this.store.clearActivity();
-    for (const item of keep) await this.store.putActivity(item);
-    return items.length - keepNewest;
+    const drop = items.sort((a, b) => b.detectedAt - a.detectedAt).slice(keepNewest);
+    await this.store.dropActivity(drop.map((a) => activityKey(a.bridgeId, a.seriesId, a.chapterId)));
+    return drop.length;
   }
 
   // ── Collection items (series / chapter / page) ───────────────────────────────

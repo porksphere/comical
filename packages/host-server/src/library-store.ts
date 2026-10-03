@@ -404,9 +404,13 @@ export class FileLibraryStore implements LibraryStore {
   async listActivity(): Promise<ActivityItem[]> {
     return [...(await this.activity()).values()];
   }
-  async putActivity(item: ActivityItem): Promise<void> {
-    (await this.activity()).set(activityKey(item.bridgeId, item.seriesId, item.chapterId), item);
+  async putActivity(item: ActivityItem): Promise<boolean> {
+    const map = await this.activity();
+    const key = activityKey(item.bridgeId, item.seriesId, item.chapterId);
+    if (map.has(key)) return false;
+    map.set(key, item);
     await this.flushActivity();
+    return true;
   }
   async deleteActivityForEntry(key: string): Promise<void> {
     const map = await this.activity();
@@ -420,5 +424,11 @@ export class FileLibraryStore implements LibraryStore {
   async clearActivity(): Promise<void> {
     this.activityCache = new Map();
     await this.flushActivity();
+  }
+  async dropActivity(keys: string[]): Promise<void> {
+    const map = await this.activity();
+    let changed = false;
+    for (const k of keys) if (map.delete(k)) changed = true;
+    if (changed) await this.flushActivity();
   }
 }

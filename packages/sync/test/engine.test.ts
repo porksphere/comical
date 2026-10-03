@@ -374,6 +374,137 @@ describe("SyncEngine", () => {
     expect(a.get("collections", "c1")).toEqual({ id: "c1", name: "From a" });
   });
 
+  test("an event keeps the first record of it, whichever device syncs first", async () => {
+    for (const order of [["a", "b"], ["b", "a"]] as const) {
+      const hub = new MemoryBackend();
+      const devices = { a: device(hub, "a"), b: device(hub, "b") };
+      await devices.a.put("activity", "e1", { seen: "by a" });
+      await devices.b.put("activity", "e1", { seen: "by b" });
+      for (const name of [...order, ...order]) await devices[name].engine.sync();
+      expect(devices.a.get("activity", "e1")).toEqual({ seen: "by a" });
+      expect(devices.b.get("activity", "e1")).toEqual({ seen: "by a" });
+    }
+  });
+
+  test("a removed event stays removed for a device that records it afterwards", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    const c = device(hub, "c");
+    await a.put("activity", "e1", { seen: "by a" });
+    await a.engine.sync();
+    await b.engine.sync();
+    await b.put("activity", "e1", undefined);
+
+    // c records it while b's removal is still unsent, and reaches the hub first.
+    await c.put("activity", "e1", { seen: "by c" });
+    await c.engine.sync();
+    await b.engine.sync();
+    expect(b.get("activity", "e1")).toBeUndefined();
+
+    await c.engine.sync();
+    await a.engine.sync();
+    expect(c.get("activity", "e1")).toBeUndefined();
+    expect(a.get("activity", "e1")).toBeUndefined();
+
+    // And a device joining later replays the whole history to the same end.
+    const d = device(hub, "d");
+    await d.engine.sync();
+    expect(d.get("activity", "e1")).toBeUndefined();
+  });
+
+  test("a removed event takes a copy that was here before this device first synced", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    await a.put("activity", "e1", { seen: "by a" });
+    await a.engine.sync();
+    await a.put("activity", "e1", undefined);
+    await a.engine.sync();
+
+    const b = device(hub, "b");
+    await b.store.write("activity", "e1", { seen: "by b" });
+    await b.engine.sync();
+    expect(b.get("activity", "e1")).toBeUndefined();
+    expect(b.engine.hasUnsent()).toBe(false);
+  });
+
+  test("an event the store dropped on its own is not brought back", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    await a.put("activity", "e1", { seen: "by a" });
+    await a.engine.sync();
+    await b.engine.sync();
+    // Dropped without a touch: the store bounding itself, which is no one's removal.
+    await b.store.write("activity", "e1", undefined);
+
+    const c = device(hub, "c");
+    await c.put("activity", "e1", { seen: "by c" });
+    await c.engine.sync();
+    await b.engine.sync();
+    expect(b.get("activity", "e1")).toBeUndefined();
+    expect(b.engine.knows("activity", "e1")).toBe(true);
+    await a.engine.sync();
+    expect(a.get("activity", "e1")).toEqual({ seen: "by a" });
+  });
+
+  test("a record of the wrong kind for its table is not applied", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    await a.put("collections", "c1", { id: "c1" });
+    await a.engine.sync();
+    const [sent] = (await hub.pull({ device: "reader", name: "reader", have: {} })).segments;
+    const hlc = sent!.records[0]!.env.hlc;
+    await hub.push({
+      device: "forged",
+      seq: 1,
+      records: [
+        { table: "activity", id: "e1", env: { kind: "register", hlc, value: { seen: "as a register" }, deleted: false } },
+        { table: "collections", id: "c2", env: { kind: "event", hlc, value: { id: "c2" }, deleted: false } },
+      ],
+    });
+    const b = device(hub, "b");
+    await b.engine.sync();
+    expect(b.get("collections", "c1")).toEqual({ id: "c1" });
+    expect(b.get("activity", "e1")).toBeUndefined();
+    expect(b.get("collections", "c2")).toBeUndefined();
+  });
+
+  test("knows tells a record sync has met from one it never has", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    await a.put("activity", "e1", { seen: "by a" });
+    await a.engine.sync();
+    expect(b.engine.knows("activity", "e1")).toBe(false);
+    await b.engine.sync();
+    expect(b.engine.knows("activity", "e1")).toBe(true);
+    expect(b.engine.knows("activity", "e2")).toBe(false);
+  });
+
+  test("every table is unadopted until the host says otherwise, and that survives a restart", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    expect(a.engine.unadopted()).toContain("collections");
+    expect(a.engine.unadopted()).toContain("activity");
+    a.engine.markAdopted();
+    expect(a.engine.unadopted()).toEqual([]);
+
+    await a.put("collections", "c1", { id: "c1" });
+    await a.engine.sync();
+    const restarted = device(hub, "a", { state: a.saved()! });
+    expect(restarted.engine.unadopted()).toEqual([]);
+  });
+
+  test("a state saved before tables were listed has adopted only the tables of its day", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    await a.put("collections", "c1", { id: "c1" });
+    await a.engine.sync();
+    const { adopted: _, ...old } = a.saved()!;
+    expect(device(hub, "a", { state: old }).engine.unadopted()).toEqual(["activity"]);
+  });
+
   test("a device id is required on first run", () => {
     expect(() => new SyncEngine({ store: new MemoryStore(), backend: new MemoryBackend(), name: () => "x", newDeviceId: () => "x" })).toThrow(
       /device id/,

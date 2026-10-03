@@ -128,6 +128,7 @@ export interface BackgroundSyncOptions {
 
 export interface BackgroundSyncResult {
   updated: number;
+  /** Chapters this run put in the activity feed — not ones another device's run already had. */
   newChapters: number;
   readSynced: number;
   suggestions: TrackerSuggestion[];
@@ -735,7 +736,7 @@ export class ComicalRuntime {
       } else if (bridge.getChapters) {
         chapters = await bridge.getChapters(entry.seriesId);
         const result = await lib.syncChapters(key, chapters, check?.revision);
-        counters.newChapters += result.added.length;
+        counters.newChapters += result.fresh.length;
         counters.updated++;
       }
 
