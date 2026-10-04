@@ -95,6 +95,9 @@ export const parseVersionVector = (input: unknown): Parsed<VersionVector> =>
 
 export const SYNC_PUSH_PATH = "/sync/push";
 export const SYNC_PULL_PATH = "/sync/pull";
+// Only a hub that pairs its devices (`pairing.ts`) answers these two.
+export const SYNC_PAIR_PATH = "/sync/pair";
+export const SYNC_UNPAIR_PATH = "/sync/unpair";
 
 /** A hub answers at most this many records per pull, whatever a client asks for. */
 export const MAX_PULL_LIMIT = 10_000;
@@ -103,8 +106,8 @@ export const MAX_PULL_LIMIT = 10_000;
 export const deviceNameSchema = z.string().trim().min(1).max(64);
 
 /**
- * Every round opens with a pull, so the pull is where a device says who it is: a hub keeps the
- * roster of who has been by from these alone, with nothing extra on the wire.
+ * Every round opens with a pull, so the pull is where a device says what it is called now: a hub
+ * that lists its paired devices keeps their names current from these alone.
  */
 export type PullRequest = { device: string; name: string; have: VersionVector; limit?: number };
 

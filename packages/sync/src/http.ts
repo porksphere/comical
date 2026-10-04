@@ -2,18 +2,21 @@
  * A hub reached over HTTP. `fetch` is passed in rather than taken from the global, so this package
  * keeps no platform dependency of its own.
  *
- * Given a pairing secret, every exchange goes through the sealed channel (`seal.ts`): the body out
- * is a ciphertext, and a reply that doesn't open as the hub's answer to that very request is
- * refused as not the hub's at all — whatever address it came from and whatever it says.
+ * Given this device's pairing (`pairing.ts`), every exchange goes through the sealed channel
+ * (`seal.ts`): the body out is a ciphertext, and a reply that doesn't open as the hub's answer to
+ * that very request is refused as not the hub's at all — whatever address it came from and whatever
+ * it says.
  */
 import type { SyncBackend } from "./backend.ts";
 import { SeqConflictError, SeqGapError } from "./log.ts";
+import type { Pairing } from "./pairing.ts";
 import { sealedChannel, type SealedChannel } from "./seal.ts";
 import {
   parsePullResult,
   parsePushRefusal,
   SYNC_PULL_PATH,
   SYNC_PUSH_PATH,
+  SYNC_UNPAIR_PATH,
   type PullRequest,
   type PullResult,
   type Segment,
@@ -24,8 +27,8 @@ export type HttpBackendOptions = {
   baseUrl: string;
   fetch: (url: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<Response>;
   token?: string;
-  /** The pairing secret; with it, nothing crosses in the clear. */
-  secret?: string;
+  /** What `pair` returned; with it, nothing crosses in the clear. */
+  pairing?: Pairing;
 };
 
 export class SyncHttpError extends Error {
@@ -38,11 +41,19 @@ export class SyncHttpError extends Error {
   }
 }
 
-/** The reply wasn't sealed by a hub holding the secret: a stranger at that address, or a hub re-keyed since pairing. */
+/** The reply wasn't sealed by the hub this device paired with: a stranger at that address, or a hub that has since forgotten the pairing. */
 export class SyncSealError extends Error {
   constructor() {
     super("sync: the server didn't answer as the paired hub");
     this.name = "SyncSealError";
+  }
+}
+
+/** The hub unlinked this device. Only the hub can say so, and it will say nothing else until the device pairs again. */
+export class SyncUnlinkedError extends Error {
+  constructor() {
+    super("sync: the hub unlinked this device");
+    this.name = "SyncUnlinkedError";
   }
 }
 
@@ -54,7 +65,18 @@ export class HttpBackend implements SyncBackend {
 
   constructor(private readonly opts: HttpBackendOptions) {
     this.base = opts.baseUrl.replace(/\/+$/, "");
-    this.channel = opts.secret ? sealedChannel(opts.secret) : null;
+    this.channel = opts.pairing ? sealedChannel(opts.pairing.key, opts.pairing.id) : null;
+  }
+
+  /** Has the hub forget this device's pairing. Nothing to do on a hub that doesn't pair, or one that already unlinked it. */
+  async unpair(): Promise<void> {
+    if (!this.channel) return;
+    try {
+      const { status, body } = await this.post(SYNC_UNPAIR_PATH, {});
+      if (!ok(status)) throw new SyncHttpError(status, `sync: unpair refused (${status}): ${describe(body)}`);
+    } catch (err) {
+      if (!(err instanceof SyncUnlinkedError)) throw err;
+    }
   }
 
   async push(segment: Segment): Promise<void> {
@@ -90,6 +112,7 @@ export class HttpBackend implements SyncBackend {
     const res = await this.opts.fetch(`${this.base}${path}`, { method: "POST", headers, body: envelope });
     const reply = this.channel.openResponse(nonce, await res.text());
     if (!reply) throw new SyncSealError();
+    if (reply.status === 410) throw new SyncUnlinkedError();
     return { status: reply.status, body: parseJson(reply.body) };
   }
 }

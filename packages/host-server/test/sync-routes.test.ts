@@ -80,7 +80,7 @@ describe("/sync over HTTP", () => {
       });
     expect((await post("/sync/push", { device: "../x", seq: 1, records: [] })).status).toBe(400);
     expect((await post("/sync/pull", { device: "x", name: "X", have: { a: -1 } })).status).toBe(400);
-    // Who is pulling is not optional: a hub keeps its roster from these.
+    // Who is pulling is not optional: a hub that lists its devices names them from these.
     expect((await post("/sync/pull", { have: {} })).status).toBe(400);
     expect((await post("/sync/pull", { device: "x", name: "X", have: {} }, "wrong")).status).toBe(401);
     await expect(backend("wrong").pull({ device: "x", name: "X", have: {} })).rejects.toThrow(/401/);

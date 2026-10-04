@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { sealedChannel } from "../src/seal.ts";
+import { envelopePairing, sealedChannel } from "../src/seal.ts";
 
 const SECRET = "abcdefghjkmn";
 
@@ -21,6 +21,16 @@ describe("sealedChannel", () => {
     expect(envelope).not.toContain("phone");
     expect(envelope).not.toContain(SECRET);
     expect(JSON.parse(envelope)).toEqual({ v: 1, n: expect.any(String), c: expect.any(String) });
+  });
+
+  test("a device's requests name its pairing, and its hub opens them all the same", () => {
+    const device = sealedChannel(SECRET, "pairing-1");
+    const { nonce, envelope } = device.sealRequest("/sync/pull", "{}");
+    expect(envelopePairing(envelope)).toBe("pairing-1");
+    expect(sealedChannel(SECRET).openRequest("/sync/pull", envelope)).toEqual({ nonce, body: "{}" });
+
+    expect(envelopePairing(sealedChannel(SECRET).sealRequest("/sync/pull", "{}").envelope)).toBeNull();
+    for (const junk of ["", "null", "[]", '{"p":7}', "<html>"]) expect(envelopePairing(junk)).toBeNull();
   });
 
   test("a different secret opens nothing, either way", () => {

@@ -1,7 +1,7 @@
 /**
  * The sealed channel between a device and its hub: every request and response body travels as an
- * AEAD ciphertext under keys derived from the pairing secret, and nothing else — not the secret, not
- * a token — ever crosses the wire. One primitive buys three things at once. A body no one else can
+ * AEAD ciphertext under keys derived from a secret the two share, and nothing else — not the secret,
+ * not a token — ever crosses the wire. One primitive buys three things at once. A body no one else can
  * read. A body no one else can forge or alter, since a host without the secret can't produce a
  * ciphertext the other side opens, so a stranger answering at the hub's address is simply not
  * heard. And a response that can only be an answer to the request it came back for: the request's
@@ -30,8 +30,11 @@ const VERSION = 1;
 const SALT = utf8ToBytes("comical-sync-seal");
 const NONCE_BYTES = 24;
 
-/** What crosses the wire, as JSON: the version, the nonce and the ciphertext, each in base64. */
-export type SealedEnvelope = { v: number; n: string; c: string };
+/**
+ * What crosses the wire, as JSON: the version, the nonce and the ciphertext, each in base64. A
+ * request from a paired device also names its pairing, so a hub with many knows whose key to try.
+ */
+export type SealedEnvelope = { v: number; n: string; c: string; p?: string };
 
 export interface SealedChannel {
   /** A device seals a request for `path`; the nonce is kept to open the reply. */
@@ -44,7 +47,8 @@ export interface SealedChannel {
   openResponse(nonce: string, envelope: string): { status: number; body: string } | null;
 }
 
-export function sealedChannel(secret: string): SealedChannel {
+/** `pairing` is what a device's requests are labelled with; a hub's side of the channel has no use for it. */
+export function sealedChannel(secret: string, pairing?: string): SealedChannel {
   const ikm = utf8ToBytes(secret);
   const toHub = hkdf(sha256, ikm, SALT, utf8ToBytes("device to hub"), 32);
   const fromHub = hkdf(sha256, ikm, SALT, utf8ToBytes("hub to device"), 32);
@@ -52,7 +56,7 @@ export function sealedChannel(secret: string): SealedChannel {
   return {
     sealRequest(path, body) {
       const nonce = randomBytes(NONCE_BYTES);
-      return { nonce: toBase64(nonce), envelope: seal(toHub, nonce, `request ${path}`, body) };
+      return { nonce: toBase64(nonce), envelope: seal(toHub, nonce, `request ${path}`, body, pairing) };
     },
     openRequest(path, envelope) {
       const parsed = parseEnvelope(envelope);
@@ -79,11 +83,24 @@ export function sealedChannel(secret: string): SealedChannel {
   };
 }
 
+/**
+ * The pairing a request claims to be from. Only a claim: it picks the key to try, and the request
+ * is that pairing's once its channel opens it.
+ */
+export function envelopePairing(envelope: string): string | null {
+  try {
+    const { p } = (JSON.parse(envelope) ?? {}) as Partial<SealedEnvelope>;
+    return typeof p === "string" ? p : null;
+  } catch {
+    return null;
+  }
+}
+
 type Parsed = { n: string; nonce: Uint8Array; ciphertext: Uint8Array };
 
-function seal(key: Uint8Array, nonce: Uint8Array, aad: string, plaintext: string): string {
+function seal(key: Uint8Array, nonce: Uint8Array, aad: string, plaintext: string, pairing?: string): string {
   const ciphertext = xchacha20poly1305(key, nonce, utf8ToBytes(aad)).encrypt(utf8ToBytes(plaintext));
-  const envelope: SealedEnvelope = { v: VERSION, n: toBase64(nonce), c: toBase64(ciphertext) };
+  const envelope: SealedEnvelope = { v: VERSION, n: toBase64(nonce), c: toBase64(ciphertext), ...(pairing && { p: pairing }) };
   return JSON.stringify(envelope);
 }
 
@@ -115,7 +132,7 @@ function parseEnvelope(text: string): Parsed | null {
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const LOOKUP = new Map([...ALPHABET].map((ch, i) => [ch, i]));
 
-function toBase64(bytes: Uint8Array): string {
+export function toBase64(bytes: Uint8Array): string {
   let out = "";
   for (let i = 0; i < bytes.length; i += 3) {
     const a = bytes[i]!;
@@ -129,7 +146,7 @@ function toBase64(bytes: Uint8Array): string {
   return out;
 }
 
-function fromBase64(text: string): Uint8Array | null {
+export function fromBase64(text: string): Uint8Array | null {
   if (text.length % 4 !== 0) return null;
   const padding = text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0;
   const out = new Uint8Array((text.length / 4) * 3 - padding);

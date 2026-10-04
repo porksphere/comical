@@ -43,8 +43,10 @@ export {
   pullResultSchema,
   pushRefusalSchema,
   segmentSchema,
+  SYNC_PAIR_PATH,
   SYNC_PULL_PATH,
   SYNC_PUSH_PATH,
+  SYNC_UNPAIR_PATH,
   syncRecordSchema,
   versionVectorSchema,
   type PullRequest,
@@ -57,8 +59,22 @@ export {
 export { ChangeLog, DEFAULT_PULL_LIMIT, SeqConflictError, SeqGapError } from "./log.ts";
 export { MemoryBackend, type SyncBackend } from "./backend.ts";
 export { MemorySegmentStore, SyncHub, type SegmentStore } from "./hub.ts";
-export { HttpBackend, SyncHttpError, SyncSealError, type HttpBackendOptions } from "./http.ts";
-export { sealedChannel, type SealedChannel, type SealedEnvelope } from "./seal.ts";
+export { HttpBackend, SyncHttpError, SyncSealError, SyncUnlinkedError, type HttpBackendOptions } from "./http.ts";
+export { envelopePairing, sealedChannel, type SealedChannel, type SealedEnvelope } from "./seal.ts";
+export {
+  newPairingCode,
+  pair,
+  PAIRING_CODE_TTL_MS,
+  pairingGate,
+  SyncPairingError,
+  type PairedDevice,
+  type Pairing,
+  type PairingCode,
+  type PairingGate,
+  type PairingGateOptions,
+  type PairOptions,
+  type StoredPairing,
+} from "./pairing.ts";
 export { composeSyncStores, type ProgressValue, type SyncStore } from "./store.ts";
 export {
   SyncEngine,

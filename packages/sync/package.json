@@ -12,6 +12,7 @@
     "@comical/core": "workspace:*",
     "@comical/library": "workspace:*",
     "@noble/ciphers": "^2.4.0",
+    "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
     "zod": "^3.23.8"
   }
