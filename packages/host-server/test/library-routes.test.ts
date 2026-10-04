@@ -310,6 +310,38 @@ describe("sync + activity-count params", () => {
     expect((await send("POST", "/library/activity/demo/nope/read")).status).toBe(404);
   });
 
+  test("?caughtUp=1 narrows the feed, the count and mark-read to series the reader was caught up on", async () => {
+    // cu-1 is read up to date when its chapter lands; cu-2 was never opened.
+    await send("PUT", "/library/collected/series/demo/cu-1", { seriesTitle: "Caught Up" });
+    await send("PUT", "/library/collected/series/demo/cu-2", { seriesTitle: "Not Started" });
+    await send("POST", "/library/collected/series/demo/cu-1/sync", { chapters: [chapters[0]!] });
+    await send("POST", "/library/collected/series/demo/cu-2/sync", { chapters: [chapters[0]!] });
+    await send("PUT", "/library/collected/series/demo/cu-1/progress/c1", { read: true });
+    const two = [chapters[0]!, chapters[1]!];
+    await send("POST", "/library/collected/series/demo/cu-1/sync", { chapters: two });
+    const synced = await send("POST", "/library/collected/series/demo/cu-2/sync", { chapters: two });
+    expect(((await synced.json()) as { unseen: Array<{ id: string }> }).unseen.map((c) => c.id)).toEqual(["c2"]);
+
+    type Item = { seriesId: string; behind?: string };
+    const feed = async (q = "") => (await (await get(`/library/activity${q}`)).json()) as Item[];
+    const mine = (items: Item[]) => items.filter((a) => a.seriesId.startsWith("cu-")).map((a) => a.seriesId);
+    expect(mine(await feed()).sort()).toEqual(["cu-1", "cu-2"]);
+    expect(mine(await feed("?caughtUp=1"))).toEqual(["cu-1"]);
+    expect((await feed("?caughtUp=1")).some((a) => a.behind === "unseen")).toBe(false);
+    // Any other value is the full feed: the param is opt-in.
+    expect(mine(await feed("?caughtUp=0")).sort()).toEqual(["cu-1", "cu-2"]);
+
+    const count = async (q = "") => ((await (await get(`/library/activity/count${q}`)).json()) as { unread: number }).unread;
+    expect(await count("?caughtUp=1")).toBe((await feed("?caughtUp=1&unread=1")).length);
+    expect(await count("?caughtUp=1")).toBeLessThan(await count());
+
+    // The caught-up feed has no row for cu-2, so marking it read there marks nothing.
+    const quiet = await send("POST", "/library/activity/demo/cu-2/read?caughtUp=1");
+    expect(((await quiet.json()) as { marked: number }).marked).toBe(0);
+    const loud = await send("POST", "/library/activity/demo/cu-2/read");
+    expect(((await loud.json()) as { marked: number }).marked).toBe(1);
+  });
+
   test("POST /library/sync accepts options and reports the new result fields", async () => {
     const res = await send("POST", "/library/sync", { force: true, trackers: false, budgetMs: 10_000 });
     expect(res.status).toBe(200);

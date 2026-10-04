@@ -478,6 +478,14 @@ export const activityItemSchema = z.object({
   publishedAt: z.number().int().optional(),
   /** When `syncChapters` first observed this chapter (epoch ms) — the feed sorts on this, newest first. */
   detectedAt: z.number().int(),
+  /**
+   * Set when the reader had unread chapters of the series as this one landed: what a feed limited
+   * to series they are caught up on goes by. `"joined"` — the series had an unread row in that feed
+   * already, and this chapter extends it without being news of its own. `"unseen"` — it had none,
+   * and that feed leaves the chapter out. Absent when the reader was caught up, and on every item
+   * recorded before the field existed.
+   */
+  behind: z.enum(["joined", "unseen"]).optional(),
 });
 export type ActivityItem = z.infer<typeof activityItemSchema>;
 

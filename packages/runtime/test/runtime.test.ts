@@ -1565,6 +1565,42 @@ describe("backgroundSync — batch update check", () => {
     expect(res).toMatchObject({ updated: 1, newChapters: 0 });
   });
 
+  test("behind counts the new chapters of series the reader had unread chapters of", async () => {
+    const revisions = new Map([["s0", rev(1)], ["s1", rev(1)]]);
+    const lib = makeLib();
+    const { bridge } = batchCheckBridge({ revisions });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 2);
+    const first = await runtime.backgroundSync(); // baselines: nothing is new
+    expect(first.behind).toEqual({ joined: 0, unseen: 0 });
+
+    // s0 is read up to date; s1 was never opened.
+    await lib.markRead(entryKey("test", "s0"), "c1", true);
+    revisions.set("s0", rev(2));
+    revisions.set("s1", rev(2));
+    const second = await runtime.backgroundSync({ force: true });
+    expect(second).toMatchObject({ newChapters: 2, behind: { joined: 0, unseen: 1 } });
+
+    // s0's new chapter is still unread in the feed, so the next one joins it.
+    revisions.set("s0", rev(3));
+    const third = await runtime.backgroundSync({ force: true });
+    expect(third).toMatchObject({ newChapters: 1, behind: { joined: 1, unseen: 0 } });
+  });
+
+  test("markActivityRead passes the caught-up option through to the library", async () => {
+    const revisions = new Map([["s0", rev(1)]]);
+    const lib = makeLib();
+    const { bridge } = batchCheckBridge({ revisions });
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 1);
+    await runtime.backgroundSync();
+    revisions.set("s0", rev(2));
+    await runtime.backgroundSync({ force: true }); // c2 lands on a series never opened
+
+    expect(await runtime.markActivityRead("test", "s0", { caughtUpOnly: true })).toEqual({ marked: 0 });
+    expect(await runtime.markActivityRead("test", "s0")).toEqual({ marked: 1 });
+  });
+
   test("a series the bridge won't answer for is fetched rather than assumed unchanged", async () => {
     const revisions = new Map([["s0", rev(1)], ["s1", rev(1)]]);
     const lib = makeLib();

@@ -546,12 +546,15 @@ export class Library {
    * `fresh` is the part of `added` this call put in the feed, and so the part worth announcing. The
    * baseline is this device's own, so with a library that syncs a chapter can be new against it and
    * already old news: in the feed from another device's check, or removed from the feed there.
+   *
+   * `joined` and `unseen` are the parts of `fresh` that landed while the reader was behind on the
+   * series — see `ActivityItem.behind`.
    */
   async syncChapters(
     key: string,
     chapters: Chapter[],
     revision?: SeriesRevision,
-  ): Promise<{ added: Chapter[]; fresh: Chapter[] }> {
+  ): Promise<{ added: Chapter[]; fresh: Chapter[]; joined: Chapter[]; unseen: Chapter[] }> {
     const entry = await this.requireSeries(key);
     // Diff by logical chapter `(number, language)` — a fresh scanlation-group copy of a chapter we
     // already know is NOT a new chapter.
@@ -582,6 +585,10 @@ export class Library {
       await this.reanchorChapterItems(entry.bridgeId, entry.seriesId, entry.knownChapters ?? [], chapters);
     }
 
+    // Taken BEFORE the baseline is overwritten: once the new chapters are known they are unread
+    // themselves, and no series would ever count as caught up.
+    const standing = added.length > 0 ? await this.standingBefore(key, entry) : undefined;
+
     const t = this.now();
     entry.knownChapters = chapters.map((c): KnownChapter => {
       const k: KnownChapter = { id: c.id };
@@ -604,6 +611,8 @@ export class Library {
     // Record each newly-detected chapter as an activity event (the "new chapters" feed). Snapshots
     // the series display fields so the feed renders offline / after the bridge is removed.
     const fresh: Chapter[] = [];
+    const joined: Chapter[] = [];
+    const unseen: Chapter[] = [];
     for (const c of added) {
       const item: ActivityItem = {
         bridgeId: entry.bridgeId,
@@ -617,10 +626,47 @@ export class Library {
       if (c.number !== undefined) item.number = c.number;
       if (c.languageCode !== undefined) item.languageCode = c.languageCode;
       if (c.publishedAt !== undefined) item.publishedAt = c.publishedAt;
-      if (await this.store.putActivity(item)) fresh.push(c);
+      const behind = standing?.(c);
+      if (behind !== undefined) item.behind = behind;
+      if (!(await this.store.putActivity(item))) continue;
+      fresh.push(c);
+      if (behind === "joined") joined.push(c);
+      else if (behind === "unseen") unseen.push(c);
     }
 
-    return { added, fresh };
+    return { added, fresh, joined, unseen };
+  }
+
+  /**
+   * Where a chapter landing now stands against the series as it was before this sync — the value of
+   * `ActivityItem.behind`. Judged per language: someone reading one translation is caught up in it
+   * however many chapters the others hold, and a translation that is new to the series is one they
+   * have read nothing of. A series with no chapters at all has nothing to be behind on.
+   */
+  private async standingBefore(
+    key: string,
+    entry: CollectionSeriesItem,
+  ): Promise<(c: Chapter) => ActivityItem["behind"]> {
+    const progress = await this.store.listProgress(key);
+    const read = new Set(progress.filter((p) => p.read).map((p) => logicalChapterKey(p, p.chapterId)));
+    const languages = new Set(entry.knownChapters.map((c) => c.languageCode));
+    const unreadIn = new Set(
+      entry.knownChapters.filter((c) => !read.has(logicalChapterKey(c, c.id))).map((c) => c.languageCode),
+    );
+    const behindIn = (language: string | undefined) =>
+      unreadIn.has(language) || (languages.size > 0 && !languages.has(language));
+    const rowIn = new Set(
+      (await this.store.listActivity())
+        .filter(
+          (a) =>
+            a.bridgeId === entry.bridgeId &&
+            a.seriesId === entry.seriesId &&
+            a.behind !== "unseen" &&
+            !read.has(logicalChapterKey(a, a.chapterId)),
+        )
+        .map((a) => a.languageCode),
+    );
+    return (c) => (!behindIn(c.languageCode) ? undefined : rowIn.has(c.languageCode) ? "joined" : "unseen");
   }
 
   /**
@@ -878,8 +924,11 @@ export class Library {
    * The new-chapter feed, newest first. Each item's `read` flag is derived live from chapter
    * progress, so an item drops out of the unread count the moment the user reads its chapter.
    * `since` keeps only items detected strictly after that time — the badge watermark filter.
+   * `caughtUpOnly` leaves out chapters of a series the reader was behind on — see `ActivityItem.behind`.
    */
-  async getActivity(opts: { limit?: number; unreadOnly?: boolean; since?: number } = {}): Promise<ActivityItemView[]> {
+  async getActivity(
+    opts: { limit?: number; unreadOnly?: boolean; since?: number; caughtUpOnly?: boolean } = {},
+  ): Promise<ActivityItemView[]> {
     const items = (await this.store.listActivity()).sort((a, b) => b.detectedAt - a.detectedAt);
     const readByKey = new Map<string, Set<string>>();
     const readSet = async (key: string): Promise<Set<string>> => {
@@ -896,6 +945,7 @@ export class Library {
     for (const item of items) {
       // Sorted newest-first, so the first at-or-before-`since` item ends the scan (large-feed fast path).
       if (opts.since !== undefined && item.detectedAt <= opts.since) break;
+      if (opts.caughtUpOnly && item.behind === "unseen") continue;
       const read = (await readSet(entryKey(item.bridgeId, item.seriesId))).has(logicalChapterKey(item, item.chapterId));
       if (opts.unreadOnly && read) continue;
       views.push({ ...item, read });
@@ -906,10 +956,11 @@ export class Library {
 
   /**
    * Count of feed items whose chapter the user hasn't read yet — the "new" badge value.
-   * `since` restricts the count to items detected after that time (the client's seen watermark).
+   * `since` restricts the count to items detected after that time (the client's seen watermark);
+   * `caughtUpOnly` to the feed {@link getActivity} returns under the same option.
    */
-  async unreadActivityCount(since?: number): Promise<number> {
-    return (await this.getActivity({ unreadOnly: true, ...(since !== undefined && { since }) })).length;
+  async unreadActivityCount(since?: number, opts: { caughtUpOnly?: boolean } = {}): Promise<number> {
+    return (await this.getActivity({ unreadOnly: true, ...opts, ...(since !== undefined && { since }) })).length;
   }
 
   /** Empty the feed (user "clear" action). */
@@ -929,11 +980,17 @@ export class Library {
    * and dismissing a feed row is not reading, so the resume pointer and history stay where the
    * user's own reading left them. The items stay in the feed, now `read` (the row dims), and drop
    * out of the unread badge count.
+   *
+   * `caughtUpOnly` marks only what that feed shows: a row can't acknowledge chapters it never listed.
    */
-  async markActivityRead(bridgeId: string, seriesId: string): Promise<{ marked: number }> {
+  async markActivityRead(
+    bridgeId: string,
+    seriesId: string,
+    opts: { caughtUpOnly?: boolean } = {},
+  ): Promise<{ marked: number }> {
     const key = entryKey(bridgeId, seriesId);
     const items = (await this.store.listActivity()).filter(
-      (a) => a.bridgeId === bridgeId && a.seriesId === seriesId,
+      (a) => a.bridgeId === bridgeId && a.seriesId === seriesId && !(opts.caughtUpOnly && a.behind === "unseen"),
     );
     return this.reconcileRead(
       key,

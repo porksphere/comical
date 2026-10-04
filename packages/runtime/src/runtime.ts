@@ -130,6 +130,8 @@ export interface BackgroundSyncResult {
   updated: number;
   /** Chapters this run put in the activity feed — not ones another device's run already had. */
   newChapters: number;
+  /** Of `newChapters`, those on a series the reader was behind on — see `ActivityItem.behind`. */
+  behind: { joined: number; unseen: number };
   readSynced: number;
   suggestions: TrackerSuggestion[];
   /** Library size at scan time. */
@@ -431,8 +433,12 @@ export class ComicalRuntime {
    * reached a tracker. No bridge read-sync push here, deliberately: `Library.markActivityRead`
    * doesn't touch the resume pointer or history either, because dismissing a feed row isn't reading.
    */
-  async markActivityRead(bridgeId: string, seriesId: string): Promise<{ marked: number }> {
-    const result = await this.requireLibrary().markActivityRead(bridgeId, seriesId);
+  async markActivityRead(
+    bridgeId: string,
+    seriesId: string,
+    opts: { caughtUpOnly?: boolean } = {},
+  ): Promise<{ marked: number }> {
+    const result = await this.requireLibrary().markActivityRead(bridgeId, seriesId, opts);
     // Unconditional, like `markRead`: even a zero-marked call is a chance to heal a link that's
     // behind for some other reason (a failed earlier push, a completion never sent).
     await this.syncEntryToTrackers(bridgeId, seriesId).catch(() => {});
@@ -609,7 +615,7 @@ export class ComicalRuntime {
     // "Check for updates" still gets the cheap batch pre-pass rather than a full fetch of everything.
     const checks = await this.batchCheckRevisions(candidates, deadlineAt);
 
-    const counters = { updated: 0, newChapters: 0, readSynced: 0, unchanged: 0 };
+    const counters = { updated: 0, newChapters: 0, behind: { joined: 0, unseen: 0 }, readSynced: 0, unchanged: 0 };
     let partial = false;
     let next = 0;
     const worker = async (): Promise<void> => {
@@ -717,7 +723,13 @@ export class ComicalRuntime {
    */
   private async syncOneEntry(
     entry: CollectionSeriesItemView,
-    counters: { updated: number; newChapters: number; readSynced: number; unchanged: number },
+    counters: {
+      updated: number;
+      newChapters: number;
+      behind: { joined: number; unseen: number };
+      readSynced: number;
+      unchanged: number;
+    },
     detailStaleMs?: number,
     check?: UpdateCheckOutcome,
   ): Promise<void> {
@@ -737,6 +749,8 @@ export class ComicalRuntime {
         chapters = await bridge.getChapters(entry.seriesId);
         const result = await lib.syncChapters(key, chapters, check?.revision);
         counters.newChapters += result.fresh.length;
+        counters.behind.joined += result.joined.length;
+        counters.behind.unseen += result.unseen.length;
         counters.updated++;
       }
 

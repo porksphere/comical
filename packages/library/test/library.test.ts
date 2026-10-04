@@ -1,7 +1,7 @@
 /** The Library domain service over the in-memory store: collection, read state, sync, lists. */
 import { describe, expect, test } from "bun:test";
 import type { Chapter } from "@comical/contract";
-import { entryKey, InMemoryLibraryStore, Library, normalizeTitle } from "../src/index.ts";
+import { activityItemSchema, entryKey, InMemoryLibraryStore, Library, normalizeTitle } from "../src/index.ts";
 
 const SERIES = { bridgeId: "demo", seriesId: "s1", title: "Series One" };
 const COORD = { bridgeId: SERIES.bridgeId, seriesId: SERIES.seriesId };
@@ -635,6 +635,211 @@ describe("activity feed", () => {
     // Under the cap: no-op.
     expect(await lib.pruneActivity(2)).toBe(0);
     expect(await lib.getActivity()).toHaveLength(2);
+  });
+});
+
+describe("activity standing — was the reader caught up when the chapter landed", () => {
+  const upTo = (n: number) => Array.from({ length: n }, (_, i) => ch(`c${i + 1}`, i + 1));
+  const CAUGHT_UP = { caughtUpOnly: true };
+
+  /** A one-chapter series whose one chapter is read. */
+  async function caughtUp() {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, upTo(1));
+    await lib.markRead(KEY, "c1", true);
+    return { lib, store };
+  }
+
+  const standings = async (lib: Library, opts: { caughtUpOnly?: boolean } = {}) =>
+    Object.fromEntries((await lib.getActivity(opts)).map((a) => [a.chapterId, a.behind ?? "caught-up"]));
+
+  test("a chapter landing on a caught-up series carries no standing and is in both feeds", async () => {
+    const { lib } = await caughtUp();
+    const res = await lib.syncChapters(KEY, upTo(2));
+
+    expect(res.fresh.map((c) => c.id)).toEqual(["c2"]);
+    expect(res.joined).toEqual([]);
+    expect(res.unseen).toEqual([]);
+    expect(await standings(lib)).toEqual({ c2: "caught-up" });
+    expect(await standings(lib, CAUGHT_UP)).toEqual({ c2: "caught-up" });
+    expect(await lib.unreadActivityCount(undefined, CAUGHT_UP)).toBe(1);
+  });
+
+  test("a series the reader never started stays out of the caught-up feed and off its count", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, upTo(1));
+    const res = await lib.syncChapters(KEY, upTo(2));
+
+    expect(res.fresh.map((c) => c.id)).toEqual(["c2"]);
+    expect(res.unseen.map((c) => c.id)).toEqual(["c2"]);
+    expect(await standings(lib, CAUGHT_UP)).toEqual({});
+    expect(await lib.unreadActivityCount(undefined, CAUGHT_UP)).toBe(0);
+    // The chapter is still recorded: the full feed has it, and the library's unread count rises.
+    expect(await standings(lib)).toEqual({ c2: "unseen" });
+    expect(await lib.unreadActivityCount()).toBe(1);
+    expect((await lib.getLibrary())[0]?.unreadCount).toBe(2);
+  });
+
+  test("a series with no chapters yet has nothing to be behind on", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, []);
+    const res = await lib.syncChapters(KEY, upTo(1));
+
+    expect(res.fresh.map((c) => c.id)).toEqual(["c1"]);
+    expect(await standings(lib, CAUGHT_UP)).toEqual({ c1: "caught-up" });
+  });
+
+  test("a second chapter while the first is unread joins the row it already has", async () => {
+    const { lib } = await caughtUp();
+    await lib.syncChapters(KEY, upTo(2));
+    const res = await lib.syncChapters(KEY, upTo(3));
+
+    expect(res.joined.map((c) => c.id)).toEqual(["c3"]);
+    expect(res.unseen).toEqual([]);
+    expect(await standings(lib, CAUGHT_UP)).toEqual({ c2: "caught-up", c3: "joined" });
+    expect(await lib.unreadActivityCount(undefined, CAUGHT_UP)).toBe(2);
+
+    // A joined chapter is itself part of the row, so the one after it joins too.
+    const next = await lib.syncChapters(KEY, upTo(4));
+    expect(next.joined.map((c) => c.id)).toEqual(["c4"]);
+  });
+
+  test("chapters landing in one sync share the standing the series had before it", async () => {
+    const { lib } = await caughtUp();
+    const res = await lib.syncChapters(KEY, upTo(3));
+
+    expect(res.fresh.map((c) => c.id)).toEqual(["c2", "c3"]);
+    expect(res.joined).toEqual([]);
+    expect(await standings(lib, CAUGHT_UP)).toEqual({ c2: "caught-up", c3: "caught-up" });
+  });
+
+  test("marking the row read is catching up: the next chapter is news again", async () => {
+    const { lib } = await caughtUp();
+    await lib.syncChapters(KEY, upTo(2));
+    await lib.markActivityRead("demo", "s1", CAUGHT_UP);
+    const res = await lib.syncChapters(KEY, upTo(3));
+
+    expect(res.joined).toEqual([]);
+    expect(res.unseen).toEqual([]);
+    expect((await standings(lib, CAUGHT_UP)).c3).toBe("caught-up");
+  });
+
+  test("clearing the row unread leaves the next chapter out, until the reader catches up", async () => {
+    const { lib } = await caughtUp();
+    await lib.syncChapters(KEY, upTo(2));
+    await lib.clearActivityForEntry("demo", "s1");
+
+    const res = await lib.syncChapters(KEY, upTo(3));
+    expect(res.unseen.map((c) => c.id)).toEqual(["c3"]);
+    expect(await standings(lib, CAUGHT_UP)).toEqual({});
+    expect((await lib.getLibrary())[0]?.unreadCount).toBe(2);
+
+    await lib.markRead(KEY, "c2", true);
+    await lib.markRead(KEY, "c3", true);
+    await lib.syncChapters(KEY, upTo(4));
+    expect(await standings(lib, CAUGHT_UP)).toEqual({ c4: "caught-up" });
+  });
+
+  test("a row whose chapters are all read is not one to join", async () => {
+    const { lib } = await caughtUp();
+    await lib.syncChapters(KEY, upTo(2));
+    await lib.markRead(KEY, "c2", true);
+    await lib.markRead(KEY, "c1", false); // behind again, on a chapter the feed never held
+
+    const res = await lib.syncChapters(KEY, upTo(3));
+    expect(res.joined).toEqual([]);
+    expect(res.unseen.map((c) => c.id)).toEqual(["c3"]);
+  });
+
+  test("standing is judged per language", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    const base = [chg("e1", 1, "g", "en"), chg("j1", 1, "g", "ja")];
+    await lib.syncChapters(KEY, base);
+    await lib.markRead(KEY, "e1", true); // caught up in English; never opened the Japanese
+
+    const res = await lib.syncChapters(KEY, [...base, chg("e2", 2, "g", "en"), chg("j2", 2, "g", "ja")]);
+    expect(res.fresh.map((c) => c.id)).toEqual(["e2", "j2"]);
+    expect(res.unseen.map((c) => c.id)).toEqual(["j2"]);
+    expect(await standings(lib, CAUGHT_UP)).toEqual({ e2: "caught-up" });
+
+    // The English row doesn't make the next Japanese chapter a joiner: it has no row of its own.
+    const more = await lib.syncChapters(KEY, [
+      ...base,
+      chg("e2", 2, "g", "en"),
+      chg("j2", 2, "g", "ja"),
+      chg("e3", 3, "g", "en"),
+      chg("j3", 3, "g", "ja"),
+    ]);
+    expect(more.joined.map((c) => c.id)).toEqual(["e3"]);
+    expect(more.unseen.map((c) => c.id)).toEqual(["j3"]);
+  });
+
+  test("a translation new to the series is one the reader has read nothing of", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    const base = [chg("e1", 1, "g", "en")];
+    await lib.syncChapters(KEY, base);
+    await lib.markRead(KEY, "e1", true);
+
+    const res = await lib.syncChapters(KEY, [...base, chg("f1", 1, "g", "fr")]);
+    expect(res.unseen.map((c) => c.id)).toEqual(["f1"]);
+    expect(await standings(lib, CAUGHT_UP)).toEqual({});
+  });
+
+  test("marking a caught-up row read leaves the chapters it never listed unread", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    const base = [chg("e1", 1, "g", "en"), chg("j1", 1, "g", "ja")];
+    await lib.syncChapters(KEY, base);
+    await lib.markRead(KEY, "e1", true);
+    await lib.syncChapters(KEY, [...base, chg("e2", 2, "g", "en"), chg("j2", 2, "g", "ja")]);
+
+    expect((await lib.markActivityRead("demo", "s1", CAUGHT_UP)).marked).toBe(1);
+    const feed = await lib.getActivity();
+    expect(feed.find((a) => a.chapterId === "e2")?.read).toBe(true);
+    expect(feed.find((a) => a.chapterId === "j2")?.read).toBe(false);
+
+    // Without the option the whole entry is marked, as before.
+    expect((await lib.markActivityRead("demo", "s1")).marked).toBe(1);
+    expect((await lib.getActivity()).every((a) => a.read)).toBe(true);
+  });
+
+  test("an item recorded before the field existed is shown, and is a row to join", async () => {
+    const { lib, store } = await caughtUp();
+    await lib.syncChapters(KEY, upTo(2));
+    // What an older build wrote: the same item, no standing on it.
+    const [legacy] = await store.listActivity();
+    expect(legacy).not.toHaveProperty("behind");
+
+    expect(await standings(lib, CAUGHT_UP)).toEqual({ c2: "caught-up" });
+    const res = await lib.syncChapters(KEY, upTo(3));
+    expect(res.joined.map((c) => c.id)).toEqual(["c3"]);
+  });
+
+  test("a chapter the feed already knew is counted in no standing", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, upTo(1));
+    await lib.syncChapters(KEY, upTo(2)); // c2 recorded, unseen
+
+    await lib.syncChapters(KEY, upTo(1));
+    const again = await lib.syncChapters(KEY, upTo(2));
+    expect(again.added.map((c) => c.id)).toEqual(["c2"]);
+    expect(again.fresh).toEqual([]);
+    expect(again.unseen).toEqual([]);
+  });
+
+  test("the schema takes the two standings and nothing else", () => {
+    const item = { bridgeId: "demo", seriesId: "s1", chapterId: "c1", title: "Series One", detectedAt: 1 };
+    expect(activityItemSchema.safeParse(item).success).toBe(true);
+    expect(activityItemSchema.safeParse({ ...item, behind: "joined" }).success).toBe(true);
+    expect(activityItemSchema.safeParse({ ...item, behind: "unseen" }).success).toBe(true);
+    expect(activityItemSchema.safeParse({ ...item, behind: "ahead" }).success).toBe(false);
   });
 });
 

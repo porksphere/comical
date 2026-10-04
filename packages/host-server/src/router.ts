@@ -1241,7 +1241,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       );
     });
 
-    // Activity feed — newly-detected chapters across the library (a "new chapters" news feed)
+    // Activity feed — newly-detected chapters across the library (a "new chapters" news feed).
+    // `?caughtUp=1` is the client's choice of feed, so it rides every request that reads or acts on one.
+    const caughtUpOnly = (c: Context): { caughtUpOnly?: boolean } =>
+      c.req.query("caughtUp") === "1" ? { caughtUpOnly: true } : {};
     app.get("/library/activity", async (c) => {
       const limit = c.req.query("limit");
       const unread = c.req.query("unread");
@@ -1249,12 +1252,13 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         await lib.getActivity({
           ...(limit ? { limit: Number(limit) } : {}),
           ...(unread === "1" ? { unreadOnly: true } : {}),
+          ...caughtUpOnly(c),
         }),
       );
     });
     app.get("/library/activity/count", async (c) => {
       const since = c.req.query("since");
-      return c.json({ unread: await lib.unreadActivityCount(since ? Number(since) : undefined) });
+      return c.json({ unread: await lib.unreadActivityCount(since ? Number(since) : undefined, caughtUpOnly(c)) });
     });
     app.delete("/library/activity", async (c) => {
       await lib.clearActivity();
@@ -1273,8 +1277,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.post("/library/activity/:bridgeId/:seriesId/read", async (c) =>
       withCollectedSeries(c, () =>
         runtime
-          ? runtime.markActivityRead(c.req.param("bridgeId"), c.req.param("seriesId"))
-          : lib.markActivityRead(c.req.param("bridgeId"), c.req.param("seriesId")),
+          ? runtime.markActivityRead(c.req.param("bridgeId"), c.req.param("seriesId"), caughtUpOnly(c))
+          : lib.markActivityRead(c.req.param("bridgeId"), c.req.param("seriesId"), caughtUpOnly(c)),
       ),
     );
 
