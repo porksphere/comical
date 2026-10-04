@@ -72,6 +72,24 @@ describe("bridgeInfoSchema cardSubtitles", () => {
   });
 });
 
+describe("bridgeInfoSchema ratings", () => {
+  test("accepts true (bridge whose source has community ratings)", () => {
+    expect(bridgeInfoSchema.parse({ ...BASE, ratings: true }).ratings).toBe(true);
+  });
+
+  test("parses when omitted (backward-compatible; means no ratings)", () => {
+    expect(bridgeInfoSchema.parse({ ...BASE }).ratings).toBeUndefined();
+  });
+
+  test("accepts an explicit false", () => {
+    expect(bridgeInfoSchema.parse({ ...BASE, ratings: false }).ratings).toBe(false);
+  });
+
+  test("rejects a non-boolean", () => {
+    expect(() => bridgeInfoSchema.parse({ ...BASE, ratings: "yes" })).toThrow();
+  });
+});
+
 describe("bridgeInfoSchema assetProxy", () => {
   test("accepts declared hosts with a Referer", () => {
     const info = bridgeInfoSchema.parse({

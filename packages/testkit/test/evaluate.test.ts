@@ -72,6 +72,23 @@ describe("evaluateBridge", () => {
     expect(r.results.find((x) => x.id === "read.details.author")?.severity).toBe("warn");
   });
 
+  test("a rating from a bridge that doesn't declare ratings → fail", async () => {
+    const rated: Bridge["getSeriesDetails"] = async (id) => ({ id, title: "Alpha", rating: { score: 0.8 } });
+    const undeclared = await evaluateBridge(bridge({ getSeriesDetails: rated }));
+    expect(undeclared.summary.verdict).toBe("fail");
+    expect(undeclared.results.find((x) => x.id === "read.details.ratingDeclared")?.severity).toBe("fail");
+
+    const declared = await evaluateBridge(
+      bridge({ info: { ...INFO(["search"]), ratings: true }, getSeriesDetails: rated }),
+    );
+    expect(declared.results.some((x) => x.id === "read.details.ratingDeclared")).toBe(false);
+  });
+
+  test("declaring ratings without rating the sampled series is fine (it may simply be unrated)", async () => {
+    const r = await evaluateBridge(bridge({ info: { ...INFO(["search"]), ratings: true } }));
+    expect(r.summary.verdict).toBe("pass");
+  });
+
   test("id round-trip mismatch → fail", async () => {
     const r = await evaluateBridge(
       bridge({ getSeriesDetails: async () => ({ id: "WRONG", title: "Alpha", status: "completed" }) }),

@@ -175,10 +175,44 @@ export const creditSchema = z.object({
 });
 export type Credit = z.infer<typeof creditSchema>;
 
+/**
+ * A series' community score, on ONE scale for every source. Sources disagree about the scale (out
+ * of 5, 10 or 100; stars, percentages), so the bridge — the only place that knows its source's —
+ * divides it out, and a client formats the result however it likes without a per-bridge table.
+ * Not to be confused with `contentRating`, which is an age classification.
+ */
+export const seriesRatingSchema = z.object({
+  /** 0 (worst) to 1 (best): a 7.9 out of 10 is 0.79, four stars of five is 0.8. */
+  score: z.number().min(0).max(1),
+  /** How many ratings `score` averages, when the source reports it. */
+  votes: z.number().int().nonnegative().optional(),
+});
+export type SeriesRating = z.infer<typeof seriesRatingSchema>;
+
+/**
+ * One labeled fact about a series that a client only ever PRINTS — a release year, a view count, a
+ * publisher, a serialization. Presentation-as-data, like {@link cardBadgeSchema}: the bridge picks
+ * the label and formats the value, and every client renders the pair as one more metadata cell.
+ * Anything a client acts on (links, filters, sorts, compares across sources) gets a typed field
+ * instead; this is for the long tail that differs per source and means nothing off its own page.
+ */
+export const infoCellSchema = z.object({
+  /** Short caption, e.g. "Year". Clients may restyle its casing. */
+  label: z.string().min(1).max(32),
+  /** The value as it should read, already formatted by the bridge (e.g. "2023", "716.5K"). */
+  value: z.string().min(1).max(80),
+});
+export type InfoCell = z.infer<typeof infoCellSchema>;
+
 /** Full detail for a single series. */
 export const seriesInfoSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
+  /**
+   * Other names this series goes by — translations, romanizations, the original-script title —
+   * excluding `title` itself. Unordered and untagged by language: sources rarely say which is which.
+   */
+  altTitles: z.array(z.string().min(1)).optional(),
   /** Cover image — absolute URL or server-relative path; see {@link seriesEntrySchema}'s `thumbnailUrl`. */
   thumbnailUrl: z.string().min(1).optional(),
   /**
@@ -228,6 +262,16 @@ export const seriesInfoSchema = z.object({
   pageCount: z.number().int().positive().optional(),
   /** This series' content rating (capability "content-rating"). See `seriesEntrySchema.contentRating`. */
   contentRating: contentRatingSchema.optional(),
+  /**
+   * This series' community score. Only meaningful from a bridge that declares `BridgeInfo.ratings`;
+   * such a bridge omits it for a series nobody has rated yet.
+   */
+  rating: seriesRatingSchema.optional(),
+  /**
+   * Further print-only facts, in the order the bridge wants them shown after the typed metadata
+   * (status, type, credits, rating). See {@link infoCellSchema} for what belongs here.
+   */
+  infoCells: z.array(infoCellSchema).max(12).optional(),
   /**
    * A user-facing URL for this series on the source site, for sharing outside the app (e.g. a
    * share sheet). Distinct from any bridge-internal id — this must be a URL a browser can open.
@@ -743,6 +787,14 @@ export const bridgeInfoSchema = z.object({
    * and optional — omitted means "no subtitles".
    */
   cardSubtitles: z.boolean().optional(),
+  /**
+   * Whether this bridge's source has community ratings, i.e. whether its series details can carry
+   * a `rating`. Declared up front, like `cardSubtitles`, because a missing `rating` alone can't tell
+   * a client which of two things happened: the source has no ratings at all (omitted here — clients
+   * show no rating UI anywhere for this bridge), or it does and this one series is unrated (declared
+   * here — clients may say so). Additive and optional — omitted means "no ratings".
+   */
+  ratings: z.boolean().optional(),
   /** Absolute URL (or data URI) to a small square icon representing the bridge/source. Optional. */
   iconUrl: z.string().url().optional(),
   /**

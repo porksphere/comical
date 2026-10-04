@@ -352,6 +352,11 @@ export async function evaluateBridge(
       } else pass("core", "read.detailsRoundTrip", "details round-trip the sampled id");
       if (!details.author) warn("core", "read.details.author", "series details have no author");
       if (!details.description) warn("core", "read.details.description", "series details have no description");
+      // A client shows rating UI only for a bridge that declares it, so an undeclared one is sending
+      // a score nobody will see.
+      if (details.rating && !bridge.info.ratings) {
+        fail("core", "read.details.ratingDeclared", "series details carry a rating but info.ratings is not declared");
+      }
       const genreGroup = details.tagGroups?.find((g) => g.kind === "genre");
       if (!genreGroup || genreGroup.tags.length === 0)
         warn("core", "read.details.genres", 'series details have no genre tag group (kind: "genre")');

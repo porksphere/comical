@@ -15,6 +15,7 @@ import {
   type CheerioRoot,
   type Filter,
   type InferSettings,
+  type InfoCell,
   type ListRequest,
   type Page,
   type PagedResults,
@@ -88,6 +89,8 @@ class ExampleBridge extends BridgeBase<Settings> {
     // Entries carry an author subtitle (see `entry.subtitle` below) — clients reserve the card
     // sub-line for this bridge's grids.
     cardSubtitles: true,
+    // The demo library scores its series (see `info.rating` below), so clients show a rating for it.
+    ratings: true,
     iconUrl: "https://example.com/favicon.ico",
   };
 
@@ -319,6 +322,26 @@ class ExampleBridge extends BridgeBase<Settings> {
     if (cover) info.thumbnailUrl = this.resolve(this.base(), cover);
     if (tagGroups.length > 0) info.tagGroups = tagGroups;
     if (relatedSeriesGroups.length > 0) info.relatedSeriesGroups = relatedSeriesGroups;
+
+    const altTitles = liText("ul.alt-titles > li");
+    if (altTitles.length > 0) info.altTitles = altTitles;
+
+    // The site scores out of five stars; the contract wants 0–1, so the scale is divided out here.
+    const ratingEl = article.find(".rating").first();
+    const stars = Number(ratingEl.attr("data-stars"));
+    if (ratingEl.length > 0 && Number.isFinite(stars)) {
+      info.rating = { score: Math.min(1, Math.max(0, stars / 5)) };
+      const votes = Number(ratingEl.attr("data-votes"));
+      if (Number.isInteger(votes) && votes >= 0) info.rating.votes = votes;
+    }
+
+    // Whatever else the site lists goes through as-is: nothing here is acted on, only shown.
+    const infoCells: InfoCell[] = article
+      .find("dl.facts > dt")
+      .toArray()
+      .map((dt) => ({ label: $(dt).text().trim(), value: $(dt).next("dd").text().trim() }))
+      .filter((c) => c.label && c.value);
+    if (infoCells.length > 0) info.infoCells = infoCells;
     return info;
   }
 

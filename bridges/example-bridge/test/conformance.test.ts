@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { loadBridge } from "@comical/core";
-import { FixtureBackend, fixtureHost, runConformance } from "@comical/testkit";
+import { DEFAULT_CATALOG, FixtureBackend, fixtureHost, runConformance } from "@comical/testkit";
 
 const BUNDLE = readFileSync(join(import.meta.dir, "..", "dist", "bridge.js"), "utf8");
 
@@ -70,6 +70,44 @@ describe("example-bridge", () => {
     // The same parsing path feeds list results.
     const list = await bridge.getListItems!("latest");
     expect(list.items[0]!.badges?.some((b) => b.text === "EN")).toBe(true);
+  });
+
+  test("declares ratings and converts the site's five-star score to the contract's 0–1", async () => {
+    const bridge = await load();
+    expect(bridge.info.ratings).toBe(true);
+    const details = await bridge.getSeriesDetails("odyssey");
+    expect(details.rating).toEqual({ score: 0.9, votes: 1280 });
+  });
+
+  test("parses alternate titles and the site's label/value facts", async () => {
+    const bridge = await load();
+    const details = await bridge.getSeriesDetails("odyssey");
+    expect(details.altTitles).toEqual(["Odysseia", "Ὀδύσσεια", "L'Odyssée"]);
+    expect(details.infoCells).toEqual([
+      { label: "Year", value: "-700" },
+      { label: "Views", value: "48.2K" },
+    ]);
+  });
+
+  test("omits the optional metadata for a series the site has none for", async () => {
+    const bridge = await load();
+    const details = await bridge.getSeriesDetails("sherlock");
+    expect(details.altTitles).toBeUndefined();
+    expect(details.rating).toBeUndefined();
+    expect(details.infoCells).toBeUndefined();
+  });
+
+  test("a rating with no vote count, and one outside the site's scale, still validate", async () => {
+    const catalog = structuredClone(DEFAULT_CATALOG);
+    catalog.find((s) => s.id === "alice")!.rating = { stars: 3 };
+    catalog.find((s) => s.id === "sherlock")!.rating = { stars: 7, votes: 2 };
+    const bridge = await loadBridge({
+      code: BUNDLE,
+      capabilities: fixtureHost(new FixtureBackend(catalog)),
+      expectedId: "example",
+    });
+    expect((await bridge.getSeriesDetails("alice")).rating).toEqual({ score: 0.6 });
+    expect((await bridge.getSeriesDetails("sherlock")).rating).toEqual({ score: 1, votes: 2 });
   });
 
   test("parses related-series rails into labeled, kinded groups", async () => {

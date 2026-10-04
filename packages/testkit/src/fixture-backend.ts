@@ -24,6 +24,8 @@ export interface FixtureChapter {
 export interface FixtureSeries {
   id: string;
   title: string;
+  /** Other names the series goes by (optional). */
+  altTitles?: string[];
   author: string;
   description: string;
   genres: string[];
@@ -35,6 +37,10 @@ export interface FixtureSeries {
    */
   related?: Array<{ label: string; kind?: string; ids: string[] }>;
   status: "ongoing" | "completed" | "hiatus";
+  /** Reader score in this site's own unit — stars out of five — so a bridge has a scale to convert (optional). */
+  rating?: { stars: number; votes?: number };
+  /** Label/value facts the site lists on the detail page, verbatim (optional). */
+  facts?: Array<{ label: string; value: string }>;
   chapters: FixtureChapter[];
 }
 
@@ -96,7 +102,7 @@ export const DEFAULT_CATALOG: FixtureSeries[] = [
   { id: "huck-finn", title: "Adventures of Huckleberry Finn", author: "Mark Twain", description: "A raft journey down the great river.", genres: ["Adventure"], status: "ongoing", chapters: chaps("huck-finn", 4) },
   { id: "wuthering", title: "Wuthering Heights", author: "Emily Bronte", description: "A doomed romance on the moors.", genres: ["Gothic", "Drama"], status: "completed", chapters: chaps("wuthering") },
   { id: "jane-eyre", title: "Jane Eyre", author: "Charlotte Bronte", description: "A governess and the secrets of Thornfield.", genres: ["Gothic", "Romance"], status: "completed", chapters: chaps("jane-eyre", 3) },
-  { id: "odyssey", title: "The Odyssey", author: "Homer", description: "A hero's long voyage home from Troy.", genres: ["Adventure", "Fantasy"], status: "completed", chapters: chaps("odyssey", 4) },
+  { id: "odyssey", title: "The Odyssey", altTitles: ["Odysseia", "Ὀδύσσεια", "L'Odyssée"], author: "Homer", description: "A hero's long voyage home from Troy.", genres: ["Adventure", "Fantasy"], status: "completed", rating: { stars: 4.5, votes: 1280 }, facts: [{ label: "Year", value: "-700" }, { label: "Views", value: "48.2K" }], chapters: chaps("odyssey", 4) },
   { id: "metamorphosis", title: "The Metamorphosis", author: "Franz Kafka", description: "A man wakes transformed into an insect.", genres: ["Horror", "Drama"], status: "completed", chapters: chaps("metamorphosis", 1) },
   { id: "raven", title: "The Raven and Other Poems", author: "Edgar Allan Poe", description: "Macabre verse and a midnight visitor.", genres: ["Horror", "Gothic"], status: "completed", chapters: chaps("raven") },
   { id: "peter-pan", title: "Peter Pan", author: "J. M. Barrie", description: "The boy who wouldn't grow up.", genres: ["Fantasy", "Adventure"], status: "ongoing", chapters: chaps("peter-pan", 3) },
@@ -318,10 +324,20 @@ export class FixtureBackend {
       s.title,
       `<article class="series" data-id="${esc(s.id)}">` +
         `<h1 class="title">${esc(s.title)}</h1>` +
+        (s.altTitles?.length
+          ? `<ul class="alt-titles">${s.altTitles.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>`
+          : "") +
         `<img class="cover" src="${esc(cover(s.id))}">` +
         `<div class="author">${esc(s.author)}</div>` +
         `<div class="status">${esc(s.status)}</div>` +
         `<p class="description">${esc(s.description)}</p>` +
+        (s.rating
+          ? `<div class="rating" data-stars="${s.rating.stars}"` +
+            `${s.rating.votes === undefined ? "" : ` data-votes="${s.rating.votes}"`}></div>`
+          : "") +
+        (s.facts?.length
+          ? `<dl class="facts">${s.facts.map((f) => `<dt>${esc(f.label)}</dt><dd>${esc(f.value)}</dd>`).join("")}</dl>`
+          : "") +
         `<ul class="genres">${s.genres.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>` +
         (s.tagGroups ?? [])
           .map(
