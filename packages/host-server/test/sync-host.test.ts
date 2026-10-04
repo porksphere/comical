@@ -3,18 +3,23 @@
  * lands in it and its own writes reach the phone.
  */
 import { join } from "node:path";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, test } from "bun:test";
+import type { SettingDescriptor, SettingValue } from "@comical/contract";
 import { entryKey, InMemoryLibraryStore, Library, type LibraryStore } from "@comical/library";
 import {
+  bridgeSettingsSyncStore,
   composeSyncStores,
   LIBRARY_TABLES,
   librarySyncStore,
   REGISTRY_TABLES,
   registrySyncStore,
+  SETTINGS_TABLES,
   SyncEngine,
+  wrapBridgeSettings,
   wrapLibraryStore,
   wrapRegistryProvider,
+  type BridgeSettingsProvider,
   type SyncedRegistry,
 } from "@comical/sync";
 import { createSyncHost, type SyncHostOptions } from "../src/sync-host.ts";
@@ -44,18 +49,45 @@ function fakeRegistry() {
   return reg;
 }
 
-function hostOptions(store: LibraryStore = new InMemoryLibraryStore()): SyncHostOptions<SyncedRegistry> {
+const BRIDGE_SETTINGS: SettingDescriptor[] = [
+  { type: "boolean", key: "dataSaver", label: "Data saver" },
+  { type: "string", key: "password", label: "Password", secret: true },
+];
+
+/** Bridges over maps: `declares` is what can be loaded, `stored` what each has saved. */
+function fakeBridges(ids: string[] = ["bridge-a"]) {
+  const declares = new Map(ids.map((id) => [id, BRIDGE_SETTINGS]));
+  const stored = new Map<string, Record<string, SettingValue>>();
+  const provider: BridgeSettingsProvider = {
+    get: async (id) => {
+      const descriptors = declares.get(id);
+      if (!descriptors) throw new Error(`bridge not found: ${id}`);
+      return { getSettings: () => descriptors };
+    },
+    storedSettings: async (id) => ({ ...stored.get(id) }),
+    updateSettings: async (id, values) => {
+      const next = { ...stored.get(id), ...values };
+      stored.set(id, next);
+      return { ...next };
+    },
+  };
+  return { ...provider, declares, stored };
+}
+
+function hostOptions(store: LibraryStore = new InMemoryLibraryStore()): SyncHostOptions<SyncedRegistry, ReturnType<typeof fakeBridges>> {
   const registry = fakeRegistry();
-  return { dir: DIR, store, registry, lists: registry, log: quiet };
+  return { dir: DIR, store, registry, bridges: fakeBridges(), lists: registry, log: quiet };
 }
 
 function phone(backend: ReturnType<typeof createSyncHost>["backend"], id = "phone", name = "A phone") {
   const inner = new InMemoryLibraryStore();
   const registry = fakeRegistry();
+  const bridges = fakeBridges();
   const engine = new SyncEngine({
     store: composeSyncStores([
       [LIBRARY_TABLES, librarySyncStore(inner)],
       [REGISTRY_TABLES, registrySyncStore(registry, { log: quiet })],
+      [SETTINGS_TABLES, bridgeSettingsSyncStore(bridges, { log: quiet })],
     ]),
     backend,
     device: id,
@@ -68,6 +100,8 @@ function phone(backend: ReturnType<typeof createSyncHost>["backend"], id = "phon
     library: new Library(wrapLibraryStore(inner, engine)),
     registry: wrapRegistryProvider(registry, registry, engine),
     held: registry,
+    bridges: wrapBridgeSettings(bridges, engine),
+    settings: bridges.stored,
   };
 }
 
@@ -195,6 +229,64 @@ describe("createSyncHost", () => {
     down = false;
     await host.flush();
     expect(await opts.lists.installed()).toEqual([{ id: "bridge-one", registryUrl: REG }]);
+  });
+
+  test("a bridge preference set on the phone is stored on the server and back, and a login stays where it was typed", async () => {
+    const opts = hostOptions();
+    const host = createSyncHost(opts);
+    await host.ready;
+    const p = phone(host.backend);
+
+    await p.bridges.updateSettings("bridge-a", { dataSaver: true, password: "phone's" });
+    await p.engine.sync();
+    await host.flush();
+    expect(opts.bridges.stored.get("bridge-a")).toEqual({ dataSaver: true });
+
+    await host.bridges.updateSettings("bridge-a", { dataSaver: false, password: "server's", excludedTags: ["gore"] });
+    await host.flush();
+    await p.engine.sync();
+    expect(p.settings.get("bridge-a")).toEqual({ dataSaver: false, password: "phone's", excludedTags: ["gore"] });
+    // Neither password is anywhere in what the hub keeps.
+    const segments = join(DIR, "segments");
+    const kept = (await Promise.all((await readdir(segments)).map((f) => readFile(join(segments, f), "utf8")))).join();
+    expect(kept).toContain("dataSaver");
+    expect(kept).not.toContain("password");
+    expect(kept).not.toContain("server's");
+    expect(kept).not.toContain("phone's");
+  });
+
+  test("a fresh hub starts from the preferences of the bridges the server has installed", async () => {
+    const opts = hostOptions();
+    await opts.registry.install(REG, "bridge-a");
+    opts.bridges.stored.set("bridge-a", { dataSaver: true, password: "server's" });
+    opts.bridges.stored.set("bridge-gone", { dataSaver: true });
+    const host = createSyncHost(opts);
+    await host.ready;
+    const p = phone(host.backend);
+    await p.engine.sync();
+    expect(p.settings.get("bridge-a")).toEqual({ dataSaver: true });
+    expect(p.settings.has("bridge-gone")).toBe(false);
+  });
+
+  test("a preference for a bridge the server can't load yet is stored once it can, and counts as applied", async () => {
+    const opts = hostOptions();
+    opts.bridges.declares.clear();
+    let applied = 0;
+    const host = createSyncHost({ ...opts, onApplied: () => applied++ });
+    await host.ready;
+    const p = phone(host.backend);
+    await p.bridges.updateSettings("bridge-a", { dataSaver: true });
+    await p.engine.sync();
+    await host.flush();
+    expect(opts.bridges.stored.has("bridge-a")).toBe(false);
+    const before = applied;
+
+    opts.bridges.declares.set("bridge-a", BRIDGE_SETTINGS);
+    await host.flush();
+    expect(opts.bridges.stored.get("bridge-a")).toEqual({ dataSaver: true });
+    expect(applied).toBe(before + 1);
+    // Stored from the phone's record, so there is nothing of the server's to send back.
+    expect(host.engine.hasUnsent()).toBe(false);
   });
 
   test("onApplied fires when another device's records change this server, not for its own writes", async () => {

@@ -62,6 +62,8 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
     registry,
     hostUrl: `http://localhost:${opts.port ?? 3100}`,
   });
+  // What the router writes settings through; with sync on, the recording one.
+  let bridges = manager;
 
   const port = opts.port ?? 3100;
   const routerOpts: RouterOptions = {
@@ -100,6 +102,7 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
         dir: syncDir,
         store,
         registry,
+        bridges: manager,
         lists: {
           registries: () => manifest.allRegistries(),
           installed: () => manifest.allInstalled(),
@@ -110,6 +113,7 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
       routerOpts.sync = host.backend;
       // The router's installs are recorded; the managers keep the plain one, they only read.
       routerOpts.registry = host.registry;
+      bridges = host.bridges;
     }
     const lib = new Library(store);
     // Rebuild series items from a pre-collections entries.json, if one is still there. Everything
@@ -149,7 +153,7 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
     routerOpts.downloads = downloads;
     routerOpts.downloadEngine = engine;
   }
-  const router = createRouter(manager, routerOpts);
+  const router = createRouter(bridges, routerOpts);
   routerFetch = (req) => router.fetch(req);
   engine?.kick(); // resume any downloads interrupted by the previous run
 

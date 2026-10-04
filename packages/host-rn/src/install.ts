@@ -22,6 +22,7 @@ import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
 import { EmbeddedTrackerProvider } from "./tracker-provider.ts";
 import { createEmbeddedTransport, type EmbeddedLibrary } from "./transport.ts";
 import type {
+  BridgeProvider,
   CreateRouter,
   DownloadsStore,
   EmbeddedCoversConfig,
@@ -95,6 +96,12 @@ export interface EmbeddedRuntimeConfig {
    * bridge and tracker providers keep the plain one: they only read.
    */
   decorateRegistry?: (registry: RegistryProvider) => RegistryProvider;
+  /**
+   * Wraps the bridge provider the router writes settings through — what `@comical/sync`'s
+   * `wrapBridgeSettings` does, so a setting changed from the app's own screens is recorded. The
+   * runtime and the registry keep the plain one.
+   */
+  decorateBridges?: (bridges: BridgeProvider) => BridgeProvider;
   /** Optional sink for the embedded runtime's own diagnostics — currently the best-effort tracker
    *  pushes that happen after a read. Those are fire-and-forget by design, so without this a failing
    *  push (expired token, offline) is invisible on-device: nothing in the UI would ever report it.
@@ -225,7 +232,7 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
   activeSetTransport = config.setTransport;
   activeEngine = embeddedEngine ?? null;
   transport = createEmbeddedTransport(
-    bridgeProvider,
+    config.decorateBridges ? config.decorateBridges(bridgeProvider) : bridgeProvider,
     config.createRouter,
     config.decorateRegistry ? config.decorateRegistry(registry) : registry,
     embeddedLibrary,

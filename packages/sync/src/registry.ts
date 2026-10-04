@@ -3,7 +3,7 @@
  * installed from them. The record is the INTENT, not the install — "this registry, with this
  * signature policy" and "this bridge, from this registry" — so a device receiving one performs its
  * own add or install (fetching the index, downloading and verifying the bundle) and keeps its own
- * versions and paths. Bridge settings never travel: they hold logins.
+ * versions and paths. A bridge's settings are their own table (`./settings.ts`).
  *
  * An install is a network operation that can fail while the sync round itself succeeded, and a
  * throw from `write` would hold every record behind it in the same pull — a dead registry must not

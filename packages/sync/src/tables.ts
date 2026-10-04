@@ -2,8 +2,10 @@
  * The sync allow-list. Anything not named here does not sync, so a new store never starts syncing by
  * accident — it has to be opted in, with a merge strategy.
  *
- * Bridge SETTINGS are deliberately absent: they hold logins and cookies, and a change log is a copy
- * of everything it has ever carried.
+ * A bridge's settings hold its logins beside its preferences, and a change log is a copy of
+ * everything it has ever carried. So `bridgeSettings` carries one record per setting, and only the
+ * settings `./settings.ts` lets through: a login never becomes a record. Tracker settings are all
+ * login, and have no table.
  */
 export type Strategy = "register" | "set" | "progress" | "event";
 
@@ -12,6 +14,7 @@ export const TABLE_STRATEGY = {
   registries: "set",
   installed: "set",
   installedTrackers: "set",
+  bridgeSettings: "register",
   bridgePrefs: "register",
   groups: "register",
   collections: "register",
@@ -38,6 +41,7 @@ const SEP = String.fromCharCode(0);
 export const compositeId = {
   progress: (entryKey: string, chapterId: string): string => `${entryKey}${SEP}${chapterId}`,
   trackerLink: (entryKey: string, trackerId: string): string => `${entryKey}${SEP}${trackerId}`,
+  bridgeSetting: (bridgeId: string, key: string): string => `${bridgeId}${SEP}${key}`,
 };
 
 export function splitCompositeId(id: string): [string, string] {

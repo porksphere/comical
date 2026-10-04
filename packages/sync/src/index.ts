@@ -79,3 +79,12 @@ export {
   type RegistrySyncStore,
   type SyncedRegistry,
 } from "./registry.ts";
+export {
+  adoptBridgeSettings,
+  bridgeSettingsSyncStore,
+  SETTINGS_TABLES,
+  wrapBridgeSettings,
+  type BridgeSettingsProvider,
+  type BridgeSettingsSyncOptions,
+  type BridgeSettingsSyncStore,
+} from "./settings.ts";

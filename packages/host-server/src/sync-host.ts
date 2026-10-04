@@ -14,17 +14,22 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import type { LibraryStore } from "@comical/library";
 import {
+  adoptBridgeSettings,
   adoptLibrary,
   adoptRegistry,
+  bridgeSettingsSyncStore,
   composeSyncStores,
   LIBRARY_TABLES,
   librarySyncStore,
   REGISTRY_TABLES,
   registrySyncStore,
+  SETTINGS_TABLES,
   SyncEngine,
   SyncHub,
+  wrapBridgeSettings,
   wrapLibraryStore,
   wrapRegistryProvider,
+  type BridgeSettingsProvider,
   type PullRequest,
   type RegistryLists,
   type RegistryMutations,
@@ -42,11 +47,13 @@ export interface SyncDevice {
   lastSeenAt: number;
 }
 
-export interface SyncHost<R extends RegistryMutations = RegistryMutations> {
+export interface SyncHost<R extends RegistryMutations = RegistryMutations, B extends BridgeSettingsProvider = BridgeSettingsProvider> {
   /** The store to build the server's `Library` over; writes through it are recorded. */
   store: LibraryStore;
   /** The registry to hand the router; installs and adds through it are recorded. */
   registry: R;
+  /** The bridges to hand the router; a settings change through it is recorded. */
+  bridges: B;
   /** What `/sync` serves. A push through it also brings this server's own library up to date. */
   backend: SyncBackend;
   engine: SyncEngine;
@@ -64,9 +71,14 @@ export interface SyncHost<R extends RegistryMutations = RegistryMutations> {
   stop(): void;
 }
 
-export interface SyncHostOptions<R extends RegistryMutations> {
+export interface SyncHostOptions<R extends RegistryMutations, B extends BridgeSettingsProvider = BridgeSettingsProvider> {
   dir: string;
   store: LibraryStore;
+  /**
+   * The server's bridge manager: a preference changed on a phone is stored here too, and one changed
+   * here reaches the phones. A bridge's logins are never read through it for sync.
+   */
+  bridges: B;
   /**
    * The server's registry manager: a phone's install is performed here too, and an install here
    * reaches the phones. Its network failures are retried on later rounds.
@@ -77,8 +89,8 @@ export interface SyncHostOptions<R extends RegistryMutations> {
   /** How long a burst of local writes or pushes is gathered before this server syncs. */
   debounceMs?: number;
   /**
-   * Called after a round changed this server's own library or registry from another device's
-   * records — the moment anything showing them is out of date.
+   * Called after a round changed this server's own library, registry or bridge settings from
+   * another device's records — the moment anything showing them is out of date.
    */
   onApplied?: () => void;
   /** Called when `devices()` has a new answer: a device first seen, renamed, or back for more. */
@@ -87,7 +99,9 @@ export interface SyncHostOptions<R extends RegistryMutations> {
   log?: Pick<Console, "error">;
 }
 
-export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOptions<R>): SyncHost<R> {
+export function createSyncHost<R extends RegistryMutations, B extends BridgeSettingsProvider>(
+  opts: SyncHostOptions<R, B>,
+): SyncHost<R, B> {
   mkdirSync(opts.dir, { recursive: true });
   const statePath = join(opts.dir, "state.json");
   const log = opts.log ?? console;
@@ -101,10 +115,12 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
   const state = readState(statePath, log);
   const registry = { ...opts.lists, ...bind(opts.registry) };
   const registryStore = registrySyncStore(registry, { log });
+  const settingsStore = bridgeSettingsSyncStore(opts.bridges, { log });
   const engine = new SyncEngine({
     store: composeSyncStores([
       [LIBRARY_TABLES, librarySyncStore(opts.store)],
       [REGISTRY_TABLES, registryStore],
+      [SETTINGS_TABLES, settingsStore],
     ]),
     backend: hub,
     // Only ever said to itself: this engine's pulls go to `hub` directly, past the roster.
@@ -122,7 +138,10 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
       .sync()
       .then(async (stats) => {
         await registryStore.retry();
-        if (stats.applied > 0) opts.onApplied?.();
+        // After the registry's, so a setting held for a bridge that just installed lands this round.
+        // Under the engine's lock, so the recording wrapper never takes it for a change made here.
+        const late = await engine.exclusive(() => settingsStore.retry());
+        if (stats.applied > 0 || late > 0) opts.onApplied?.();
       })
       .catch((err: unknown) => log.error("sync: round failed", err));
   function schedule(): void {
@@ -142,6 +161,8 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
     if (tables.length === 0) return;
     await adoptLibrary(opts.store, engine, tables);
     await adoptRegistry(opts.lists, engine, tables);
+    const bridgeIds = (await opts.lists.installed()).map((b) => b.id);
+    await adoptBridgeSettings(opts.bridges, bridgeIds, engine, tables);
     engine.markAdopted();
     await run();
   });
@@ -149,6 +170,7 @@ export function createSyncHost<R extends RegistryMutations>(opts: SyncHostOption
   return {
     store: wrapLibraryStore(opts.store, engine),
     registry: wrapRegistryProvider(opts.registry, opts.lists, engine),
+    bridges: wrapBridgeSettings(opts.bridges, engine),
     backend: {
       push: async (s) => {
         await hub.push(s);

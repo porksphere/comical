@@ -74,6 +74,8 @@ export interface EmbeddedBootstrapConfig {
   onRegistryChange?: () => void;
   /** See `EmbeddedRuntimeConfig.decorateRegistry`. */
   decorateRegistry?: EmbeddedRuntimeConfig["decorateRegistry"];
+  /** See `EmbeddedRuntimeConfig.decorateBridges`. */
+  decorateBridges?: EmbeddedRuntimeConfig["decorateBridges"];
 }
 
 let config: EmbeddedBootstrapConfig | null = null;
@@ -111,5 +113,6 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
     ...(config.onRegistryChange ? { onRegistryChange: config.onRegistryChange } : {}),
     ...(config.decorateRegistry ? { decorateRegistry: config.decorateRegistry } : {}),
+    ...(config.decorateBridges ? { decorateBridges: config.decorateBridges } : {}),
   });
 }

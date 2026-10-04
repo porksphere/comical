@@ -502,7 +502,7 @@ describe("SyncEngine", () => {
     await a.put("collections", "c1", { id: "c1" });
     await a.engine.sync();
     const { adopted: _, ...old } = a.saved()!;
-    expect(device(hub, "a", { state: old }).engine.unadopted()).toEqual(["activity"]);
+    expect(device(hub, "a", { state: old }).engine.unadopted()).toEqual(["bridgeSettings", "activity"]);
   });
 
   test("a device id is required on first run", () => {

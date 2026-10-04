@@ -62,7 +62,7 @@ describe("wire validation", () => {
 
   test("rejects unknown tables, unsafe device ids and unpadded stamps", () => {
     const bad = (patch: (s: Segment) => unknown) => parseSegment(patch(structuredClone(seg("a", 1))));
-    expect(bad((s) => ({ ...s, records: [{ ...s.records[0], table: "bridgeSettings" }] })).ok).toBe(false);
+    expect(bad((s) => ({ ...s, records: [{ ...s.records[0], table: "trackerSettings" }] })).ok).toBe(false);
     expect(bad((s) => ({ ...s, device: "../etc" })).ok).toBe(false);
     expect(bad((s) => ({ ...s, records: [{ ...s.records[0], env: { ...s.records[0]!.env, hlc: "5:0:a" } }] })).ok).toBe(false);
     expect(bad((s) => ({ ...s, seq: 0 })).ok).toBe(false);
