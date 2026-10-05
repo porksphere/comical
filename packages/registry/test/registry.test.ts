@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { join } from "node:path";
 import { readFileSync, rmSync } from "node:fs";
 import {
@@ -18,6 +18,7 @@ import {
   verifyChecksum,
   verifySignature,
 } from "../src/index.ts";
+import { INDEX_MEMO_MS } from "../src/index-memo.ts";
 
 const BUNDLE_PATH = join(import.meta.dir, "..", "..", "..", "bridges", "example-bridge", "dist", "bridge.js");
 const DATA_DIR = join(import.meta.dir, ".tmp-registry");
@@ -267,6 +268,85 @@ describe("fetchIndex + RegistryManager", () => {
     const available = await mgr.browse(registryUrl);
     expect(available[0]!.installedVersion).toBe("0.1.0");
     expect(available[0]!.updateAvailable).toBe(false);
+  });
+
+  describe("a long-lived manager", () => {
+    afterEach(() => setSystemTime());
+
+    /** A registry whose index can be republished, or taken offline, under a running manager. */
+    function republishable() {
+      const state = { version: "0.1.0", down: false };
+      const live = Bun.serve({
+        port: 0,
+        fetch(req): Response {
+          const path = new URL(req.url).pathname;
+          if (path === "/bridge.js") return new Response(bundleBytes);
+          if (path !== "/index.json") return new Response("not found", { status: 404 });
+          if (state.down) return new Response("unavailable", { status: 503 });
+          return Response.json({
+            registryVersion: "1",
+            updated: new Date().toISOString(),
+            bridges: [{
+              id: "example", name: "Example Bridge", version: state.version, contractVersion: "2.0.0",
+              languages: ["en"], nsfw: false, capabilities: ["search"],
+              url: `http://localhost:${live.port}/bridge.js`, sha256: bundleHash,
+            }],
+          });
+        },
+      });
+      return { state, live, url: `http://localhost:${live.port}/index.json` };
+    }
+    const lapse = () => setSystemTime(new Date(Date.now() + INDEX_MEMO_MS + 1));
+
+    test("sees a version published after its first check, without a restart", async () => {
+      const { state, live, url } = republishable();
+      try {
+        const manifest = new ManifestStore(join(DATA_DIR, "test-republish"));
+        const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-republish"), manifest });
+        await mgr.add(url);
+        await mgr.install(url, "example");
+        expect(await mgr.checkUpdates()).toEqual([]);
+
+        state.version = "0.2.0";
+        // Inside the memo's window the burst of reads one screen makes still shares a fetch…
+        expect(await mgr.checkUpdates()).toEqual([]);
+        // …and past it the same manager asks the registry again.
+        lapse();
+        expect(await mgr.checkUpdates()).toEqual([
+          { id: "example", installedVersion: "0.1.0", availableVersion: "0.2.0" },
+        ]);
+      } finally {
+        live.stop(true);
+      }
+    });
+
+    test("keeps the last index it read when the registry stops answering", async () => {
+      const { state, live, url } = republishable();
+      try {
+        const manifest = new ManifestStore(join(DATA_DIR, "test-unreachable"));
+        const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-unreachable"), manifest });
+        await mgr.add(url);
+        expect((await mgr.browse(url)).map((b) => b.entry.version)).toEqual(["0.1.0"]);
+
+        state.down = true;
+        lapse();
+        expect((await mgr.browse(url)).map((b) => b.entry.version)).toEqual(["0.1.0"]);
+      } finally {
+        live.stop(true);
+      }
+    });
+
+    test("a registry never read still fails when it can't be reached", async () => {
+      const { state, live, url } = republishable();
+      try {
+        state.down = true;
+        const manifest = new ManifestStore(join(DATA_DIR, "test-never-read"));
+        const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-never-read"), manifest });
+        await expect(mgr.add(url)).rejects.toThrow(FetchError);
+      } finally {
+        live.stop(true);
+      }
+    });
   });
 
   test("removing a registry marks its bridges as orphaned", async () => {

@@ -80,8 +80,8 @@ async function publish(name: string, opts: IndexOpts): Promise<string> {
 }
 
 /**
- * A manager over `dir`'s manifest. `RegistryManager` caches indexes in-memory for its lifetime, so a
- * test that republishes an index must make a *new* manager (sharing the manifest) to see the change —
+ * A manager over `dir`'s manifest. `RegistryManager` memoizes an index for a few seconds, so a test
+ * that republishes one must make a *new* manager (sharing the manifest) to see the change at once —
  * which is also what a real client does across restarts.
  */
 function mgrFor(dir: string, manifest = new ManifestStore(join(DATA_DIR, dir))) {

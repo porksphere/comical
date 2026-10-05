@@ -4,8 +4,9 @@
  * bundle) and `EmbeddedRegistryProvider` (browse/install/update/uninstall/checkUpdates over injected
  * stores + fetcher, incl. discontinuation — bridges and trackers mirror each other 1:1).
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { downloadBundle, fetchIndex } from "@comical/registry/fetcher";
+import { INDEX_MEMO_MS } from "@comical/registry/index-memo";
 import { sha256Hex } from "@comical/registry/verify";
 import type { RegistryBridgeEntry, RegistryIndex, RegistryTrackerEntry, SavedRegistry } from "@comical/registry/schema";
 import { EmbeddedRegistryProvider } from "../src/registry-provider.ts";
@@ -412,6 +413,38 @@ describe("EmbeddedRegistryProvider", () => {
     const updates = await p2.checkUpdates();
     expect(updates).toEqual([{ id: "demo", installedVersion: "1.0.0", availableVersion: "2.0.0" }]);
     expect((await installed.get("demo"))?.availableVersion).toBe("2.0.0");
+  });
+
+  test("checkUpdates() sees a version published after its first check, on the same provider", async () => {
+    const indexes = { [REG_A]: index([entry({ version: "1.0.0" })]) };
+    const { provider } = setup(indexes);
+    await provider.install(REG_A, "demo");
+    expect(await provider.checkUpdates()).toEqual([]);
+
+    indexes[REG_A] = index([entry({ version: "2.0.0" })]);
+    try {
+      // An app left running is the ordinary case on a phone; the memo must not outlive a publish.
+      setSystemTime(new Date(Date.now() + INDEX_MEMO_MS + 1));
+      expect(await provider.checkUpdates()).toEqual([
+        { id: "demo", installedVersion: "1.0.0", availableVersion: "2.0.0" },
+      ]);
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  test("browse() keeps the last index it read when the registry stops answering", async () => {
+    const indexes: Record<string, RegistryIndex> = { [REG_A]: index([entry({ version: "1.0.0" })]) };
+    const { provider } = setup(indexes);
+    expect((await provider.browse(REG_A)).map((b) => b.entry.version)).toEqual(["1.0.0"]);
+
+    delete indexes[REG_A];
+    try {
+      setSystemTime(new Date(Date.now() + INDEX_MEMO_MS + 1));
+      expect((await provider.browse(REG_A)).map((b) => b.entry.version)).toEqual(["1.0.0"]);
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("checkUpdates() silently re-pins a same-version hash drift instead of leaving it wedged", async () => {

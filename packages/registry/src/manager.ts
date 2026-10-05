@@ -17,6 +17,7 @@ import { join, dirname } from "node:path";
 import { assertContractCompatible, isEntryCompatible } from "./compat.ts";
 import { assertInstallableFrom } from "./conflicts.ts";
 import { downloadBundle, fetchIndex } from "./fetcher.ts";
+import { IndexMemo } from "./index-memo.ts";
 import { ManifestStore } from "./manifest.ts";
 import { MAX_MOVE_HOPS, MoveError, assertSameRegistry, hasKeyContinuity } from "./moves.ts";
 import type { InstalledBridge, InstalledTracker, RegistryIndex, SavedRegistry } from "./schema.ts";
@@ -43,7 +44,7 @@ interface ResolvedIndex {
 }
 
 export class RegistryManager {
-  private readonly cache = new Map<string, RegistryIndex>();
+  private readonly cache = new IndexMemo();
 
   constructor(private readonly opts: RegistryManagerOptions) {}
 
@@ -465,9 +466,17 @@ export class RegistryManager {
   // ── Private ─────────────────────────────────────────────────────────────────
 
   private async fetchAndCache(url: string): Promise<RegistryIndex> {
-    const cached = this.cache.get(url);
+    const cached = this.cache.fresh(url);
     if (cached) return cached;
-    const index = await fetchIndex(url);
+    let index: RegistryIndex;
+    try {
+      index = await fetchIndex(url);
+    } catch (e) {
+      // Offline since the memo lapsed: the index last read still lists what's installable.
+      const last = this.cache.last(url);
+      if (last) return last;
+      throw e;
+    }
     this.cache.set(url, index);
     await this.reconcileDisplayName(url, index);
     return index;

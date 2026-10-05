@@ -20,6 +20,7 @@
 import type { AvailableBridge, AvailableTracker, InstallResult } from "@comical/registry/available";
 import { assertContractCompatible, isEntryCompatible } from "@comical/registry/compat";
 import { assertInstallableFrom } from "@comical/registry/conflicts";
+import { IndexMemo } from "@comical/registry/index-memo";
 import { MAX_MOVE_HOPS, MoveError, assertSameRegistry, hasKeyContinuity } from "@comical/registry/moves";
 import type { RegistryBridgeEntry, RegistryIndex, RegistryTrackerEntry, SavedRegistry } from "@comical/registry/schema";
 import { registryDisplayName, resolveRegistryUrl } from "@comical/registry/url";
@@ -51,8 +52,8 @@ export interface EmbeddedRegistryProviderDeps {
 }
 
 export class EmbeddedRegistryProvider implements RegistryProvider {
-  /** Per-session index memo (mirrors `RegistryManager.fetchAndCache`); cleared per-url on update. */
-  private readonly indexCache = new Map<string, RegistryIndex>();
+  /** Short-lived index memo (mirrors `RegistryManager.fetchAndCache`); cleared per-url on update. */
+  private readonly indexCache = new IndexMemo();
   /** In-flight `fetchAndCache(url)` calls, keyed by url — de-dupes concurrent callers (bridge list +
    *  tracker list + the background update check can all miss a cold cache for the same registry at
    *  once) so they share one network fetch instead of each firing their own. */
@@ -67,14 +68,22 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
   constructor(private readonly deps: EmbeddedRegistryProviderDeps) {}
 
   private async fetchAndCache(url: string): Promise<RegistryIndex> {
-    const cached = this.indexCache.get(url);
+    const cached = this.indexCache.fresh(url);
     if (cached) return cached;
 
     const inFlight = this.fetching.get(url);
     if (inFlight) return inFlight;
 
     const promise = (async () => {
-      const index = await this.deps.fetcher.fetchIndex(url);
+      let index: RegistryIndex;
+      try {
+        index = await this.deps.fetcher.fetchIndex(url);
+      } catch (e) {
+        // Offline since the memo lapsed: the index last read still lists what's installable.
+        const last = this.indexCache.last(url);
+        if (last) return last;
+        throw e;
+      }
       this.indexCache.set(url, index);
       await this.reconcileDisplayName(url, index);
       return index;

@@ -12,7 +12,8 @@
     "./url": "./src/url.ts",
     "./moves": "./src/moves.ts",
     "./conflicts": "./src/conflicts.ts",
-    "./compat": "./src/compat.ts"
+    "./compat": "./src/compat.ts",
+    "./index-memo": "./src/index-memo.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {
