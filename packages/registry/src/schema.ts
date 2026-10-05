@@ -35,6 +35,14 @@ export const registryBridgeEntrySchema = z.object({
       referer: z.string().url().optional(),
     })
     .optional(),
+  /**
+   * Mirrors of `BridgeInfo.cardSubtitles` / `BridgeInfo.ratings` — what this bridge's cards and
+   * series pages will carry, which a client lays out for before any of them arrive. In the index
+   * for the reason `assetProxy` is: a device lists its installed bridges from here, without
+   * loading them, so a flag that only the bundle knew would read as absent there.
+   */
+  cardSubtitles: z.boolean().optional(),
+  ratings: z.boolean().optional(),
   /** Absolute URL to the CJS bridge bundle. */
   url: z.string().url(),
   /** Lowercase hex SHA-256 of the bundle content. Always required. */

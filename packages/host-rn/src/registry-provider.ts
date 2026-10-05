@@ -275,12 +275,24 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
         continue;
       }
 
-      if ((rec.availableVersion ?? undefined) !== availableVersion || Boolean(rec.discontinued) !== discontinued) {
+      // A record's `info` is what the index said on the day of the install, and it is all a device
+      // lists the bridge from. The index can come to say more about that same version afterwards —
+      // a field it has only just started carrying, or one an older build of this app didn't read —
+      // and nothing would ever bring the record up to it short of the bridge's next release.
+      const info = entry && entry.version === rec.version ? entryToInfo(entry) : undefined;
+      const infoChanged = info !== undefined && JSON.stringify(info) !== JSON.stringify(rec.info);
+
+      if (
+        (rec.availableVersion ?? undefined) !== availableVersion ||
+        Boolean(rec.discontinued) !== discontinued ||
+        infoChanged
+      ) {
         // Rebuild off a base without the annotation fields so a no-longer-applicable one is cleared
         // (exactOptionalPropertyTypes forbids writing them back as `undefined`).
         const { availableVersion: _av, discontinued: _dc, ...base } = rec;
         await this.deps.installed.add({
           ...base,
+          ...(infoChanged ? { info: info! } : {}),
           ...(availableVersion !== undefined ? { availableVersion } : {}),
           ...(discontinued ? { discontinued: true } : {}),
         });

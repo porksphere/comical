@@ -99,6 +99,25 @@ describe("registryBridgeEntrySchema assetProxy", () => {
   });
 });
 
+describe("registryBridgeEntrySchema display flags", () => {
+  test("carries cardSubtitles and ratings", () => {
+    const entry = registryBridgeEntrySchema.parse({ ...BASE_ENTRY, cardSubtitles: true, ratings: true });
+    expect(entry.cardSubtitles).toBe(true);
+    expect(entry.ratings).toBe(true);
+  });
+
+  test("leaves both absent for a bridge that declares neither", () => {
+    const entry = registryBridgeEntrySchema.parse({ ...BASE_ENTRY });
+    expect("cardSubtitles" in entry).toBe(false);
+    expect("ratings" in entry).toBe(false);
+  });
+
+  test("rejects a flag that isn't a boolean", () => {
+    expect(registryBridgeEntrySchema.safeParse({ ...BASE_ENTRY, ratings: "yes" }).success).toBe(false);
+    expect(registryBridgeEntrySchema.safeParse({ ...BASE_ENTRY, cardSubtitles: 1 }).success).toBe(false);
+  });
+});
+
 // ── Checksum verification ─────────────────────────────────────────────────────
 
 describe("verifyChecksum", () => {

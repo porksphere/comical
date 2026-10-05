@@ -10,6 +10,7 @@ import {
   MemoryBundleCache,
   MultiRegistryBundleSource,
   RegistryBundleSource,
+  entryToInfo,
   type RegistryFetcher,
 } from "../src/registry-bundle-source.ts";
 
@@ -34,6 +35,8 @@ async function makeIndex(sha256?: string) {
         nsfw: false,
         capabilities: ["search"],
         assetProxy: { hosts: ["cdn.demo.example"], referer: "https://demo.example/" },
+        cardSubtitles: true,
+        ratings: true,
         url: BUNDLE_URL,
         sha256: digest,
       },
@@ -73,7 +76,18 @@ describe("RegistryBundleSource", () => {
     expect(installed[0]?.info.capabilities).toEqual(["search"]);
     // assetProxy round-trips through entryToInfo so the on-device router can derive its allowlist.
     expect(installed[0]?.info.assetProxy).toEqual({ hosts: ["cdn.demo.example"], referer: "https://demo.example/" });
+    // So do the display flags: the index is all a device lists a bridge from, so one dropped here
+    // is one the app never sees, whatever the bundle itself declares.
+    expect(installed[0]?.info.cardSubtitles).toBe(true);
+    expect(installed[0]?.info.ratings).toBe(true);
     expect(installed[0]?.source).toBe("registry");
+  });
+
+  test("entryToInfo leaves the display flags off an entry that carries neither", async () => {
+    const { cardSubtitles: _cs, ratings: _r, ...bare } = (await makeIndex()).bridges[0]!;
+    const info = entryToInfo(bare);
+    expect("cardSubtitles" in info).toBe(false);
+    expect("ratings" in info).toBe(false);
   });
 
   test("resolveBundle downloads + verifies, then serves from cache on repeat", async () => {

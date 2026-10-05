@@ -481,6 +481,56 @@ describe("EmbeddedRegistryProvider", () => {
     expect(rec?.discontinued).toBeUndefined();
   });
 
+  test("checkUpdates() brings a record's info up to what the index now says about its version", async () => {
+    // A record pins the index's info on the day of the install. Here the index starts carrying a
+    // flag for that same version afterwards — no new bytes, no version bump — and the record is the
+    // only thing a device lists the bridge from.
+    const indexes = { [REG_A]: index([entry()]) };
+    const { provider, installed } = setup(indexes);
+    await provider.install(REG_A, "demo");
+    expect((await installed.get("demo"))?.info.ratings).toBeUndefined();
+
+    indexes[REG_A] = index([entry({ ratings: true })]);
+    const p2 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed,
+      installedTrackers: new MemInstalledTrackerStore(),
+      fetcher: fakeFetcher(indexes),
+    });
+    let changed = 0;
+    p2.onChange = () => (changed += 1);
+
+    expect(await p2.checkUpdates()).toEqual([]); // nothing to offer: it is the version already installed
+    expect(changed).toBe(1);
+    const rec = await installed.get("demo");
+    expect(rec?.info.ratings).toBe(true);
+    expect(rec?.sha256).toBe("a".repeat(64));
+    expect(rec?.version).toBe("1.0.0");
+
+    // Settled: a second check has nothing left to write.
+    expect(await p2.checkUpdates()).toEqual([]);
+    expect(changed).toBe(1);
+  });
+
+  test("checkUpdates() leaves a record's info alone when the index describes a different version", async () => {
+    const indexes = { [REG_A]: index([entry()]) };
+    const { provider, installed } = setup(indexes);
+    await provider.install(REG_A, "demo");
+
+    // The newer version rates its series; the one installed does not, and still doesn't.
+    indexes[REG_A] = index([entry({ version: "1.1.0", sha256: "b".repeat(64), ratings: true })]);
+    const p2 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed,
+      installedTrackers: new MemInstalledTrackerStore(),
+      fetcher: fakeFetcher(indexes),
+    });
+    expect(await p2.checkUpdates()).toEqual([{ id: "demo", installedVersion: "1.0.0", availableVersion: "1.1.0" }]);
+    const rec = await installed.get("demo");
+    expect(rec?.info.ratings).toBeUndefined();
+    expect(rec?.info.version).toBe("1.0.0");
+  });
+
   test("checkUpdates() marks a bridge dropped from the index as discontinued (kept installed)", async () => {
     const indexes: Record<string, RegistryIndex> = { [REG_A]: index([entry()]) };
     const { provider, installed } = setup(indexes);

@@ -74,6 +74,8 @@ export function entryToInfo(e: RegistryBridgeEntry): BridgeInfo {
     capabilities: e.capabilities as BridgeInfo["capabilities"],
     ...(e.iconUrl !== undefined ? { iconUrl: e.iconUrl } : {}),
     ...(e.assetProxy !== undefined ? { assetProxy: e.assetProxy } : {}),
+    ...(e.cardSubtitles !== undefined ? { cardSubtitles: e.cardSubtitles } : {}),
+    ...(e.ratings !== undefined ? { ratings: e.ratings } : {}),
   };
 }
 
