@@ -751,7 +751,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       const q = c.req.query("q");
       const sort = c.req.query("sort");
       const dir = c.req.query("dir");
+      const readState = c.req.query("readState");
       const validSort = sort === "added" || sort === "title" || sort === "lastRead" || sort === "unread";
+      const validReadState =
+        readState === "unstarted" || readState === "behind" || readState === "caught-up" || readState === "finished";
       return c.json(
         await lib.getLibrary({
           ...(collection && { collection }),
@@ -759,6 +762,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           ...(c.req.query("uncollected") === "true" && { uncollected: true }),
           ...(q && { q }),
           ...(c.req.query("unreadOnly") === "true" && { unreadOnly: true }),
+          ...(validReadState && { readState }),
           ...(validSort && { sort: sort as "added" | "title" | "lastRead" | "unread" }),
           ...((dir === "asc" || dir === "desc") && { dir }),
         }),

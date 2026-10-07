@@ -844,7 +844,7 @@ describe("activity standing — was the reader caught up when the chapter landed
 });
 
 describe("logical chapters (multi-scanlator / multi-language)", () => {
-  test("unreadCount collapses scanlator copies of one (number, language) but counts languages apart", async () => {
+  test("unreadCount collapses scanlator copies of one (number, language) and counts only the languages read", async () => {
     const lib = makeLibrary();
     await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [
@@ -852,15 +852,29 @@ describe("logical chapters (multi-scanlator / multi-language)", () => {
       chg("c1-b", 1, "B", "en"), // ch1 EN, group B — same logical chapter as c1-a
       chg("c2-a", 2, "A", "en"), // ch2 EN
       chg("c1-es", 1, "A", "es"), // ch1 ES — a distinct logical chapter
+      chg("c3-es", 3, "A", "es"), // ch3 ES — only in Spanish
     ]);
 
-    const unread = async () => (await lib.getLibrary()).find((e) => e.seriesId === "s1")?.unreadCount;
-    // Logical chapters: (1,en), (2,en), (1,es) → 3 unread despite 4 raw chapters.
-    expect(await unread()).toBe(3);
+    const view = async () => (await lib.getLibrary()).find((e) => e.seriesId === "s1");
+    // Nothing read yet, so no language to follow: chapter numbers 1, 2, 3 → 3 unread of 5 raw chapters.
+    expect(await view()).toMatchObject({ unreadCount: 3, knownCount: 3 });
 
-    // Reading ONE scanlator copy of ch1 EN marks the whole logical chapter read.
+    // Reading ONE scanlator copy of ch1 EN marks the whole logical chapter read — and picks English,
+    // so the Spanish-only ch3 no longer counts against the reader.
     await lib.markRead(KEY, "c1-a", true);
-    expect(await unread()).toBe(2); // ch1 EN now read; ch2 EN + ch1 ES remain
+    expect(await view()).toMatchObject({ unreadCount: 1, knownCount: 2 }); // ch2 EN remains
+
+    // Reading in a second language widens the scope to both.
+    await lib.markRead(KEY, "c1-es", true);
+    expect(await view()).toMatchObject({ unreadCount: 2, knownCount: 4 }); // ch2 EN + ch3 ES
+  });
+
+  test("a known chapter with no language counts under any language scope", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, [chg("c1", 1, "A", "en"), ch("c2", 2)]);
+    await lib.markRead(KEY, "c1", true);
+    expect((await lib.getLibrary())[0]).toMatchObject({ unreadCount: 1, knownCount: 2 });
   });
 
   test("syncChapters: a new scanlator copy of a known chapter is not 'new'; a new number/language is", async () => {
@@ -1058,6 +1072,62 @@ describe("getLibrary query (search / sort / filters)", () => {
     const { lib } = await seeded();
     // "e" matches Berserk + Bleach; unreadOnly drops fully-read Bleach.
     expect(ids(await lib.getLibrary({ q: "e", unreadOnly: true, sort: "title" }))).toEqual(["s3"]);
+  });
+
+  test("readState filters to one derived state", async () => {
+    const { lib } = await seeded();
+    expect(ids(await lib.getLibrary({ readState: "unstarted" })).sort()).toEqual(["s1", "s3"]);
+    expect(ids(await lib.getLibrary({ readState: "caught-up" }))).toEqual(["s2"]);
+    expect(ids(await lib.getLibrary({ readState: "behind" }))).toEqual([]);
+    expect(ids(await lib.getLibrary({ readState: "finished" }))).toEqual([]);
+  });
+});
+
+describe("readState", () => {
+  const state = async (lib: Library) => (await lib.getLibrary())[0]?.readState;
+
+  test("unstarted → behind → caught-up as chapters are read", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+    expect(await state(lib)).toBe("unstarted");
+    await lib.markRead(KEY, "c1", true);
+    expect(await state(lib)).toBe("behind");
+    await lib.markRead(KEY, "c2", true);
+    expect(await state(lib)).toBe("caught-up");
+  });
+
+  test("fully read + a completed or cancelled series is finished; ongoing/hiatus/unknown stay caught up", async () => {
+    for (const [status, expected] of [
+      ["completed", "finished"],
+      ["cancelled", "finished"],
+      ["ongoing", "caught-up"],
+      ["hiatus", "caught-up"],
+      ["unknown", "caught-up"],
+    ] as const) {
+      const lib = makeLibrary();
+      await lib.collectSeries(COORD, SNAP);
+      await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", status });
+      await lib.syncChapters(KEY, [ch("c1", 1)]);
+      await lib.markRead(KEY, "c1", true);
+      expect(await state(lib)).toBe(expected);
+    }
+  });
+
+  test("a series with reads but no synced chapter list is caught up, never finished", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.cacheSeriesDetail(KEY, { id: "s1", title: "Series One", status: "completed" });
+    await lib.markRead(KEY, "c1", true);
+    expect(await state(lib)).toBe("caught-up");
+  });
+
+  test("a chapter opened but not finished is still unstarted", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    await lib.setProgress(KEY, "c1", 2, 10);
+    expect(await state(lib)).toBe("unstarted");
   });
 });
 

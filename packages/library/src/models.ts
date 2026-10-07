@@ -335,11 +335,26 @@ export const collectionSeriesItemSchema = z.object({
 export type CollectionSeriesItem = z.infer<typeof collectionSeriesItemSchema>;
 
 /**
+ * Where the reader stands on a collected series, derived from read state and the cached series
+ * status — never set by the user (a linked tracker's status is the user's opinion; this is a fact).
+ *
+ * - `unstarted` — no chapter read.
+ * - `behind` — at least one unread logical chapter.
+ * - `caught-up` — everything known is read and the series may still gain chapters.
+ * - `finished` — everything known is read and the series is over (completed or cancelled).
+ */
+export type ReadState = "unstarted" | "behind" | "caught-up" | "finished";
+
+/**
  * A collected series augmented with derived, non-persisted fields a host renders directly.
- * `unreadCount` = logical chapters `(number, language)` with no read copy in any scanlation group.
+ * `unreadCount` = logical chapters `(number, language)` with no read copy in any scanlation group,
+ * counted in the languages the series has been read in (see `logicalChapterTally`); `knownCount`
+ * is the size of that same set, so `knownCount - unreadCount` is chapters read on the same scale.
  */
 export interface CollectionSeriesItemView extends CollectionSeriesItem {
   unreadCount: number;
+  knownCount: number;
+  readState: ReadState;
 }
 
 export const collectionChapterItemSchema = z.object({

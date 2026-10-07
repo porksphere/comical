@@ -196,6 +196,12 @@ describe("/library lifecycle", () => {
     // unreadOnly drops s2 (no synced chapters → 0 unread).
     expect(await idsOf("/library?unreadOnly=true")).toEqual(["s1"]);
 
+    // readState: s1 has one of its chapters read, s2 nothing; an unknown value is ignored.
+    expect(await idsOf("/library?readState=behind")).toEqual(["s1"]);
+    expect(await idsOf("/library?readState=unstarted")).toEqual(["s2"]);
+    expect(await idsOf("/library?readState=finished")).toEqual([]);
+    expect((await idsOf("/library?readState=bogus&sort=title")).length).toBe(2);
+
     // sort=title is ascending.
     expect(await titles("/library?sort=title")).toEqual(["Other Tale", "Series One"]);
 

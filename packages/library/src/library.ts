@@ -39,6 +39,7 @@ import {
   type HistoryItem,
   type KnownChapter,
   type CollectionSeriesItemView,
+  type ReadState,
   type ResumePoint,
   type SeriesGroup,
   type TrackerLink,
@@ -84,8 +85,10 @@ export interface LibraryQuery {
   uncollected?: boolean;
   /** Case-insensitive substring search over title + author. */
   q?: string;
-  /** Only series with at least one unread chapter. */
+  /** Only series with at least one unread chapter. Equivalent to `readState: "behind"`. */
   unreadOnly?: boolean;
+  /** Only series in this reading state (see {@link ReadState}). */
+  readState?: ReadState;
   /** Sort key. Defaults to `"added"`. */
   sort?: LibrarySort;
   /** Sort direction. Defaults to `"asc"` for `title`, `"desc"` otherwise. */
@@ -523,6 +526,7 @@ export class Library {
 
     let views = await Promise.all(filtered.map((i) => this.toView(i)));
     if (opts.unreadOnly) views = views.filter((v) => v.unreadCount > 0);
+    if (opts.readState) views = views.filter((v) => v.readState === opts.readState);
 
     // Sort. Title defaults to ascending (A–Z); the recency/count keys default to descending
     // (newest / most-unread first) since that's the useful direction.
@@ -533,8 +537,31 @@ export class Library {
   }
 
   private async toView(item: CollectionSeriesItem): Promise<CollectionSeriesItemView> {
-    const progress = await this.store.listProgress(entryKey(item.bridgeId, item.seriesId));
-    return { ...item, unreadCount: unreadLogicalCount(item, progress) };
+    const key = entryKey(item.bridgeId, item.seriesId);
+    const progress = await this.store.listProgress(key);
+    const { known, unread } = logicalChapterTally(item, progress);
+    return { ...item, unreadCount: unread, knownCount: known, readState: await this.readStateOf(key, item, progress, unread) };
+  }
+
+  /**
+   * See {@link ReadState}. The cached detail is read only for a series that is fully read — the one
+   * case where the status decides the answer — so a library of mostly-behind series costs nothing
+   * extra to list.
+   *
+   * A series with reads but no synced chapter list has no unread chapters to show and nothing to
+   * say it is over, so it reads as caught up: the same "no pill" the grid already shows for it.
+   */
+  private async readStateOf(
+    key: string,
+    item: CollectionSeriesItem,
+    progress: ChapterProgress[],
+    unread: number,
+  ): Promise<ReadState> {
+    if (!progress.some((p) => p.read)) return "unstarted";
+    if (unread > 0) return "behind";
+    if (item.chaptersSyncedAt === undefined || item.knownChapters.length === 0) return "caught-up";
+    const status = (await this.getCachedDetail(key))?.info.status;
+    return status === "completed" || status === "cancelled" ? "finished" : "caught-up";
   }
 
   // ── New-chapter detection ────────────────────────────────────────────────────
@@ -1777,14 +1804,33 @@ function hydrateSeriesItem(item: CollectionSeriesItem): CollectionSeriesItem {
 }
 
 /**
- * Known logical chapters `(number, language)` with no read copy in any scanlation group. Shared by
- * the library view's `unreadCount` and by `getSeriesCompletion`, so "0 unread" can never mean two
- * different things depending on which one asked.
+ * Known logical chapters `(number, language)`, and how many of them have no read copy in any
+ * scanlation group. Shared by the library view's `unreadCount` and by `getSeriesCompletion`, so
+ * "0 unread" can never mean two different things depending on which one asked.
+ *
+ * Counted in the LANGUAGES THE SERIES HAS BEEN READ IN: a source that carries a chapter in five
+ * languages publishes five logical chapters, and a reader who follows it in one of them is not four
+ * chapters behind for every chapter that lands. Before anything is read (or when no read copy
+ * records a language) there is no language to choose, so languages collapse and each chapter
+ * number counts once. A known chapter with no language is kept under either rule — it can't be
+ * excluded by a preference it doesn't carry.
  */
+function logicalChapterTally(item: CollectionSeriesItem, progress: ChapterProgress[]): { known: number; unread: number } {
+  const read = progress.filter((p) => p.read);
+  const languages = new Set(read.map((p) => p.languageCode).filter((l): l is string => l !== undefined));
+  const scoped = languages.size > 0;
+  const keyOf = (c: { number?: number | undefined; languageCode?: string | undefined }, id: string) =>
+    scoped ? logicalChapterKey(c, id) : logicalChapterKey({ number: c.number }, id);
+  const known = scoped
+    ? item.knownChapters.filter((c) => c.languageCode === undefined || languages.has(c.languageCode))
+    : item.knownChapters;
+  const readLogical = new Set(read.map((p) => keyOf(p, p.chapterId)));
+  const knownLogical = new Set(known.map((c) => keyOf(c, c.id)));
+  return { known: knownLogical.size, unread: [...knownLogical].filter((k) => !readLogical.has(k)).length };
+}
+
 function unreadLogicalCount(item: CollectionSeriesItem, progress: ChapterProgress[]): number {
-  const readLogical = new Set(progress.filter((p) => p.read).map((p) => logicalChapterKey(p, p.chapterId)));
-  const knownLogical = new Set(item.knownChapters.map((c) => logicalChapterKey(c, c.id)));
-  return [...knownLogical].filter((k) => !readLogical.has(k)).length;
+  return logicalChapterTally(item, progress).unread;
 }
 
 /**
