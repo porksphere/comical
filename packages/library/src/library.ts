@@ -500,6 +500,13 @@ export class Library {
     return this.getSeriesItem(key);
   }
 
+  /** The collected series record with the same derived counts and `readState` `getLibrary` rows
+   *  carry — for a single series page, so it reads what the grid reads. */
+  async getSeriesView(key: string): Promise<CollectionSeriesItemView | undefined> {
+    const item = await this.getSeriesItem(key);
+    return item ? this.toView(item) : undefined;
+  }
+
   /**
    * Query the library: filter by collection/search/read-state and sort, each series carrying a
    * derived `unreadCount`. All options are optional; with none, returns every collected series

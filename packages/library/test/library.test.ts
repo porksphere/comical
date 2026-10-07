@@ -1097,6 +1097,17 @@ describe("readState", () => {
     expect(await state(lib)).toBe("caught-up");
   });
 
+  test("getSeriesView carries the same derived fields as the grid row", async () => {
+    const lib = makeLibrary();
+    expect(await lib.getSeriesView(KEY)).toBeUndefined();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+    await lib.markRead(KEY, "c1", true);
+    const view = await lib.getSeriesView(KEY);
+    expect(view).toMatchObject({ seriesId: "s1", knownCount: 2, unreadCount: 1, readState: "behind" });
+    expect(view).toEqual((await lib.getLibrary())[0]);
+  });
+
   test("fully read + a completed or cancelled series is finished; ongoing/hiatus/unknown stay caught up", async () => {
     for (const [status, expected] of [
       ["completed", "finished"],

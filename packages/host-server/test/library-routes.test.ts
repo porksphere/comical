@@ -120,6 +120,10 @@ describe("/library lifecycle", () => {
     const lib2 = (await (await get("/library")).json()) as Array<{ seriesId: string; unreadCount: number }>;
     expect(lib2.find((e) => e.seriesId === "s1")?.unreadCount).toBe(1);
 
+    // the single-series read carries the same derived fields as the grid row
+    const one = (await (await get("/library/collected/series/demo/s1")).json()) as { series: Record<string, unknown> };
+    expect(one.series).toMatchObject({ seriesId: "s1", knownCount: 3, unreadCount: 1, readState: "behind" });
+
     // a later sync surfaces a genuinely new chapter
     const sync2 = (await (await send("POST", "/library/collected/series/demo/s1/sync", { chapters: [...chapters, { id: "c4", name: "Ch 4", number: 4 }] })).json()) as { added: { id: string }[] };
     expect(sync2.added.map((c) => c.id)).toEqual(["c4"]);

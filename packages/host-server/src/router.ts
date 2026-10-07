@@ -1153,7 +1153,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
 
     app.get("/library/collected/series/:bridgeId/:seriesId", async (c) => {
       const key = keyOf(c);
-      const series = await lib.getSeries(key);
+      const series = await lib.getSeriesView(key);
       if (!series) return c.json({ error: "series not collected" }, 404);
       return c.json({ series, progress: await lib.getProgress(key), resume: await lib.getResume(key) });
     });
