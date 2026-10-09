@@ -353,13 +353,14 @@ describe("sync + activity-count params", () => {
   });
 
   test("POST /library/sync accepts options and reports the new result fields", async () => {
+    // `trackers` is a retired option: an older client still sending it is simply ignored.
     const res = await send("POST", "/library/sync", { force: true, trackers: false, budgetMs: 10_000 });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { scanned: number; skipped: number; partial: boolean; suggestions: unknown[] };
+    const body = (await res.json()) as { scanned: number; skipped: number; partial: boolean };
     expect(body.scanned).toBeGreaterThanOrEqual(1); // the act-1 entry
     expect(body.skipped).toBe(0); // force syncs everything
     expect(body.partial).toBe(false);
-    expect(body.suggestions).toEqual([]);
+    expect(body).not.toHaveProperty("suggestions");
 
     // Bodyless call stays valid (back-compat) — and the staleness window now skips the fresh entry.
     const plain = await send("POST", "/library/sync");

@@ -1250,12 +1250,11 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     });
 
     app.post("/library/sync", async (c) => {
-      const b = await body<{ force?: boolean; budgetMs?: number; trackers?: boolean }>(c);
+      const b = await body<{ force?: boolean; budgetMs?: number }>(c);
       return c.json(
         await runtime!.backgroundSync({
           ...(b?.force !== undefined ? { force: b.force } : {}),
           ...(b?.budgetMs !== undefined ? { budgetMs: b.budgetMs } : {}),
-          ...(b?.trackers !== undefined ? { trackers: b.trackers } : {}),
         }),
       );
     });
@@ -1321,9 +1320,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ ok: true });
     });
 
-    // Two-way sync of one entry's link with its tracker (manual "Sync" action on a single row):
-    // whichever side has read further wins — see `syncEntryWithTracker`. The scoped counterpart to
-    // POST /trackers/:id/sync, which is still a whole-library PULL.
+    // One-way sync of one entry's link with its tracker (manual "Sync" action on a single row):
+    // local progress is pushed when it leads; the tracker's own state is recorded on the link but
+    // never applied to local read flags — see `syncEntryWithTracker`.
     app.post("/library/collected/series/:bridgeId/:seriesId/tracker-links/:trackerId/sync", async (c) => {
       try {
         return c.json(
@@ -1779,16 +1778,6 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       if (typeof cursor === "object") return c.json({ error: "cursor too long" }, 400);
       try {
         return c.json(await runtime!.searchTracker(id, q, cursor));
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return c.json({ error: msg }, msg.includes("not found") ? 404 : 400);
-      }
-    });
-
-    app.post("/trackers/:id/sync", async (c) => {
-      const id = c.req.param("id");
-      try {
-        return c.json(await runtime!.syncFromTracker(id));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return c.json({ error: msg }, msg.includes("not found") ? 404 : 400);

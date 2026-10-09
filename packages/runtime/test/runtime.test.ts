@@ -694,7 +694,7 @@ describe("syncEntryToTrackers — status", () => {
     expect((await lib.getTrackerLink("test:s1", "anilist"))!.completedPushedAt).toBeGreaterThan(0);
   });
 
-  test("a pull mirrors the tracker's own chapter count onto the link", async () => {
+  test("a sync mirrors the tracker's own chapter count onto the link", async () => {
     const lib = makeLib();
     const bridge = syncBridge({
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
@@ -713,7 +713,7 @@ describe("syncEntryToTrackers — status", () => {
     });
 
     await runtime.collectSeries("test", "s1");
-    await runtime.syncFromTracker("anilist");
+    await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
     expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({
       status: "reading",
@@ -769,19 +769,24 @@ describe("markActivityRead", () => {
   });
 });
 
-// ── backgroundSync — automatic, safe tracker pull ─────────────────────────────
+// ── backgroundSync — never reads from a tracker ──────────────────────────────
 
-describe("backgroundSync — tracker read-pull", () => {
-  test("marks chapters read from a tracker WITHOUT moving the local resume point", async () => {
+describe("backgroundSync — trackers are push-only", () => {
+  test("a tracker that is ahead is never consulted: no chapter is marked, no list is fetched", async () => {
     const lib = makeLib();
     const bridge = syncBridge({
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
       chapters: [ch("c1", 1), ch("c2", 2), ch("c3", 3)],
     });
-    const tracker = mockTracker("anilist", {
+    let libraryFetches = 0;
+    const base = mockTracker("anilist", {
       capabilities: ["library-sync", "status-sync"],
       libraryEntries: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 3 }],
     });
+    const tracker: Tracker = {
+      ...base,
+      async getLibrary(req) { libraryFetches++; return base.getLibrary!(req); },
+    };
     const runtime = new ComicalRuntime({
       bridges: mockBridgeProvider(bridge),
       library: lib,
@@ -789,55 +794,33 @@ describe("backgroundSync — tracker read-pull", () => {
     });
 
     await runtime.collectSeries("test", "s1"); // auto-links anilist:111
-    // User is reading locally — last local read is chapter 1.
     await runtime.markRead("test", "s1", "c1", true, "Ch 1", 1);
 
-    const res = await runtime.backgroundSync();
+    const res = await runtime.backgroundSync({ force: true });
 
-    // The tracker said 3 read → c2 and c3 get reconciled in (c1 was already read locally).
     const read = new Set((await lib.getProgress("test:s1")).filter((p) => p.read).map((p) => p.chapterId));
-    expect(read).toEqual(new Set(["c1", "c2", "c3"]));
-    expect(res.readSynced).toBe(2);
-    // But the resume pointer stays on the locally-read chapter — the pull never moved it.
-    const entry = await lib.getSeries("test:s1");
-    expect(entry?.lastReadChapterId).toBe("c1");
-    expect(await lib.getResume("test:s1")).toEqual({ chapterId: "c1", lastPage: 0 });
-  });
-
-  test("surfaces tracked series absent from the library as suggestions, never auto-adds", async () => {
-    const lib = makeLib();
-    const bridge = mockBridge({ id: "s1", title: "Series" });
-    const tracker = mockTracker("anilist", {
-      capabilities: ["library-sync"],
-      libraryEntries: [{ externalId: 999, title: "Berserk", status: "reading", chaptersRead: 40 }],
-    });
-    const runtime = new ComicalRuntime({
-      bridges: mockBridgeProvider(bridge),
-      library: lib,
-      trackers: mockTrackerProvider([tracker]),
-    });
-
-    const res = await runtime.syncFromTracker("anilist");
-
-    expect(res.suggestions).toHaveLength(1);
-    expect(res.suggestions[0]).toMatchObject({ trackerId: "anilist", externalId: 999, title: "Berserk" });
-    // Nothing was silently added — a tracker entry has no bridge to read from.
-    expect(await lib.getLibrary()).toHaveLength(0);
+    expect(read).toEqual(new Set(["c1"]));
+    expect(res.readSynced).toBe(0);
+    expect(libraryFetches).toBe(0);
+    // The watermark is what the read pushed (1), not the tracker's 3 — that number was never seen.
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 1 });
   });
 });
 
-// ── syncEntryWithTracker — scoped, manual per-entry TWO-WAY sync ─────────────
+// ── syncEntryWithTracker — scoped, manual per-entry PUSH-ONLY sync ───────────
 
 describe("syncEntryWithTracker", () => {
-  test("pulls when the tracker is ahead: updates the link and reconciles read state", async () => {
+  test("tracker ahead: records what it holds on the link, marks NOTHING read, pushes nothing", async () => {
     const lib = makeLib();
     const bridge = syncBridge({
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
       chapters: [ch("c1", 1), ch("c2", 2), ch("c3", 3)],
     });
+    const updateCalls: PushCall[] = [];
     const tracker = mockTracker("anilist", {
       capabilities: ["library-sync", "status-sync"],
-      libraryEntries: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 2 }],
+      updateCalls,
+      libraryEntries: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 2, totalChapters: 3 }],
     });
     const runtime = new ComicalRuntime({
       bridges: mockBridgeProvider(bridge),
@@ -849,11 +832,47 @@ describe("syncEntryWithTracker", () => {
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
-    expect(res).toEqual({ updated: true, readSynced: 2, pushed: false, chaptersRead: 2 });
+    expect(res).toEqual({ updated: true, pushed: false, chaptersRead: 2, trackerRead: 2 });
+    expect(updateCalls).toEqual([]);
     const [link] = await lib.listTrackerLinks("test:s1");
-    expect(link).toMatchObject({ trackerId: "anilist", status: "reading", chaptersRead: 2 });
+    expect(link).toMatchObject({ trackerId: "anilist", status: "reading", chaptersRead: 2, totalChapters: 3 });
+    // Read state is the library's: the tracker's count is shown on the link, never applied.
+    const read = (await lib.getProgress("test:s1")).filter((p) => p.read);
+    expect(read).toEqual([]);
+    expect(await lib.getResume("test:s1")).toBeUndefined();
+  });
+
+  test("tracker ahead, local partly read: local progress stays where it is", async () => {
+    const lib = makeLib();
+    const bridge = syncBridge({
+      details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
+      chapters: [ch("c1", 1), ch("c2", 2), ch("c3", 3)],
+    });
+    const updateCalls: PushCall[] = [];
+    const tracker = mockTracker("anilist", {
+      capabilities: ["library-sync", "status-sync"],
+      updateCalls,
+      libraryEntries: [{ externalId: 111, title: "Series", status: "reading", chaptersRead: 3 }],
+    });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(bridge),
+      library: lib,
+      trackers: mockTrackerProvider([tracker]),
+    });
+
+    await runtime.collectSeries("test", "s1");
+    await lib.markRead("test:s1", "c1", true, "Ch 1", 1);
+
+    const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
+
+    expect(res).toEqual({ updated: true, pushed: false, chaptersRead: 3, trackerRead: 3 });
+    expect(updateCalls).toEqual([]);
     const read = new Set((await lib.getProgress("test:s1")).filter((p) => p.read).map((p) => p.chapterId));
-    expect(read).toEqual(new Set(["c1", "c2"]));
+    expect(read).toEqual(new Set(["c1"]));
+    expect(await lib.getResume("test:s1")).toEqual({ chapterId: "c1", lastPage: 0 });
+    // The watermark rose to the tracker's number, so reading c2 next pushes nothing: the tracker
+    // already leads. Only passing it does.
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 3 });
   });
 
   test("pushes when local is ahead: writes the local count to the tracker, marks nothing new read", async () => {
@@ -878,7 +897,7 @@ describe("syncEntryWithTracker", () => {
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
-    expect(res).toEqual({ updated: true, readSynced: 0, pushed: true, chaptersRead: 3 });
+    expect(res).toEqual({ updated: true, pushed: true, chaptersRead: 3, trackerRead: 1 });
     expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 3 }]);
     const [link] = await lib.listTrackerLinks("test:s1");
     expect(link).toMatchObject({ chaptersRead: 3 });
@@ -908,12 +927,12 @@ describe("syncEntryWithTracker", () => {
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
-    expect(res).toEqual({ updated: true, readSynced: 0, pushed: true, chaptersRead: 2 });
+    expect(res).toEqual({ updated: true, pushed: true, chaptersRead: 2, trackerRead: 0 });
     // The tracker has no entry at all, so this push creates one — hence "reading" and a start date.
     expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 2, status: "reading", startedAt: TODAY }]);
   });
 
-  test("neither side moves when both are level: no push, nothing newly read", async () => {
+  test("neither side moves when both are level: no push", async () => {
     const lib = makeLib();
     const bridge = syncBridge({
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
@@ -937,7 +956,7 @@ describe("syncEntryWithTracker", () => {
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
-    expect(res).toEqual({ updated: true, readSynced: 0, pushed: false, chaptersRead: 2 });
+    expect(res).toEqual({ updated: true, pushed: false, chaptersRead: 2, trackerRead: 2 });
     expect(updateCalls).toEqual([]);
   });
 
@@ -965,13 +984,13 @@ describe("syncEntryWithTracker", () => {
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
-    expect(res).toEqual({ updated: true, readSynced: 0, pushed: true, chaptersRead: 2 });
-    // No pull means no known status either, so this is still the "first read" transition.
+    expect(res).toEqual({ updated: true, pushed: true, chaptersRead: 2, trackerRead: 0 });
+    // No lookup means no known status either, so this is still the "first read" transition.
     expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 2, status: "reading", startedAt: TODAY }]);
     expect(libraryCalls).toBe(0);
   });
 
-  test("a pull-only tracker (library-sync, no status-sync) never pushes, even when local is ahead", async () => {
+  test("a list-only tracker (library-sync, no status-sync) never pushes, even when local is ahead", async () => {
     const lib = makeLib();
     const bridge = syncBridge({
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
@@ -994,12 +1013,13 @@ describe("syncEntryWithTracker", () => {
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
-    // c1 gets marked read from the remote count of 1; c3 was already read locally.
-    expect(res).toEqual({ updated: true, readSynced: 1, pushed: false, chaptersRead: 1 });
+    // The tracker's 1 is recorded on the link; nothing is pushed and nothing is marked — c1 stays
+    // unread, since read state only ever comes from the reader here.
+    expect(res).toEqual({ updated: true, pushed: false, chaptersRead: 1, trackerRead: 1 });
     expect(updateCalls).toEqual([]);
-    // The local read stands — pulling a lower remote count never un-reads a chapter.
     const read = new Set((await lib.getProgress("test:s1")).filter((p) => p.read).map((p) => p.chapterId));
-    expect(read.has("c3")).toBe(true);
+    expect(read).toEqual(new Set(["c3"]));
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ status: "reading", chaptersRead: 1 });
   });
 
   test("throws when the entry has no link for that tracker", async () => {
@@ -1017,7 +1037,7 @@ describe("syncEntryWithTracker", () => {
     await expect(runtime.syncEntryWithTracker("test", "s1", "anilist")).rejects.toThrow(/no anilist link/);
   });
 
-  test("throws when the tracker can neither pull nor push", async () => {
+  test("throws when the tracker can neither look up nor push", async () => {
     const lib = makeLib();
     const bridge = syncBridge({ details: { id: "s1", title: "Series", externalIds: { anilist: 111 } } });
     const tracker = mockTracker("anilist", { capabilities: ["search"] });
@@ -1048,7 +1068,7 @@ describe("syncEntryWithTracker", () => {
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
-    expect(res).toEqual({ updated: false, readSynced: 0, pushed: false, chaptersRead: 0 });
+    expect(res).toEqual({ updated: false, pushed: false, chaptersRead: 0, trackerRead: 0 });
   });
 
   test("paginates through getLibrary until the linked entry is found", async () => {
@@ -1080,7 +1100,7 @@ describe("syncEntryWithTracker", () => {
 
     const res = await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
-    expect(res).toEqual({ updated: true, readSynced: 1, pushed: false, chaptersRead: 1 });
+    expect(res).toEqual({ updated: true, pushed: false, chaptersRead: 1, trackerRead: 1 });
     expect(calledPages).toEqual([1, 2]);
   });
 
@@ -1115,17 +1135,17 @@ describe("syncEntryWithTracker", () => {
     await lib.markRead("test:s1", "c12.5", true, "Ch 12.5", 12.5);
 
     const first = await runtime.syncEntryWithTracker("test", "s1", "anilist");
-    expect(first).toEqual({ updated: true, readSynced: 0, pushed: true, chaptersRead: 12.5 });
+    expect(first).toEqual({ updated: true, pushed: true, chaptersRead: 12.5, trackerRead: 0 });
     expect(entries[0]!.chaptersRead).toBe(12); // the tracker truncated it
 
     // Pressing Sync again: the tracker still says 12, but the watermark says it has 12.5, so this
     // settles instead of pushing the same value a second (and third, and fourth) time.
     const second = await runtime.syncEntryWithTracker("test", "s1", "anilist");
-    expect(second).toEqual({ updated: true, readSynced: 0, pushed: false, chaptersRead: 12.5 });
+    expect(second).toEqual({ updated: true, pushed: false, chaptersRead: 12.5, trackerRead: 12 });
     expect(updateCalls).toEqual([{ externalId: 111, chaptersRead: 12.5 }]);
   });
 
-  test("a pull does not lower the watermark to the tracker's truncated echo", async () => {
+  test("a lookup does not lower the watermark to the tracker's truncated echo", async () => {
     const lib = makeLib();
     const bridge = syncBridge({
       details: { id: "s1", title: "Series", externalIds: { anilist: 111 } },
@@ -1145,9 +1165,9 @@ describe("syncEntryWithTracker", () => {
     await lib.markRead("test:s1", "c12.5", true, "Ch 12.5", 12.5);
     await runtime.syncEntryWithTracker("test", "s1", "anilist"); // pushes 12.5, watermark := 12.5
 
-    // The bulk pull sees the tracker's 12. Writing that to the link would undo the watermark and
-    // make the very next sync push 12.5 all over again.
-    await runtime.syncFromTracker("anilist");
+    // The next sync sees the tracker's 12. Writing that to the link would undo the watermark and
+    // make the sync after push 12.5 all over again.
+    await runtime.syncEntryWithTracker("test", "s1", "anilist");
 
     const [link] = await lib.listTrackerLinks("test:s1");
     expect(link).toMatchObject({ chaptersRead: 12.5 });
@@ -1183,7 +1203,7 @@ describe("syncEntryWithTracker", () => {
 
     expect(updateCalls).toEqual([{ externalId: 111, status: "completed", finishedAt: TODAY }]);
     expect(res).toMatchObject({ updated: true, pushed: true });
-    // The just-pushed status survives the pulled item, which still says "reading" (it predates us).
+    // The just-pushed status survives the looked-up item, which still says "reading" (it predates us).
     expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({
       status: "completed",
       chaptersRead: 3,
@@ -1194,8 +1214,8 @@ describe("syncEntryWithTracker", () => {
     expect(updateCalls).toHaveLength(1);
   });
 
-  test("the pull's own chapter total drives trigger A here, clamping what it pushes", async () => {
-    // The manual path builds its decision from the item it just pulled, not from the link — so a
+  test("the tracker's own chapter total drives trigger A here, clamping what it pushes", async () => {
+    // The manual path builds its decision from the item it just looked up, not from the link — so a
     // total the link has never seen still completes the entry on the very first sync. The bridge
     // calls the series "unknown", so trigger B cannot be what fires.
     const lib = makeLib();
@@ -1241,7 +1261,7 @@ describe("syncEntryWithTracker", () => {
   });
 });
 
-// ── linkTracker — reconcile on link ──────────────────────────────────────────
+// ── linkTracker — record + push on link ──────────────────────────────────────
 
 describe("linkTracker", () => {
   /** A bridge with no external ids, so nothing auto-links and the explicit call is what's tested. */
@@ -1251,9 +1271,10 @@ describe("linkTracker", () => {
       chapters: [ch("c1", 1), ch("c2", 2), ch("c3", 3)],
     });
 
-  test("pulls a tracker that's ahead rather than overwriting it with local progress", async () => {
-    // The whole reason this is a two-way sync: you've read 3 on the service and 1 here, and linking
-    // must not report 1. Linking is exactly when the two sides are furthest apart.
+  test("records a tracker that's ahead rather than overwriting it with local progress", async () => {
+    // You've read 3 on the service and 1 here, and linking must not report 1. Linking is exactly
+    // when the two sides are furthest apart — and the service's 3 stays on the service: nothing
+    // local is marked read from it.
     const lib = makeLib();
     const updateCalls: PushCall[] = [];
     const tracker = mockTracker("anilist", {
@@ -1275,9 +1296,8 @@ describe("linkTracker", () => {
 
     expect(updateCalls).toEqual([]);
     expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 3, status: "reading" });
-    // And the tracker's progress is reconciled into local read state, not just recorded on the link.
     const read = new Set((await lib.getProgress("test:s1")).filter((p) => p.read).map((p) => p.chapterId));
-    expect(read).toEqual(new Set(["c1", "c2", "c3"]));
+    expect(read).toEqual(new Set(["c1"]));
   });
 
   test("pushes local progress when the newly-linked tracker is behind", async () => {
@@ -1395,7 +1415,6 @@ describe("backgroundSync — best-effort", () => {
     // Should resolve cleanly despite both sources failing.
     const res = await runtime.backgroundSync();
     expect(res).toMatchObject({ updated: 0, newChapters: 0, readSynced: 0 });
-    expect(res.suggestions).toEqual([]);
   });
 });
 
@@ -1784,33 +1803,6 @@ describe("backgroundSync — time budget", () => {
     expect(second).toMatchObject({ updated: 2, skipped: 1, partial: false });
     const total = [...calls.values()].reduce((a, b) => a + b, 0);
     expect(total).toBe(3); // every entry synced exactly once across both runs
-  });
-});
-
-describe("backgroundSync — tracker gate", () => {
-  test("trackers: false skips the whole-list tracker pull", async () => {
-    const lib = makeLib();
-    let pulls = 0;
-    const tracker: Tracker = {
-      info: { ...TRACKER_INFO, id: "anilist", capabilities: ["library-sync"] },
-      async getLibrary() {
-        pulls++;
-        return { items: [] };
-      },
-    };
-    const { bridge } = instrumentedBridge();
-    const runtime = new ComicalRuntime({
-      bridges: mockBridgeProvider(bridge),
-      library: lib,
-      trackers: mockTrackerProvider([tracker]),
-    });
-    await seedStaleEntries(lib, 1);
-
-    await runtime.backgroundSync({ trackers: false });
-    expect(pulls).toBe(0);
-
-    await runtime.backgroundSync({ force: true });
-    expect(pulls).toBe(1);
   });
 });
 

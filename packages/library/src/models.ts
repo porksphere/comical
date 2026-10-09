@@ -541,10 +541,10 @@ export const trackerLinkSchema = z.object({
   /**
    * When we successfully told this tracker the series is FINISHED, epoch ms.
    *
-   * Deliberately separate from `status`, which a pull overwrites with the tracker's own truth (see
-   * `applyTrackerItem`). If completion were inferred from `status`, a user who deliberately set a
-   * fully-read series to "dropped" on the service would have "completed" re-pushed over it on every
-   * background sync. This records only what WE sent, so the push happens exactly once.
+   * Deliberately separate from `status`, which a manual sync overwrites with the tracker's own truth
+   * (see the runtime's `recordTrackerEntry`). If completion were inferred from `status`, a user who
+   * deliberately set a fully-read series to "dropped" on the service would have "completed"
+   * re-pushed over it on the next sync. This records only what WE sent, so the push happens exactly once.
    */
   completedPushedAt: z.number().int().optional(),
   lastSyncAt: z.number().int().optional(),

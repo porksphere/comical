@@ -6,6 +6,6 @@ export {
   type FavoritesImportPreview,
   type RuntimeAddResult,
   type RuntimeOptions,
+  type TrackerLinkSyncResult,
   type TrackerProvider,
-  type TrackerSuggestion,
 } from "./runtime.ts";
