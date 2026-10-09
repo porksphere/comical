@@ -65,12 +65,12 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
   // What the router writes settings through; with sync on, the recording one.
   let bridges = manager;
 
-  const port = opts.port ?? 3100;
   const routerOpts: RouterOptions = {
     registry,
-    callbackBaseUrl: `http://localhost:${port}`,
     userAgent: DEFAULT_USER_AGENT,
   };
+  // A self-hosted deployment that registered its own relay page with its providers.
+  if (process.env.COMICAL_OAUTH_REDIRECT_URL) routerOpts.oauthRedirectUrl = process.env.COMICAL_OAUTH_REDIRECT_URL;
   if (opts.origin) routerOpts.origin = opts.origin;
   if (opts.token) routerOpts.token = opts.token;
 

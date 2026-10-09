@@ -79,8 +79,15 @@ export interface RouterOptions {
   downloadEngine?: DownloadEngine;
   /** Tracker manager — enables `/trackers` endpoints when provided. `TrackerManager` satisfies `TrackerProvider`. */
   trackers?: TrackerProvider;
-  /** Base URL of this server, used as the OAuth callback redirect URI (e.g. "http://localhost:3100"). */
-  callbackBaseUrl?: string;
+  /**
+   * Where an `oauth-callback` provider sends the browser back after sign-in — the `redirect_uri` of
+   * both the authorize request and the code exchange, so it must be the ONE URL registered with the
+   * provider. Defaults to Comical's hosted relay page (`DEFAULT_OAUTH_REDIRECT_URL`), which hands the
+   * code back to whichever client started the round trip: a provider like MyAnimeList registers a
+   * single redirect per client id, and a phone, a desktop shell and a browser can't all be it. The
+   * client finishes by calling `GET /oauth/callback` on this router with the code it was handed.
+   */
+  oauthRedirectUrl?: string;
   /**
    * User-Agent sent by `/img-proxy`'s upstream fetch. Passed in by the caller (rather than imported
    * from a specific host adapter here) so this file stays free of Node-specific deps — comical-app's
@@ -105,6 +112,17 @@ interface PendingOAuth {
   expiresAt: number;
 }
 const pendingOAuth = new Map<string, PendingOAuth>();
+
+/** The relay page every Comical client shares as its OAuth redirect (see `RouterOptions.oauthRedirectUrl`). */
+export const DEFAULT_OAUTH_REDIRECT_URL = "https://porksphere.github.io/comical-app/oauth-relay.html";
+
+/**
+ * Which client is waiting for the code: the relay page reads this back as a prefix on the `state`
+ * the provider echoes. `native` means a custom-scheme deep link (a phone's auth session, the
+ * desktop shell); `web` means a popup that posts the code back to the window that opened it.
+ */
+export type OAuthReturnTo = "native" | "web";
+const OAUTH_RETURN_TO: ReadonlySet<string> = new Set<OAuthReturnTo>(["native", "web"]);
 
 type Bindings = Record<string, never>;
 type Vars = { manager: BridgeProvider };
@@ -1660,8 +1678,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
 
     app.post("/trackers/:id/oauth-start", async (c) => {
       const trackerId = c.req.param("id");
-      const b = await body<{ key?: string; settings?: Record<string, string> }>(c);
+      const b = await body<{ key?: string; settings?: Record<string, string>; returnTo?: string }>(c);
       if (!b?.key) return c.json({ error: "key required" }, 400);
+      const returnTo = b.returnTo ?? "web";
+      if (!OAUTH_RETURN_TO.has(returnTo)) return c.json({ error: "returnTo must be \"native\" or \"web\"" }, 400);
       try {
         const tracker = await trackerMgr.get(trackerId);
         const desc = (tracker.getSettings?.() ?? []).find((d) => d.key === b.key);
@@ -1674,7 +1694,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         if (!clientId) return c.json({ error: "client_id not configured — save settings first" }, 400);
         const clientSecret = resolve(desc.exchange.clientSecretKey, desc.exchange.clientSecret);
 
-        const state = crypto.randomUUID().replace(/-/g, "");
+        // The prefix is for the relay page, which has no other way to tell which client to hand the
+        // code to; the random tail is what makes the state a state.
+        const state = `${returnTo}:${crypto.randomUUID().replace(/-/g, "")}`;
         let codeVerifier = "";
         if (desc.exchange.pkce) {
           const bytes = new Uint8Array(32);
@@ -1683,7 +1705,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
             .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "").slice(0, 43);
         }
 
-        const callbackUrl = `${opts.callbackBaseUrl ?? "http://localhost:3100"}/oauth/callback`;
+        const callbackUrl = opts.oauthRedirectUrl ?? DEFAULT_OAUTH_REDIRECT_URL;
         const authUrl = desc.authUrlTemplate
           .replace("{clientId}", encodeURIComponent(clientId))
           .replace("{pkce}", encodeURIComponent(codeVerifier))
@@ -1719,7 +1741,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       if (!pending || pending.expiresAt < Date.now()) { pendingOAuth.delete(state); return htmlErr("Expired or unknown state — please try connecting again."); }
       pendingOAuth.delete(state);
 
-      const callbackUrl = `${opts.callbackBaseUrl ?? "http://localhost:3100"}/oauth/callback`;
+      const callbackUrl = opts.oauthRedirectUrl ?? DEFAULT_OAUTH_REDIRECT_URL;
       const params: Record<string, string> = {
         grant_type: "authorization_code",
         client_id: pending.clientId,

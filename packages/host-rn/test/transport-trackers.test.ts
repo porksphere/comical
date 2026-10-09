@@ -7,7 +7,7 @@
  * pattern as `transport-library.test.ts`'s `/library*` coverage.
  */
 import { describe, expect, test } from "bun:test";
-import { createRouter } from "@comical/host-server/router";
+import { createRouter, DEFAULT_OAUTH_REDIRECT_URL } from "@comical/host-server/router";
 import { InMemoryLibraryStore, Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
 import { createEmbeddedTransport } from "../src/transport.ts";
@@ -118,39 +118,25 @@ describe("embedded transport — on-device trackers", () => {
     expect(res.status).toBe(404);
   });
 
-  // On-device there's no real HTTP server to redirect an OAuth provider back to, so
-  // `installEmbeddedTransport` threads the app's own custom-scheme deep link through as
-  // `callbackBaseUrl` — this proves it actually reaches the router's `oauth-start` route instead of
-  // silently falling back to the default `http://localhost:3100`.
-  test("threads callbackBaseUrl into oauth-start's authUrl instead of the localhost default", async () => {
-    const withCustomBase = createEmbeddedTransport(
-      stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined,
-      oauthTrackerProvider, "comical://oauth-callback",
-    );
-    const res = await withCustomBase("/trackers/anilist/oauth-start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "token" }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { authUrl: string };
-    expect(body.authUrl).toContain(encodeURIComponent("comical://oauth-callback/oauth/callback"));
-    expect(body.authUrl).not.toContain("localhost");
-  });
-
-  test("falls back to the localhost default when no callbackBaseUrl is supplied", async () => {
-    const withoutCustomBase = createEmbeddedTransport(
+  // On-device there's no HTTP server for a provider to redirect to, and the transport takes no
+  // option for one: the router aims every client at the shared relay page, which bounces the code
+  // into the app's scheme. This proves the embedded route really is built around that relay and
+  // tags the state for a native return, since a localhost redirect here would be a dead end.
+  test("builds oauth-start's authUrl around the shared relay with a native-tagged state", async () => {
+    const t = createEmbeddedTransport(
       stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined,
       oauthTrackerProvider,
     );
-    const res = await withoutCustomBase("/trackers/anilist/oauth-start", {
+    const res = await t("/trackers/anilist/oauth-start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "token" }),
+      body: JSON.stringify({ key: "token", returnTo: "native" }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { authUrl: string };
-    expect(body.authUrl).toContain(encodeURIComponent("http://localhost:3100/oauth/callback"));
+    expect(body.authUrl).toContain(encodeURIComponent(DEFAULT_OAUTH_REDIRECT_URL));
+    expect(body.authUrl).not.toContain("localhost");
+    expect(body.authUrl).toMatch(/[?&]state=native%3A[0-9a-f]{32}/);
   });
 });
 
