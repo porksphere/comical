@@ -70,6 +70,12 @@ export const trackerLibraryEntrySchema = z.object({
    */
   totalChapters: z.number().int().positive().optional(),
   thumbnailUrl: z.string().url().optional(),
+  /**
+   * Other names the service lists this media under (romanized, native, synonyms). Matching a
+   * tracker entry to a library series or a bridge search result is title-based, and the title a
+   * service shows is often not the one a source uses — these are what let the match land anyway.
+   */
+  altTitles: z.array(z.string().min(1)).optional(),
 });
 export type TrackerLibraryEntry = z.infer<typeof trackerLibraryEntrySchema>;
 

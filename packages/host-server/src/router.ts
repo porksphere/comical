@@ -35,6 +35,7 @@ import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
 import { streamSSE } from "hono/streaming";
 import type { ComicalRuntime, FavoritesImportItem } from "@comical/runtime";
+import { trackerImportRequestSchema, trackerImportResolveRequestSchema } from "@comical/runtime";
 import type { BridgeProvider } from "./bridge-provider.ts";
 import type { RegistryProvider } from "./registry-provider.ts";
 import { TagLabelCache } from "./tag-label-cache.ts";
@@ -1108,6 +1109,57 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         return c.json(await runtime!.importBridgeFavorites(c.req.param("id"), items));
       }),
     );
+
+    // Import from a tracker's list. Three steps, each its own request so a host can show progress
+    // and let the user confirm or cancel between them:
+    //   preview — the tracker's whole list classified against the library (read-only);
+    //   resolve — find the source series for entries the library doesn't have, on one bridge;
+    //   import  — add/link the confirmed pairs. Push-only for series already here; a tracker's
+    //             progress seeds read state only on a series the library didn't have (`seedProgress`).
+    // Resolve and import take at most MAX_TRACKER_IMPORT_BATCH entries per call — see that constant.
+    // Mounted only with a TrackerManager, like the /trackers routes.
+    if (trackerMgr) {
+      const trackerStatus = (e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { error: msg, status: msg.includes("not found") ? 404 : 400 } as const;
+      };
+
+      app.get("/library/import/trackers/:id/preview", async (c) => {
+        try {
+          return c.json(await runtime!.previewTrackerImport(c.req.param("id")));
+        } catch (e) {
+          const { error, status } = trackerStatus(e);
+          return c.json({ error }, status);
+        }
+      });
+
+      app.post("/library/import/trackers/:id/resolve", async (c) => {
+        const parsed = trackerImportResolveRequestSchema.safeParse(await body<unknown>(c));
+        if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid body" }, 400);
+        try {
+          await trackerMgr.get(c.req.param("id"));
+          return c.json(await runtime!.resolveTrackerImport(c.req.param("id"), parsed.data.bridgeId, parsed.data.entries));
+        } catch (e) {
+          const { error, status } = trackerStatus(e);
+          return c.json({ error }, status);
+        }
+      });
+
+      app.post("/library/import/trackers/:id", async (c) => {
+        const parsed = trackerImportRequestSchema.safeParse(await body<unknown>(c));
+        if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid body" }, 400);
+        const { items, collectionIds, seedProgress } = parsed.data;
+        try {
+          return c.json(await runtime!.importTrackerEntries(c.req.param("id"), items, {
+            ...(collectionIds !== undefined && { collectionIds }),
+            seedProgress,
+          }));
+        } catch (e) {
+          const { error, status } = trackerStatus(e);
+          return c.json({ error }, status);
+        }
+      });
+    }
 
     // ── Backup ──────────────────────────────────────────────────────────────────
     // The library as one document, and the way back from one. The library's part is `Library`'s;

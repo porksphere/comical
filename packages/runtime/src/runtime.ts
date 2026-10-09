@@ -14,8 +14,10 @@
  *     then bulk-add the caller's selection, grouping in any confirmed cross-bridge duplicates.
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
-import type { Chapter, Cursor, LogCapability, PagedResults, SeriesEntry, SeriesInfo, SeriesRevision, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult } from "@comical/contract";
+import type { Chapter, Cursor, LogCapability, PagedResults, SeriesEntry, SeriesInfo, SeriesRevision, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult, TrackerStatus } from "@comical/contract";
 import { MAX_UPDATE_CHECK_BATCH, trackerEntryUpdateSchema } from "@comical/contract";
+import type { z } from "zod";
+import { matchSearchResults, sharesName, trackerEntryNames, type trackerImportItemSchema, type trackerImportResolveRequestSchema } from "./tracker-import.ts";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
 // node:vm-backed default evaluator) so `@comical/runtime`'s types stay consumable by non-Node
 // hosts — e.g. comical-app's embedded runtime typing `RouterOptions.runtime`. See @comical/core.
@@ -32,9 +34,9 @@ import {
   type TrackerLink,
 } from "@comical/library";
 
-/** Page cap for a favorites walk, mirroring the router's `isFavorite` fallback scan. A favorites
- *  list this long is a runaway `hasNextPage`, not a real account. */
-const MAX_FAVORITE_PAGES = 50;
+/** Page cap for an import walk (a bridge's favorites, a tracker's list), mirroring the router's
+ *  `isFavorite` fallback scan. A list this long is a runaway `hasNextPage`, not a real account. */
+const MAX_IMPORT_PAGES = 50;
 
 /** What a bridge's batch update check said about one entry. See `batchCheckRevisions`. */
 interface UpdateCheckOutcome {
@@ -87,6 +89,82 @@ export interface FavoritesImportItem {
   title: string;
   thumbnailUrl?: string;
   linkTo?: string;
+}
+
+/** One entry of a tracker's list, classified against the library. See {@link ComicalRuntime.previewTrackerImport}. */
+export interface TrackerImportCandidate {
+  externalId: string | number;
+  title: string;
+  altTitles?: string[];
+  thumbnailUrl?: string;
+  status: TrackerStatus;
+  chaptersRead?: number;
+  totalChapters?: number;
+  /**
+   * `"linked"` — a library series is already linked to this entry, so there's nothing to import.
+   * `"in-library"` — the library has it (matched on the tracker's id in the series' `externalIds`, or
+   * on title/alternate titles) but not linked: importing links it. `"none"` — no match; a source
+   * series has to be found first (see {@link ComicalRuntime.resolveTrackerImport}).
+   */
+  match: "linked" | "in-library" | "none";
+  /** Present for `"in-library"` — every matching series (cross-bridge copies), with its local progress. */
+  entries?: Array<{ key: string; bridgeId: string; seriesId: string; title: string; localRead: number }>;
+}
+
+export interface TrackerImportPreview {
+  items: TrackerImportCandidate[];
+  /** True when the page cap stopped the walk, so `items` is not the whole tracker list. */
+  truncated: boolean;
+}
+
+/** What one bridge turned up for one tracker entry. See {@link ComicalRuntime.resolveTrackerImport}. */
+export interface TrackerImportResolveResult {
+  externalId: string | number;
+  /** A hit the runtime is confident enough to accept on the user's behalf. */
+  exact?: SeriesEntry;
+  /** Hits the user has to choose between — empty when the bridge found nothing. */
+  candidates: SeriesEntry[];
+  /** Set when the search itself failed, so "nothing found" isn't mistaken for "source is down". */
+  error?: string;
+}
+
+/** The library as seen from one tracker — built once per preview. See `indexLibraryForTracker`. */
+interface TrackerLibraryIndex {
+  /** External ids (as strings) some series is already linked to. */
+  linked: Set<string>;
+  /** External id (as string) → unlinked series carrying it in `externalIds`. */
+  byExternalId: Map<string, CollectionSeriesItem[]>;
+  /** Normalized title or alternate title → unlinked series going by it. */
+  byName: Map<string, CollectionSeriesItem[]>;
+}
+
+/** One tracker entry to import, paired with the source series it resolved to (`bridgeId`/`seriesId`). */
+export type TrackerImportItem = z.infer<typeof trackerImportItemSchema>;
+
+/** A tracker entry to find on a bridge — the names the search can use. */
+export type TrackerImportResolveEntry = z.infer<typeof trackerImportResolveRequestSchema>["entries"][number];
+
+export interface TrackerImportOptions {
+  /** Collections a NEWLY collected series is filed in. Series already in the library keep theirs. */
+  collectionIds?: string[];
+  /**
+   * Mark chapters read up to the tracker's progress on a series the library did NOT have yet. The
+   * only way a tracker's progress ever becomes local read state; a series already in the library
+   * keeps its own progress regardless.
+   */
+  seedProgress: boolean;
+}
+
+export interface TrackerImportResult {
+  /** Series newly added to the library. */
+  imported: number;
+  /** Tracker links created (one per item that succeeded, new or already collected). */
+  linked: number;
+  /** Chapters marked read from the tracker's progress on newly added series. */
+  seeded: number;
+  /** Items whose local progress led the tracker's and was pushed to it. */
+  pushed: number;
+  failed: Array<{ externalId: string | number; bridgeId: string; seriesId: string; error: string }>;
 }
 
 /** Extends CollectSeriesResult with tracker suggestions when no externalId match was found. */
@@ -469,7 +547,7 @@ export class ComicalRuntime {
         items.push(await this.classifyFavorite(lib, byTitle, bridgeId, entry));
       }
       if (!result.nextCursor) break;
-      if (page >= MAX_FAVORITE_PAGES) { truncated = true; break; }
+      if (page >= MAX_IMPORT_PAGES) { truncated = true; break; }
       cursor = result.nextCursor;
     }
     return { items, truncated };
@@ -555,10 +633,279 @@ export class ComicalRuntime {
           ...(entry.thumbnailUrl !== undefined && { thumbnailUrl: entry.thumbnailUrl }),
         });
       }
-      if (!result.nextCursor || page >= MAX_FAVORITE_PAGES) break;
+      if (!result.nextCursor || page >= MAX_IMPORT_PAGES) break;
       cursor = result.nextCursor;
     }
     return items;
+  }
+
+  // ── Tracker import ────────────────────────────────────────────────────────────
+
+  /**
+   * Page a tracker's list and classify each entry against the library, WITHOUT writing anything —
+   * the list a host shows before importing. The tracker-side twin of
+   * {@link previewBridgeFavoritesImport}, and classified here for the same reason.
+   *
+   * A library series counts as the entry's media when it is linked to the entry (`linked`), or —
+   * for a series with no link to this tracker at all — when it carries the tracker's id in its
+   * `externalIds` or shares a name with the entry (`in-library`). Names are the title plus any
+   * alternate titles on EITHER side, folded with {@link normalizeTitle}: a tracker tends to show
+   * one language and a source another, so the tracker's romanized title is often the source's
+   * alternate title or the other way round. A series already linked to a different entry of this
+   * tracker is never offered as a match — a series holds one link per tracker, and a title twin
+   * (a sequel, a spin-off) must not silently re-point it.
+   */
+  async previewTrackerImport(trackerId: string): Promise<TrackerImportPreview> {
+    const lib = this.requireLibrary();
+    const tracker = await this.requireListableTracker(trackerId);
+    const index = await this.indexLibraryForTracker(lib, trackerId);
+
+    const items: TrackerImportCandidate[] = [];
+    let truncated = false;
+    let cursor: Cursor | undefined;
+    for (let page = 1; ; page++) {
+      const result = await tracker.getLibrary!(cursor ? { cursor } : {});
+      for (const entry of result.items) {
+        items.push(await this.classifyTrackerEntry(lib, index, entry));
+      }
+      if (!result.nextCursor) break;
+      if (page >= MAX_IMPORT_PAGES) { truncated = true; break; }
+      cursor = result.nextCursor;
+    }
+    return { items, truncated };
+  }
+
+  /** One pass over the library, so classifying a whole tracker list scans it once. */
+  private async indexLibraryForTracker(lib: Library, trackerId: string): Promise<TrackerLibraryIndex> {
+    const index: TrackerLibraryIndex = { linked: new Set(), byExternalId: new Map(), byName: new Map() };
+    const add = (map: Map<string, CollectionSeriesItem[]>, k: string, e: CollectionSeriesItem) => {
+      const bucket = map.get(k);
+      if (bucket) bucket.push(e);
+      else map.set(k, [e]);
+    };
+    for (const e of await lib.getLibrary()) {
+      const key = entryKey(e.bridgeId, e.seriesId);
+      const link = await lib.getTrackerLink(key, trackerId);
+      if (link) { index.linked.add(String(link.externalId)); continue; }
+      const ext = e.externalIds?.[trackerId];
+      if (ext !== undefined) add(index.byExternalId, String(ext), e);
+      const detail = await lib.getCachedDetail(key);
+      for (const raw of [e.seriesTitle, ...(detail?.info.altTitles ?? [])]) {
+        const n = normalizeTitle(raw);
+        if (n) add(index.byName, n, e);
+      }
+    }
+    return index;
+  }
+
+  private async classifyTrackerEntry(
+    lib: Library,
+    index: TrackerLibraryIndex,
+    entry: TrackerLibraryEntry,
+  ): Promise<TrackerImportCandidate> {
+    const candidate: TrackerImportCandidate = {
+      externalId: entry.externalId,
+      title: entry.title,
+      status: entry.status,
+      match: "none",
+    };
+    if (entry.altTitles !== undefined) candidate.altTitles = entry.altTitles;
+    if (entry.thumbnailUrl !== undefined) candidate.thumbnailUrl = entry.thumbnailUrl;
+    if (entry.chaptersRead !== undefined) candidate.chaptersRead = entry.chaptersRead;
+    if (entry.totalChapters !== undefined) candidate.totalChapters = entry.totalChapters;
+
+    const ext = String(entry.externalId);
+    if (index.linked.has(ext)) {
+      candidate.match = "linked";
+      return candidate;
+    }
+    // A series can be reached by its external id AND a name — one match, not two.
+    const matches = new Map<string, CollectionSeriesItem>();
+    for (const e of index.byExternalId.get(ext) ?? []) matches.set(entryKey(e.bridgeId, e.seriesId), e);
+    for (const name of trackerEntryNames(entry)) {
+      for (const e of index.byName.get(name) ?? []) matches.set(entryKey(e.bridgeId, e.seriesId), e);
+    }
+    if (matches.size > 0) {
+      candidate.match = "in-library";
+      candidate.entries = [];
+      for (const [key, e] of matches) {
+        candidate.entries.push({
+          key,
+          bridgeId: e.bridgeId,
+          seriesId: e.seriesId,
+          title: e.seriesTitle,
+          localRead: await lib.maxReadChapterNumber(key),
+        });
+      }
+    }
+    return candidate;
+  }
+
+  /**
+   * Find, on one bridge, the source series for tracker entries the library doesn't have. One search
+   * per entry (the bridge's own first page), then {@link matchSearchResults}: a hit whose title is
+   * one of the entry's names is accepted outright. Failing that, the top hit's full details are
+   * fetched once — a source's search listing carries only a title, but its details carry alternate
+   * titles and cross-service ids, and either of those naming the entry is as good as a title match.
+   * Otherwise the top hits are returned for the user to choose between. An empty first page is
+   * retried once under the entry's first alternate title (a source that lists a work under its
+   * romanized name finds nothing for the English one).
+   *
+   * At most three bridge requests per entry. Callers batch the entries (the router caps a call) so
+   * a long list is resolved in slices the user can watch and cancel. Per entry best-effort: one
+   * failed search reports on that entry and the rest of the batch still resolves.
+   */
+  async resolveTrackerImport(
+    trackerId: string,
+    bridgeId: string,
+    entries: TrackerImportResolveEntry[],
+  ): Promise<TrackerImportResolveResult[]> {
+    const bridge = await this.bridges.get(bridgeId);
+    if (!bridge.getSearchResults) throw new Error(`bridge "${bridgeId}" does not support search`);
+
+    const out: TrackerImportResolveResult[] = [];
+    for (const entry of entries) {
+      const names = trackerEntryNames(entry);
+      try {
+        let results = (await bridge.getSearchResults({ text: entry.title })).items;
+        const retry = entry.altTitles?.[0];
+        if (results.length === 0 && retry !== undefined && retry !== entry.title) {
+          results = (await bridge.getSearchResults({ text: retry })).items;
+        }
+
+        let split = matchSearchResults(names, results);
+        const top = results[0];
+        if (!split.exact && top) {
+          const info = await bridge.getSeriesDetails(top.id).catch(() => undefined);
+          const sameId = info?.externalIds?.[trackerId] !== undefined
+            && String(info.externalIds[trackerId]) === String(entry.externalId);
+          if (info && (sameId || sharesName(names, info))) split = matchSearchResults(names, results, top);
+        }
+        out.push({ externalId: entry.externalId, ...split });
+      } catch (err) {
+        this.log?.warn(`tracker import: search failed on ${bridgeId} for "${entry.title}":`, errMessage(err));
+        out.push({ externalId: entry.externalId, candidates: [], error: errMessage(err) });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Import tracker entries, each paired with the source series it resolved to (or the library
+   * series it matched). Per item:
+   *
+   *   - not in the library → collect it (details and chapters cached, filed in `collectionIds`),
+   *     link it, record what the tracker holds on the link, and — with `seedProgress` — mark
+   *     chapters read up to the tracker's progress. This is the ONE place a tracker's progress
+   *     becomes local read state, and it is only ever for a series the library didn't have.
+   *   - already in the library → link it and reconcile push-only, exactly like the manual sync: the
+   *     tracker is updated when local progress leads, and local chapters are never touched. A series
+   *     the user has read here keeps its progress whatever the tracker says.
+   *
+   * Idempotent: re-importing an item re-links (a no-op) and reconciles again. Failures are isolated
+   * per item and reported, never thrown mid-batch — the items before and after still land.
+   */
+  async importTrackerEntries(
+    trackerId: string,
+    items: TrackerImportItem[],
+    opts: TrackerImportOptions,
+  ): Promise<TrackerImportResult> {
+    const lib = this.requireLibrary();
+    if (!this.trackers) throw new Error("ComicalRuntime: no trackers configured");
+    const tracker = await this.trackers.get(trackerId);
+    const canPush = tracker.info.capabilities.includes("status-sync") && !!tracker.updateEntry;
+
+    const result: TrackerImportResult = { imported: 0, linked: 0, seeded: 0, pushed: 0, failed: [] };
+    for (const item of items) {
+      const key = entryKey(item.bridgeId, item.seriesId);
+      try {
+        const existing = await lib.getSeries(key);
+        const hadLink = existing !== undefined && (await lib.getTrackerLink(key, trackerId)) !== undefined;
+        let chapters: Chapter[] | undefined;
+        if (!existing) {
+          chapters = await this.collectForImport(lib, item, opts.collectionIds);
+          result.imported++;
+        }
+
+        if (!hadLink) result.linked++;
+        await lib.linkTracker(key, trackerId, item.externalId);
+        const link = (await lib.getTrackerLink(key, trackerId))!;
+        const remote: TrackerLibraryEntry = {
+          externalId: item.externalId,
+          title: item.title,
+          status: item.status,
+          ...(item.chaptersRead !== undefined && { chaptersRead: item.chaptersRead }),
+          ...(item.totalChapters !== undefined && { totalChapters: item.totalChapters }),
+        };
+
+        if (!existing) {
+          // Nothing local can lead on a series that didn't exist a moment ago, so there is nothing to
+          // push; the link just takes the tracker's state, and the seed (if wanted) matches it.
+          await this.recordTrackerEntry(key, trackerId, remote, link.chaptersRead ?? 0);
+          if (opts.seedProgress && item.chaptersRead !== undefined && item.chaptersRead > 0) {
+            result.seeded += await this.reconcileTrackerRead(item.bridgeId, item.seriesId, key, item.chaptersRead, chapters);
+          }
+        } else {
+          const sync = await this.syncLinkWithEntry(key, trackerId, link, remote, canPush ? tracker : undefined);
+          if (sync.pushed) result.pushed++;
+        }
+      } catch (err) {
+        this.log?.warn(`tracker import failed: ${trackerId} ${key}:`, errMessage(err));
+        result.failed.push({ externalId: item.externalId, bridgeId: item.bridgeId, seriesId: item.seriesId, error: errMessage(err) });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Collect a series the import found on a bridge. The source's own details are preferred over
+   * what the tracker knows (the tracker's title is in its language, not the source's), with the
+   * tracker's as the fallback so an unreachable detail page still adds the series. The chapter list
+   * fetched for the offline cache is returned so the seed can reuse it instead of fetching twice.
+   *
+   * Not {@link collectSeries}: that runs a title search on every configured tracker per series,
+   * which for a bulk import of a tracker's own list is both pointless and rate-limit poison. Any
+   * OTHER tracker's id in the source's details still auto-links, as it would for a browsed add.
+   */
+  private async collectForImport(
+    lib: Library,
+    item: TrackerImportItem,
+    collectionIds: string[] | undefined,
+  ): Promise<Chapter[] | undefined> {
+    const key = entryKey(item.bridgeId, item.seriesId);
+    const bridge = await this.bridges.get(item.bridgeId);
+    const info = await bridge.getSeriesDetails(item.seriesId).catch(() => undefined);
+
+    const snap: SeriesItemSnapshot = { seriesTitle: info?.title ?? item.title };
+    const thumbnailUrl = info?.thumbnailUrl ?? item.thumbnailUrl;
+    if (thumbnailUrl !== undefined) snap.thumbnailUrl = thumbnailUrl;
+    if (info?.author !== undefined) snap.author = info.author;
+    if (info?.externalIds !== undefined) snap.externalIds = info.externalIds;
+    if (collectionIds !== undefined) snap.collectionIds = collectionIds;
+    await lib.collectSeries({ bridgeId: item.bridgeId, seriesId: item.seriesId }, snap);
+
+    // Offline metadata capture, best-effort as in `collectSeries` — the add itself already landed.
+    let chapters: Chapter[] | undefined;
+    try {
+      if (info) await lib.cacheSeriesDetail(key, info);
+      if (bridge.getChapters) {
+        chapters = await bridge.getChapters(item.seriesId);
+        await lib.syncChapters(key, chapters);
+      }
+    } catch {
+      // Browsing/background sync write it through later.
+    }
+    await this.relinkEntry(item.bridgeId, item.seriesId, info?.externalIds);
+    return chapters;
+  }
+
+  private async requireListableTracker(trackerId: string): Promise<LoadedTracker> {
+    if (!this.trackers) throw new Error("ComicalRuntime: no trackers configured");
+    const tracker = await this.trackers.get(trackerId);
+    if (!tracker.info.capabilities.includes("library-sync") || !tracker.getLibrary) {
+      throw new Error(`tracker "${trackerId}" does not support library-sync`);
+    }
+    return tracker;
   }
 
   // ── Background sync ───────────────────────────────────────────────────────────

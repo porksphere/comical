@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { Bridge, BridgeInfo, Chapter, PagedRequest, SeriesInfo, Tracker, TrackerEntryUpdate, TrackerInfo, TrackerLibraryEntry } from "@comical/contract";
 import { MAX_UPDATE_CHECK_BATCH, trackerEntryUpdateSchema } from "@comical/contract";
 import { entryKey, InMemoryLibraryStore, Library, type TrackerLink } from "@comical/library";
-import { ComicalRuntime, type BridgeProvider, type TrackerProvider } from "@comical/runtime";
+import { ComicalRuntime, type BridgeProvider, type TrackerImportItem, type TrackerProvider } from "@comical/runtime";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -2036,5 +2036,361 @@ describe("importBridgeFavorites", () => {
   test("throws when the bridge has no favorites and no selection was given", async () => {
     const runtime = favoritesRuntime(mockBridge({ id: "s1", title: "x" }), makeLib());
     await expect(runtime.importBridgeFavorites("test")).rejects.toThrow(/does not support favorites/);
+  });
+});
+
+// ── Tracker import ────────────────────────────────────────────────────────────
+
+/**
+ * A bridge with a searchable catalog: `getSearchResults` is a case-insensitive substring match over
+ * titles (in catalog order), and `getSeriesDetails` returns the full record — alt titles and
+ * external ids included — so the resolve step's "confirm via details" path has something to find.
+ */
+function catalogBridge(
+  catalog: Array<Partial<SeriesInfo> & { id: string; title: string }>,
+  chapters: Record<string, Chapter[]> = {},
+  opts: { searchCalls?: string[]; detailCalls?: string[] } = {},
+): Bridge {
+  return {
+    info: { ...BRIDGE_INFO, capabilities: ["search"] },
+    async getSeriesDetails(id) {
+      opts.detailCalls?.push(id);
+      const hit = catalog.find((s) => s.id === id);
+      if (!hit) throw new Error(`no such series: ${id}`);
+      return hit;
+    },
+    async getSearchResults(req) {
+      opts.searchCalls?.push(req.text ?? "");
+      const q = (req.text ?? "").toLowerCase();
+      return { items: catalog.filter((s) => s.title.toLowerCase().includes(q)).map(({ id, title }) => ({ id, title })) };
+    },
+    async getChapters(id) { return chapters[id] ?? []; },
+  };
+}
+
+/** A list-capable tracker (the import needs `library-sync`) that also captures pushes. */
+function listTracker(entries: TrackerLibraryEntry[], updateCalls: PushCall[] = []): Tracker {
+  return mockTracker("anilist", { capabilities: ["library-sync", "status-sync"], libraryEntries: entries, updateCalls });
+}
+
+function importRuntime(bridge: Bridge, lib: Library, tracker: Tracker) {
+  return new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib, trackers: mockTrackerProvider([tracker]) });
+}
+
+const readIds = async (lib: Library, key: string) =>
+  new Set((await lib.getProgress(key)).filter((p) => p.read).map((p) => p.chapterId));
+
+describe("previewTrackerImport", () => {
+  test("classifies each entry: linked / in-library (by external id, title, alt title) / none", async () => {
+    const lib = makeLib();
+    await lib.collectSeries({ bridgeId: "test", seriesId: "linked" }, { seriesTitle: "Linked One" });
+    await lib.linkTracker("test:linked", "anilist", 1);
+    await lib.collectSeries({ bridgeId: "test", seriesId: "byid" }, { seriesTitle: "Totally Different Name", externalIds: { anilist: 2 } });
+    await lib.collectSeries({ bridgeId: "test", seriesId: "bytitle" }, { seriesTitle: "Berserk" });
+    // Matched through the SOURCE's alternate title (cached detail) against the tracker's title.
+    await lib.collectSeries({ bridgeId: "test", seriesId: "byalt" }, { seriesTitle: "Yokohama Kaidashi Kikou" });
+    await lib.cacheSeriesDetail("test:byalt", { id: "byalt", title: "Yokohama Kaidashi Kikou", altTitles: ["Record of a Yokohama Shopping Trip"] });
+    // Matched through the TRACKER's alternate title against the source's title.
+    await lib.collectSeries({ bridgeId: "test", seriesId: "bytrackeralt" }, { seriesTitle: "Hoshi no Samidare" });
+    await lib.markRead("test:bytitle", "c7", true, "Ch 7", 7);
+
+    const runtime = importRuntime(mockBridge({ id: "x", title: "x" }), lib, listTracker([
+      { externalId: 1, title: "Linked One", status: "reading", chaptersRead: 10 },
+      { externalId: 2, title: "By Id", status: "completed", chaptersRead: 100, totalChapters: 100 },
+      { externalId: 3, title: "BERSERK", status: "reading", chaptersRead: 300, thumbnailUrl: "http://x/3.jpg" },
+      { externalId: 4, title: "Record of a Yokohama Shopping Trip", status: "planning" },
+      { externalId: 5, title: "Lucifer and the Biscuit Hammer", altTitles: ["Hoshi no Samidare"], status: "on_hold", chaptersRead: 3 },
+      { externalId: 6, title: "Nowhere To Be Found", status: "reading", chaptersRead: 2 },
+    ]));
+
+    const preview = await runtime.previewTrackerImport("anilist");
+    expect(preview.truncated).toBe(false);
+    expect(preview.items.map((i) => i.match)).toEqual(["linked", "in-library", "in-library", "in-library", "in-library", "none"]);
+    expect(preview.items[1]!.entries).toEqual([{ key: "test:byid", bridgeId: "test", seriesId: "byid", title: "Totally Different Name", localRead: 0 }]);
+    expect(preview.items[2]!.entries).toEqual([{ key: "test:bytitle", bridgeId: "test", seriesId: "bytitle", title: "Berserk", localRead: 7 }]);
+    expect(preview.items[2]).toMatchObject({ chaptersRead: 300, thumbnailUrl: "http://x/3.jpg", status: "reading" });
+    expect(preview.items[3]!.entries!.map((e) => e.seriesId)).toEqual(["byalt"]);
+    expect(preview.items[4]!.entries!.map((e) => e.seriesId)).toEqual(["bytrackeralt"]);
+    expect(preview.items[4]!.altTitles).toEqual(["Hoshi no Samidare"]);
+    expect(preview.items[5]!.entries).toBeUndefined();
+  });
+
+  test("a series already linked to ANOTHER entry of this tracker is never offered as a title match", async () => {
+    const lib = makeLib();
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "Twin" });
+    await lib.linkTracker("test:s1", "anilist", 99);
+
+    const runtime = importRuntime(mockBridge({ id: "x", title: "x" }), lib, listTracker([
+      { externalId: 1, title: "Twin", status: "reading" },
+    ]));
+    const preview = await runtime.previewTrackerImport("anilist");
+    expect(preview.items[0]!.match).toBe("none");
+  });
+
+  test("reports every matching library series (cross-bridge copies), each once", async () => {
+    const lib = makeLib();
+    await lib.collectSeries({ bridgeId: "a", seriesId: "s1" }, { seriesTitle: "Same", externalIds: { anilist: 1 } });
+    await lib.collectSeries({ bridgeId: "b", seriesId: "s2" }, { seriesTitle: "same!" });
+
+    const runtime = importRuntime(mockBridge({ id: "x", title: "x" }), lib, listTracker([
+      { externalId: 1, title: "Same", status: "reading" },
+    ]));
+    const preview = await runtime.previewTrackerImport("anilist");
+    expect(preview.items[0]!.entries!.map((e) => e.key)).toEqual(["a:s1", "b:s2"]);
+  });
+
+  test("pages the tracker list and flags truncation at the page cap", async () => {
+    const lib = makeLib();
+    const endless: Tracker = {
+      info: { ...TRACKER_INFO, capabilities: ["library-sync"] },
+      async getLibrary(req) {
+        const page = cursorPage(req);
+        return { items: [{ externalId: page, title: `Entry ${page}`, status: "reading" as const }], nextCursor: pageCursor(page + 1, true) };
+      },
+    };
+    const runtime = importRuntime(mockBridge({ id: "x", title: "x" }), lib, endless);
+    const preview = await runtime.previewTrackerImport("anilist");
+    expect(preview.truncated).toBe(true);
+    expect(preview.items.length).toBe(50);
+  });
+
+  test("rejects a tracker without library-sync", async () => {
+    const runtime = importRuntime(mockBridge({ id: "x", title: "x" }), makeLib(), mockTracker("anilist", { capabilities: ["status-sync"] }));
+    await expect(runtime.previewTrackerImport("anilist")).rejects.toThrow(/does not support library-sync/);
+  });
+});
+
+describe("resolveTrackerImport", () => {
+  const CATALOG = [
+    { id: "b1", title: "Berserk" },
+    { id: "b2", title: "Berserk Colored" },
+    { id: "b3", title: "Berserk Deluxe" },
+    { id: "b4", title: "Berserk Guidebook" },
+    { id: "b5", title: "Berserk Max" },
+    { id: "k1", title: "Yokohama Kaidashi Kikou", altTitles: ["Record of a Yokohama Shopping Trip"] },
+    { id: "m1", title: "Mushishi Gaiden", externalIds: { anilist: 42 } },
+    { id: "h1", title: "Hoshi no Samidare" },
+  ];
+
+  test("accepts an exact title hit; the rest become candidates, capped at three", async () => {
+    const runtime = importRuntime(catalogBridge(CATALOG), makeLib(), listTracker([]));
+    const [res] = await runtime.resolveTrackerImport("anilist", "test", [{ externalId: 1, title: "BERSERK" }]);
+    expect(res!.exact?.id).toBe("b1");
+    expect(res!.candidates.map((c) => c.id)).toEqual(["b2", "b3", "b4"]);
+  });
+
+  test("confirms the top hit through its details: tracker id in externalIds", async () => {
+    const detailCalls: string[] = [];
+    const runtime = importRuntime(catalogBridge(CATALOG, {}, { detailCalls }), makeLib(), listTracker([]));
+    const [res] = await runtime.resolveTrackerImport("anilist", "test", [{ externalId: 42, title: "Mushishi" }]);
+    expect(res!.exact?.id).toBe("m1");
+    expect(res!.candidates).toEqual([]);
+    expect(detailCalls).toEqual(["m1"]);
+  });
+
+  test("confirms the top hit through its details: an alternate title names the entry", async () => {
+    const runtime = importRuntime(catalogBridge(CATALOG), makeLib(), listTracker([]));
+    const [res] = await runtime.resolveTrackerImport("anilist", "test", [{ externalId: 7, title: "Yokohama Kaidashi", altTitles: ["Record of a Yokohama Shopping Trip"] }]);
+    // "Yokohama Kaidashi" finds k1 but is not its title; k1's alt title is the entry's → confirmed.
+    expect(res!.exact?.id).toBe("k1");
+    expect(res!.candidates).toEqual([]);
+  });
+
+  test("the tracker's alternate title matches a source title directly", async () => {
+    const runtime = importRuntime(catalogBridge(CATALOG), makeLib(), listTracker([]));
+    const [res] = await runtime.resolveTrackerImport("anilist", "test", [{ externalId: 5, title: "Hoshi no Samidare!!", altTitles: ["Hoshi no Samidare"] }]);
+    expect(res!.exact?.id).toBe("h1");
+  });
+
+  test("no exact hit and details don't confirm → candidates only; nothing found → empty", async () => {
+    const searchCalls: string[] = [];
+    const runtime = importRuntime(catalogBridge(CATALOG, {}, { searchCalls }), makeLib(), listTracker([]));
+    const [near, none] = await runtime.resolveTrackerImport("anilist", "test", [
+      { externalId: 1, title: "Berserk Col" },
+      { externalId: 2, title: "Nothing Here", altTitles: ["Also Nothing"] },
+    ]);
+    expect(near!.exact).toBeUndefined();
+    expect(near!.candidates.map((c) => c.id)).toEqual(["b2"]);
+    expect(none!.exact).toBeUndefined();
+    expect(none!.candidates).toEqual([]);
+    // The empty first page was retried once under the first alternate title.
+    expect(searchCalls).toEqual(["Berserk Col", "Nothing Here", "Also Nothing"]);
+  });
+
+  test("a failing search reports on that entry only; the batch still resolves", async () => {
+    const bridge = catalogBridge(CATALOG);
+    const flaky: Bridge = {
+      ...bridge,
+      async getSearchResults(req) {
+        if (req.text === "boom") throw new Error("source down");
+        return bridge.getSearchResults!(req);
+      },
+    };
+    const runtime = importRuntime(flaky, makeLib(), listTracker([]));
+    const [bad, good] = await runtime.resolveTrackerImport("anilist", "test", [
+      { externalId: 1, title: "boom" },
+      { externalId: 2, title: "Berserk" },
+    ]);
+    expect(bad).toEqual({ externalId: 1, candidates: [], error: "source down" });
+    expect(good!.exact?.id).toBe("b1");
+  });
+
+  test("rejects a bridge without search", async () => {
+    const runtime = importRuntime(mockBridge({ id: "x", title: "x" }), makeLib(), listTracker([]));
+    await expect(runtime.resolveTrackerImport("anilist", "test", [{ externalId: 1, title: "x" }])).rejects.toThrow(/does not support search/);
+  });
+});
+
+describe("importTrackerEntries", () => {
+  const CH = [ch("c1", 1), ch("c2", 2), ch("c3", 3), ch("c4", 4), ch("c5", 5)];
+  const CATALOG = [
+    { id: "s1", title: "Berserk", author: "Miura", thumbnailUrl: "http://x/s1.jpg", externalIds: { mal: 2 } },
+    { id: "s2", title: "Other" },
+  ];
+  const item = (over: Partial<TrackerImportItem> = {}): TrackerImportItem => ({
+    externalId: 1, title: "Berserk (tracker title)", status: "reading", chaptersRead: 3, totalChapters: 100, bridgeId: "test", seriesId: "s1", ...over,
+  });
+
+  test("case A — new series: collected with the source's details, filed, linked, recorded, seeded up to the tracker's progress", async () => {
+    const lib = makeLib();
+    const shelf = await lib.createCollection("Shelf");
+    const pushes: PushCall[] = [];
+    const runtime = importRuntime(catalogBridge(CATALOG, { s1: CH }), lib, listTracker([], pushes));
+
+    const res = await runtime.importTrackerEntries("anilist", [item()], { collectionIds: [shelf.id], seedProgress: true });
+    expect(res).toEqual({ imported: 1, linked: 1, seeded: 3, pushed: 0, failed: [] });
+
+    const series = await lib.getSeries("test:s1");
+    expect(series).toMatchObject({ seriesTitle: "Berserk", author: "Miura", thumbnailUrl: "http://x/s1.jpg", collectionIds: [shelf.id] });
+    expect((await lib.getCachedDetail("test:s1"))?.info.author).toBe("Miura");
+    expect((await lib.getCachedChapters("test:s1"))?.chapters.length).toBe(5);
+    expect(await readIds(lib, "test:s1")).toEqual(new Set(["c1", "c2", "c3"]));
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ externalId: 1, status: "reading", chaptersRead: 3, totalChapters: 100 });
+    // Seeding matched the tracker, so there was nothing to push.
+    expect(pushes).toEqual([]);
+  });
+
+  test("case A with the seed off: nothing marked, the link still carries the tracker's watermark", async () => {
+    const lib = makeLib();
+    const runtime = importRuntime(catalogBridge(CATALOG, { s1: CH }), lib, listTracker([]));
+    const res = await runtime.importTrackerEntries("anilist", [item()], { seedProgress: false });
+    expect(res).toMatchObject({ imported: 1, linked: 1, seeded: 0, pushed: 0 });
+    expect(await readIds(lib, "test:s1")).toEqual(new Set());
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 3, status: "reading" });
+  });
+
+  test("case A falls back to the tracker's title when the source's details are unreachable", async () => {
+    const lib = makeLib();
+    const bridge = catalogBridge(CATALOG, { s1: CH });
+    const noDetails: Bridge = { ...bridge, async getSeriesDetails() { throw new Error("offline"); } };
+    const runtime = importRuntime(noDetails, lib, listTracker([]));
+    const res = await runtime.importTrackerEntries("anilist", [item({ thumbnailUrl: "http://t/1.jpg" })], { seedProgress: true });
+    expect(res).toMatchObject({ imported: 1, seeded: 3, failed: [] });
+    expect(await lib.getSeries("test:s1")).toMatchObject({ seriesTitle: "Berserk (tracker title)", thumbnailUrl: "http://t/1.jpg" });
+  });
+
+  test("case A auto-links OTHER trackers named in the source's externalIds", async () => {
+    const lib = makeLib();
+    const mal = mockTracker("mal", { capabilities: ["status-sync"] });
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(catalogBridge(CATALOG, { s1: CH })),
+      library: lib,
+      trackers: mockTrackerProvider([listTracker([]), mal]),
+    });
+    await runtime.importTrackerEntries("anilist", [item()], { seedProgress: true });
+    expect((await lib.getTrackerLink("test:s1", "mal"))?.externalId).toBe(2);
+  });
+
+  test("case B — in library and ahead: linked, local chapters untouched, progress pushed to the tracker", async () => {
+    const lib = makeLib();
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "Berserk" });
+    for (const c of CH) await lib.markRead("test:s1", c.id, true, c.name, c.number);
+    const pushes: PushCall[] = [];
+    const runtime = importRuntime(catalogBridge(CATALOG, { s1: CH }), lib, listTracker([], pushes));
+
+    const res = await runtime.importTrackerEntries("anilist", [item({ chaptersRead: 3 })], { seedProgress: true });
+    expect(res).toEqual({ imported: 0, linked: 1, seeded: 0, pushed: 1, failed: [] });
+    expect(pushes).toEqual([{ externalId: 1, chaptersRead: 5 }]);
+    expect(await readIds(lib, "test:s1")).toEqual(new Set(["c1", "c2", "c3", "c4", "c5"]));
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 5, status: "reading", totalChapters: 100 });
+  });
+
+  test("case B — in library and behind: linked and recorded, nothing marked, nothing pushed — even with the seed on", async () => {
+    const lib = makeLib();
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "Berserk" });
+    await lib.markRead("test:s1", "c1", true, "Ch 1", 1);
+    const pushes: PushCall[] = [];
+    const runtime = importRuntime(catalogBridge(CATALOG, { s1: CH }), lib, listTracker([], pushes));
+
+    const res = await runtime.importTrackerEntries("anilist", [item({ chaptersRead: 3 })], { seedProgress: true });
+    expect(res).toEqual({ imported: 0, linked: 1, seeded: 0, pushed: 0, failed: [] });
+    expect(pushes).toEqual([]);
+    expect(await readIds(lib, "test:s1")).toEqual(new Set(["c1"]));
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 3, status: "reading" });
+  });
+
+  test("case B — a 'planning' entry with local progress is pushed into 'reading'", async () => {
+    const lib = makeLib();
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "Berserk" });
+    await lib.markRead("test:s1", "c2", true, "Ch 2", 2);
+    const pushes: PushCall[] = [];
+    const runtime = importRuntime(catalogBridge(CATALOG, { s1: CH }), lib, listTracker([], pushes));
+
+    const res = await runtime.importTrackerEntries("anilist", [item({ status: "planning", chaptersRead: undefined })], { seedProgress: true });
+    expect(res.pushed).toBe(1);
+    expect(pushes).toEqual([{ externalId: 1, chaptersRead: 2, status: "reading", startedAt: TODAY }]);
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 2, status: "reading" });
+  });
+
+  test("a 'completed' entry seeds a new series fully and stays completed", async () => {
+    const lib = makeLib();
+    const pushes: PushCall[] = [];
+    const runtime = importRuntime(catalogBridge(CATALOG, { s1: CH }), lib, listTracker([], pushes));
+    const res = await runtime.importTrackerEntries("anilist", [item({ status: "completed", chaptersRead: 5, totalChapters: 5 })], { seedProgress: true });
+    expect(res).toMatchObject({ imported: 1, seeded: 5, pushed: 0 });
+    expect(pushes).toEqual([]);
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ status: "completed", chaptersRead: 5, totalChapters: 5 });
+  });
+
+  test("re-importing is idempotent: the series stays, the link stays, nothing is seeded or pushed twice", async () => {
+    const lib = makeLib();
+    const pushes: PushCall[] = [];
+    const runtime = importRuntime(catalogBridge(CATALOG, { s1: CH }), lib, listTracker([], pushes));
+    await runtime.importTrackerEntries("anilist", [item()], { seedProgress: true });
+    const again = await runtime.importTrackerEntries("anilist", [item()], { seedProgress: true });
+    expect(again).toEqual({ imported: 0, linked: 0, seeded: 0, pushed: 0, failed: [] });
+    expect(pushes).toEqual([]);
+    expect(await readIds(lib, "test:s1")).toEqual(new Set(["c1", "c2", "c3"]));
+    expect((await lib.getLibrary()).length).toBe(1);
+    // And the preview now classifies it as linked.
+    const preview = await importRuntime(catalogBridge(CATALOG), lib, listTracker([{ externalId: 1, title: "Berserk", status: "reading" }])).previewTrackerImport("anilist");
+    expect(preview.items[0]!.match).toBe("linked");
+  });
+
+  test("one failing item doesn't stop the batch", async () => {
+    const lib = makeLib();
+    const bridge = catalogBridge(CATALOG, { s1: CH });
+    const provider: BridgeProvider = {
+      get: async (id) => { if (id === "gone") throw new Error("bridge not installed"); return bridge; },
+    };
+    const runtime = new ComicalRuntime({ bridges: provider, library: lib, trackers: mockTrackerProvider([listTracker([])]) });
+    const res = await runtime.importTrackerEntries("anilist", [
+      item({ externalId: 9, bridgeId: "gone", seriesId: "zz" }),
+      item(),
+    ], { seedProgress: true });
+    expect(res).toMatchObject({ imported: 1, linked: 1, seeded: 3 });
+    expect(res.failed).toEqual([{ externalId: 9, bridgeId: "gone", seriesId: "zz", error: "bridge not installed" }]);
+    expect(await lib.getSeries("test:s1")).toBeDefined();
+  });
+
+  test("a list-only tracker (no status-sync) links and records but never pushes", async () => {
+    const lib = makeLib();
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "Berserk" });
+    for (const c of CH) await lib.markRead("test:s1", c.id, true, c.name, c.number);
+    const tracker = mockTracker("anilist", { capabilities: ["library-sync"], libraryEntries: [] });
+    const runtime = importRuntime(catalogBridge(CATALOG, { s1: CH }), lib, tracker);
+    const res = await runtime.importTrackerEntries("anilist", [item({ chaptersRead: 3 })], { seedProgress: true });
+    expect(res).toMatchObject({ linked: 1, pushed: 0 });
+    expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 3, status: "reading" });
   });
 });

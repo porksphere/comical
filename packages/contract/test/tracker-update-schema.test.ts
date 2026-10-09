@@ -104,3 +104,26 @@ describe("trackerLibraryEntrySchema totalChapters", () => {
     ).toThrow();
   });
 });
+
+describe("trackerLibraryEntrySchema altTitles", () => {
+  test("parses an entry carrying the service's other names for the media", () => {
+    const entry = trackerLibraryEntrySchema.parse({
+      externalId: 111,
+      title: "Series",
+      status: "reading",
+      altTitles: ["Shirīzu", "シリーズ"],
+    });
+    expect(entry.altTitles).toEqual(["Shirīzu", "シリーズ"]);
+  });
+
+  test("parses an entry without it — older trackers publish only a title", () => {
+    const entry = trackerLibraryEntrySchema.parse({ externalId: 111, title: "Series", status: "reading" });
+    expect(entry.altTitles).toBeUndefined();
+  });
+
+  test("rejects an empty name — a blank would match nothing and pollute the index", () => {
+    expect(() =>
+      trackerLibraryEntrySchema.parse({ externalId: 111, title: "Series", status: "reading", altTitles: [""] }),
+    ).toThrow();
+  });
+});

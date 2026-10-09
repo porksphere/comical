@@ -6,6 +6,21 @@ export {
   type FavoritesImportPreview,
   type RuntimeAddResult,
   type RuntimeOptions,
+  type TrackerImportCandidate,
+  type TrackerImportItem,
+  type TrackerImportOptions,
+  type TrackerImportPreview,
+  type TrackerImportResolveEntry,
+  type TrackerImportResolveResult,
+  type TrackerImportResult,
   type TrackerLinkSyncResult,
   type TrackerProvider,
 } from "./runtime.ts";
+export {
+  MAX_IMPORT_CANDIDATES,
+  MAX_TRACKER_IMPORT_BATCH,
+  matchSearchResults,
+  trackerImportItemSchema,
+  trackerImportRequestSchema,
+  trackerImportResolveRequestSchema,
+} from "./tracker-import.ts";
