@@ -162,6 +162,52 @@ describe("library sync", () => {
     }
   });
 
+  test("joining merges a local collection into the pulled one with the same name", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const theirs = await a.library.createCollection("Default");
+    await collect(a.library, [theirs.id]);
+    await a.engine.sync();
+
+    // This one grew up on its own: a "Default" of its own, another series filed in it, and a
+    // collection nobody else has.
+    const inner = new InMemoryLibraryStore();
+    const before = new Library(inner, { now });
+    const mine = await before.createCollection("Default");
+    const only = await before.createCollection("Only on b");
+    await before.collectSeries({ bridgeId: "bridge-a", seriesId: "s2" }, { seriesTitle: "Two", collectionIds: [mine.id, only.id] });
+    await before.collectSeries({ bridgeId: "bridge-a", seriesId: "s3" }, { seriesTitle: "Three", collectionIds: [mine.id] });
+
+    const b = device(hub, "b", inner);
+    await b.engine.sync();
+    await adoptLibrary(inner, b.engine);
+    await b.engine.sync();
+    await a.engine.sync();
+
+    for (const d of [a, b]) {
+      const collections = await d.library.getCollections();
+      expect(collections.map((c) => c.name).sort()).toEqual(["Default", "Only on b"]);
+      expect(collections.find((c) => c.name === "Default")?.id).toBe(theirs.id);
+      expect((await d.inner.getCollectionItem("series:bridge-a:s2"))?.collectionIds).toEqual([theirs.id, only.id]);
+      expect((await d.inner.getCollectionItem("series:bridge-a:s3"))?.collectionIds).toEqual([theirs.id]);
+    }
+  });
+
+  test("after the join, a second collection with the same name is its own collection", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    const one = await a.library.createCollection("Reading");
+    await a.engine.sync();
+    await b.engine.sync();
+    await adoptLibrary(b.inner, b.engine);
+
+    const two = await b.library.createCollection("Reading");
+    await b.engine.sync();
+    await a.engine.sync();
+    expect((await a.library.getCollections()).map((c) => c.id).sort()).toEqual([one.id, two.id].sort());
+  });
+
   test("a series removed elsewhere after the first sync is removed here too", async () => {
     const hub = new MemoryBackend();
     const a = device(hub, "a");

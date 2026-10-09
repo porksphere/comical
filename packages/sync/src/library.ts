@@ -394,7 +394,10 @@ export async function adoptLibrary(
 ): Promise<void> {
   const want = (...t: TableId[]): boolean => t.some((x) => tables.includes(x));
   await engine.exclusive(async () => {
-    if (want("collections")) for (const c of await store.listCollections()) engine.adopt("collections", c.id);
+    if (want("collections")) {
+      await joinCollections(store, engine);
+      for (const c of await store.listCollections()) engine.adopt("collections", c.id);
+    }
     if (want("groups")) for (const g of await store.listGroups()) engine.adopt("groups", g.id);
 
     if (want("collectionItems", "seriesResume", "trackerLinks")) {
@@ -420,4 +423,34 @@ export async function adoptLibrary(
     if (want("bridgePrefs")) for (const p of await store.listBridgePrefs()) engine.adopt("bridgePrefs", p.bridgeId);
     if (want("activity")) for (const a of await store.listActivity()) engine.adopt("activity", activityId(a));
   });
+}
+
+/**
+ * Two libraries that grew up apart each made their own "Default" (or "Reading", or "Favorites"), under
+ * ids that never met. Joined as they are, the user has two collections with one name and no way to
+ * tell them apart — and tidying the "extra" one away takes every series that was only in it out of
+ * the library, on every device. So at the join a local collection that shares its name with one the
+ * first pull brought in IS that collection: its members move over and the local record goes, never
+ * having synced. The pulled one is the one kept because the other devices already hold it.
+ *
+ * Only at the join. From then on a name is just a name, and two collections called the same thing
+ * are two collections.
+ */
+async function joinCollections(store: LibraryStore, engine: SyncEngine): Promise<void> {
+  const collections = await store.listCollections();
+  const pulled = new Map<string, string>();
+  for (const c of [...collections].sort((a, b) => a.order - b.order)) {
+    if (engine.knows("collections", c.id) && !pulled.has(c.name)) pulled.set(c.name, c.id);
+  }
+  const into = new Map<string, string>();
+  for (const c of collections) {
+    const target = pulled.get(c.name);
+    if (target !== undefined && !engine.knows("collections", c.id)) into.set(c.id, target);
+  }
+  if (into.size === 0) return;
+  const refiled = (await store.listCollectionItems())
+    .filter((i) => i.collectionIds.some((id) => into.has(id)))
+    .map((i) => ({ ...i, collectionIds: [...new Set(i.collectionIds.map((id) => into.get(id) ?? id))] }));
+  await store.putCollectionItems(refiled);
+  await store.putCollections(collections.filter((c) => !into.has(c.id)));
 }
