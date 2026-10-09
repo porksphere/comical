@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { SettingValue } from "@comical/contract";
 import { BridgeManager } from "../src/bridge-manager.ts";
-import { createRouter, DEFAULT_OAUTH_REDIRECT_URL } from "../src/router.ts";
+import { createRouter } from "../src/router.ts";
 import type { TrackerManager, TrackerSummary } from "../src/tracker-manager.ts";
 import { SettingsStore } from "../src/settings-store.ts";
 
@@ -30,7 +30,12 @@ const TRACKER_SUMMARY: TrackerSummary = {
       type: "oauth-callback",
       authUrlTemplate: "https://example.com/authorize?client_id={clientId}&redirect_uri={callbackUrl}&state={state}",
       // `url` is repointed at the mock token endpoint in beforeAll.
-      exchange: { url: "https://example.com/token", clientId: "public-client-id", clientSecret: "should-never-leave-the-host" },
+      exchange: {
+        url: "https://example.com/token",
+        clientId: "public-client-id",
+        clientSecret: "should-never-leave-the-host",
+        redirectUri: "https://relay.example/registered",
+      },
     },
   ],
   values: {},
@@ -62,6 +67,8 @@ const tokenExchanges: URLSearchParams[] = [];
 
 let baseUrl: string;
 let customRedirectUrl: string;
+let noRedirectUrl: string;
+let noRedirectStop = () => {};
 let noTrackerUrl: string;
 let stop: () => void;
 let customRedirectStop: () => void;
@@ -97,12 +104,25 @@ beforeAll(() => {
   customRedirectUrl = `http://localhost:${customSrv.port}`;
   customRedirectStop = () => customSrv.stop(true);
 
+  // The same tracker with its registration incomplete: the host has nothing to fall back on.
+  const noRedirectField = { ...TRACKER_SUMMARY.settings[1], exchange: { url: "https://example.com/token", clientId: "x" } };
+  const noRedirectManager = {
+    ...mockManager,
+    get: async (id: string) => {
+      const t = await mockManager.get(id);
+      return { ...t, getSettings: () => [TRACKER_SUMMARY.settings[0], noRedirectField] };
+    },
+  } as unknown as TrackerManager;
+  const noRedirectSrv = Bun.serve({ port: 0, fetch: createRouter(manager, { trackers: noRedirectManager }).fetch });
+  noRedirectUrl = `http://localhost:${noRedirectSrv.port}`;
+  noRedirectStop = () => noRedirectSrv.stop(true);
+
   const noTrackerSrv = Bun.serve({ port: 0, fetch: createRouter(manager).fetch });
   noTrackerUrl = `http://localhost:${noTrackerSrv.port}`;
   noTrackerStop = () => noTrackerSrv.stop(true);
 });
 
-afterAll(() => { stop(); customRedirectStop(); noTrackerStop(); tokenStop(); });
+afterAll(() => { stop(); customRedirectStop(); noRedirectStop(); noTrackerStop(); tokenStop(); });
 
 const startOAuth = (base: string, body: Record<string, unknown>) =>
   fetch(`${base}/trackers/mock-tracker/oauth-start`, {
@@ -118,26 +138,34 @@ const stateOf = (authUrl: string): string => {
 };
 
 describe("POST /trackers/:id/oauth-start", () => {
-  test("aims the provider at the shared relay and tags the state with where to return", async () => {
+  test("aims the provider at the tracker's registered redirect and tags the state with the client's returnTo", async () => {
     const res = await startOAuth(baseUrl, { key: "token", returnTo: "native" });
     expect(res.status).toBe(200);
     const { authUrl } = (await res.json()) as { authUrl: string };
     const url = new URL(authUrl);
-    expect(url.searchParams.get("redirect_uri")).toBe(DEFAULT_OAUTH_REDIRECT_URL);
+    expect(url.searchParams.get("redirect_uri")).toBe("https://relay.example/registered");
     expect(url.searchParams.get("client_id")).toBe("public-client-id");
     expect(stateOf(authUrl)).toMatch(/^native:[0-9a-f]{32}$/);
   });
 
-  test("defaults the return to a web popup", async () => {
+  test("a client that says nothing about returning gets a bare state", async () => {
     const res = await startOAuth(baseUrl, { key: "token" });
     expect(res.status).toBe(200);
     const { authUrl } = (await res.json()) as { authUrl: string };
-    expect(stateOf(authUrl)).toMatch(/^web:[0-9a-f]{32}$/);
+    expect(stateOf(authUrl)).toMatch(/^[0-9a-f]{32}$/);
   });
 
-  test("rejects a return target the relay would not understand", async () => {
-    const res = await startOAuth(baseUrl, { key: "token", returnTo: "carrier-pigeon" });
+  test("a returnTo tag is any short lowercase word, nothing that could blur into the nonce", async () => {
+    expect((await startOAuth(baseUrl, { key: "token", returnTo: "carrier-pigeon" })).status).toBe(200);
+    expect((await startOAuth(baseUrl, { key: "token", returnTo: "Native" })).status).toBe(400);
+    expect((await startOAuth(baseUrl, { key: "token", returnTo: "a:b" })).status).toBe(400);
+    expect((await startOAuth(baseUrl, { key: "token", returnTo: "" })).status).toBe(400);
+  });
+
+  test("a tracker that registered no redirect cannot start a round trip", async () => {
+    const res = await startOAuth(noRedirectUrl, { key: "token" });
     expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("redirect");
   });
 
   test("honours a self-hosted redirect override", async () => {
@@ -161,7 +189,7 @@ describe("GET /oauth/callback", () => {
     expect(exchange?.get("grant_type")).toBe("authorization_code");
     expect(exchange?.get("code")).toBe("the-code");
     // A provider refuses the exchange when this differs from the authorize request's redirect_uri.
-    expect(exchange?.get("redirect_uri")).toBe(DEFAULT_OAUTH_REDIRECT_URL);
+    expect(exchange?.get("redirect_uri")).toBe("https://relay.example/registered");
     expect(exchange?.get("client_secret")).toBe("should-never-leave-the-host");
 
     const saved = savedSettings.at(-1);

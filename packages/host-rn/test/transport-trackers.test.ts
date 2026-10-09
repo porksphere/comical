@@ -7,7 +7,7 @@
  * pattern as `transport-library.test.ts`'s `/library*` coverage.
  */
 import { describe, expect, test } from "bun:test";
-import { createRouter, DEFAULT_OAUTH_REDIRECT_URL } from "@comical/host-server/router";
+import { createRouter } from "@comical/host-server/router";
 import { InMemoryLibraryStore, Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
 import { createEmbeddedTransport } from "../src/transport.ts";
@@ -68,7 +68,7 @@ const OAUTH_TRACKER_SUMMARY: TrackerSummary = {
       key: "token",
       label: "AniList Account",
       authUrlTemplate: "https://example.com/authorize?client_id={clientId}&redirect_uri={callbackUrl}&state={state}",
-      exchange: { url: "https://example.com/token", clientId: "abc" },
+      exchange: { url: "https://example.com/token", clientId: "abc", redirectUri: "https://relay.example/return" },
     },
   ],
   values: {},
@@ -122,7 +122,7 @@ describe("embedded transport — on-device trackers", () => {
   // option for one: the router aims every client at the shared relay page, which bounces the code
   // into the app's scheme. This proves the embedded route really is built around that relay and
   // tags the state for a native return, since a localhost redirect here would be a dead end.
-  test("builds oauth-start's authUrl around the shared relay with a native-tagged state", async () => {
+  test("builds oauth-start's authUrl around the tracker's redirect with a native-tagged state", async () => {
     const t = createEmbeddedTransport(
       stubBridgeProvider, makeCreate(), undefined, undefined, undefined, undefined, undefined,
       oauthTrackerProvider,
@@ -134,7 +134,7 @@ describe("embedded transport — on-device trackers", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { authUrl: string };
-    expect(body.authUrl).toContain(encodeURIComponent(DEFAULT_OAUTH_REDIRECT_URL));
+    expect(body.authUrl).toContain(encodeURIComponent("https://relay.example/return"));
     expect(body.authUrl).not.toContain("localhost");
     expect(body.authUrl).toMatch(/[?&]state=native%3A[0-9a-f]{32}/);
   });

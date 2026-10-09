@@ -80,12 +80,11 @@ export interface RouterOptions {
   /** Tracker manager — enables `/trackers` endpoints when provided. `TrackerManager` satisfies `TrackerProvider`. */
   trackers?: TrackerProvider;
   /**
-   * Where an `oauth-callback` provider sends the browser back after sign-in — the `redirect_uri` of
-   * both the authorize request and the code exchange, so it must be the ONE URL registered with the
-   * provider. Defaults to Comical's hosted relay page (`DEFAULT_OAUTH_REDIRECT_URL`), which hands the
-   * code back to whichever client started the round trip: a provider like MyAnimeList registers a
-   * single redirect per client id, and a phone, a desktop shell and a browser can't all be it. The
-   * client finishes by calling `GET /oauth/callback` on this router with the code it was handed.
+   * Overrides every `oauth-callback` tracker's own `exchange.redirectUri` — the `redirect_uri` of
+   * both the authorize request and the code exchange, which must be the ONE URL the provider has
+   * registered for the client id. A tracker declares it beside its client id; this is for a host
+   * that registered its own. Wherever it points, the page there hands the code back to the client
+   * that started the round trip, which finishes by calling `GET /oauth/callback` on this router.
    */
   oauthRedirectUrl?: string;
   /**
@@ -107,22 +106,20 @@ interface PendingOAuth {
   clientId: string;
   clientSecret?: string;
   codeVerifier: string;
+  /** Sent again on the exchange: a provider rejects a code whose redirect_uri it doesn't recognize. */
+  redirectUri: string;
   exchangeUrl: string;
   refreshUrl?: string;
   expiresAt: number;
 }
 const pendingOAuth = new Map<string, PendingOAuth>();
 
-/** The relay page every Comical client shares as its OAuth redirect (see `RouterOptions.oauthRedirectUrl`). */
-export const DEFAULT_OAUTH_REDIRECT_URL = "https://porksphere.github.io/comical-app/oauth-relay.html";
-
 /**
- * Which client is waiting for the code: the relay page reads this back as a prefix on the `state`
- * the provider echoes. `native` means a custom-scheme deep link (a phone's auth session, the
- * desktop shell); `web` means a popup that posts the code back to the window that opened it.
+ * A client's `returnTo` tag goes on the front of the `state` the provider echoes, so the page at
+ * the redirect URL can tell which client is waiting for the code. What the tags mean is between
+ * the client and that page; the router only keeps them unambiguous (`tag:nonce`).
  */
-export type OAuthReturnTo = "native" | "web";
-const OAUTH_RETURN_TO: ReadonlySet<string> = new Set<OAuthReturnTo>(["native", "web"]);
+const OAUTH_RETURN_TO = /^[a-z][a-z0-9-]{0,15}$/;
 
 type Bindings = Record<string, never>;
 type Vars = { manager: BridgeProvider };
@@ -1680,8 +1677,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       const trackerId = c.req.param("id");
       const b = await body<{ key?: string; settings?: Record<string, string>; returnTo?: string }>(c);
       if (!b?.key) return c.json({ error: "key required" }, 400);
-      const returnTo = b.returnTo ?? "web";
-      if (!OAUTH_RETURN_TO.has(returnTo)) return c.json({ error: "returnTo must be \"native\" or \"web\"" }, 400);
+      if (b.returnTo !== undefined && !OAUTH_RETURN_TO.test(b.returnTo)) {
+        return c.json({ error: "returnTo must be a short lowercase tag" }, 400);
+      }
       try {
         const tracker = await trackerMgr.get(trackerId);
         const desc = (tracker.getSettings?.() ?? []).find((d) => d.key === b.key);
@@ -1693,10 +1691,11 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         const clientId = resolve(desc.exchange.clientIdKey, desc.exchange.clientId);
         if (!clientId) return c.json({ error: "client_id not configured — save settings first" }, 400);
         const clientSecret = resolve(desc.exchange.clientSecretKey, desc.exchange.clientSecret);
+        const redirectUri = opts.oauthRedirectUrl ?? desc.exchange.redirectUri;
+        if (!redirectUri) return c.json({ error: "tracker declares no redirect URI for this field" }, 400);
 
-        // The prefix is for the relay page, which has no other way to tell which client to hand the
-        // code to; the random tail is what makes the state a state.
-        const state = `${returnTo}:${crypto.randomUUID().replace(/-/g, "")}`;
+        const nonce = crypto.randomUUID().replace(/-/g, "");
+        const state = b.returnTo ? `${b.returnTo}:${nonce}` : nonce;
         let codeVerifier = "";
         if (desc.exchange.pkce) {
           const bytes = new Uint8Array(32);
@@ -1705,17 +1704,16 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
             .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "").slice(0, 43);
         }
 
-        const callbackUrl = opts.oauthRedirectUrl ?? DEFAULT_OAUTH_REDIRECT_URL;
         const authUrl = desc.authUrlTemplate
           .replace("{clientId}", encodeURIComponent(clientId))
           .replace("{pkce}", encodeURIComponent(codeVerifier))
-          .replace("{callbackUrl}", encodeURIComponent(callbackUrl))
+          .replace("{callbackUrl}", encodeURIComponent(redirectUri))
           .replace("{state}", encodeURIComponent(state));
 
         // Prune stale entries then register this one.
         for (const [s, p] of pendingOAuth) { if (p.expiresAt < Date.now()) pendingOAuth.delete(s); }
         const pending: PendingOAuth = {
-          trackerId, settingKey: b.key, clientId, codeVerifier,
+          trackerId, settingKey: b.key, clientId, codeVerifier, redirectUri,
           exchangeUrl: desc.exchange.url,
           expiresAt: Date.now() + 10 * 60 * 1000,
         };
@@ -1741,12 +1739,11 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       if (!pending || pending.expiresAt < Date.now()) { pendingOAuth.delete(state); return htmlErr("Expired or unknown state — please try connecting again."); }
       pendingOAuth.delete(state);
 
-      const callbackUrl = opts.oauthRedirectUrl ?? DEFAULT_OAUTH_REDIRECT_URL;
       const params: Record<string, string> = {
         grant_type: "authorization_code",
         client_id: pending.clientId,
         code,
-        redirect_uri: callbackUrl,
+        redirect_uri: pending.redirectUri,
       };
       if (pending.clientSecret) params.client_secret = pending.clientSecret;
       if (pending.codeVerifier) params.code_verifier = pending.codeVerifier;

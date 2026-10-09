@@ -638,12 +638,18 @@ export const settingDescriptorSchema = z.discriminatedUnion("type", [
      * Auth URL template. Placeholders replaced by the server:
      *   {clientId}    — resolved from `exchange.clientIdKey` setting or `exchange.clientId`
      *   {pkce}        — server-generated PKCE code_challenge (plain method, when exchange.pkce = true)
-     *   {callbackUrl} — server's local OAuth callback URL
-     *   {state}       — random CSRF state token
+     *   {callbackUrl} — `exchange.redirectUri` (or the host's override)
+     *   {state}       — random CSRF state token, prefixed by the client's `returnTo` tag
      */
     authUrlTemplate: z.string(),
     exchange: z.object({
       url: z.string(),
+      /**
+       * The `redirect_uri` registered with the provider for this client id — the authorize request
+       * and the code exchange both send it. Part of the tracker's registration, like the client id:
+       * a provider ties the two together, so the tracker is what knows it. A host may override it.
+       */
+      redirectUri: z.string().optional(),
       /** Read client_id from this other setting key (e.g. "clientId"). */
       clientIdKey: z.string().optional(),
       /** Hardcoded client_id (when not per-user). */
