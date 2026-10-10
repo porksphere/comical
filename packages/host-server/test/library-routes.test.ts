@@ -356,9 +356,10 @@ describe("sync + activity-count params", () => {
     // `trackers` is a retired option: an older client still sending it is simply ignored.
     const res = await send("POST", "/library/sync", { force: true, trackers: false, budgetMs: 10_000 });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { scanned: number; skipped: number; partial: boolean };
+    const body = (await res.json()) as { scanned: number; skipped: number; unavailable: number; partial: boolean };
     expect(body.scanned).toBeGreaterThanOrEqual(1); // the act-1 entry
-    expect(body.skipped).toBe(0); // force syncs everything
+    // Force syncs everything whose bridge loads; this library also holds series of bridges that don't.
+    expect(body.skipped).toBe(body.unavailable);
     expect(body.partial).toBe(false);
     expect(body).not.toHaveProperty("suggestions");
 
