@@ -10,7 +10,8 @@
 import { describe, expect, test } from "bun:test";
 import { loadBridge, type LoadedBridge } from "@comical/core";
 import { createRouter } from "@comical/host-server/router";
-import { EmbeddedBridgeProvider } from "../src/provider.ts";
+import { EmbeddedBridgeProvider, missingRequiredFor } from "../src/provider.ts";
+import type { SettingDescriptor } from "@comical/contract";
 import { createEmbeddedTransport } from "../src/transport.ts";
 import type { BundleSource, CreateRouter, InstalledBridge, NativeBridgeRuntime, SettingsStore } from "../src/types.ts";
 
@@ -304,5 +305,23 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
     const body = (await res.json()) as { settings: { key: string }[]; missingRequired: string[] };
     expect(body.settings.map((d) => d.key)).toEqual(["baseUrl", "token"]);
     expect(body.missingRequired).toEqual(["baseUrl"]);
+  });
+});
+
+describe("missingRequiredFor", () => {
+  const required: SettingDescriptor[] = [
+    { type: "enum", key: "server", label: "Server", required: true, options: [{ value: "new", label: "New" }] },
+    { type: "string", key: "baseUrl", label: "URL", required: true, default: "https://default.example" },
+  ];
+
+  test("agrees with the loader: a stored value the bridge no longer accepts is missing", () => {
+    // Stored under an older version that offered "old". The loader sets it aside, so the bridge runs
+    // unconfigured — the device must say so rather than report it configured and fail every call.
+    expect(missingRequiredFor(required, { server: "old" })).toEqual(["server"]);
+    expect(missingRequiredFor(required, { server: "new" })).toEqual([]);
+  });
+
+  test("a default satisfies a required key", () => {
+    expect(missingRequiredFor(required, { server: "new", baseUrl: "" })).toEqual([]);
   });
 });

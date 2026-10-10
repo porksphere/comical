@@ -185,11 +185,16 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   }
 
   // 5. Enforce settings: apply declared defaults + coerce/validate present values (in place, so
-  //    the bridge's lazy `host.settings` reads see the result). Throws on an invalid present value;
-  //    a merely-missing required setting is NOT fatal here (discovery must still load the bridge).
+  //    the bridge's lazy `host.settings` reads see the result). Neither a stored value this version
+  //    no longer accepts (set aside, logged by key — never by value, it may be a secret) nor a
+  //    missing required setting is fatal here: discovery must still load the bridge, and a reinstall
+  //    must not be broken by what an older version stored.
   if (raw.getSettings) {
     const descriptors = validate(z.array(settingDescriptorSchema), raw.getSettings(), "getSettings");
-    const { values } = resolveSettings(gated.settings, descriptors);
+    const { values, dropped } = resolveSettings(gated.settings, descriptors);
+    if (dropped.length > 0) {
+      opts.capabilities.log.warn(`bridge "${info.id}": ignoring stored settings this version doesn't accept: ${dropped.join(", ")}`);
+    }
     gated.settings = values;
   }
 

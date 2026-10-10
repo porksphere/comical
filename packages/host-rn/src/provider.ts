@@ -9,12 +9,13 @@
  * proxies + descriptors are cached; a settings change or uninstall drops the cache (and the native
  * context) via `invalidate`/`refresh`.
  *
- * `missingRequired` mirrors `@comical/core`'s `resolveSettings` (a required descriptor with neither a
- * stored value nor a default is missing) so the router's "not configured" gate behaves identically.
+ * `missingRequired` is `@comical/core`'s `resolveSettings` answer (a required descriptor with no
+ * usable stored value and no default is missing) so the router's "not configured" gate behaves
+ * identically.
  */
 import type { SettingDescriptor, SettingValue } from "@comical/contract";
 import type { LoadedBridge } from "@comical/core/loader";
-import { storedSecretKeys } from "@comical/core/settings";
+import { resolveSettings, storedSecretKeys } from "@comical/core/settings";
 import { methodsForBridge } from "./capabilities.ts";
 import { KeyedQueue } from "./keyed-queue.ts";
 import { buildProxyBridge } from "./proxy-bridge.ts";
@@ -28,19 +29,16 @@ import type {
   SettingsStore,
 } from "./types.ts";
 
-/** Required descriptor keys with neither a stored value nor a default — matches resolveSettings. */
+/**
+ * Required descriptor keys with no usable value — `resolveSettings`' own answer, so the device and
+ * the bridge's loader agree on "configured": a stored value the bridge no longer accepts counts as
+ * missing here exactly as it is set aside there.
+ */
 export function missingRequiredFor(
   descriptors: readonly SettingDescriptor[],
   stored: Record<string, SettingValue>,
 ): string[] {
-  const missing: string[] = [];
-  for (const d of descriptors) {
-    const supplied = stored[d.key];
-    if (supplied !== undefined && supplied !== "") continue;
-    const hasDefault = "default" in d && d.default !== undefined;
-    if (!hasDefault && d.required) missing.push(d.key);
-  }
-  return missing;
+  return resolveSettings(stored, descriptors).missingRequired;
 }
 
 export interface EmbeddedProviderDeps {

@@ -4,10 +4,12 @@
  * `resolveSettings` takes the raw user-supplied values + the bridge's descriptors and returns a
  * normalized value map: declared defaults applied for unset keys, trivial coercions performed
  * (`"40" → 40`, `"true" → true`, so the CLI's string `--set` and lenient JSON bodies work), and
- * present values validated against their descriptor (type + enum membership). It throws
- * `BridgeSettingsError` on an *invalid present value*, but never on a merely-missing required one —
- * discovery must still be able to load a bridge to read its info. Missing-required is reported
- * separately via `missingRequired`.
+ * present values validated against their descriptor (type + enum membership). It never throws:
+ * discovery must still be able to load a bridge to read its info, and a value stored under an older
+ * version of the bridge (an enum option since removed, a changed range) must not stop the new
+ * version from loading — that would leave a reinstall broken by settings the user can't see. Such a
+ * value is set aside and reported in `dropped`; a required key with nothing usable is reported in
+ * `missingRequired`. The strict check is `validateSettingsInput`, on the save path.
  */
 import type { SettingDescriptor, SettingValue } from "@comical/contract";
 import { BridgeSettingsError } from "./errors.ts";
@@ -16,6 +18,13 @@ export interface ResolveResult {
   values: Record<string, SettingValue>;
   /** Required keys with neither a supplied value nor a declared default. */
   missingRequired: string[];
+  /**
+   * Keys whose stored value no longer fits their descriptor (an enum option the bridge removed, a
+   * type or range that changed between versions). Each is resolved as if unset — its default, or
+   * `missingRequired` — rather than failing the load; a multi-select keeps whichever of its options
+   * still exist. Hosts should log these: the user's choice was set aside.
+   */
+  dropped: string[];
 }
 
 /** Coerce + validate a single value against its descriptor. Returns the value or an error string. */
@@ -143,28 +152,42 @@ export function resolveSettings(
   descriptors: readonly SettingDescriptor[],
 ): ResolveResult {
   const values: Record<string, SettingValue> = { ...raw };
-  const issues: string[] = [];
   const missingRequired: string[] = [];
+  const dropped: string[] = [];
+
+  const unset = (d: SettingDescriptor) => {
+    const defaultValue = "default" in d ? d.default : undefined;
+    if (defaultValue !== undefined) {
+      values[d.key] = defaultValue;
+    } else {
+      delete values[d.key];
+      if (d.required) missingRequired.push(d.key);
+    }
+  };
 
   for (const d of descriptors) {
     const supplied = values[d.key];
     if (supplied === undefined || supplied === "") {
-      const defaultValue = "default" in d ? d.default : undefined;
-      if (defaultValue !== undefined) {
-        values[d.key] = defaultValue;
-      } else {
-        delete values[d.key];
-        if (d.required) missingRequired.push(d.key);
-      }
+      unset(d);
       continue;
     }
     const result = coerce(d, supplied);
-    if ("error" in result) issues.push(result.error);
-    else values[d.key] = result.value;
+    if (!("error" in result)) {
+      values[d.key] = result.value;
+      continue;
+    }
+    dropped.push(d.key);
+    // A multi-select that lost some of its options keeps the ones that still exist.
+    if (d.type === "enum" && d.multiple && Array.isArray(supplied)) {
+      const allowed = new Set(d.options.map((o) => o.value));
+      const kept = supplied.filter((v) => allowed.has(v));
+      if (kept.length > 0) {
+        values[d.key] = kept;
+        continue;
+      }
+    }
+    unset(d);
   }
 
-  if (issues.length > 0) {
-    throw new BridgeSettingsError(`invalid settings:\n  - ${issues.join("\n  - ")}`, issues);
-  }
-  return { values, missingRequired };
+  return { values, missingRequired, dropped };
 }

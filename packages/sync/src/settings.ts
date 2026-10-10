@@ -11,8 +11,9 @@
  * declares — stays where it is.
  *
  * Devices run different versions of a bridge, so a value can arrive ahead of the version that
- * understands it, or ahead of the bridge itself. Storing it anyway would stop the bridge loading
- * (`resolveSettings` rejects an invalid stored value), so it is kept aside and retried through
+ * understands it, or ahead of the bridge itself. Storing it anyway would silently replace the value
+ * that works here with one the bridge sets aside on load (`resolveSettings` drops a stored value it
+ * doesn't accept, falling back to the default), so it is kept aside and retried through
  * `retry()`, which the host calls each round, until the bridge here takes it, a later record
  * replaces it, or the setting is changed here. What is kept aside is not saved: a restart forgets it.
  */

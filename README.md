@@ -185,10 +185,13 @@ to derive the typed settings shape, then `extends BridgeBase<Settings>` — `thi
 is `string`, an enum is its literal union, required vs optional is enforced.
 
 **Host enforcement:** the runtime applies declared `default`s, coerces simple inputs
-(`"40"→40`, `"true"→true`), and validates submitted values (type + enum membership) — an invalid
-value throws `BridgeSettingsError`. The host won't dispatch content calls to a bridge whose
-**required** settings are unset (`GET /bridges/:id` reports `missingRequired`); `PUT
-/bridges/:id/settings` rejects unknown keys / wrong types with `400`.
+(`"40"→40`, `"true"→true`), and validates values (type + enum membership). A *submitted* invalid
+value is rejected — `PUT /bridges/:id/settings` answers unknown keys / wrong types with `400`. A
+*stored* value the installed version no longer accepts (an enum option a bridge update removed, a
+changed range) is set aside on load and logged by key: the setting falls back to its default (or
+counts as unset), so an update or reinstall never fails to load over an old choice. The host won't
+dispatch content calls to a bridge whose **required** settings are unset (`GET /bridges/:id`
+reports `missingRequired`).
 
 ### Search filters and sort
 

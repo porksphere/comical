@@ -74,16 +74,52 @@ describe("resolveSettings (load-time enforcement)", () => {
     expect(missingRequired).toEqual(["baseUrl"]);
   });
 
-  test("throws BridgeSettingsError on an out-of-range number", () => {
-    expect(() => resolveSettings({ baseUrl: "https://x", perPage: 999 }, DESCRIPTORS)).toThrow(
-      BridgeSettingsError,
-    );
+  test("a stored out-of-range number is dropped back to its default, not fatal", () => {
+    const { values, dropped } = resolveSettings({ baseUrl: "https://x", perPage: 999 }, DESCRIPTORS);
+    expect(values.perPage).toBe(40);
+    expect(dropped).toEqual(["perPage"]);
   });
 
-  test("throws on an invalid enum value", () => {
-    expect(() => resolveSettings({ baseUrl: "https://x", region: "antarctica" }, DESCRIPTORS)).toThrow(
-      BridgeSettingsError,
-    );
+  test("an enum option a bridge update removed falls back to the default", () => {
+    // The user picked "antarctica" under a version that offered it; this version doesn't.
+    const { values, dropped, missingRequired } = resolveSettings({ baseUrl: "https://x", region: "antarctica" }, DESCRIPTORS);
+    expect(values.region).toBe("us");
+    expect(dropped).toEqual(["region"]);
+    expect(missingRequired).toEqual([]);
+  });
+
+  test("a dropped required value with no default counts as missing", () => {
+    const required: SettingDescriptor[] = [
+      { type: "enum", key: "server", label: "Server", required: true, options: [{ value: "new", label: "New" }] },
+    ];
+    const { values, dropped, missingRequired } = resolveSettings({ server: "old" }, required);
+    expect(values).toEqual({});
+    expect(dropped).toEqual(["server"]);
+    expect(missingRequired).toEqual(["server"]);
+  });
+
+  test("a multi-select keeps the options that still exist", () => {
+    const multi: SettingDescriptor[] = [
+      {
+        type: "enum",
+        key: "langs",
+        label: "Languages",
+        multiple: true,
+        options: [{ value: "en", label: "English" }, { value: "ja", label: "Japanese" }],
+        default: ["en"],
+      },
+    ];
+    expect(resolveSettings({ langs: ["en", "xx", "ja"] }, multi)).toEqual({
+      values: { langs: ["en", "ja"] },
+      missingRequired: [],
+      dropped: ["langs"],
+    });
+    // Nothing left that still exists: the default, as if never set.
+    expect(resolveSettings({ langs: ["xx"] }, multi).values).toEqual({ langs: ["en"] });
+  });
+
+  test("valid settings drop nothing", () => {
+    expect(resolveSettings({ baseUrl: "https://x", perPage: 10, region: "eu" }, DESCRIPTORS).dropped).toEqual([]);
   });
 
   test("does not throw merely because a required value is absent", () => {
@@ -177,9 +213,14 @@ describe("loader settings wiring", () => {
     await loadBridge({ code: SETTINGS_BRIDGE, capabilities: mockHost({}) });
   });
 
-  test("an invalid present setting value throws BridgeSettingsError at load", async () => {
-    await expect(
-      loadBridge({ code: SETTINGS_BRIDGE, capabilities: mockHost({ baseUrl: "https://x", perPage: "notnum" }) }),
-    ).rejects.toThrow(BridgeSettingsError);
+  test("a stored value this version rejects still loads, with the default in its place, logged by key", async () => {
+    const host = mockHost({ baseUrl: "https://x", perPage: "notnum" });
+    const warnings: string[] = [];
+    host.log.warn = (...args: unknown[]) => void warnings.push(args.join(" "));
+    const b = await loadBridge({ code: SETTINGS_BRIDGE, capabilities: host });
+    expect((await b.getSeriesDetails("m1")).title).toBe("40:number");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("perPage");
+    expect(warnings[0]).not.toContain("notnum"); // keys only — a dropped value may be a secret
   });
 });

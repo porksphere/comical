@@ -111,7 +111,11 @@ export function loadTracker(opts: LoadTrackerOptions): LoadedTracker {
 
   if (raw.getSettings) {
     const descriptors = validate(z.array(settingDescriptorSchema), raw.getSettings(), "getSettings");
-    const { values } = resolveSettings(gated.settings, descriptors);
+    // A stored value this version no longer accepts is set aside, not fatal (see loader.ts step 5).
+    const { values, dropped } = resolveSettings(gated.settings, descriptors);
+    if (dropped.length > 0) {
+      opts.capabilities.log.warn(`tracker "${info.id}": ignoring stored settings this version doesn't accept: ${dropped.join(", ")}`);
+    }
     gated.settings = values;
   }
 
