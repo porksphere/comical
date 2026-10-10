@@ -590,6 +590,18 @@ export class Library {
     revision?: SeriesRevision,
   ): Promise<{ added: Chapter[]; fresh: Chapter[]; joined: Chapter[]; unseen: Chapter[] }> {
     const entry = await this.requireSeries(key);
+    // An empty list against a series we've already seen chapters for is a source glitch (a failed
+    // parse, a rate-limit page, a mirror mid-migration), not every chapter vanishing at once. Taking
+    // it as truth would wipe the unread baseline and the offline chapter list, and the next real list
+    // would diff against nothing. So keep all of it and only move the entry to the back of the sync
+    // queue. The stored revision stays too: recording the new one would let the batch check match it
+    // and skip this series' fetch for good. (A genuine full takedown keeps its stale list — the same
+    // trade other readers make.)
+    if (chapters.length === 0 && entry.knownChapters.length > 0) {
+      entry.chaptersSyncedAt = this.now();
+      await this.putSeriesItem(entry);
+      return { added: [], fresh: [], joined: [], unseen: [] };
+    }
     // Diff by logical chapter `(number, language)` — a fresh scanlation-group copy of a chapter we
     // already know is NOT a new chapter.
     const known = new Set(entry.knownChapters.map((c) => logicalChapterKey(c, c.id)));

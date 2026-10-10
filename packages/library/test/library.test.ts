@@ -432,6 +432,51 @@ describe("source revision (batch update-check baseline)", () => {
   });
 });
 
+describe("an empty chapter list after a known one (source glitch)", () => {
+  const entryOf = async (lib: Library) => (await lib.getLibrary()).find((e) => e.seriesId === "s1")!;
+
+  test("keeps the baseline, revision, offline list and unread count; only bumps the sync time", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)], { latestChapterId: "c3", chapterCount: 3 });
+    await lib.markRead(KEY, "c1", true);
+    const before = await entryOf(lib);
+    const cachedBefore = await lib.getCachedChapters(KEY);
+
+    const res = await lib.syncChapters(KEY, [], { chapterCount: 0 });
+    expect(res).toEqual({ added: [], fresh: [], joined: [], unseen: [] });
+
+    const after = await entryOf(lib);
+    expect(after.chaptersSyncedAt!).toBeGreaterThan(before.chaptersSyncedAt!);
+    expect(after.knownChapters.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
+    // The old fingerprint, not the glitched one: storing `chapterCount: 0` would let the next batch
+    // check match the glitch and skip the real fetch indefinitely.
+    expect(after.revision).toEqual({ latestChapterId: "c3", chapterCount: 3 });
+    expect(after.unreadCount).toBe(2);
+    expect(await lib.getCachedChapters(KEY)).toEqual(cachedBefore);
+  });
+
+  test("the next real list diffs against the pre-glitch baseline", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
+    await lib.syncChapters(KEY, []);
+
+    const { added } = await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2), ch("c3", 3)]);
+    expect(added.map((c) => c.id)).toEqual(["c3"]);
+    expect((await lib.getActivity()).map((a) => a.chapterId)).toEqual(["c3"]);
+  });
+
+  test("a first sync that comes back empty is still recorded as the (empty) baseline", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, []);
+    const entry = await entryOf(lib);
+    expect(entry.chaptersSyncedAt).toBeDefined();
+    expect(await lib.getCachedChapters(KEY)).toMatchObject({ chapters: [] });
+  });
+});
+
 describe("activity feed", () => {
   test("the baseline sync records nothing; later syncs record one item per new chapter", async () => {
     const lib = makeLibrary();
