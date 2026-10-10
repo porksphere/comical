@@ -234,20 +234,23 @@ describe("host-native runtime (Android / async adapter)", () => {
     expect(res.title).toBe("absent");
   });
 
-  test("enforces settings validation at init (invalid enum throws)", async () => {
+  test("resolves settings at init: a stored value the bridge no longer accepts falls back to its default", async () => {
     installNativeEval();
     installAsyncNatives();
     installComicalHarness(makeAsyncHost);
 
+    // Left over from an older version (or a previous install): it must not stop the bridge loading.
     const info = `{ id: "t", name: "T", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"] }`;
     const code = `module.exports = { default: (host) => ({
       info: ${info},
-      getSeriesDetails: async (id) => ({ id, title: id }),
+      getSeriesDetails: async (id) => ({ id, title: String(host.settings.mode) }),
       getChapters: async () => [],
       getChapterPages: async () => [],
-      getSettings: () => [{ type: "enum", key: "mode", label: "Mode", options: [{ value: "a", label: "A" }, { value: "b", label: "B" }] }],
+      getSettings: () => [{ type: "enum", key: "mode", label: "Mode", default: "b", options: [{ value: "a", label: "A" }, { value: "b", label: "B" }] }],
     }) };`;
-    await expect(g.comical_init(code, JSON.stringify({ mode: "zzz" }))).rejects.toThrow();
+    await g.comical_init(code, JSON.stringify({ mode: "zzz" }));
+    const res = JSON.parse(await g.comical_call("getSeriesDetails", JSON.stringify(["x"])));
+    expect(res.title).toBe("b");
   });
 
   test("rejects an incompatible contract version at init", async () => {
