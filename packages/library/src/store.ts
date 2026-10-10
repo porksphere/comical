@@ -60,7 +60,17 @@ export interface LibraryStore {
   /** Collections are a small ordered array — the whole document is read and written at once, so a
    *  reorder or a cascading delete is a single write rather than N racing read-modify-writes. */
   listCollections(): Promise<Collection[]>;
-  putCollections(collections: Collection[]): Promise<void>;
+  /**
+   * Replace the collections with `next(current)`, as ONE step: the store reads the current list,
+   * calls `next` with it, and writes the result, with no other collections write in between. There
+   * is deliberately no blind `put` — a caller that listed, awaited, then wrote back its stale copy
+   * silently dropped any collection another writer (a sync pull, a second tab) added meanwhile, and
+   * sync then recorded that drop as a deletion on every device.
+   *
+   * `next` is synchronous and called exactly once; it must not mutate its argument. If it throws,
+   * nothing is written and the error propagates.
+   */
+  updateCollections(next: (current: Collection[]) => Collection[]): Promise<void>;
 
   // ── Tracker links ─────────────────────────────────────────────────────────
   listTrackerLinks(key: string): Promise<TrackerLink[]>;

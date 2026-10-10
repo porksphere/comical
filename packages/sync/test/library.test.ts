@@ -32,6 +32,34 @@ describe("library sync", () => {
     expect((await series(b))?.collectionIds).toEqual([c.id]);
   });
 
+  test("a collection pulled while a local create is under way survives, and isn't sent as deleted", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    await a.library.createCollection("Theirs");
+    await a.engine.sync();
+
+    // The pull lands after b's library decided to create and before its write reaches the store —
+    // the window in which a write-back of a stale list used to drop "Theirs", and sync then saw it
+    // vanish and recorded that as b deleting it, everywhere.
+    const racing = new Proxy(b.store, {
+      get(target, prop, receiver) {
+        if (prop !== "updateCollections") return Reflect.get(target, prop, receiver);
+        return async (next: Parameters<typeof target.updateCollections>[0]) => {
+          await b.engine.sync();
+          return target.updateCollections(next);
+        };
+      },
+    });
+    await new Library(racing, { now }).createCollection("Mine");
+    await b.engine.sync();
+    await a.engine.sync();
+
+    for (const d of [a, b]) {
+      expect((await d.library.getCollections()).map((x) => x.name).sort()).toEqual(["Mine", "Theirs"]);
+    }
+  });
+
   test("reading on one device doesn't undo a collection edit made on another", async () => {
     const hub = new MemoryBackend();
     const a = device(hub, "a");
@@ -119,7 +147,7 @@ describe("library sync", () => {
     await a.engine.sync();
 
     const inner = new InMemoryLibraryStore();
-    await inner.putCollections([{ id: c.id, name: "Stale", order: 0 }, { id: "local", name: "Only on b", order: 1 }]);
+    await inner.updateCollections(() => [{ id: c.id, name: "Stale", order: 0 }, { id: "local", name: "Only on b", order: 1 }]);
     const b = device(hub, "b", inner);
     await b.engine.sync();
     await adoptLibrary(inner, b.engine);
@@ -145,7 +173,7 @@ describe("library sync", () => {
     // This one had them all along, before it ever synced.
     const inner = new InMemoryLibraryStore();
     const before = new Library(inner, { now });
-    await inner.putCollections([{ id: gone.id, name: "Shelved", order: 0 }]);
+    await inner.updateCollections(() => [{ id: gone.id, name: "Shelved", order: 0 }]);
     await collect(before, [gone.id]);
 
     const b = device(hub, "b", inner);

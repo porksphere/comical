@@ -293,13 +293,17 @@ export class Library {
     rows: unknown[],
     collectionName = "Default",
   ): Promise<{ imported: number; skipped: number; collectionId: string }> {
-    const collections = await this.store.listCollections();
-    let target = collections.find((c) => c.name === collectionName);
-    if (!target) {
+    let collectionId = "";
+    await this.store.updateCollections((collections) => {
+      const found = collections.find((c) => c.name === collectionName);
+      if (found) {
+        collectionId = found.id;
+        return collections;
+      }
       const order = collections.reduce((max, c) => Math.max(max, c.order), -1) + 1;
-      target = { id: crypto.randomUUID(), name: collectionName, order };
-      await this.store.putCollections([...collections, target]);
-    }
+      collectionId = crypto.randomUUID();
+      return [...collections, { id: collectionId, name: collectionName, order }];
+    });
 
     const items: CollectionSeriesItem[] = [];
     let skipped = 0;
@@ -330,7 +334,7 @@ export class Library {
         seriesTitle: e.title,
         collectedAt: current?.collectedAt ?? e.addedAt,
         updatedAt: e.updatedAt,
-        collectionIds: current?.collectionIds.length ? current.collectionIds : [target.id],
+        collectionIds: current?.collectionIds.length ? current.collectionIds : [collectionId],
         knownChapters: e.knownChapters,
         ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
         ...(e.author !== undefined && { author: e.author }),
@@ -345,7 +349,7 @@ export class Library {
       items.push(item);
     }
     if (items.length > 0) await this.store.putCollectionItems(items);
-    return { imported: items.length, skipped, collectionId: target.id };
+    return { imported: items.length, skipped, collectionId };
   }
 
   /**
@@ -1454,22 +1458,23 @@ export class Library {
   }
 
   async createCollection(name: string): Promise<Collection> {
-    const existing = await this.store.listCollections();
-    const order = existing.reduce((max, c) => Math.max(max, c.order), -1) + 1;
-    const collection: Collection = { id: crypto.randomUUID(), name, order };
-    await this.store.putCollections([...existing, collection]);
+    const collection: Collection = { id: crypto.randomUUID(), name, order: 0 };
+    await this.store.updateCollections((existing) => {
+      collection.order = existing.reduce((max, c) => Math.max(max, c.order), -1) + 1;
+      return [...existing, { ...collection }];
+    });
     return collection;
   }
 
   async renameCollection(id: string, name: string): Promise<void> {
-    const collections = await this.store.listCollections();
-    if (!collections.some((c) => c.id === id)) throw new Error(`favorite collection not found: ${id}`);
-    await this.store.putCollections(collections.map((c) => (c.id === id ? { ...c, name } : c)));
+    await this.store.updateCollections((collections) => {
+      if (!collections.some((c) => c.id === id)) throw new Error(`favorite collection not found: ${id}`);
+      return collections.map((c) => (c.id === id ? { ...c, name } : c));
+    });
   }
 
   async reorderCollections(orderedIds: string[]): Promise<void> {
-    const collections = await this.store.listCollections();
-    await this.store.putCollections(
+    await this.store.updateCollections((collections) =>
       collections.map((c) => {
         const idx = orderedIds.indexOf(c.id);
         return idx === -1 ? c : { ...c, order: idx };
@@ -1486,8 +1491,7 @@ export class Library {
    * membership.
    */
   async deleteCollection(id: string): Promise<void> {
-    const collections = await this.store.listCollections();
-    await this.store.putCollections(collections.filter((c) => c.id !== id));
+    await this.store.updateCollections((collections) => collections.filter((c) => c.id !== id));
     // One batched write per side for the whole cascade — a per-member write would rewrite the
     // items document once per member.
     const members = (await this.store.listCollectionItems()).filter((i) => i.collectionIds.includes(id));

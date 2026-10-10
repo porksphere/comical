@@ -355,6 +355,23 @@ describe("favorite collections", () => {
     expect((await lib.getCollections()).map((c) => c.name)).toEqual(["A", "B"]);
   });
 
+  test("parallel creates keep both, each with its own order", async () => {
+    const { lib } = makeLibrary();
+    const [a, b] = await Promise.all([lib.createCollection("A"), lib.createCollection("B")]);
+    expect([a.order, b.order].sort()).toEqual([0, 1]);
+    expect((await lib.getCollections()).map((c) => c.name).sort()).toEqual(["A", "B"]);
+  });
+
+  test("an edit racing a create doesn't undo it", async () => {
+    const { lib } = makeLibrary();
+    const a = await lib.createCollection("A");
+    const [, b] = await Promise.all([lib.renameCollection(a.id, "A2"), lib.createCollection("B")]);
+    expect(await lib.getCollections()).toEqual([
+      { id: a.id, name: "A2", order: 0 },
+      { id: b.id, name: "B", order: 1 },
+    ]);
+  });
+
   test("rename changes the name in place", async () => {
     const { lib } = makeLibrary();
     const a = await lib.createCollection("A");

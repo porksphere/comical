@@ -125,19 +125,39 @@ describe("FileLibraryStore favorites", () => {
       { id: "a", name: "Panels", order: 0 },
       { id: "b", name: "Splashes", order: 1 },
     ];
-    await store.putCollections(collections);
+    await store.updateCollections(() => collections);
     expect(await new FileLibraryStore(LIB).listCollections()).toEqual(collections);
 
     // A whole-document write is how a reorder or a cascading delete lands atomically.
-    await store.putCollections([{ id: "b", name: "Splashes", order: 0 }]);
+    await store.updateCollections(() => [{ id: "b", name: "Splashes", order: 0 }]);
     expect(await new FileLibraryStore(LIB).listCollections()).toEqual([
       { id: "b", name: "Splashes", order: 0 },
     ]);
   });
 
+  test("overlapping collection updates each see the other's result — none is lost", async () => {
+    const store = new FileLibraryStore(LIB);
+    await Promise.all(
+      ["a", "b", "c", "d"].map((id, i) => store.updateCollections((cur) => [...cur, { id, name: id, order: i }])),
+    );
+    const ids = (await new FileLibraryStore(LIB).listCollections()).map((c) => c.id).sort();
+    expect(ids).toEqual(["a", "b", "c", "d"]);
+  });
+
+  test("an update that throws writes nothing", async () => {
+    const store = new FileLibraryStore(LIB);
+    await store.updateCollections(() => [{ id: "a", name: "Panels", order: 0 }]);
+    await expect(
+      store.updateCollections(() => {
+        throw new Error("nope");
+      }),
+    ).rejects.toThrow("nope");
+    expect(await new FileLibraryStore(LIB).listCollections()).toEqual([{ id: "a", name: "Panels", order: 0 }]);
+  });
+
   test("listCollections hands back a copy — mutating it can't corrupt the cache", async () => {
     const store = new FileLibraryStore(LIB);
-    await store.putCollections([{ id: "a", name: "Panels", order: 0 }]);
+    await store.updateCollections(() => [{ id: "a", name: "Panels", order: 0 }]);
     (await store.listCollections()).push({ id: "evil", name: "Injected", order: 9 });
     expect(await store.listCollections()).toHaveLength(1);
   });
@@ -225,7 +245,7 @@ describe("FileLibraryStore corruption", () => {
     writeFileSync(join(LIB, "collections.json"), '[{"id":"c1","name":"Favou'); // cut off mid-write
     const store = new FileLibraryStore(LIB);
     expect(await silenced(() => store.listCollections())).toEqual([]);
-    await store.putCollections([{ id: "c2", name: "New", createdAt: 1, order: 0 } as Collection]);
+    await store.updateCollections(() => [{ id: "c2", name: "New", createdAt: 1, order: 0 } as Collection]);
 
     const aside = readdirSync(LIB).find((f) => f.startsWith("collections.json.corrupt-"));
     expect(aside).toBeDefined();

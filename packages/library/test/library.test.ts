@@ -1747,7 +1747,7 @@ describe("importLegacyEntries", () => {
   test("upgrades a pre-dissolution series item instead of skipping it", async () => {
     const store = new InMemoryLibraryStore();
     const lib = new Library(store, { now: fakeClock() });
-    await store.putCollections([{ id: "c-existing", name: "Reading", order: 0 }]);
+    await store.updateCollections(() => [{ id: "c-existing", name: "Reading", order: 0 }]);
     await store.putCollectionItems([preDissolutionItem()]);
 
     // "Already collected" would strand it forever: it predates every tracking field the entry

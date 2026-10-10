@@ -240,7 +240,7 @@ shard per series):
 | `getFavoritePage(id)` | `getCollectionItem(id)` |
 | `putFavoritePages(pages)` | `putCollectionItems(items)` |
 | `deleteFavoritePages(ids)` | `deleteCollectionItems(ids)` |
-| `listFavoriteCollections` / `putFavoriteCollections` | `listCollections` / `putCollections` |
+| `listFavoriteCollections` / `putFavoriteCollections` | `listCollections` / `updateCollections` |
 | `listEntries` / `getEntry` / `putEntry` / `deleteEntry` | **delete these** and the entries document |
 | `listLists` / `putList` / `deleteList` | **delete these** and their documents |
 

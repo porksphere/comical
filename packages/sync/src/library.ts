@@ -156,10 +156,12 @@ export function librarySyncStore(store: LibraryStore, now: () => number = Date.n
   async function write(table: TableId, id: string, value: unknown): Promise<void> {
     switch (table) {
       case "collections": {
-        const rest = (await store.listCollections()).filter((c) => c.id !== id);
         const parsed = value === undefined ? undefined : collectionSchema.safeParse(value);
         if (parsed && !parsed.success) return;
-        await store.putCollections(parsed ? [...rest, parsed.data] : rest);
+        await store.updateCollections((current) => {
+          const rest = current.filter((c) => c.id !== id);
+          return parsed ? [...rest, parsed.data] : rest;
+        });
         return;
       }
       case "collectionItems": {
@@ -340,14 +342,19 @@ export function wrapLibraryStore(inner: LibraryStore, engine: SyncEngine): Libra
       ),
 
     listCollections: () => inner.listCollections(),
-    putCollections: (collections) =>
-      recorded(
-        async () => {
-          const ids = new Set([...(await inner.listCollections()).map((c) => c.id), ...collections.map((c) => c.id)]);
-          return [...ids].map((id): Target => ["collections", id]);
-        },
-        () => inner.putCollections(collections),
-      ),
+    // Which collections an update touched is only known once it has run, so this diffs the whole
+    // (small) list before and after — all of it on `inner`, inside one `exclusive` (which isn't
+    // re-entrant), so a remote apply can't land between the read and the write and be mistaken for
+    // a local deletion.
+    updateCollections: (next) =>
+      engine.exclusive(async () => {
+        const before = new Map((await inner.listCollections()).map((c) => [c.id, stableJson(c)]));
+        await inner.updateCollections(next);
+        const after = new Map((await inner.listCollections()).map((c) => [c.id, stableJson(c)]));
+        for (const id of new Set([...before.keys(), ...after.keys()])) {
+          if (before.get(id) !== after.get(id)) engine.touch("collections", id);
+        }
+      }),
 
     listTrackerLinks: (key) => inner.listTrackerLinks(key),
     putTrackerLink: (key, link) =>
@@ -452,5 +459,5 @@ async function joinCollections(store: LibraryStore, engine: SyncEngine): Promise
     .filter((i) => i.collectionIds.some((id) => into.has(id)))
     .map((i) => ({ ...i, collectionIds: [...new Set(i.collectionIds.map((id) => into.get(id) ?? id))] }));
   await store.putCollectionItems(refiled);
-  await store.putCollections(collections.filter((c) => !into.has(c.id)));
+  await store.updateCollections((current) => current.filter((c) => !into.has(c.id)));
 }

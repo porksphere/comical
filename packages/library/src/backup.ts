@@ -204,25 +204,29 @@ export async function restoreLibrary(store: LibraryStore, backup: LibraryBackup)
   // A collection made again under the same name since the backup is the same collection to the
   // user, under a new id. The backup's items are filed into it rather than into a second
   // collection of that name.
-  const collections = await store.listCollections();
-  const backupIds = new Set(backup.collections.map((c) => c.id));
-  const twinByName = new Map(collections.filter((c) => !backupIds.has(c.id)).map((c) => [c.name, c.id]));
+  // Decided against the store's list as it is when the update runs, so a collection added meanwhile
+  // (a sync pull) is kept, and its name can still claim a backup collection as its twin.
   const alias = new Map<string, string>();
-  for (const collection of backup.collections) {
-    const at = collections.findIndex((c) => c.id === collection.id);
-    const twin = twinByName.get(collection.name);
-    if (at !== -1) {
-      if (same(collections[at], collection)) continue;
-      collections[at] = collection;
-    } else if (twin !== undefined) {
-      alias.set(collection.id, twin);
-      continue;
-    } else {
-      collections.push(collection);
+  await store.updateCollections((current) => {
+    const collections = [...current];
+    const backupIds = new Set(backup.collections.map((c) => c.id));
+    const twinByName = new Map(collections.filter((c) => !backupIds.has(c.id)).map((c) => [c.name, c.id]));
+    for (const collection of backup.collections) {
+      const at = collections.findIndex((c) => c.id === collection.id);
+      const twin = twinByName.get(collection.name);
+      if (at !== -1) {
+        if (same(collections[at], collection)) continue;
+        collections[at] = collection;
+      } else if (twin !== undefined) {
+        alias.set(collection.id, twin);
+        continue;
+      } else {
+        collections.push(collection);
+      }
+      count.collections++;
     }
-    count.collections++;
-  }
-  if (count.collections > 0) await store.putCollections(collections);
+    return collections;
+  });
 
   const held = new Map((await store.listCollectionItems()).map((i) => [i.id, i]));
   const changed: CollectionItem[] = [];

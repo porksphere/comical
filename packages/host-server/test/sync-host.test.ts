@@ -125,7 +125,7 @@ describe("createSyncHost", () => {
 
   test("a fresh hub starts from the library the server already has", async () => {
     const existing = new InMemoryLibraryStore();
-    await existing.putCollections([{ id: "c", name: "Already here", order: 0 }]);
+    await existing.updateCollections(() => [{ id: "c", name: "Already here", order: 0 }]);
     const host = createSyncHost(hostOptions(existing));
     await host.ready;
     const p = phone(host.backend);
@@ -143,7 +143,7 @@ describe("createSyncHost", () => {
 
     // As an older build left things: a feed sync never recorded, and a state that lists no tables.
     await inner.putActivity({ bridgeId: "b", seriesId: "s", chapterId: "c1", title: "S", detectedAt: 5 });
-    await inner.putCollections([{ id: "unrecorded", name: "Not sync's to send", order: 0 }]);
+    await inner.updateCollections(() => [{ id: "unrecorded", name: "Not sync's to send", order: 0 }]);
     const statePath = join(DIR, "state.json");
     const { adopted: _, ...old } = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
     await writeFile(statePath, JSON.stringify(old));

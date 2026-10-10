@@ -93,8 +93,8 @@ export class InMemoryLibraryStore implements LibraryStore {
   async listCollections(): Promise<Collection[]> {
     return this.collections.map(clone);
   }
-  async putCollections(collections: Collection[]): Promise<void> {
-    this.collections = collections.map(clone);
+  async updateCollections(next: (current: Collection[]) => Collection[]): Promise<void> {
+    this.collections = next(this.collections.map(clone)).map(clone);
   }
 
   async listTrackerLinks(key: string): Promise<TrackerLink[]> {

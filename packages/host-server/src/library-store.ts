@@ -237,8 +237,8 @@ export class FileLibraryStore implements LibraryStore {
   async listCollections(): Promise<Collection[]> {
     return [...(await this.collectionsDoc.get())];
   }
-  async putCollections(collections: Collection[]): Promise<void> {
-    await this.collectionsDoc.replace([...collections]);
+  async updateCollections(next: (current: Collection[]) => Collection[]): Promise<void> {
+    await this.collectionsDoc.transform((current) => [...next([...current])]);
   }
 
   // ── Tracker links ─────────────────────────────────────────────────────────────
