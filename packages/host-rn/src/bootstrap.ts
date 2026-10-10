@@ -23,6 +23,7 @@ import type {
   InstalledStore,
   InstalledTrackerStore,
   LibraryStore,
+  RetiredStore,
   SavedRegistryStore,
   SettingsStore,
 } from "./types.ts";
@@ -58,6 +59,8 @@ export interface EmbeddedBootstrapConfig {
    *  the `/trackers*` endpoints (see `EmbeddedRuntimeConfig.installedTrackers`'s doc comment in
    *  install.ts). */
   installedTrackers: InstalledTrackerStore;
+  /** See `EmbeddedRuntimeConfig.retired`. */
+  retired?: RetiredStore;
   /** Per-tracker settings persistence (AsyncStorage-backed in an app). */
   trackerSettings?: SettingsStore;
   /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
@@ -97,6 +100,7 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     settings: config.settings,
     setTransport: config.setTransport,
     installedTrackers: config.installedTrackers,
+    ...(config.retired ? { retired: config.retired } : {}),
     ...(config.libraryStore ? { libraryStore: config.libraryStore } : {}),
     ...(config.downloadsStore ? { downloadsStore: config.downloadsStore } : {}),
     ...(config.downloadsEngine ? { downloadsEngine: config.downloadsEngine } : {}),
