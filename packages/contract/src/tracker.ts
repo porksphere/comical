@@ -30,6 +30,8 @@ export const trackerInfoSchema = z.object({
   version: z.string(),
   contractVersion: z.string(),
   capabilities: z.array(trackerCapabilitySchema),
+  /** Absolute URL (or data URI) to a small square icon representing the service. Optional. */
+  iconUrl: z.string().url().optional(),
   rateLimit: z.object({
     maxConcurrent: z.number().int().positive().optional(),
     minIntervalMs: z.number().int().nonnegative().optional(),
