@@ -1248,6 +1248,14 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json({ series, progress: await lib.getProgress(key), resume: await lib.getResume(key) });
     });
 
+    // The chapter list as last synced, with its age — what a client shows straight away while the
+    // live list is fetched, and all it has once the bridge can't answer.
+    app.get("/library/collected/series/:bridgeId/:seriesId/chapters", async (c) => {
+      const saved = await lib.getCachedChapters(keyOf(c)).catch(() => undefined);
+      if (!saved) return c.json({ error: "no saved chapter list" }, 404);
+      return c.json(saved);
+    });
+
     app.post("/library/collected/series/:bridgeId/:seriesId/sync", async (c) => {
       const b = await body<{ chapters?: Chapter[] }>(c);
       if (!b?.chapters) return c.json({ error: "chapters is required" }, 400);

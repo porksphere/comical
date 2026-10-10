@@ -134,7 +134,7 @@ describe("POST /library/backup/restore", () => {
     const result = (await res.json()) as RestoreResult;
 
     expect(result).toEqual({
-      restored: { collections: 0, items: 1, progress: 2, groups: 0, trackerLinks: 0, readingLog: 1, bridgePrefs: 0 },
+      restored: { collections: 0, items: 1, progress: 2, groups: 0, trackerLinks: 0, readingLog: 1, bridgePrefs: 0, chapters: 0 },
       skipped: 0,
     });
     expect(await library.isCollected(entryKey("demo", "kept"))).toBe(true);

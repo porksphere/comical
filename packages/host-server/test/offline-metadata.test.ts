@@ -245,6 +245,23 @@ describe("offline metadata fallback", () => {
   });
 });
 
+describe("GET /library/collected/series/:bridgeId/:seriesId/chapters", () => {
+  test("serves the saved chapter list with its age, without asking the bridge", async () => {
+    await lib.collectSeries({ bridgeId: "ghost", seriesId: "saved" }, { seriesTitle: "Saved" });
+    await lib.syncChapters("ghost:saved", [{ id: "s1", name: "Ch 1", number: 1 }, { id: "s2", name: "Ch 2", number: 2 }]);
+
+    const res = await get("/library/collected/series/ghost/saved/chapters");
+    expect(res.status).toBe(200);
+    const saved = (await res.json()) as { chapters: Array<{ id: string }>; cachedAt: number };
+    expect(saved.chapters.map((c) => c.id)).toEqual(["s1", "s2"]);
+    expect(saved.cachedAt).toBeGreaterThan(0);
+  });
+
+  test("404s for a series with no saved list", async () => {
+    expect((await get("/library/collected/series/ghost/never-synced/chapters")).status).toBe(404);
+  });
+});
+
 describe("absence: no library", () => {
   test("routes behave exactly as before when the library module isn't enabled", async () => {
     const manager = new BridgeManager({

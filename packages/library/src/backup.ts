@@ -3,9 +3,10 @@
  * something rewrites the library wholesale (a first sync, a new device, a reinstall).
  *
  * It holds what the user did: what they collected and where they filed it, what they read (series
- * they never collected included), what they linked and grouped. It leaves out what can be fetched
- * again (cached details and chapter lists, covers, downloads) and what a device derives for itself
- * (the activity feed). Logins never come near it — bridge settings and tracker tokens live outside
+ * they never collected included), what they linked and grouped — plus each collected series' saved
+ * chapter list, without which that read state has nothing to show against until the source answers
+ * (and never does, for a bridge that's gone). It leaves out the rest of what can be fetched again
+ * (cached details, covers, downloads) and what a device derives for itself (the activity feed). Logins never come near it — bridge settings and tracker tokens live outside
  * the library altogether.
  *
  * Records are carried as the store held them, checked only as far as their identity. A backup
@@ -18,6 +19,7 @@ import {
   entryKey,
   parseCollectionItemId,
   type BridgePrefs,
+  type CachedChapters,
   type ChapterProgress,
   type Collection,
   type CollectionItem,
@@ -56,6 +58,8 @@ export interface LibraryBackup {
   /** By `entryKey`. */
   trackerLinks: Record<string, TrackerLink[]>;
   bridgePrefs: BridgePrefs[];
+  /** By `entryKey`: each collected series' saved chapter list. Absent from backups made before it. */
+  chapters?: Record<string, CachedChapters>;
   sources?: LibraryBackupSources;
 }
 
@@ -68,6 +72,7 @@ export interface LibraryRestoreCounts {
   trackerLinks: number;
   readingLog: number;
   bridgePrefs: number;
+  chapters: number;
 }
 
 /** The input isn't a backup this build can read. The message is written for the user. */
@@ -92,6 +97,7 @@ const envelopeSchema = z.object({
   progress: z.record(z.string(), z.array(z.unknown())).default({}),
   trackerLinks: z.record(z.string(), z.array(z.unknown())).default({}),
   bridgePrefs: z.array(z.unknown()).default([]),
+  chapters: z.record(z.string(), z.unknown()).default({}),
   sources: z
     .object({
       registries: z.array(z.object({ url: id })).default([]),
@@ -115,6 +121,7 @@ const identity = {
   progress: z.object({ chapterId: id, read: z.boolean() }).passthrough(),
   trackerLink: z.object({ trackerId: id }).passthrough(),
   bridgePrefs: z.object({ bridgeId: id }).passthrough(),
+  chapters: z.object({ chapters: z.array(z.object({ id }).passthrough()), cachedAt: z.number() }).passthrough(),
 };
 
 /**
@@ -156,6 +163,9 @@ export function readLibraryBackup(input: unknown): { backup: LibraryBackup; skip
     progress: keepByKey(identity.progress, raw.progress),
     trackerLinks: keepByKey(identity.trackerLink, raw.trackerLinks),
     bridgePrefs: keep(identity.bridgePrefs, raw.bridgePrefs),
+    chapters: Object.fromEntries(
+      Object.entries(raw.chapters).flatMap(([key, record]) => keep<CachedChapters>(identity.chapters, [record]).map((c) => [key, c] as const)),
+    ),
     ...(raw.sources && { sources: raw.sources }),
   };
   return { backup, skipped };
@@ -171,11 +181,14 @@ export async function exportLibrary(store: LibraryStore, exportedAt: number): Pr
   }
 
   const trackerLinks: Record<string, TrackerLink[]> = {};
+  const chapters: Record<string, CachedChapters> = {};
   for (const item of items) {
     if (item.type !== "series") continue;
     const key = entryKey(item.bridgeId, item.seriesId);
     const links = await store.listTrackerLinks(key);
     if (links.length > 0) trackerLinks[key] = links;
+    const saved = await store.getCachedChapters(key);
+    if (saved && saved.chapters.length > 0) chapters[key] = saved;
   }
 
   return {
@@ -189,6 +202,7 @@ export async function exportLibrary(store: LibraryStore, exportedAt: number): Pr
     progress,
     trackerLinks,
     bridgePrefs: await store.listBridgePrefs(),
+    chapters,
   };
 }
 
@@ -199,7 +213,7 @@ export async function exportLibrary(store: LibraryStore, exportedAt: number): Pr
  * that records its changes for sync a restore travels to the other devices like any other edit.
  */
 export async function restoreLibrary(store: LibraryStore, backup: LibraryBackup): Promise<LibraryRestoreCounts> {
-  const count: LibraryRestoreCounts = { collections: 0, items: 0, progress: 0, groups: 0, trackerLinks: 0, readingLog: 0, bridgePrefs: 0 };
+  const count: LibraryRestoreCounts = { collections: 0, items: 0, progress: 0, groups: 0, trackerLinks: 0, readingLog: 0, bridgePrefs: 0, chapters: 0 };
 
   // A collection made again under the same name since the backup is the same collection to the
   // user, under a new id. The backup's items are filed into it rather than into a second
@@ -287,6 +301,15 @@ export async function restoreLibrary(store: LibraryStore, backup: LibraryBackup)
     if (same(await store.getBridgePrefs(prefs.bridgeId), prefs)) continue;
     await store.setBridgePrefs(prefs.bridgeId, prefs);
     count.bridgePrefs++;
+  }
+
+  // A saved list is a snapshot, not a choice the user made, so the newer of the two is the right
+  // one — a backup's list never rolls back one a sync has refreshed since.
+  for (const [key, saved] of Object.entries(backup.chapters ?? {})) {
+    const have = await store.getCachedChapters(key);
+    if (have && have.cachedAt >= saved.cachedAt) continue;
+    await store.putCachedChapters(key, saved);
+    count.chapters++;
   }
 
   return count;

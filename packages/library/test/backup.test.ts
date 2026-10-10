@@ -70,6 +70,7 @@ function comparable(backup: LibraryBackup) {
     ),
     trackerLinks: backup.trackerLinks,
     bridgePrefs: [...backup.bridgePrefs].sort((a, b) => a.bridgeId.localeCompare(b.bridgeId)),
+    chapters: backup.chapters,
   };
 }
 
@@ -94,6 +95,13 @@ describe("exportBackup", () => {
     const { lib } = await seeded();
     const item = (await lib.exportBackup()).items.find((i) => i.id === "series:demo:collected");
     expect(item?.type === "series" && item.knownChapters.map((c) => c.id)).toEqual(["c1", "c2"]);
+  });
+
+  test("carries a collected series' saved chapter list, so it shows with its read state before the source answers", async () => {
+    const { lib } = await seeded();
+    const backup = await lib.exportBackup();
+    expect(Object.keys(backup.chapters ?? {})).toEqual([COLLECTED]);
+    expect(backup.chapters?.[COLLECTED]?.chapters.map((c) => c.id)).toEqual(["c1", "c2"]);
   });
 
   test("carries read progress for series that were never collected", async () => {
@@ -122,7 +130,7 @@ describe("exportBackup", () => {
   test("an empty library exports an empty, restorable backup", async () => {
     const { lib } = makeLibrary();
     const backup = await lib.exportBackup();
-    expect(comparable(backup)).toEqual({ collections: [], items: [], groups: [], readingLog: [], progress: {}, trackerLinks: {}, bridgePrefs: [] });
+    expect(comparable(backup)).toEqual({ collections: [], items: [], groups: [], readingLog: [], progress: {}, trackerLinks: {}, bridgePrefs: [], chapters: {} });
     expect(fromFile(backup).skipped).toBe(0);
   });
 });
@@ -136,7 +144,7 @@ describe("restoreBackup", () => {
     const counts = await target.lib.restoreBackup(fromFile(backup).backup);
 
     expect(comparable(await target.lib.exportBackup())).toEqual(comparable(backup));
-    expect(counts).toEqual({ collections: 1, items: 3, progress: 3, groups: 1, trackerLinks: 1, readingLog: 1, bridgePrefs: 1 });
+    expect(counts).toEqual({ collections: 1, items: 3, progress: 3, groups: 1, trackerLinks: 1, readingLog: 1, bridgePrefs: 1, chapters: 1 });
     // The restored library is a working one, not just matching documents.
     expect((await target.lib.getLibrary()).map((s) => s.seriesId).sort()).toEqual(["collected", "twin"]);
     expect((await target.lib.getHistory()).map((h) => h.seriesId)).toContain("uncollected");
@@ -149,7 +157,30 @@ describe("restoreBackup", () => {
     const target = makeLibrary();
     await target.lib.restoreBackup(backup);
 
-    expect(await target.lib.restoreBackup(backup)).toEqual({ collections: 0, items: 0, progress: 0, groups: 0, trackerLinks: 0, readingLog: 0, bridgePrefs: 0 });
+    expect(await target.lib.restoreBackup(backup)).toEqual({ collections: 0, items: 0, progress: 0, groups: 0, trackerLinks: 0, readingLog: 0, bridgePrefs: 0, chapters: 0 });
+  });
+
+  test("brings back saved chapter lists, but never over a newer one", async () => {
+    const source = await seeded();
+    const { backup } = fromFile(await source.lib.exportBackup());
+    const target = makeLibrary();
+    await target.lib.restoreBackup(backup);
+    expect((await target.lib.getCachedChapters(COLLECTED))?.chapters.map((c) => c.id)).toEqual(["c1", "c2"]);
+
+    const fresher = makeLibrary();
+    await fresher.lib.collectSeries({ bridgeId: "demo", seriesId: "collected" }, { seriesTitle: "Collected" });
+    await fresher.store.putCachedChapters(COLLECTED, { chapters: [{ id: "c3", name: "Chapter 3", number: 3 }], cachedAt: Number.MAX_SAFE_INTEGER });
+    expect((await fresher.lib.restoreBackup(backup)).chapters).toBe(0);
+    expect((await fresher.lib.getCachedChapters(COLLECTED))?.chapters.map((c) => c.id)).toEqual(["c3"]);
+  });
+
+  test("restores a backup made before chapter lists were carried", async () => {
+    const source = await seeded();
+    const raw = JSON.parse(JSON.stringify(await source.lib.exportBackup()));
+    delete raw.chapters;
+    const target = makeLibrary();
+    expect((await target.lib.restoreBackup(readLibraryBackup(raw).backup)).chapters).toBe(0);
+    expect(await target.lib.getCachedChapters(COLLECTED)).toBeUndefined();
   });
 
   test("keeps what was added since the backup", async () => {
@@ -278,10 +309,12 @@ describe("readLibraryBackup", () => {
     raw.progress[COLLECTED].push({ read: true });
     raw.progress["demo:broken"] = [{ chapterId: 5 }];
     raw.readingLog.push({ bridgeId: "demo" });
+    raw.chapters["demo:broken"] = { chapters: [{ name: "No id" }], cachedAt: 1 };
 
     const { backup, skipped } = readLibraryBackup(raw);
 
-    expect(skipped).toBe(6);
+    expect(skipped).toBe(7);
+    expect(Object.keys(backup.chapters ?? {})).toEqual([COLLECTED]);
     expect(backup.collections).toHaveLength(1);
     expect(backup.items).toHaveLength(3);
     expect(backup.progress[COLLECTED]).toHaveLength(1);
