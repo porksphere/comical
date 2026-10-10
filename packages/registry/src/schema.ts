@@ -139,6 +139,19 @@ export const savedRegistrySchema = z.object({
 });
 export type SavedRegistry = z.infer<typeof savedRegistrySchema>;
 
+/**
+ * The little a client needs to show a bridge's series without loading the bridge: what to call it,
+ * whether it is adult content, and its capabilities (a `direct` bridge's series open as pages, not a
+ * chapter list). Taken from the index entry at install and kept past the uninstall, because the
+ * library keeps those series.
+ */
+export const bridgeSnapshotSchema = z.object({
+  name: z.string(),
+  nsfw: z.boolean(),
+  capabilities: z.array(z.string()),
+});
+export type BridgeSnapshot = z.infer<typeof bridgeSnapshotSchema>;
+
 /** Persisted record of an installed bridge, stored in the local manifest. */
 export const installedBridgeSchema = z.object({
   id: z.string(),
@@ -151,8 +164,33 @@ export const installedBridgeSchema = z.object({
   /** SHA-256 of the installed bundle (for integrity re-verification). */
   sha256: z.string(),
   installedAt: z.string(),
+  /** From the index entry at install. Absent on records written before it was kept. */
+  info: bridgeSnapshotSchema.optional(),
 });
 export type InstalledBridge = z.infer<typeof installedBridgeSchema>;
+
+/** A bridge the user uninstalled — what is still known of it. Cleared when it is installed again. */
+export const retiredBridgeSchema = z.object({
+  id: z.string(),
+  /** Where it was installed from, so a client can say where to get it back. */
+  registryUrl: z.string().url().nullable(),
+  info: bridgeSnapshotSchema.optional(),
+  uninstalledAt: z.string(),
+});
+export type RetiredBridge = z.infer<typeof retiredBridgeSchema>;
+
+/**
+ * A bridge the library still holds series from but that isn't installed (`GET /library/missing-bridges`).
+ * Only `id` is certain: the rest comes from its retired record, else from a registry that offers it,
+ * and is absent when neither knows the id.
+ */
+export interface MissingBridge {
+  id: string;
+  name?: string;
+  nsfw?: boolean;
+  capabilities?: string[];
+  registryUrl?: string;
+}
 
 /** Persisted record of an installed tracker, stored in the local manifest. */
 export const installedTrackerSchema = z.object({
@@ -174,5 +212,7 @@ export const manifestSchema = z.object({
   registries: z.array(savedRegistrySchema),
   installed: z.array(installedBridgeSchema),
   installedTrackers: z.array(installedTrackerSchema).default([]),
+  /** Uninstalled bridges, one per id. Manifests written before it was kept have none. */
+  retired: z.array(retiredBridgeSchema).default([]),
 });
 export type Manifest = z.infer<typeof manifestSchema>;

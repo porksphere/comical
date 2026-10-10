@@ -19,8 +19,16 @@ import { assertInstallableFrom } from "./conflicts.ts";
 import { downloadBundle, fetchIndex } from "./fetcher.ts";
 import { IndexMemo } from "./index-memo.ts";
 import { ManifestStore } from "./manifest.ts";
+import { describeMissingBridges, snapshotOf } from "./missing.ts";
 import { MAX_MOVE_HOPS, MoveError, assertSameRegistry, hasKeyContinuity } from "./moves.ts";
-import type { InstalledBridge, InstalledTracker, RegistryIndex, SavedRegistry } from "./schema.ts";
+import type {
+  InstalledBridge,
+  InstalledTracker,
+  MissingBridge,
+  RegistryIndex,
+  RetiredBridge,
+  SavedRegistry,
+} from "./schema.ts";
 import { resolveRegistryUrl, registryDisplayName } from "./url.ts";
 import { publicKeyFingerprint } from "./verify.ts";
 // Install-status view types live in a Node-free module so the host-server router can name them
@@ -152,6 +160,7 @@ export class RegistryManager {
       bundlePath,
       sha256: result.sha256,
       installedAt: new Date().toISOString(),
+      info: snapshotOf(entry),
     };
     await this.opts.manifest.addInstalled(installed);
     await this.opts.manifest.updateLastFetched(url);
@@ -171,9 +180,34 @@ export class RegistryManager {
     return this.install(current.registryUrl, bridgeId);
   }
 
-  /** Uninstall a bridge (removes from manifest; bundle file stays on disk). */
+  /**
+   * Uninstall a bridge. Its install record becomes a retired one (see `ManifestStore.retireInstalled`)
+   * so the library can still name and filter its series; the bundle file stays on disk.
+   */
   async uninstall(bridgeId: string): Promise<void> {
-    await this.opts.manifest.removeInstalled(bridgeId);
+    await this.opts.manifest.retireInstalled(bridgeId, new Date().toISOString());
+  }
+
+  /** Uninstalled bridges and what was known of them. */
+  async retired(): Promise<RetiredBridge[]> {
+    return this.opts.manifest.allRetired();
+  }
+
+  /**
+   * Describe bridges that aren't installed (see `describeMissingBridges`): retired records first,
+   * then indexes already read, then — unless `network` is false — the saved registries, bounded by
+   * a timeout.
+   */
+  async describeBridges(ids: string[], opts: { network?: boolean } = {}): Promise<MissingBridge[]> {
+    if (ids.length === 0) return [];
+    const cached = (await this.list()).flatMap((reg) =>
+      (this.cache.last(reg.url)?.bridges ?? []).map((entry) => ({ entry, registryUrl: reg.url })),
+    );
+    return describeMissingBridges(ids, {
+      retired: await this.opts.manifest.allRetired(),
+      cached,
+      ...(opts.network !== false ? { browseAll: () => this.browseAll() } : {}),
+    });
   }
 
   // ── Update detection (for API/UI "update available" badge) ──────────────────

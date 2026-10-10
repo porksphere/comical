@@ -12,7 +12,7 @@ import type { BlobStore, DownloadEngine, Downloads, DownloadsStore, PageFetcher,
 import type { RegistryProvider } from "@comical/host-server/registry-provider";
 import type { TrackerProvider } from "@comical/host-server/tracker-provider";
 import type { Library, LibraryStore } from "@comical/library";
-import type { SavedRegistry } from "@comical/registry/schema";
+import type { RetiredBridge, SavedRegistry } from "@comical/registry/schema";
 import type { ComicalRuntime } from "@comical/runtime";
 
 export type { Library, LibraryStore } from "@comical/library";
@@ -167,6 +167,16 @@ export interface InstalledStore {
   all(): Promise<InstalledBridgeRecord[]>;
   get(id: string): Promise<InstalledBridgeRecord | null>;
   add(record: InstalledBridgeRecord): Promise<void>;
+  remove(id: string): Promise<void>;
+}
+
+/**
+ * Persistence for uninstalled bridges (see `RetiredBridge`): what the library still needs to show
+ * their series. `add` upserts by `id`.
+ */
+export interface RetiredStore {
+  all(): Promise<RetiredBridge[]>;
+  add(record: RetiredBridge): Promise<void>;
   remove(id: string): Promise<void>;
 }
 

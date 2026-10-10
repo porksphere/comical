@@ -7,7 +7,7 @@
  * registry-management endpoints simply omits `RouterOptions.registry`. Mirrors `BridgeProvider`.
  */
 import type { AvailableBridge, AvailableTracker, InstallResult } from "@comical/registry/available";
-import type { SavedRegistry } from "@comical/registry/schema";
+import type { MissingBridge, SavedRegistry } from "@comical/registry/schema";
 
 /** One row of `checkUpdates`/`checkTrackerUpdates`. */
 export interface RegistryUpdate {
@@ -28,6 +28,12 @@ export interface RegistryProvider {
   uninstall(bridgeId: string): Promise<void>;
   /** What is installed, from the local manifest — no network. */
   allInstalled(): Promise<Array<{ id: string; registryUrl: string | null }>>;
+  /**
+   * Name the given (not installed) bridge ids: from what was kept when each was uninstalled, else
+   * from a registry offering it — the network only when `network` isn't false, and under a timeout.
+   * Optional: a provider without it leaves the ids unnamed.
+   */
+  describeBridges?(ids: string[], opts?: { network?: boolean }): Promise<MissingBridge[]>;
   checkUpdates(): Promise<RegistryUpdate[]>;
   browseTrackers(rawUrl: string): Promise<AvailableTracker[]>;
   browseAllTrackers(): Promise<AvailableTracker[]>;

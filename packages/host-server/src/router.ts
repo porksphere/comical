@@ -1167,17 +1167,40 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     // where to get a bridge the backup needs. Restoring acts on none of it: a file can put library
     // records back, never add a registry or install code.
 
+    /** Bridge ids the library holds something under that aren't installed here. */
+    const missingBridgeIds = async (): Promise<string[]> => {
+      const installed = new Set((await manager.list()).map((b) => b.info.id));
+      return (await lib.referencedBridgeIds()).filter((id) => !installed.has(id));
+    };
+
     const backupSources = async (): Promise<LibraryBackupSources | undefined> => {
       const registry = opts.registry;
       if (!registry) return undefined;
-      const fromRegistry = (list: Array<{ id: string; registryUrl: string | null }>) =>
+      const fromRegistry = (list: Array<{ id: string; registryUrl?: string | null }>) =>
         list.flatMap((i) => (i.registryUrl ? [{ id: i.id, registryUrl: i.registryUrl }] : []));
+      // An uninstalled bridge's series are in the backup too; say where it came from (or, failing
+      // that, a saved registry known to offer it) so a restore can point at it. Never the network:
+      // exporting a backup must not wait on a registry host.
+      const missing = registry.describeBridges
+        ? await registry.describeBridges(await missingBridgeIds(), { network: false })
+        : [];
       return {
         registries: (await registry.list()).map((r) => ({ url: r.url })),
-        bridges: fromRegistry(await registry.allInstalled()),
+        bridges: [...fromRegistry(await registry.allInstalled()), ...fromRegistry(missing)],
         trackers: fromRegistry(await registry.allInstalledTrackers()),
       };
     };
+
+    // Series whose bridge isn't installed — uninstalled, or never installed on this host (a synced
+    // or restored library). A client can't list them correctly without this: it names them, hides
+    // the adult ones when the user hides adult content, and opens a `direct` bridge's as pages.
+    app.get("/library/missing-bridges", async (c) => {
+      const ids = await missingBridgeIds();
+      const described = opts.registry?.describeBridges
+        ? await opts.registry.describeBridges(ids)
+        : ids.map((id) => ({ id }));
+      return c.json(described);
+    });
 
     app.get("/library/backup", async (c) => {
       const sources = await backupSources();

@@ -13,7 +13,8 @@
     "./moves": "./src/moves.ts",
     "./conflicts": "./src/conflicts.ts",
     "./compat": "./src/compat.ts",
-    "./index-memo": "./src/index-memo.ts"
+    "./index-memo": "./src/index-memo.ts",
+    "./missing": "./src/missing.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {

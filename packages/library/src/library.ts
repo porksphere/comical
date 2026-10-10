@@ -397,6 +397,27 @@ export class Library {
     }
   }
 
+  /**
+   * Every bridge id the library holds something under — collected items, the reading log, reading
+   * progress, the activity feed — sorted. A client compares this against what is installed to find
+   * series whose bridge has gone, which it still has to name, filter by rating and open correctly.
+   *
+   * A progress key only counts while it holds progress (the store may list emptied keys), and is
+   * only read when nothing else already named its bridge.
+   */
+  async referencedBridgeIds(): Promise<string[]> {
+    const ids = new Set<string>();
+    for (const item of await this.store.listCollectionItems()) ids.add(item.bridgeId);
+    for (const h of await this.store.listReadingLog()) ids.add(h.bridgeId);
+    for (const a of await this.store.listActivity()) ids.add(a.bridgeId);
+    for (const key of await this.store.listProgressKeys()) {
+      const { bridgeId } = parseEntryKey(key);
+      if (ids.has(bridgeId)) continue;
+      if ((await this.store.listProgress(key)).length > 0) ids.add(bridgeId);
+    }
+    return [...ids].sort();
+  }
+
   /** The bytes the library's persisted documents occupy, when the store can measure them. */
   async diskUsage(): Promise<number | undefined> {
     return this.store.diskUsage?.();

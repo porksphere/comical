@@ -5,5 +5,6 @@ export * from "./moves.ts";
 export * from "./compat.ts";
 export * from "./conflicts.ts";
 export * from "./fetcher.ts";
+export * from "./missing.ts";
 export * from "./manifest.ts";
 export * from "./manager.ts";

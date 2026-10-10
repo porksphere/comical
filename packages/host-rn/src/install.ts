@@ -32,6 +32,7 @@ import type {
   InstalledTrackerStore,
   LibraryStore,
   RegistryProvider,
+  RetiredStore,
   SavedRegistryStore,
   SettingsStore,
 } from "./types.ts";
@@ -73,6 +74,9 @@ export interface EmbeddedRuntimeConfig {
    *  endpoints; omitting either leaves them unmounted (they 404), matching the
    *  `libraryStore`/`downloadsStore` optional-capability pattern. */
   installedTrackers: InstalledTrackerStore;
+  /** Where uninstalled bridges are remembered, so the library can still name and filter their
+   *  series (`GET /library/missing-bridges`). Optional: without it an uninstall keeps nothing. */
+  retired?: RetiredStore;
   /** Per-tracker settings persistence (AsyncStorage-backed in an app; reuses the same store shape as
    *  bridge `settings`, just keyed by tracker id). */
   trackerSettings?: SettingsStore;
@@ -136,6 +140,7 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
     installed: config.installed,
     installedTrackers: config.installedTrackers,
     fetcher: config.fetcher,
+    ...(config.retired ? { retired: config.retired } : {}),
   });
 
   const bridgeProvider = new EmbeddedBridgeProvider({

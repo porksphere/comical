@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { join } from "node:path";
-import { readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import {
   FetchError,
   InstallConflictError,
@@ -434,6 +434,98 @@ describe("fetchIndex + RegistryManager", () => {
     await mgr.uninstall("example");
     expect(await mgr.isOrphaned("example")).toBe(false);
     expect(await mgr.resolveBundle("example")).toBeNull();
+  });
+
+  describe("retired bridges", () => {
+    test("an uninstall keeps the name, rating and capabilities, and survives a reload", async () => {
+      const dir = join(DATA_DIR, "test-retire");
+      const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-retire"), manifest: new ManifestStore(dir) });
+      await mgr.add(registryUrl);
+      await mgr.install(registryUrl, "example");
+      await mgr.uninstall("example");
+
+      // A fresh store reads the file back, not the first one's cache.
+      const reread = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-retire"), manifest: new ManifestStore(dir) });
+      expect(await reread.retired()).toEqual([{
+        id: "example",
+        registryUrl,
+        info: { name: "Example Bridge", nsfw: false, capabilities: ["search"] },
+        uninstalledAt: expect.any(String),
+      }]);
+      expect(await reread.describeBridges(["example"], { network: false })).toEqual([{
+        id: "example", name: "Example Bridge", nsfw: false, capabilities: ["search"], registryUrl,
+      }]);
+    });
+
+    test("installing it again clears the retired record", async () => {
+      const manifest = new ManifestStore(join(DATA_DIR, "test-unretire"));
+      const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-unretire"), manifest });
+      await mgr.add(registryUrl);
+      await mgr.install(registryUrl, "example");
+      await mgr.uninstall("example");
+      await mgr.install(registryUrl, "example");
+      expect(await mgr.retired()).toEqual([]);
+      expect((await manifest.getInstalled("example"))?.info?.name).toBe("Example Bridge");
+    });
+
+    test("uninstalling an id that isn't installed records nothing", async () => {
+      const mgr = new RegistryManager({
+        cacheDir: join(DATA_DIR, "cache-retire-none"),
+        manifest: new ManifestStore(join(DATA_DIR, "test-retire-none")),
+      });
+      await mgr.uninstall("never-installed");
+      expect(await mgr.retired()).toEqual([]);
+    });
+
+    test("a record from before snapshots were kept still names its registry, and an index fills the rest", async () => {
+      const manifest = new ManifestStore(join(DATA_DIR, "test-retire-old"));
+      const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-retire-old"), manifest });
+      await mgr.add(registryUrl); // reads the index, so it's cached
+      await manifest.addInstalled({
+        id: "example", version: "0.0.1", contractVersion: "2.0.0", registryUrl,
+        bundlePath: "/nonexistent/example.js", sha256: "a".repeat(64), installedAt: new Date().toISOString(),
+      });
+      await mgr.uninstall("example");
+      expect((await mgr.retired())[0]).not.toHaveProperty("info");
+      expect(await mgr.describeBridges(["example"], { network: false })).toEqual([{
+        id: "example", name: "Example Bridge", nsfw: false, capabilities: ["search"], registryUrl,
+      }]);
+    });
+
+    test("an id never installed is named from a saved registry's index, or left unnamed", async () => {
+      const manifest = new ManifestStore(join(DATA_DIR, "test-describe-network"));
+      await manifest.addRegistry({ url: registryUrl, name: "example", requireSignature: false });
+      // Nothing has read the index yet, so only the network can name it.
+      const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-describe-network"), manifest });
+      expect(await mgr.describeBridges(["example", "nobody-knows"], { network: false })).toEqual([
+        { id: "example" },
+        { id: "nobody-knows" },
+      ]);
+      expect(await mgr.describeBridges(["example", "nobody-knows"])).toEqual([
+        { id: "example", name: "Example Bridge", nsfw: false, capabilities: ["search"], registryUrl },
+        { id: "nobody-knows" },
+      ]);
+    });
+
+    test("a manifest written before retired records existed loads with none", async () => {
+      const dir = join(DATA_DIR, "test-retire-legacy");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "registry-manifest.json"), JSON.stringify({ registries: [], installed: [] }));
+      const manifest = new ManifestStore(dir);
+      expect(await manifest.allRetired()).toEqual([]);
+      expect(readdirSync(dir).filter((f) => f.includes(".corrupt-"))).toEqual([]);
+    });
+
+    test("moving a registry repoints its retired bridges too", async () => {
+      const manifest = new ManifestStore(join(DATA_DIR, "test-retire-move"));
+      const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-retire-move"), manifest });
+      await mgr.add(registryUrl);
+      await mgr.install(registryUrl, "example");
+      await mgr.uninstall("example");
+      const moved = "https://example.com/moved/index.json";
+      await manifest.rebindRegistry(registryUrl, moved);
+      expect((await mgr.retired())[0]?.registryUrl).toBe(moved);
+    });
   });
 
   test("checksum mismatch throws VerificationError during install", async () => {

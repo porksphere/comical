@@ -5,16 +5,18 @@
  */
 import { join } from "node:path";
 import { readJsonFile, writeJsonFile } from "@comical/host-bun";
+import { withRetired } from "./missing.ts";
 import {
   type InstalledBridge,
   type InstalledTracker,
   type Manifest,
   manifestSchema,
+  type RetiredBridge,
   type SavedRegistry,
 } from "./schema.ts";
 import { registryDisplayName } from "./url.ts";
 
-const EMPTY: Manifest = { registries: [], installed: [], installedTrackers: [] };
+const EMPTY: Manifest = { registries: [], installed: [], installedTrackers: [], retired: [] };
 
 export class ManifestStore {
   private readonly path: string;
@@ -101,6 +103,8 @@ export class ManifestStore {
     m.registries.push(moved);
     for (const b of m.installed) if (b.registryUrl === oldUrl) b.registryUrl = newUrl;
     for (const t of m.installedTrackers) if (t.registryUrl === oldUrl) t.registryUrl = newUrl;
+    // So "get it back from" names where the registry lives now.
+    for (const r of m.retired) if (r.registryUrl === oldUrl) r.registryUrl = newUrl;
     await this.write(m);
   }
 
@@ -136,17 +140,43 @@ export class ManifestStore {
 
   // ── Installed bridges ──────────────────────────────────────────────────────
 
+  /** Record an install. Installing a bridge again clears its retired record in the same write. */
   async addInstalled(bridge: InstalledBridge): Promise<void> {
     const m = await this.read();
     m.installed = m.installed.filter((b) => b.id !== bridge.id);
     m.installed.push(bridge);
+    m.retired = withRetired(m.retired, bridge.id);
     await this.write(m);
   }
 
+  /** Drop an install record outright — nothing is kept of it. `retireInstalled` is the uninstall. */
   async removeInstalled(id: string): Promise<void> {
     const m = await this.read();
     m.installed = m.installed.filter((b) => b.id !== id);
     await this.write(m);
+  }
+
+  /**
+   * Uninstall: drop the install record and keep what's needed to still show the bridge's series —
+   * its name, rating and capabilities, and where it came from — as a retired record, in one write.
+   * A no-op for an id that isn't installed.
+   */
+  async retireInstalled(id: string, at: string): Promise<void> {
+    const m = await this.read();
+    const rec = m.installed.find((b) => b.id === id);
+    if (!rec) return;
+    m.installed = m.installed.filter((b) => b.id !== id);
+    m.retired = withRetired(m.retired, id, {
+      id,
+      registryUrl: rec.registryUrl,
+      ...(rec.info ? { info: rec.info } : {}),
+      uninstalledAt: at,
+    });
+    await this.write(m);
+  }
+
+  async allRetired(): Promise<RetiredBridge[]> {
+    return (await this.read()).retired;
   }
 
   async getInstalled(id: string): Promise<InstalledBridge | undefined> {

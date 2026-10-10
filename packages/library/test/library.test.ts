@@ -1006,6 +1006,36 @@ describe("history", () => {
   });
 });
 
+describe("referencedBridgeIds", () => {
+  test("names every bridge the library holds anything under, once, sorted", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await lib.collectSeries({ bridgeId: "collected", seriesId: "s1" }, { seriesTitle: "One" });
+    await lib.collectSeries({ bridgeId: "collected", seriesId: "s2" }, { seriesTitle: "Two" });
+    await store.upsertReadingLog({ bridgeId: "logged", seriesId: "s1", title: "Logged", lastReadAt: 1 });
+    await lib.markRead(entryKey("progress-only", "s1"), "c1", true);
+    await store.putActivity({ bridgeId: "in-feed", seriesId: "s1", chapterId: "c1", title: "Fed", detectedAt: 1 });
+
+    expect(await lib.referencedBridgeIds()).toEqual(["collected", "in-feed", "logged", "progress-only"]);
+  });
+
+  test("a progress key with nothing left under it doesn't count", async () => {
+    // A store may keep listing a key it has emptied (the file store's per-series files do).
+    class EmptiedKeyStore extends InMemoryLibraryStore {
+      override async listProgressKeys(): Promise<string[]> {
+        return [...(await super.listProgressKeys()), entryKey("emptied", "s1")];
+      }
+    }
+    const store = new EmptiedKeyStore();
+    await store.putProgress(entryKey("kept", "s1"), { chapterId: "c1", read: true, lastPage: 0, updatedAt: 1 });
+    expect(await new Library(store, { now: fakeClock() }).referencedBridgeIds()).toEqual(["kept"]);
+  });
+
+  test("an empty library references nothing", async () => {
+    expect(await makeLibrary().referencedBridgeIds()).toEqual([]);
+  });
+});
+
 describe("collections filter the library", () => {
   // The old library "lists" retired into collections: memberships live on SERIES favorite items,
   // and getLibrary reads through them. Filing a series = collectSeries + collection membership.

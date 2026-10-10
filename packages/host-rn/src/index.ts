@@ -74,6 +74,7 @@ export type {
   PageFetcher,
   PendingPage,
   RegistryProvider,
+  RetiredStore,
   SavedRegistryStore,
   SettingsStore,
   TrackerBundleSource,

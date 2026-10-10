@@ -21,8 +21,15 @@ import type { AvailableBridge, AvailableTracker, InstallResult } from "@comical/
 import { assertContractCompatible, isEntryCompatible } from "@comical/registry/compat";
 import { assertInstallableFrom } from "@comical/registry/conflicts";
 import { IndexMemo } from "@comical/registry/index-memo";
+import { describeMissingBridges, snapshotOf } from "@comical/registry/missing";
 import { MAX_MOVE_HOPS, MoveError, assertSameRegistry, hasKeyContinuity } from "@comical/registry/moves";
-import type { RegistryBridgeEntry, RegistryIndex, RegistryTrackerEntry, SavedRegistry } from "@comical/registry/schema";
+import type {
+  MissingBridge,
+  RegistryBridgeEntry,
+  RegistryIndex,
+  RegistryTrackerEntry,
+  SavedRegistry,
+} from "@comical/registry/schema";
 import { registryDisplayName, resolveRegistryUrl } from "@comical/registry/url";
 import { publicKeyFingerprint } from "@comical/registry/verify";
 import type { RegistryProvider, RegistryUpdate } from "@comical/host-server/registry-provider";
@@ -32,6 +39,7 @@ import type {
   InstalledStore,
   InstalledTrackerRecord,
   InstalledTrackerStore,
+  RetiredStore,
   SavedRegistryStore,
 } from "./types.ts";
 
@@ -49,6 +57,9 @@ export interface EmbeddedRegistryProviderDeps {
   installed: InstalledStore;
   installedTrackers: InstalledTrackerStore;
   fetcher: RegistryFetcher;
+  /** Where an uninstall keeps what the library needs of the bridge. Without it nothing is kept, and
+   *  `describeBridges` can only name a missing bridge from a registry that offers it. */
+  retired?: RetiredStore;
 }
 
 export class EmbeddedRegistryProvider implements RegistryProvider {
@@ -200,6 +211,9 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
       ...(index.publicKey !== undefined ? { publicKey: index.publicKey } : {}),
     };
     await this.deps.installed.add(record); // upsert — installing over an existing version re-pins it
+    // After the install lands: interrupted between the two, the bridge is installed and also still
+    // retired, and an installed bridge is never asked about as a missing one.
+    await this.deps.retired?.remove(entry.id);
     this.onChange?.();
     return { id: entry.id, version: entry.version, bundlePath: "" };
   }
@@ -211,9 +225,36 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
     return this.install(current.registryUrl, bridgeId);
   }
 
+  /**
+   * Uninstall, keeping a retired record of the bridge so its series — which stay in the library —
+   * can still be named, rating-filtered and opened. The record is written first, for the reason
+   * `install` clears it last.
+   */
   async uninstall(bridgeId: string): Promise<void> {
+    const rec = await this.deps.installed.get(bridgeId);
+    if (rec && this.deps.retired) {
+      await this.deps.retired.add({
+        id: rec.id,
+        registryUrl: rec.registryUrl,
+        info: snapshotOf(rec.info),
+        uninstalledAt: new Date().toISOString(),
+      });
+    }
     await this.deps.installed.remove(bridgeId);
     this.onChange?.();
+  }
+
+  /** See `RegistryProvider.describeBridges`. */
+  async describeBridges(ids: string[], opts: { network?: boolean } = {}): Promise<MissingBridge[]> {
+    if (ids.length === 0) return [];
+    const cached = (await this.list()).flatMap((reg) =>
+      (this.indexCache.last(reg.url)?.bridges ?? []).map((entry) => ({ entry, registryUrl: reg.url })),
+    );
+    return describeMissingBridges(ids, {
+      retired: (await this.deps.retired?.all()) ?? [],
+      cached,
+      ...(opts.network !== false ? { browseAll: () => this.browseAll() } : {}),
+    });
   }
 
   allInstalled() {
@@ -513,6 +554,10 @@ export class EmbeddedRegistryProvider implements RegistryProvider {
       if (rec.registryUrl !== oldUrl) continue;
       const entry = (index.trackers ?? []).find((t) => t.id === rec.id && t.sha256 === rec.sha256);
       await this.deps.installedTrackers.add({ ...repin(rec, entry, index), registryUrl: newUrl });
+    }
+    // So "get it back from" names where the registry lives now.
+    for (const rec of (await this.deps.retired?.all()) ?? []) {
+      if (rec.registryUrl === oldUrl) await this.deps.retired!.add({ ...rec, registryUrl: newUrl });
     }
 
     await this.deps.registries.remove(oldUrl);
