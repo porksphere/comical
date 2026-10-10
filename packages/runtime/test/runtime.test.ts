@@ -1806,6 +1806,48 @@ describe("backgroundSync — time budget", () => {
   });
 });
 
+describe("backgroundSync — unavailable bridges", () => {
+  // Series from an uninstalled bridge never sync, so nothing moves them off the front of the
+  // stalest-first queue. Left in, they'd take a short background window's one slot every run.
+  test("series whose bridge won't load are left out, so a real one gets the slot", async () => {
+    const lib = makeLib();
+    const { bridge, calls } = instrumentedBridge();
+    let goneAsked = 0;
+    const runtime = new ComicalRuntime({
+      bridges: {
+        get: async (id) => {
+          if (id === "test") return bridge;
+          goneAsked++;
+          throw new Error(`bridge not found: ${id}`);
+        },
+      },
+      library: lib,
+    });
+    await runtime.collectSeries("test", "real"); // synced once — older than the window below
+    calls.clear();
+    // Never synced, so they sort ahead of "real".
+    await lib.collectSeries({ bridgeId: "gone", seriesId: "o1" }, { seriesTitle: "Orphan 1" });
+    await lib.collectSeries({ bridgeId: "gone", seriesId: "o2" }, { seriesTitle: "Orphan 2" });
+    await new Promise((r) => setTimeout(r, 2));
+
+    const res = await runtime.backgroundSync({ concurrency: 1, budgetMs: 0, staleMs: 1 });
+
+    expect(calls.get("real")).toBe(1);
+    expect(res).toMatchObject({ updated: 1, scanned: 3, skipped: 2, unavailable: 2 });
+    expect(goneAsked).toBe(1); // resolved once per run, not once per series
+    // Nothing was written for them: still never-synced, so first in line after a reinstall.
+    expect((await lib.getSeries("gone:o1"))?.chaptersSyncedAt).toBeUndefined();
+  });
+
+  test("an available library reports none unavailable", async () => {
+    const lib = makeLib();
+    const { bridge } = instrumentedBridge();
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
+    await seedStaleEntries(lib, 2);
+    expect(await runtime.backgroundSync()).toMatchObject({ updated: 2, skipped: 0, unavailable: 0 });
+  });
+});
+
 // ── searchTracker — the "link tracker" UI flow ────────────────────────────────
 // Directly exercises the method the tracker-link search calls. Its "no trackers configured" guard
 // is the exact error the on-device runtime once threw (see host-rn's install-trackers.test.ts): a

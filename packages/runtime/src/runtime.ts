@@ -200,8 +200,10 @@ export interface BackgroundSyncResult {
   readSynced: number;
   /** Library size at scan time. */
   scanned: number;
-  /** Entries skipped because they were synced within the staleness window. */
+  /** Entries not synced this run: synced within the staleness window, or in `unavailable`. */
   skipped: number;
+  /** Of `skipped`, stale entries whose bridge couldn't be loaded (e.g. it was uninstalled). */
+  unavailable: number;
   /**
    * Entries a bridge's batch update check reported as unchanged, so their chapter list was never
    * fetched. These are the requests the batch check saved; they are NOT counted in `updated`.
@@ -944,11 +946,11 @@ export class ComicalRuntime {
     const startedAt = Date.now();
 
     const entries = await lib.getLibrary();
-    const candidates = force
+    const stale = force
       ? [...entries]
       : entries.filter((e) => e.chaptersSyncedAt === undefined || startedAt - e.chaptersSyncedAt > staleMs);
     // Stalest first (never-synced entries lead) so a truncated run picks up the remainder next time.
-    candidates.sort((a, b) => (a.chaptersSyncedAt ?? -1) - (b.chaptersSyncedAt ?? -1));
+    stale.sort((a, b) => (a.chaptersSyncedAt ?? -1) - (b.chaptersSyncedAt ?? -1));
 
     const deadlineAt = budgetMs === undefined ? undefined : startedAt + budgetMs;
 
@@ -957,7 +959,13 @@ export class ComicalRuntime {
     // between one request per library entry and a couple per bridge. `force` only bypasses the
     // staleness filter above (which candidates are considered) — it does not bypass this check, so
     // "Check for updates" still gets the cheap batch pre-pass rather than a full fetch of everything.
-    const checks = await this.batchCheckRevisions(candidates, deadlineAt);
+    const { checks, unavailable } = await this.batchCheckRevisions(stale, deadlineAt);
+    // A series whose bridge won't load (uninstalled, say) can't sync, and syncing is what moves an
+    // entry to the back of the stalest-first queue — so left in, it would head every run and spend a
+    // short background window failing. Nothing is written for it, so after a reinstall it is the
+    // stalest again and goes first.
+    const candidates = unavailable.size === 0 ? stale : stale.filter((e) => !unavailable.has(e.bridgeId));
+    const unavailableCount = stale.length - candidates.length;
 
     const counters = { updated: 0, newChapters: 0, behind: { joined: 0, unseen: 0 }, readSynced: 0, unchanged: 0 };
     let partial = false;
@@ -983,6 +991,7 @@ export class ComicalRuntime {
       ...counters,
       scanned: entries.length,
       skipped: entries.length - candidates.length,
+      unavailable: unavailableCount,
       partial,
     };
   }
@@ -996,15 +1005,21 @@ export class ComicalRuntime {
    * NEXT run skip them. Asking only about entries that already had a baseline would mean none was
    * ever acquired and the check would never fire at all.
    *
-   * Conservative throughout: a bridge that can't be loaded, throws, or omits a series simply isn't
-   * in the result, and the caller does the full fetch. Nothing here can cause an update to be
-   * missed; the worst case is the per-entry behavior that predates it.
+   * Conservative throughout: a bridge that throws, or omits a series, simply isn't in the result,
+   * and the caller does the full fetch. Nothing here can cause an update to be missed; the worst
+   * case is the per-entry behavior that predates it.
+   *
+   * Resolving each bridge once is also how a run learns which can't be loaded at all: those come
+   * back in `unavailable`. Only the ids — the per-entry pass gets the bridge again rather than
+   * reusing this one, since a bridge can be invalidated (and on device, disposed) mid-run. Bridges
+   * not reached before the deadline aren't in it; their entries are tried as before.
    */
   private async batchCheckRevisions(
     candidates: CollectionSeriesItemView[],
     deadlineAt: number | undefined,
-  ): Promise<Map<string, UpdateCheckOutcome>> {
+  ): Promise<{ checks: Map<string, UpdateCheckOutcome>; unavailable: Set<string> }> {
     const out = new Map<string, UpdateCheckOutcome>();
+    const unavailable = new Set<string>();
     const byBridge = new Map<string, CollectionSeriesItemView[]>();
     for (const e of candidates) {
       const list = byBridge.get(e.bridgeId);
@@ -1014,12 +1029,16 @@ export class ComicalRuntime {
 
     for (const [bridgeId, entries] of byBridge) {
       const bridge = await this.bridges.get(bridgeId).catch(() => undefined);
-      if (!bridge?.checkForUpdates) continue;
+      if (!bridge) {
+        unavailable.add(bridgeId);
+        continue;
+      }
+      if (!bridge.checkForUpdates) continue;
       const bySeriesId = new Map(entries.map((e) => [e.seriesId, e]));
       for (let i = 0; i < entries.length; i += MAX_UPDATE_CHECK_BATCH) {
         // The check is a net saving, but it isn't free — once past the deadline stop asking and let
         // the (already budget-gated) per-entry pass do what it can with the time that's left.
-        if (deadlineAt !== undefined && Date.now() >= deadlineAt) return out;
+        if (deadlineAt !== undefined && Date.now() >= deadlineAt) return { checks: out, unavailable };
         const chunk = entries.slice(i, i + MAX_UPDATE_CHECK_BATCH);
         const answered = await bridge
           .checkForUpdates(chunk.map((e) => e.seriesId))
@@ -1037,7 +1056,7 @@ export class ComicalRuntime {
         }
       }
     }
-    return out;
+    return { checks: out, unavailable };
   }
 
   /**
