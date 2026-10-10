@@ -107,6 +107,16 @@ describe("RegistryManager contract compatibility", () => {
     await expect(mgr.installTracker(registryUrl, "ok-trk")).resolves.toMatchObject({ id: "ok-trk" });
   });
 
+  // Not a compatibility case, but this is the fixture with a tracker in it.
+  test("a tracker whose registry is removed keeps its bundle, as a bridge does", async () => {
+    const { mgr } = manager("orphan-tracker");
+    await mgr.add(registryUrl);
+    const { bundlePath } = await mgr.installTracker(registryUrl, "ok-trk");
+    await mgr.remove(registryUrl);
+    expect(await mgr.isTrackerOrphaned("ok-trk")).toBe(true);
+    expect(await mgr.resolveTrackerBundle("ok-trk")).toBe(bundlePath);
+  });
+
   // ── Update detection ───────────────────────────────────────────────────────
 
   test("checkUpdates never offers a newer bridge version this build can't load", async () => {

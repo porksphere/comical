@@ -11,7 +11,7 @@ import { BridgeManager } from "./bridge-manager.ts";
 import { FileBlobStore } from "./blob-store.ts";
 import { FileDownloadsStore } from "./downloads-store.ts";
 import { FileLibraryStore } from "./library-store.ts";
-import { createSyncHost } from "./sync-host.ts";
+import { createSyncHost, dropStaleLoads } from "./sync-host.ts";
 import { migrateLegacyEntries } from "./legacy-entries.ts";
 import { createServerPageFetcher, createServerPageResolver } from "./page-fetcher.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
@@ -108,6 +108,7 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
           installed: () => manifest.allInstalled(),
           installedTrackers: () => manifest.allInstalledTrackers(),
         },
+        onRegistryApplied: dropStaleLoads(manager, trackerManager),
       });
       store = host.store;
       routerOpts.sync = host.backend;

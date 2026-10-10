@@ -1861,11 +1861,12 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       }
     });
 
-    // Remove a registry (orphans its installed bridges).
+    // Remove a registry. What it installed stays installed and keeps working; it just can't update.
     app.delete("/registries/:encodedUrl", async (c) => {
       const url = decodeURIComponent(c.req.param("encodedUrl"));
       await reg.remove(url);
       manager.refresh();
+      trackerMgr?.refresh?.();
       return c.json({ ok: true });
     });
 
@@ -1932,6 +1933,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       try {
         const movedTo = await reg.confirmMove(url);
         manager.refresh();
+        trackerMgr?.refresh?.();
         return c.json({ url: movedTo });
       } catch (e) {
         return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
@@ -1953,6 +1955,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       try {
         await reg.confirmAdoption(url, body.url);
         manager.refresh();
+        trackerMgr?.refresh?.();
         return c.json({ ok: true });
       } catch (e) {
         return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);

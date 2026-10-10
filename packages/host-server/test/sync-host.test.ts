@@ -22,7 +22,7 @@ import {
   type BridgeSettingsProvider,
   type SyncedRegistry,
 } from "@comical/sync";
-import { createSyncHost, type SyncHostOptions } from "../src/sync-host.ts";
+import { createSyncHost, dropStaleLoads, type RegistryChange, type SyncHostOptions } from "../src/sync-host.ts";
 
 const DIR = join(import.meta.dir, ".tmp-sync-host");
 const quiet = { error: () => {} };
@@ -194,6 +194,57 @@ describe("createSyncHost", () => {
     await p.engine.sync();
     expect(await p.held.installedTrackers()).toEqual([{ id: "tracker-one", registryUrl: REG }]);
     expect(await p.held.installed()).toEqual([]);
+  });
+
+  test("a registry change applied from the phone tells the server what to drop", async () => {
+    const changes: RegistryChange[] = [];
+    const host = createSyncHost({ ...hostOptions(), onRegistryApplied: (c) => changes.push(c) });
+    await host.ready;
+    const p = phone(host.backend);
+
+    await p.registry.add(REG);
+    await p.registry.install(REG, "bridge-one");
+    await p.registry.installTracker(REG, "tracker-one");
+    await p.engine.sync();
+    await host.flush();
+    expect(changes).toEqual([
+      { kind: "registries" },
+      { kind: "bridge", id: "bridge-one" },
+      { kind: "tracker", id: "tracker-one" },
+    ]);
+
+    changes.length = 0;
+    await p.registry.uninstall("bridge-one");
+    await p.registry.remove(REG);
+    await p.engine.sync();
+    await host.flush();
+    expect(changes).toContainEqual({ kind: "bridge", id: "bridge-one" });
+    expect(changes).toContainEqual({ kind: "registries" });
+  });
+
+  test("a change the server makes itself is the router's to report, not sync's", async () => {
+    const changes: RegistryChange[] = [];
+    const host = createSyncHost({ ...hostOptions(), onRegistryApplied: (c) => changes.push(c) });
+    await host.ready;
+    await host.registry.add(REG);
+    await host.registry.install(REG, "bridge-one");
+    await host.flush();
+    expect(changes).toEqual([]);
+  });
+
+  test("dropStaleLoads evicts one bridge or tracker, or everything for a registry-list change", () => {
+    const calls: string[] = [];
+    const cache = (name: string) => ({
+      invalidate: (id: string) => void calls.push(`${name}.invalidate ${id}`),
+      refresh: () => void calls.push(`${name}.refresh`),
+    });
+    const drop = dropStaleLoads(cache("bridges"), cache("trackers"));
+    drop({ kind: "bridge", id: "b" });
+    drop({ kind: "tracker", id: "t" });
+    drop({ kind: "registries" });
+    expect(calls).toEqual(["bridges.invalidate b", "trackers.invalidate t", "bridges.refresh", "trackers.refresh"]);
+    // A host without trackers only has bridges to drop.
+    expect(() => dropStaleLoads(cache("bridges"))({ kind: "tracker", id: "t" })).not.toThrow();
   });
 
   test("a fresh hub starts from the registries the server already has, but not its locally built bridges", async () => {

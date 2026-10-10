@@ -28,4 +28,6 @@ export interface TrackerProvider {
   storedSettings(id: string): Promise<Record<string, SettingValue>>;
   updateSettings(id: string, patch: Record<string, SettingValue>): Promise<Record<string, SettingValue>>;
   invalidate(id: string): void;
+  /** Drop every loaded tracker, for a change that can touch several at once (a registry removed or moved). */
+  refresh?(): void;
 }

@@ -54,7 +54,7 @@ Usage:
   Registry (M4):
   comical registry list                          list added registries
   comical registry add <url>                     add a registry (GitHub link or any URL)
-  comical registry remove <url>                  remove a registry (orphans its bridges)
+  comical registry remove <url>                  remove a registry (its bridges stay, un-updatable)
   comical registry browse [<url>]                browse available bridges
   comical registry install <url> <bridgeId>      install a bridge from a registry
   comical registry update <bridgeId>             update an installed bridge
@@ -217,7 +217,7 @@ async function main(): Promise<number> {
     if (sub === "remove") {
       const url = requireArg(positionals[2], "url");
       await reg.remove(resolveRegistryUrl(url));
-      console.log("Registry removed. Bridges installed from it are now orphaned.");
+      console.log("Registry removed. Bridges installed from it keep working, but can't update until it is added back.");
       return 0;
     }
 

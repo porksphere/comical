@@ -6,11 +6,11 @@
  *   - browse bridges available in a registry
  *   - install a bridge (download → verify → cache → manifest)
  *   - check for available updates (manual policy: expose info, never auto-install)
- *   - uninstall / block orphaned bridges
+ *   - uninstall bridges
  *
- * "Orphaned" = installed from a registry that has since been removed. Orphaned bridges
- * are recorded in the manifest but their bundles are marked unloadable. The caller
- * (host-server BridgeManager) checks isOrphaned() before loading.
+ * "Orphaned" = installed from a registry that has since been removed. An orphaned bridge stays in
+ * the manifest and keeps loading from its cached (install-time verified) bundle, exactly as it does
+ * on device; it just has nowhere to update from until the registry is added back.
  */
 import { writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
@@ -76,9 +76,8 @@ export class RegistryManager {
 
   async remove(rawUrl: string): Promise<void> {
     const url = resolveRegistryUrl(rawUrl);
-    // Bridges from this registry become orphaned — they stay in the manifest with
-    // registryUrl intact so the host can detect and block them, but they are not deleted
-    // from disk (the user may re-add the registry later).
+    // Bridges from this registry become orphaned — they stay installed, with registryUrl intact,
+    // and keep working from their cached bundles; re-adding the registry makes them updatable again.
     await this.opts.manifest.removeRegistry(url);
     this.cache.delete(url);
   }
@@ -214,8 +213,9 @@ export class RegistryManager {
   // ── Orphan detection ────────────────────────────────────────────────────────
 
   /**
-   * A bridge is orphaned if it was installed from a registry that no longer exists
-   * in the user's registry list. Orphaned bridges cannot be loaded.
+   * A bridge is orphaned if it was installed from a registry that no longer exists in the user's
+   * registry list. Informational only: an orphan keeps working — its bundle was verified when it
+   * was installed — it just can't be updated until its registry is added back.
    */
   async isOrphaned(bridgeId: string): Promise<boolean> {
     const installed = await this.opts.manifest.getInstalled(bridgeId);
@@ -224,9 +224,8 @@ export class RegistryManager {
     return !reg;
   }
 
-  /** Bundle path for an installed bridge, or null if not installed / orphaned. */
+  /** Bundle path for an installed bridge (orphaned or not), or null if it isn't installed. */
   async resolveBundle(bridgeId: string): Promise<string | null> {
-    if (await this.isOrphaned(bridgeId)) return null;
     const installed = await this.opts.manifest.getInstalled(bridgeId);
     return installed?.bundlePath ?? null;
   }
@@ -340,8 +339,8 @@ export class RegistryManager {
     return !reg;
   }
 
+  /** See `resolveBundle`: an orphaned tracker keeps working. */
   async resolveTrackerBundle(trackerId: string): Promise<string | null> {
-    if (await this.isTrackerOrphaned(trackerId)) return null;
     const installed = await this.opts.manifest.getInstalledTracker(trackerId);
     return installed?.bundlePath ?? null;
   }

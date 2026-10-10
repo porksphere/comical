@@ -316,7 +316,7 @@ bundles or needs CORS at all.
 | Package | Platform | Key capabilities |
 |---------|----------|-----------------|
 | `@comical/host-bun` | Desktop / CLI | Bun `fetch` + cookie jar, `FileStorage` / `MemoryStorage`, `node:vm` loader |
-| `@comical/host-server` | LAN / home server | Hono REST API, `BridgeManager` (load on demand, cache, orphan detection), `SettingsStore`, registry-aware |
+| `@comical/host-server` | LAN / home server | Hono REST API, `BridgeManager` (load on demand, cache), `SettingsStore`, registry-aware |
 | `host-ios` (Swift Package) | iOS / macOS | `JSContext` evaluator, `URLSession`, `FileManager`, on-device `ComicalServer` |
 | `host-android` (Kotlin library) | Android | QuickJS (~1 MB), OkHttp, DataStore, on-device `ComicalServer` |
 | `@comical/host-rn` | React Native / Expo | Reusable in-process embedding layer: proxy `BridgeProvider`, reused-router transport, registry-download `BundleSource`, Hermes WebCrypto shim. See below. |
@@ -782,7 +782,7 @@ curl http://localhost:3100/registry/updates
 - SHA-256 checksum is always verified before a bundle is evaluated. Prevents corruption and transit tampering.
 - Ed25519 signature verification is optional — present when the registry operator has generated a keypair. Trust is established when you add the registry (HTTPS identity + the registry operator's identity on GitHub).
 - Updates are **always manual**. `checkUpdates()` / `GET /registry/updates` reports available versions; nothing installs without explicit user action.
-- Removing a registry **orphans** its installed bridges (they are blocked from loading). Re-add the registry or reinstall the bridges to restore them.
+- Removing a registry **orphans** its installed bridges: they keep working from their cached bundles, on the server as on device, but can't update until the registry is added back.
 - A registry that claims to have moved (`movedTo` / `movedFrom`) is followed automatically **only** under key continuity; otherwise the claim is held for explicit user confirmation. See [Moving a registry](#moving-a-registry).
 
 ---

@@ -368,14 +368,17 @@ describe("fetchIndex + RegistryManager", () => {
     });
   });
 
-  test("removing a registry marks its bridges as orphaned", async () => {
+  test("removing a registry orphans its bridges, which keep their bundles", async () => {
     const manifest = new ManifestStore(join(DATA_DIR, "test-orphan"));
     const mgr = new RegistryManager({ cacheDir: join(DATA_DIR, "cache-orphan"), manifest });
     await mgr.add(registryUrl);
-    await mgr.install(registryUrl, "example");
+    const { bundlePath } = await mgr.install(registryUrl, "example");
     await mgr.remove(registryUrl);
     expect(await mgr.isOrphaned("example")).toBe(true);
-    expect(await mgr.resolveBundle("example")).toBeNull();
+    // Still loadable, as on device: removing a registry stops updates, not the bridge.
+    expect(await mgr.resolveBundle("example")).toBe(bundlePath);
+    // …but there is nowhere left to update from.
+    expect(await mgr.checkUpdates()).toEqual([]);
   });
 
   test("a second registry cannot overwrite an id installed from the first", async () => {

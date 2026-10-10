@@ -83,7 +83,42 @@ export interface SyncHostOptions<R extends RegistryMutations, B extends BridgeSe
    * another device's records — the moment anything showing them is out of date.
    */
   onApplied?: () => void;
+  /**
+   * Called after each registry change sync performed here — another device's install, uninstall or
+   * registry removal — so the host drops what it loaded under the old manifest. The router does the
+   * same for a change made through it; sync goes around the router.
+   */
+  onRegistryApplied?: (change: RegistryChange) => void;
   log?: Pick<Console, "error">;
+}
+
+/** A registry change applied from another device: one bridge, one tracker, or the registry list. */
+export type RegistryChange =
+  | { kind: "bridge"; id: string }
+  | { kind: "tracker"; id: string }
+  | { kind: "registries" };
+
+interface LoadedCache {
+  invalidate(id: string): void;
+  refresh(): void;
+}
+
+/** The `onRegistryApplied` for a host holding these managers: drop what each change made stale. */
+export function dropStaleLoads(bridges: LoadedCache, trackers?: LoadedCache): (change: RegistryChange) => void {
+  return (change) => {
+    switch (change.kind) {
+      case "bridge":
+        bridges.invalidate(change.id);
+        return;
+      case "tracker":
+        trackers?.invalidate(change.id);
+        return;
+      case "registries":
+        bridges.refresh();
+        trackers?.refresh();
+        return;
+    }
+  };
 }
 
 export function createSyncHost<R extends RegistryMutations, B extends BridgeSettingsProvider>(
@@ -99,7 +134,7 @@ export function createSyncHost<R extends RegistryMutations, B extends BridgeSett
   };
 
   const state = readState(statePath, log);
-  const registry = { ...opts.lists, ...bind(opts.registry) };
+  const registry = { ...opts.lists, ...bind(opts.registry, opts.onRegistryApplied ?? (() => {})) };
   const registryStore = registrySyncStore(registry, { log });
   const settingsStore = bridgeSettingsSyncStore(opts.bridges, { log });
   const engine = new SyncEngine({
@@ -180,15 +215,21 @@ export function createSyncHost<R extends RegistryMutations, B extends BridgeSett
   };
 }
 
-// The manager's mutations, callable off their instance.
-function bind(reg: RegistryMutations): RegistryMutations {
+// The manager's mutations, callable off their instance, each reporting what it changed once it has
+// succeeded. Adding a registry can adopt a predecessor's installs, so it counts as a list change too.
+function bind(reg: RegistryMutations, applied: (change: RegistryChange) => void): RegistryMutations {
+  const then = <T>(p: Promise<T>, change: RegistryChange): Promise<T> =>
+    p.then((v) => {
+      applied(change);
+      return v;
+    });
   return {
-    add: (url, o) => reg.add(url, o),
-    remove: (url) => reg.remove(url),
-    install: (url, id) => reg.install(url, id),
-    uninstall: (id) => reg.uninstall(id),
-    installTracker: (url, id) => reg.installTracker(url, id),
-    uninstallTracker: (id) => reg.uninstallTracker(id),
+    add: (url, o) => then(reg.add(url, o), { kind: "registries" }),
+    remove: (url) => then(reg.remove(url), { kind: "registries" }),
+    install: (url, id) => then(reg.install(url, id), { kind: "bridge", id }),
+    uninstall: (id) => then(reg.uninstall(id), { kind: "bridge", id }),
+    installTracker: (url, id) => then(reg.installTracker(url, id), { kind: "tracker", id }),
+    uninstallTracker: (id) => then(reg.uninstallTracker(id), { kind: "tracker", id }),
   };
 }
 

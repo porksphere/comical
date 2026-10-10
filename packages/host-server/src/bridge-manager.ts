@@ -5,8 +5,8 @@
  *   - Local (bridges/ directory, built with `bun run build`) — source: "local"
  *   - Registry (downloaded, verified, cached in dataDir/bridge-cache/) — source: "registry"
  *
- * Registry bridges are registry-aware: orphaned bridges (from a removed registry) are
- * blocked at load time with a clear error rather than failing mid-request.
+ * A registry bridge whose registry was removed (an orphan) keeps loading from its cached bundle,
+ * as it does on device — removing a registry stops updates, not the bridges it installed.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -119,7 +119,7 @@ export class BridgeManager implements BridgeProvider {
             ...(availableVersion ? { availableVersion } : {}),
           });
         } catch {
-          // One broken or orphaned registry bridge must not hide every other installed bridge.
+          // One broken registry bridge must not hide every other installed bridge.
         }
       }
     }
@@ -130,14 +130,6 @@ export class BridgeManager implements BridgeProvider {
   async get(id: string): Promise<LoadedBridge> {
     const cached = this.loaded.get(id);
     if (cached) return cached;
-
-    // Check if orphaned before doing anything else.
-    if (this.opts.registry && await this.opts.registry.isOrphaned(id)) {
-      throw new Error(
-        `bridge "${id}" is orphaned — it was installed from a registry that has been removed. ` +
-        `Re-add the registry or reinstall the bridge.`,
-      );
-    }
 
     const code = await this.resolveCode(id);
     const userSettings = await this.opts.settings.get(id);
