@@ -4,5 +4,6 @@
  * lives in core's gated network; this host only reports `Set-Cookie`.
  */
 export * from "./host.ts";
+export * from "./json-file.ts";
 export * from "./network.ts";
 export * from "./storage.ts";

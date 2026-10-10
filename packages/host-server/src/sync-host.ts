@@ -9,8 +9,9 @@
  * Everything is set up synchronously, since `createServer` is: the hub finishes loading behind a
  * promise every call waits on, and the engine state is read with a blocking read.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonFile } from "@comical/host-bun";
 import type { LibraryStore } from "@comical/library";
 import {
   adoptBridgeSettings,
@@ -111,7 +112,8 @@ export function createSyncHost<R extends RegistryMutations, B extends BridgeSett
     name: () => "hub",
     ...(state ? { state } : { device: `hub-${crypto.randomUUID()}` }),
     newDeviceId: () => `hub-${crypto.randomUUID()}`,
-    persist: async (s) => writeJson(statePath, s),
+    // Written aside and renamed over, so a crash leaves the old state or the new one, never half of each.
+    persist: (s) => writeJsonFile(statePath, s),
     onTouch: () => schedule(),
   });
 
@@ -200,10 +202,4 @@ function readState(path: string, log: Pick<Console, "error">): SyncStateSnapshot
     log.error("sync: engine state unreadable, starting as a new device", err);
     return undefined;
   }
-}
-
-// Written aside and renamed over, so a crash leaves the old state or the new one, never half of each.
-function writeJson(path: string, value: unknown): void {
-  writeFileSync(`${path}.tmp`, JSON.stringify(value));
-  renameSync(`${path}.tmp`, path);
 }

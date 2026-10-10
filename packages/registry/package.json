@@ -18,6 +18,7 @@
   "types": "./src/index.ts",
   "dependencies": {
     "@comical/contract": "workspace:*",
+    "@comical/host-bun": "workspace:*",
     "zod": "^3.23.8"
   }
 }

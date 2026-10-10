@@ -6,48 +6,34 @@
  *   {dir}/progress/{encoded-key}.json   → { [chapterId]: ChapterProgress }
  *
  * Single-user, local scale: small files, full read/parse on first touch, then cached.
+ *
+ * Every document goes through `@comical/host-bun`'s json-file: a file that won't parse is moved
+ * aside (never read as "empty" and then overwritten), writes are atomic, and writes to one path are
+ * serialized. Cached documents are `JsonDoc`s, so concurrent first touches share one load.
  */
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { asJsonArray, asJsonRecord, deleteJsonFile, JsonDoc, jsonMapDoc, readJsonFile, writeJsonFile } from "@comical/host-bun";
 import { activityKey, entryKey, parseCollectionItemId, type ActivityItem, type BridgePrefs, type CachedChapters, type CachedSeriesDetail, type ChapterProgress, type Collection, type CollectionItem, type CollectionItemScope, type HistoryItem, type LibraryStore, type SeriesGroup, type TrackerLink } from "@comical/library";
 
-async function readJson<T>(path: string, fallback: T): Promise<T> {
-  try {
-    return JSON.parse(await readFile(path, "utf8")) as T;
-  } catch {
-    return fallback;
-  }
-}
-
 export class FileLibraryStore implements LibraryStore {
-  private groupsCache?: Map<string, SeriesGroup>;
-  private progressCache = new Map<string, Map<string, ChapterProgress>>();
-  private trackerLinksCache?: Map<string, TrackerLink[]>;
-  private readingLogCache?: Map<string, HistoryItem>;
-  private bridgePrefsCache?: Map<string, BridgePrefs>;
-  private activityCache?: Map<string, ActivityItem>;
-  private collectionsCache?: Collection[];
+  private readonly groupsDoc: JsonDoc<Map<string, SeriesGroup>>;
+  private readonly progressDocs = new Map<string, JsonDoc<Map<string, ChapterProgress>>>();
+  private readonly trackerLinksDoc: JsonDoc<Map<string, TrackerLink[]>>;
+  private readonly readingLogDoc: JsonDoc<Map<string, HistoryItem>>;
+  private readonly bridgePrefsDoc: JsonDoc<Map<string, BridgePrefs>>;
+  private readonly activityDoc: JsonDoc<Map<string, ActivityItem>>;
+  private readonly collectionsDoc: JsonDoc<Collection[]>;
 
-  constructor(private readonly dir: string) {}
+  constructor(private readonly dir: string) {
+    this.groupsDoc = jsonMapDoc(join(dir, "groups.json"));
+    this.trackerLinksDoc = jsonMapDoc(join(dir, "tracker-links.json"));
+    this.readingLogDoc = jsonMapDoc(join(dir, "reading-log.json"));
+    this.bridgePrefsDoc = jsonMapDoc(join(dir, "bridge-prefs.json"));
+    this.activityDoc = jsonMapDoc(join(dir, "activity.json"));
+    this.collectionsDoc = new JsonDoc(join(dir, "collections.json"), { empty: () => [], decode: (raw) => asJsonArray<Collection>(raw) });
+  }
 
-  private get groupsPath(): string {
-    return join(this.dir, "groups.json");
-  }
-  private get trackerLinksPath(): string {
-    return join(this.dir, "tracker-links.json");
-  }
-  private get readingLogPath(): string {
-    return join(this.dir, "reading-log.json");
-  }
-  private get bridgePrefsPath(): string {
-    return join(this.dir, "bridge-prefs.json");
-  }
-  private get activityPath(): string {
-    return join(this.dir, "activity.json");
-  }
-  private get collectionsPath(): string {
-    return join(this.dir, "collections.json");
-  }
   private progressPath(key: string): string {
     return join(this.dir, "progress", `${encodeURIComponent(key)}.json`);
   }
@@ -86,85 +72,63 @@ export class FileLibraryStore implements LibraryStore {
   // One JSON doc per entry (chapter lists are bulky), read lazily on demand — never bulk-loaded.
 
   async getSeriesDetail(key: string): Promise<CachedSeriesDetail | undefined> {
-    return readJson<CachedSeriesDetail | undefined>(this.detailPath(key), undefined);
+    return readJsonFile<CachedSeriesDetail | undefined>(this.detailPath(key), undefined, {
+      decode: (raw) => asJsonRecord(raw) as unknown as CachedSeriesDetail,
+    });
   }
   async putSeriesDetail(key: string, detail: CachedSeriesDetail): Promise<void> {
-    await mkdir(join(this.dir, "details"), { recursive: true });
-    await writeFile(this.detailPath(key), JSON.stringify(detail, null, 2), "utf8");
+    await writeJsonFile(this.detailPath(key), detail);
   }
   async deleteSeriesDetail(key: string): Promise<void> {
-    await rm(this.detailPath(key), { force: true });
+    await deleteJsonFile(this.detailPath(key));
   }
   async getCachedChapters(key: string): Promise<CachedChapters | undefined> {
-    return readJson<CachedChapters | undefined>(this.cachedChaptersPath(key), undefined);
+    return readJsonFile<CachedChapters | undefined>(this.cachedChaptersPath(key), undefined, {
+      decode: (raw) => asJsonRecord(raw) as unknown as CachedChapters,
+    });
   }
   async putCachedChapters(key: string, doc: CachedChapters): Promise<void> {
-    await mkdir(join(this.dir, "chapters-cache"), { recursive: true });
-    await writeFile(this.cachedChaptersPath(key), JSON.stringify(doc, null, 2), "utf8");
+    await writeJsonFile(this.cachedChaptersPath(key), doc);
   }
   async deleteCachedChapters(key: string): Promise<void> {
-    await rm(this.cachedChaptersPath(key), { force: true });
+    await deleteJsonFile(this.cachedChaptersPath(key));
   }
 
   // ── Progress ───────────────────────────────────────────────────────────────────
 
-  private async progress(key: string): Promise<Map<string, ChapterProgress>> {
-    let map = this.progressCache.get(key);
-    if (!map) {
-      const obj = await readJson<Record<string, ChapterProgress>>(this.progressPath(key), {});
-      map = new Map(Object.entries(obj));
-      this.progressCache.set(key, map);
+  private progressDoc(key: string): JsonDoc<Map<string, ChapterProgress>> {
+    let doc = this.progressDocs.get(key);
+    if (!doc) {
+      doc = jsonMapDoc(this.progressPath(key));
+      this.progressDocs.set(key, doc);
     }
-    return map;
-  }
-
-  private async flushProgress(key: string): Promise<void> {
-    const obj = Object.fromEntries((await this.progress(key)).entries());
-    await mkdir(join(this.dir, "progress"), { recursive: true });
-    await writeFile(this.progressPath(key), JSON.stringify(obj, null, 2), "utf8");
+    return doc;
   }
 
   async listProgress(key: string): Promise<ChapterProgress[]> {
-    return [...(await this.progress(key)).values()];
+    return [...(await this.progressDoc(key).get()).values()];
   }
   async listProgressKeys(): Promise<string[]> {
     const files = await readdir(join(this.dir, "progress")).catch(() => [] as string[]);
     return files.filter((f) => f.endsWith(".json")).map((f) => decodeURIComponent(f.slice(0, -".json".length)));
   }
   async putProgress(key: string, progress: ChapterProgress): Promise<void> {
-    (await this.progress(key)).set(progress.chapterId, progress);
-    await this.flushProgress(key);
+    await this.progressDoc(key).update((map) => map.set(progress.chapterId, progress));
   }
   async deleteProgressForEntry(key: string): Promise<void> {
-    this.progressCache.set(key, new Map());
-    await this.flushProgress(key);
+    await this.progressDoc(key).replace(new Map());
   }
 
   // ── Groups ───────────────────────────────────────────────────────────────────────
 
-  private async groups(): Promise<Map<string, SeriesGroup>> {
-    if (!this.groupsCache) {
-      const obj = await readJson<Record<string, SeriesGroup>>(this.groupsPath, {});
-      this.groupsCache = new Map(Object.entries(obj));
-    }
-    return this.groupsCache;
-  }
-
-  private async flushGroups(): Promise<void> {
-    const obj = Object.fromEntries((await this.groups()).entries());
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.groupsPath, JSON.stringify(obj, null, 2), "utf8");
-  }
-
   async listGroups(): Promise<SeriesGroup[]> {
-    return [...(await this.groups()).values()];
+    return [...(await this.groupsDoc.get()).values()];
   }
   async putGroup(group: SeriesGroup): Promise<void> {
-    (await this.groups()).set(group.id, group);
-    await this.flushGroups();
+    await this.groupsDoc.update((map) => map.set(group.id, group));
   }
   async deleteGroup(id: string): Promise<void> {
-    if ((await this.groups()).delete(id)) await this.flushGroups();
+    if ((await this.groupsDoc.get()).delete(id)) await this.groupsDoc.flush();
   }
 
   // ── Collection items (series / chapter / page) ────────────────────────────────
@@ -176,15 +140,12 @@ export class FileLibraryStore implements LibraryStore {
   // (chapter open, reconcile) are naturally scoped to a single shard. A series ANCHOR lives in its
   // own series' shard, so the layout covers all three item types.
 
-  private itemShards = new Map<string, Map<string, CollectionItem>>();
+  private itemShards = new Map<string, JsonDoc<Map<string, CollectionItem>>>();
   /** Set once every shard has been read, so an unscoped listing doesn't re-scan the directory. */
   private allItemShardsLoaded = false;
 
   private get itemsDir(): string {
     return join(this.dir, "collection-items");
-  }
-  private itemShardPath(shard: string): string {
-    return join(this.itemsDir, `${encodeURIComponent(shard)}.json`);
   }
   /** Which shard an item belongs to. Derivable from the id alone (every coord type carries
    *  bridge+series), which is what lets `getCollectionItem` be a keyed lookup rather than a scan. */
@@ -192,18 +153,23 @@ export class FileLibraryStore implements LibraryStore {
     return entryKey(item.bridgeId, item.seriesId);
   }
 
-  private async itemShard(shard: string): Promise<Map<string, CollectionItem>> {
-    let map = this.itemShards.get(shard);
-    if (!map) {
-      const obj = await readJson<Record<string, CollectionItem>>(this.itemShardPath(shard), {});
-      map = new Map(Object.entries(obj));
-      this.itemShards.set(shard, map);
+  // An emptied shard is deleted rather than written as `{}` — decided when its flush RUNS, so a
+  // delete queued behind a re-add can't remove the re-added item.
+  private itemShardDoc(shard: string): JsonDoc<Map<string, CollectionItem>> {
+    let doc = this.itemShards.get(shard);
+    if (!doc) {
+      doc = jsonMapDoc(join(this.itemsDir, `${encodeURIComponent(shard)}.json`), { deleteWhenEmpty: true });
+      this.itemShards.set(shard, doc);
     }
-    return map;
+    return doc;
+  }
+
+  private itemShard(shard: string): Promise<Map<string, CollectionItem>> {
+    return this.itemShardDoc(shard).get();
   }
 
   /** Load every shard — only for genuinely cross-series work (the full grid, a collection cascade). */
-  private async allItemShards(): Promise<Map<string, Map<string, CollectionItem>>> {
+  private async allItemShards(): Promise<Map<string, CollectionItem>[]> {
     if (!this.allItemShardsLoaded) {
       let files: string[] = [];
       try {
@@ -217,17 +183,7 @@ export class FileLibraryStore implements LibraryStore {
       }
       this.allItemShardsLoaded = true;
     }
-    return this.itemShards;
-  }
-
-  private async flushFavoriteShard(shard: string): Promise<void> {
-    const map = await this.itemShard(shard);
-    if (map.size === 0) {
-      await rm(this.itemShardPath(shard), { force: true });
-      return;
-    }
-    await mkdir(this.itemsDir, { recursive: true });
-    await writeFile(this.itemShardPath(shard), JSON.stringify(Object.fromEntries(map), null, 2), "utf8");
+    return Promise.all([...this.itemShards.values()].map((doc) => doc.get()));
   }
 
   async listCollectionItems(scope?: CollectionItemScope): Promise<CollectionItem[]> {
@@ -236,7 +192,7 @@ export class FileLibraryStore implements LibraryStore {
     const shards =
       scope?.bridgeId !== undefined && scope.seriesId !== undefined
         ? [await this.itemShard(entryKey(scope.bridgeId, scope.seriesId))]
-        : [...(await this.allItemShards()).values()];
+        : await this.allItemShards();
     const out: CollectionItem[] = [];
     for (const map of shards) {
       for (const item of map.values()) {
@@ -264,7 +220,7 @@ export class FileLibraryStore implements LibraryStore {
       (await this.itemShard(shard)).set(item.id, item);
       touched.add(shard);
     }
-    for (const shard of touched) await this.flushFavoriteShard(shard);
+    for (const shard of touched) await this.itemShardDoc(shard).flush();
   }
 
   async deleteCollectionItems(ids: string[]): Promise<void> {
@@ -275,160 +231,98 @@ export class FileLibraryStore implements LibraryStore {
       const shard = FileLibraryStore.itemShardOf(coord);
       if ((await this.itemShard(shard)).delete(id)) touched.add(shard);
     }
-    for (const shard of touched) await this.flushFavoriteShard(shard);
+    for (const shard of touched) await this.itemShardDoc(shard).flush();
   }
 
   async listCollections(): Promise<Collection[]> {
-    if (!this.collectionsCache) {
-      this.collectionsCache = await readJson<Collection[]>(this.collectionsPath, []);
-    }
-    return [...this.collectionsCache];
+    return [...(await this.collectionsDoc.get())];
   }
   async putCollections(collections: Collection[]): Promise<void> {
-    this.collectionsCache = [...collections];
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.collectionsPath, JSON.stringify(collections, null, 2), "utf8");
+    await this.collectionsDoc.replace([...collections]);
   }
 
   // ── Tracker links ─────────────────────────────────────────────────────────────
 
-  private async trackerLinks(): Promise<Map<string, TrackerLink[]>> {
-    if (!this.trackerLinksCache) {
-      const obj = await readJson<Record<string, TrackerLink[]>>(this.trackerLinksPath, {});
-      this.trackerLinksCache = new Map(Object.entries(obj));
-    }
-    return this.trackerLinksCache;
-  }
-
-  private async flushTrackerLinks(): Promise<void> {
-    const obj = Object.fromEntries((await this.trackerLinks()).entries());
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.trackerLinksPath, JSON.stringify(obj, null, 2), "utf8");
-  }
-
   async listTrackerLinks(key: string): Promise<TrackerLink[]> {
-    return (await this.trackerLinks()).get(key) ?? [];
+    return (await this.trackerLinksDoc.get()).get(key) ?? [];
   }
   async putTrackerLink(key: string, link: TrackerLink): Promise<void> {
-    const map = await this.trackerLinks();
-    const existing = map.get(key) ?? [];
-    const idx = existing.findIndex((l) => l.trackerId === link.trackerId);
-    if (idx === -1) existing.push(link);
-    else existing[idx] = link;
-    map.set(key, existing);
-    await this.flushTrackerLinks();
+    await this.trackerLinksDoc.update((map) => {
+      const existing = map.get(key) ?? [];
+      const idx = existing.findIndex((l) => l.trackerId === link.trackerId);
+      if (idx === -1) existing.push(link);
+      else existing[idx] = link;
+      map.set(key, existing);
+    });
   }
   async deleteTrackerLink(key: string, trackerId: string): Promise<void> {
-    const map = await this.trackerLinks();
+    const map = await this.trackerLinksDoc.get();
     const existing = map.get(key);
     if (!existing) return;
     const next = existing.filter((l) => l.trackerId !== trackerId);
     if (next.length === existing.length) return;
     if (next.length === 0) map.delete(key);
     else map.set(key, next);
-    await this.flushTrackerLinks();
+    await this.trackerLinksDoc.flush();
   }
 
   // ── Reading log ───────────────────────────────────────────────────────────────
 
-  private async readingLog(): Promise<Map<string, HistoryItem>> {
-    if (!this.readingLogCache) {
-      const obj = await readJson<Record<string, HistoryItem>>(this.readingLogPath, {});
-      this.readingLogCache = new Map(Object.entries(obj));
-    }
-    return this.readingLogCache;
-  }
-
-  private async flushReadingLog(): Promise<void> {
-    const obj = Object.fromEntries((await this.readingLog()).entries());
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.readingLogPath, JSON.stringify(obj, null, 2), "utf8");
-  }
-
   async listReadingLog(): Promise<HistoryItem[]> {
-    return [...(await this.readingLog()).values()];
+    return [...(await this.readingLogDoc.get()).values()];
   }
   async upsertReadingLog(item: HistoryItem): Promise<void> {
-    (await this.readingLog()).set(`${item.bridgeId}:${item.seriesId}`, item);
-    await this.flushReadingLog();
+    await this.readingLogDoc.update((map) => map.set(`${item.bridgeId}:${item.seriesId}`, item));
   }
   async deleteReadingLog(bridgeId: string, seriesId: string): Promise<void> {
-    if ((await this.readingLog()).delete(`${bridgeId}:${seriesId}`)) await this.flushReadingLog();
+    if ((await this.readingLogDoc.get()).delete(`${bridgeId}:${seriesId}`)) await this.readingLogDoc.flush();
   }
 
   // ── Bridge preferences ────────────────────────────────────────────────────
 
-  private async bridgePrefs(): Promise<Map<string, BridgePrefs>> {
-    if (!this.bridgePrefsCache) {
-      const obj = await readJson<Record<string, BridgePrefs>>(this.bridgePrefsPath, {});
-      this.bridgePrefsCache = new Map(Object.entries(obj));
-    }
-    return this.bridgePrefsCache;
-  }
-
-  private async flushBridgePrefs(): Promise<void> {
-    const obj = Object.fromEntries((await this.bridgePrefs()).entries());
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.bridgePrefsPath, JSON.stringify(obj, null, 2), "utf8");
-  }
-
   async getBridgePrefs(bridgeId: string): Promise<BridgePrefs | undefined> {
-    return (await this.bridgePrefs()).get(bridgeId);
+    return (await this.bridgePrefsDoc.get()).get(bridgeId);
   }
 
   async listBridgePrefs(): Promise<BridgePrefs[]> {
-    return [...(await this.bridgePrefs()).values()];
+    return [...(await this.bridgePrefsDoc.get()).values()];
   }
 
   async setBridgePrefs(bridgeId: string, prefs: BridgePrefs): Promise<void> {
-    (await this.bridgePrefs()).set(bridgeId, prefs);
-    await this.flushBridgePrefs();
+    await this.bridgePrefsDoc.update((map) => map.set(bridgeId, prefs));
   }
 
   // ── Activity feed ───────────────────────────────────────────────────────────────
 
-  private async activity(): Promise<Map<string, ActivityItem>> {
-    if (!this.activityCache) {
-      const obj = await readJson<Record<string, ActivityItem>>(this.activityPath, {});
-      this.activityCache = new Map(Object.entries(obj));
-    }
-    return this.activityCache;
-  }
-
-  private async flushActivity(): Promise<void> {
-    const obj = Object.fromEntries((await this.activity()).entries());
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.activityPath, JSON.stringify(obj, null, 2), "utf8");
-  }
-
   async listActivity(): Promise<ActivityItem[]> {
-    return [...(await this.activity()).values()];
+    return [...(await this.activityDoc.get()).values()];
   }
+  // `clearActivity` swaps the whole map, so every other write goes through `update` (which mutates
+  // the CURRENT map) after a read-only check that skips the write when nothing would change.
   async putActivity(item: ActivityItem): Promise<boolean> {
-    const map = await this.activity();
     const key = activityKey(item.bridgeId, item.seriesId, item.chapterId);
-    if (map.has(key)) return false;
-    map.set(key, item);
-    await this.flushActivity();
-    return true;
+    if ((await this.activityDoc.get()).has(key)) return false;
+    return this.activityDoc.update((map) => {
+      if (map.has(key)) return false;
+      map.set(key, item);
+      return true;
+    });
   }
   async deleteActivityForEntry(key: string): Promise<void> {
-    const map = await this.activity();
     const prefix = `${key}:`;
-    let changed = false;
-    for (const k of map.keys()) {
-      if (k.startsWith(prefix) && map.delete(k)) changed = true;
-    }
-    if (changed) await this.flushActivity();
+    if (![...(await this.activityDoc.get()).keys()].some((k) => k.startsWith(prefix))) return;
+    await this.activityDoc.update((map) => {
+      for (const k of [...map.keys()]) if (k.startsWith(prefix)) map.delete(k);
+    });
   }
   async clearActivity(): Promise<void> {
-    this.activityCache = new Map();
-    await this.flushActivity();
+    await this.activityDoc.replace(new Map());
   }
   async dropActivity(keys: string[]): Promise<void> {
-    const map = await this.activity();
-    let changed = false;
-    for (const k of keys) if (map.delete(k)) changed = true;
-    if (changed) await this.flushActivity();
+    const current = await this.activityDoc.get();
+    if (!keys.some((k) => current.has(k))) return;
+    await this.activityDoc.update((map) => {
+      for (const k of keys) map.delete(k);
+    });
   }
 }

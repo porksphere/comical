@@ -3,8 +3,8 @@
  * Tracks which registries the user has added and which bridges are installed
  * (from registries or locally built).
  */
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { readJsonFile, writeJsonFile } from "@comical/host-bun";
 import {
   type InstalledBridge,
   type InstalledTracker,
@@ -24,22 +24,35 @@ export class ManifestStore {
     this.path = join(dataDir, "registry-manifest.json");
   }
 
+  private loading: Promise<Manifest> | undefined;
+
+  /**
+   * The manifest, loaded once. A file that doesn't parse or fails the schema is moved aside to
+   * `registry-manifest.json.corrupt-<ts>` (never read as empty and then overwritten — that would
+   * silently forget every registry and install); a real IO error throws.
+   */
   async read(): Promise<Manifest> {
     if (this.cache) return this.cache;
-    try {
-      const raw = await readFile(this.path, "utf8");
-      const parsed = manifestSchema.safeParse(JSON.parse(raw));
-      this.cache = parsed.success ? parsed.data : structuredClone(EMPTY);
-    } catch {
-      this.cache = structuredClone(EMPTY);
-    }
-    return this.cache;
+    this.loading ??= readJsonFile<Manifest>(this.path, structuredClone(EMPTY), {
+      decode: (raw) => manifestSchema.parse(raw),
+    }).then(
+      (manifest) => {
+        this.cache ??= manifest;
+        this.loading = undefined;
+        return this.cache;
+      },
+      (err: unknown) => {
+        this.loading = undefined;
+        throw err;
+      },
+    );
+    return this.loading;
   }
 
   private async write(manifest: Manifest): Promise<void> {
     this.cache = manifest;
-    await mkdir(dirname(this.path), { recursive: true });
-    await writeFile(this.path, JSON.stringify(manifest, null, 2), "utf8");
+    // Serialize the cache as it is when the write runs, so overlapping writes land in order.
+    await writeJsonFile(this.path, manifest);
   }
 
   // ── Registries ─────────────────────────────────────────────────────────────

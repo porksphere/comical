@@ -3,46 +3,45 @@
  * credentials, options) to disk, separate from the bridge's own `storage` capability.
  *
  * This is the mechanism by which a user configures which backend a bridge points to.
- * All values live in `{dataDir}/settings/{bridgeId}.json`.
+ * All values live in `{dataDir}/settings/{bridgeId}.json`, read and written through
+ * `@comical/host-bun`'s json-file (an unreadable file is moved aside, never silently replaced).
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { asJsonRecord, JsonDoc } from "@comical/host-bun";
 import type { ResolvedSettings, SettingValue } from "@comical/contract";
 
 export class SettingsStore {
   private readonly dir: string;
-  private cache = new Map<string, Record<string, SettingValue>>();
+  private docs = new Map<string, JsonDoc<Record<string, SettingValue>>>();
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, "settings");
   }
 
-  private path(bridgeId: string): string {
-    return join(this.dir, `${bridgeId}.json`);
+  private doc(bridgeId: string): JsonDoc<Record<string, SettingValue>> {
+    let doc = this.docs.get(bridgeId);
+    if (!doc) {
+      doc = new JsonDoc(join(this.dir, `${bridgeId}.json`), {
+        empty: () => ({}),
+        decode: (raw) => asJsonRecord<SettingValue>(raw),
+      });
+      this.docs.set(bridgeId, doc);
+    }
+    return doc;
   }
 
   async get(bridgeId: string): Promise<ResolvedSettings> {
-    if (this.cache.has(bridgeId)) return this.cache.get(bridgeId)!;
-    try {
-      const raw = await readFile(this.path(bridgeId), "utf8");
-      const parsed = JSON.parse(raw) as Record<string, SettingValue>;
-      this.cache.set(bridgeId, parsed);
-      return parsed;
-    } catch {
-      return {};
-    }
+    return this.doc(bridgeId).get();
   }
 
   async set(bridgeId: string, settings: Record<string, SettingValue>): Promise<void> {
-    this.cache.set(bridgeId, settings);
-    await mkdir(dirname(this.path(bridgeId)), { recursive: true });
-    await writeFile(this.path(bridgeId), JSON.stringify(settings, null, 2), "utf8");
+    await this.doc(bridgeId).replace(settings);
   }
 
   async patch(bridgeId: string, patch: Record<string, SettingValue>): Promise<ResolvedSettings> {
-    const current = await this.get(bridgeId) as Record<string, SettingValue>;
-    const updated = { ...current, ...patch };
-    await this.set(bridgeId, updated);
+    // A transform, not get-then-set: two overlapping patches must both land.
+    let updated: Record<string, SettingValue> = {};
+    await this.doc(bridgeId).transform((current) => (updated = { ...current, ...patch }));
     return updated;
   }
 }

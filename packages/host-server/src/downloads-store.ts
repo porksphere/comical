@@ -11,154 +11,112 @@
  * (host-server does not fetch or serve page bytes; a host that does writes them wherever it likes and
  * records the relative `file` path here). Single-user, local scale: small files, full read/parse on
  * first touch, then cached.
+ *
+ * Like `FileLibraryStore`, every document goes through `@comical/host-bun`'s json-file (corrupt
+ * files are moved aside rather than read as empty, writes are atomic and serialized per path).
  */
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { asJsonRecord, DELETE_FILE, JsonDoc, jsonMapDoc } from "@comical/host-bun";
 import type { DownloadPrefs, DownloadedChapter, DownloadedPage, DownloadedSeries, DownloadsStore } from "@comical/downloads";
 
-async function readJson<T>(path: string, fallback: T): Promise<T> {
-  try {
-    return JSON.parse(await readFile(path, "utf8")) as T;
-  } catch {
-    return fallback;
-  }
-}
-
 export class FileDownloadsStore implements DownloadsStore {
-  private seriesCache?: Map<string, DownloadedSeries>;
-  private chaptersCache = new Map<string, Map<string, DownloadedChapter>>();
-  private pagesCache = new Map<string, Map<number, DownloadedPage>>();
-  private prefsCache?: DownloadPrefs | null;
+  private readonly seriesDoc: JsonDoc<Map<string, DownloadedSeries>>;
+  private readonly chapterDocs = new Map<string, JsonDoc<Map<string, DownloadedChapter> | null>>();
+  private readonly pageDocs = new Map<string, JsonDoc<Map<number, DownloadedPage> | null>>();
+  private readonly prefsDoc: JsonDoc<DownloadPrefs | null>;
 
-  constructor(private readonly dir: string) {}
-
-  private get seriesPath(): string {
-    return join(this.dir, "series.json");
-  }
-  private get prefsPath(): string {
-    return join(this.dir, "prefs.json");
-  }
-  private chaptersPath(key: string): string {
-    return join(this.dir, "chapters", `${encodeURIComponent(key)}.json`);
-  }
-  private pagesPath(key: string, chapterId: string): string {
-    return join(this.dir, "pages", encodeURIComponent(key), `${encodeURIComponent(chapterId)}.json`);
-  }
-  private pagesCacheKey(key: string, chapterId: string): string {
-    return `${key} ${chapterId}`;
+  constructor(private readonly dir: string) {
+    this.seriesDoc = jsonMapDoc(join(dir, "series.json"));
+    this.prefsDoc = new JsonDoc<DownloadPrefs | null>(join(dir, "prefs.json"), {
+      empty: () => null,
+      decode: (raw) => asJsonRecord(raw) as unknown as DownloadPrefs,
+    });
   }
 
   // ── Series ─────────────────────────────────────────────────────────────────────
 
-  private async series(): Promise<Map<string, DownloadedSeries>> {
-    if (!this.seriesCache) {
-      const obj = await readJson<Record<string, DownloadedSeries>>(this.seriesPath, {});
-      this.seriesCache = new Map(Object.entries(obj));
-    }
-    return this.seriesCache;
-  }
-
-  private async flushSeries(): Promise<void> {
-    const obj = Object.fromEntries((await this.series()).entries());
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.seriesPath, JSON.stringify(obj, null, 2), "utf8");
-  }
-
   async listSeries(): Promise<DownloadedSeries[]> {
-    return [...(await this.series()).values()];
+    return [...(await this.seriesDoc.get()).values()];
   }
   async getSeries(key: string): Promise<DownloadedSeries | undefined> {
-    return (await this.series()).get(key);
+    return (await this.seriesDoc.get()).get(key);
   }
   async putSeries(series: DownloadedSeries): Promise<void> {
-    (await this.series()).set(`${series.bridgeId}:${series.seriesId}`, series);
-    await this.flushSeries();
+    await this.seriesDoc.update((map) => map.set(`${series.bridgeId}:${series.seriesId}`, series));
   }
   async deleteSeries(key: string): Promise<void> {
-    if ((await this.series()).delete(key)) await this.flushSeries();
+    if ((await this.seriesDoc.get()).delete(key)) await this.seriesDoc.flush();
   }
 
   // ── Chapters ───────────────────────────────────────────────────────────────────
+  // `null` is "deleted": the doc's flush removes the file, through the same per-path queue as its
+  // writes, so a delete can't race a still-pending write of the old contents.
 
-  private async chapters(key: string): Promise<Map<string, DownloadedChapter>> {
-    let map = this.chaptersCache.get(key);
-    if (!map) {
-      const obj = await readJson<Record<string, DownloadedChapter>>(this.chaptersPath(key), {});
-      map = new Map(Object.entries(obj));
-      this.chaptersCache.set(key, map);
+  private chapterDoc(key: string): JsonDoc<Map<string, DownloadedChapter> | null> {
+    let doc = this.chapterDocs.get(key);
+    if (!doc) {
+      doc = new JsonDoc<Map<string, DownloadedChapter> | null>(join(this.dir, "chapters", `${encodeURIComponent(key)}.json`), {
+        empty: () => new Map(),
+        decode: (raw) => new Map(Object.entries(asJsonRecord<DownloadedChapter>(raw))),
+        encode: (map) => (map === null ? DELETE_FILE : Object.fromEntries(map)),
+      });
+      this.chapterDocs.set(key, doc);
     }
-    return map;
-  }
-
-  private async flushChapters(key: string): Promise<void> {
-    const obj = Object.fromEntries((await this.chapters(key)).entries());
-    await mkdir(join(this.dir, "chapters"), { recursive: true });
-    await writeFile(this.chaptersPath(key), JSON.stringify(obj, null, 2), "utf8");
+    return doc;
   }
 
   async listChapters(key: string): Promise<DownloadedChapter[]> {
-    return [...(await this.chapters(key)).values()];
+    return [...((await this.chapterDoc(key).get())?.values() ?? [])];
   }
   async getChapter(key: string, chapterId: string): Promise<DownloadedChapter | undefined> {
-    return (await this.chapters(key)).get(chapterId);
+    return (await this.chapterDoc(key).get())?.get(chapterId);
   }
   async putChapter(chapter: DownloadedChapter): Promise<void> {
     const key = `${chapter.bridgeId}:${chapter.seriesId}`;
-    (await this.chapters(key)).set(chapter.chapterId, chapter);
-    await this.flushChapters(key);
+    // The first write after a delete starts a fresh document.
+    await this.chapterDoc(key).transform((map) => (map ?? new Map()).set(chapter.chapterId, chapter));
   }
   async deleteChapter(key: string, chapterId: string): Promise<void> {
-    if ((await this.chapters(key)).delete(chapterId)) await this.flushChapters(key);
+    if (!(await this.chapterDoc(key).get())?.has(chapterId)) return;
+    await this.chapterDoc(key).update((map) => map?.delete(chapterId));
   }
   async deleteChaptersForEntry(key: string): Promise<void> {
-    this.chaptersCache.set(key, new Map());
-    await rm(this.chaptersPath(key), { force: true });
+    await this.chapterDoc(key).replace(null);
   }
 
   // ── Pages ──────────────────────────────────────────────────────────────────────
 
-  private async pages(key: string, chapterId: string): Promise<Map<number, DownloadedPage>> {
-    const cacheKey = this.pagesCacheKey(key, chapterId);
-    let map = this.pagesCache.get(cacheKey);
-    if (!map) {
-      const obj = await readJson<Record<string, DownloadedPage>>(this.pagesPath(key, chapterId), {});
-      map = new Map(Object.values(obj).map((p) => [p.index, p]));
-      this.pagesCache.set(cacheKey, map);
+  private pageDoc(key: string, chapterId: string): JsonDoc<Map<number, DownloadedPage> | null> {
+    const cacheKey = `${key} ${chapterId}`;
+    let doc = this.pageDocs.get(cacheKey);
+    if (!doc) {
+      doc = new JsonDoc<Map<number, DownloadedPage> | null>(join(this.dir, "pages", encodeURIComponent(key), `${encodeURIComponent(chapterId)}.json`), {
+        empty: () => new Map(),
+        decode: (raw) => new Map(Object.values(asJsonRecord<DownloadedPage>(raw)).map((p) => [p.index, p])),
+        encode: (map) => (map === null ? DELETE_FILE : Object.fromEntries([...map.values()].map((p) => [String(p.index), p]))),
+      });
+      this.pageDocs.set(cacheKey, doc);
     }
-    return map;
-  }
-
-  private async flushPages(key: string, chapterId: string): Promise<void> {
-    const map = await this.pages(key, chapterId);
-    const obj = Object.fromEntries([...map.values()].map((p) => [String(p.index), p]));
-    await mkdir(join(this.dir, "pages", encodeURIComponent(key)), { recursive: true });
-    await writeFile(this.pagesPath(key, chapterId), JSON.stringify(obj, null, 2), "utf8");
+    return doc;
   }
 
   async listPages(key: string, chapterId: string): Promise<DownloadedPage[]> {
-    return [...(await this.pages(key, chapterId)).values()].sort((a, b) => a.index - b.index);
+    return [...((await this.pageDoc(key, chapterId).get())?.values() ?? [])].sort((a, b) => a.index - b.index);
   }
   async putPage(key: string, chapterId: string, page: DownloadedPage): Promise<void> {
-    (await this.pages(key, chapterId)).set(page.index, page);
-    await this.flushPages(key, chapterId);
+    await this.pageDoc(key, chapterId).transform((map) => (map ?? new Map()).set(page.index, page));
   }
   async deletePagesForChapter(key: string, chapterId: string): Promise<void> {
-    this.pagesCache.set(this.pagesCacheKey(key, chapterId), new Map());
-    await rm(this.pagesPath(key, chapterId), { force: true });
+    await this.pageDoc(key, chapterId).replace(null);
   }
 
   // ── Preferences ───────────────────────────────────────────────────────────────
 
   async getPrefs(): Promise<DownloadPrefs | undefined> {
-    if (this.prefsCache === undefined) {
-      this.prefsCache = await readJson<DownloadPrefs | null>(this.prefsPath, null);
-    }
-    return this.prefsCache ?? undefined;
+    return (await this.prefsDoc.get()) ?? undefined;
   }
 
   async setPrefs(prefs: DownloadPrefs): Promise<void> {
-    this.prefsCache = prefs;
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.prefsPath, JSON.stringify(prefs, null, 2), "utf8");
+    await this.prefsDoc.replace(prefs);
   }
 }

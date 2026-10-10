@@ -2,52 +2,38 @@
  * Filesystem-backed, per-bridge key/value storage. Each bridge gets its own JSON file under the
  * data dir, so a bridge's stored state (tokens, ETags) is namespaced and cannot read another's.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { KeyValueStore, StorageCapability } from "@comical/contract";
+import { asJsonRecord, JsonDoc } from "./json-file.ts";
 
 export class FileStorage implements KeyValueStore {
-  private readonly file: string;
-  private cache: Record<string, string> | undefined;
+  private readonly doc: JsonDoc<Record<string, string>>;
 
   constructor(dataDir: string, bridgeId: string) {
-    this.file = join(dataDir, "storage", `${bridgeId}.json`);
-  }
-
-  private async read(): Promise<Record<string, string>> {
-    if (this.cache) return this.cache;
-    try {
-      this.cache = JSON.parse(await readFile(this.file, "utf8")) as Record<string, string>;
-    } catch {
-      this.cache = {};
-    }
-    return this.cache;
-  }
-
-  private async write(data: Record<string, string>): Promise<void> {
-    this.cache = data;
-    await mkdir(dirname(this.file), { recursive: true });
-    await writeFile(this.file, JSON.stringify(data, null, 2), "utf8");
+    this.doc = new JsonDoc(join(dataDir, "storage", `${bridgeId}.json`), {
+      empty: () => ({}),
+      decode: (raw) => asJsonRecord<string>(raw),
+    });
   }
 
   async get(key: string): Promise<string | undefined> {
-    return (await this.read())[key];
+    return (await this.doc.get())[key];
   }
 
   async set(key: string, value: string): Promise<void> {
-    const data = await this.read();
-    data[key] = value;
-    await this.write(data);
+    await this.doc.update((data) => {
+      data[key] = value;
+    });
   }
 
   async delete(key: string): Promise<void> {
-    const data = await this.read();
-    delete data[key];
-    await this.write(data);
+    await this.doc.update((data) => {
+      delete data[key];
+    });
   }
 
   async keys(): Promise<string[]> {
-    return Object.keys(await this.read());
+    return Object.keys(await this.doc.get());
   }
 }
 

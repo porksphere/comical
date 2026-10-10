@@ -209,3 +209,56 @@ describe("FileLibraryStore enumeration", () => {
     ]);
   });
 });
+
+describe("FileLibraryStore corruption", () => {
+  const silenced = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      return await fn();
+    } finally {
+      console.warn = warn;
+    }
+  };
+
+  test("a garbled collections.json is moved aside, not read as empty and overwritten", async () => {
+    writeFileSync(join(LIB, "collections.json"), '[{"id":"c1","name":"Favou'); // cut off mid-write
+    const store = new FileLibraryStore(LIB);
+    expect(await silenced(() => store.listCollections())).toEqual([]);
+    await store.putCollections([{ id: "c2", name: "New", createdAt: 1, order: 0 } as Collection]);
+
+    const aside = readdirSync(LIB).find((f) => f.startsWith("collections.json.corrupt-"));
+    expect(aside).toBeDefined();
+    expect(readFileSync(join(LIB, aside!), "utf8")).toBe('[{"id":"c1","name":"Favou');
+  });
+
+  test("a progress file of the wrong shape is quarantined, and listings skip the quarantined copy", async () => {
+    mkdirSync(join(LIB, "progress"), { recursive: true });
+    writeFileSync(join(LIB, "progress", `${encodeURIComponent("demo:s1")}.json`), "[]"); // an array, not a map
+    const store = new FileLibraryStore(LIB);
+    expect(await silenced(() => store.listProgress("demo:s1"))).toEqual([]);
+    // The `.corrupt-*` copy doesn't end in `.json`, so it isn't mistaken for a series with progress.
+    expect(await store.listProgressKeys()).toEqual([]);
+  });
+
+  test("an unreadable document throws rather than presenting an empty library", async () => {
+    mkdirSync(join(LIB, "reading-log.json")); // a directory where the file should be: a real IO error
+    await expect(new FileLibraryStore(LIB).listReadingLog()).rejects.toThrow();
+  });
+
+  test("concurrent first writes to a cold store all land", async () => {
+    const store = new FileLibraryStore(LIB);
+    await Promise.all(
+      ["c1", "c2", "c3", "c4"].map((id) => store.putProgress("demo:s1", { chapterId: id, read: true, lastPage: 0, updatedAt: 1 })),
+    );
+    const reopened = await new FileLibraryStore(LIB).listProgress("demo:s1");
+    expect(reopened.map((p) => p.chapterId).sort()).toEqual(["c1", "c2", "c3", "c4"]);
+  });
+
+  test("clearing activity while another write is pending leaves no stale events behind", async () => {
+    const store = new FileLibraryStore(LIB);
+    await store.putActivity({ bridgeId: "demo", seriesId: "s1", chapterId: "c1", title: "S", detectedAt: 1 });
+    await Promise.all([store.clearActivity(), store.dropActivity(["demo:s1:c1"])]);
+    expect(await new FileLibraryStore(LIB).listActivity()).toEqual([]);
+  });
+});
