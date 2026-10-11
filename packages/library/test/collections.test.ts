@@ -321,17 +321,17 @@ describe("getFavoritePages — filter and sort", () => {
     expect((await lib.getCollectionItems({ collection: panels.id })).map((p) => p.id)).toEqual([alpha1.id]);
   });
 
-  test("emptying an item's memberships removes the item — pure collections", async () => {
+  test("emptying an item's memberships keeps it, unfiled", async () => {
     const { lib, alpha1 } = await seed();
     const panels = await lib.createCollection("Panels");
     await lib.setItemCollections(alpha1.id, [panels.id]);
 
-    expect(await lib.setItemCollections(alpha1.id, [])).toBeUndefined();
-    expect(await lib.getCollectionItem(alpha1.id)).toBeUndefined();
+    expect((await lib.setItemCollections(alpha1.id, [])).collectionIds).toEqual([]);
+    expect((await lib.getCollectionItem(alpha1.id))?.collectionIds).toEqual([]);
     // ...and memberships resolving to zero after unknown ids drop counts as emptying.
     const again = await lib.collectPage(coord({ chapterId: "c2", pageIndex: 1 }), { seriesTitle: "Alpha Comic" });
-    expect(await lib.setItemCollections(again.id, ["ghost"])).toBeUndefined();
-    expect(await lib.getCollectionItem(again.id)).toBeUndefined();
+    expect((await lib.setItemCollections(again.id, ["ghost"])).collectionIds).toEqual([]);
+    expect(await lib.getCollectionItem(again.id)).toBeDefined();
   });
 
   test("combines filters", async () => {
@@ -425,7 +425,7 @@ describe("favorite collections", () => {
     expect(lib.setItemCollections("page:demo:s1:c1:0", [])).rejects.toThrow("item not found");
   });
 
-  test("deleting a collection removes items whose last membership it was — pure collections", async () => {
+  test("deleting a collection leaves items whose last membership it was unfiled", async () => {
     const { lib } = makeLibrary();
     const a = await lib.createCollection("A");
     const b = await lib.createCollection("B");
@@ -437,11 +437,9 @@ describe("favorite collections", () => {
     await lib.deleteCollection(a.id);
 
     expect((await lib.getCollections()).map((c) => c.id)).toEqual([b.id]);
-    // p1 survives with its remaining membership; p2's only membership died with the collection —
-    // items exist only as members, PAGES INCLUDED (no bare-heart exception any more).
-    expect((await lib.getCollectionItems()).map((i) => i.id)).toEqual([p1.id]);
+    expect((await lib.getCollectionItems()).map((i) => i.id).sort()).toEqual([p1.id, p2.id].sort());
     expect((await lib.getCollectionItem(p1.id))?.collectionIds).toEqual([b.id]);
-    expect(await lib.getCollectionItem(p2.id)).toBeUndefined();
+    expect((await lib.getCollectionItem(p2.id))?.collectionIds).toEqual([]);
   });
 
   test("deleting an unknown collection is a no-op", async () => {
@@ -507,22 +505,30 @@ describe("uncollecting a series cascades to its satellite documents", () => {
     await expectCascaded(lib);
   });
 
-  test("emptying its memberships cascades", async () => {
+  /** Un-filing is organizing, not removing: the series and everything hanging off it stay. */
+  async function expectIntact(lib: Library) {
+    expect((await lib.getSeries("demo:s1"))?.collectionIds).toEqual([]);
+    expect(await lib.getCachedDetail("demo:s1")).toBeDefined();
+    expect(await lib.getCachedChapters("demo:s1")).toBeDefined();
+    expect(await lib.getProgress("demo:s1")).toHaveLength(1);
+  }
+
+  test("emptying its memberships does NOT cascade", async () => {
     const { lib } = makeLibrary();
     const shelf = await lib.createCollection("Shelf");
     await seedSeries(lib, [shelf.id]);
 
-    expect(await lib.setItemCollections(collectionItemId({ type: "series", bridgeId: "demo", seriesId: "s1" }), [])).toBeUndefined();
-    await expectCascaded(lib);
+    await lib.setItemCollections(collectionItemId({ type: "series", bridgeId: "demo", seriesId: "s1" }), []);
+    await expectIntact(lib);
   });
 
-  test("deleting its last collection cascades", async () => {
+  test("deleting its last collection does NOT cascade", async () => {
     const { lib } = makeLibrary();
     const shelf = await lib.createCollection("Shelf");
     await seedSeries(lib, [shelf.id]);
 
     await lib.deleteCollection(shelf.id);
-    await expectCascaded(lib);
+    await expectIntact(lib);
   });
 
   test("losing one of several memberships does NOT cascade", async () => {
@@ -879,7 +885,7 @@ describe("scaling — a chapter's cost is independent of library size", () => {
     expect(calls.recordsRead - before.recordsRead).toBe(1);
   });
 
-  test("deleting a collection cascades in one batched write and one batched delete", async () => {
+  test("deleting a collection strips its members in one batched write and deletes nothing", async () => {
     const { store, calls } = countingStore();
     const lib = new Library(store);
     await seedLibrary(lib, 50);
@@ -887,18 +893,17 @@ describe("scaling — a chapter's cost is independent of library size", () => {
     const keep = await lib.createCollection("Keep");
     const members = (await lib.getCollectionItems()).slice(0, 20);
     for (const [i, page] of members.entries()) {
-      // Half also live in another collection (they survive, stripped); half only here (removed).
+      // Half also live in another collection; half only here (left unfiled).
       await lib.setItemCollections(page.id, i % 2 === 0 ? [doomed.id, keep.id] : [doomed.id]);
     }
     const before = { ...calls };
 
     await lib.deleteCollection(doomed.id);
 
-    // 10 survivors stripped in ONE write, 10 last-membership items removed in ONE delete. (The full
-    // listing is inherent — a cascade must consider every item, since collections span series.)
+    // All 20 members stripped in ONE write. (The full listing is inherent — collections span series.)
     expect(calls.put - before.put).toBe(1);
-    expect(calls.recordsWritten - before.recordsWritten).toBe(10);
-    expect(calls.del - before.del).toBe(1);
+    expect(calls.recordsWritten - before.recordsWritten).toBe(20);
+    expect(calls.del - before.del).toBe(0);
     expect((await lib.getCollectionItems({ collection: keep.id })).length).toBe(10);
   });
 });
@@ -1124,8 +1129,7 @@ describe("series and chapter favorites", () => {
     expect(got.map((i) => i.type).sort()).toEqual(["chapter", "page", "series"]);
   });
 
-  test("deleting a collection removes every type whose last membership it was — no exceptions", async () => {
-    // PURE COLLECTIONS: items exist only as members. Pages get no bare-heart carve-out.
+  test("deleting a collection leaves every type whose last membership it was saved, unfiled", async () => {
     const { lib } = makeLibrary();
     const only = await lib.createCollection("Only");
     const keep = await lib.createCollection("Keep");
@@ -1140,10 +1144,9 @@ describe("series and chapter favorites", () => {
 
     await lib.deleteCollection(only.id);
 
-    // Only the two-collection chapter survives, stripped to its remaining membership.
-    expect((await lib.getCollectionItems()).map((i) => i.id)).toEqual([both.id]);
+    expect((await lib.getCollectionItems()).map((i) => i.id).sort()).toEqual([series.id, chapter.id, both.id, page.id].sort());
     expect((await lib.getCollectionItem(both.id))?.collectionIds).toEqual([keep.id]);
-    expect(await lib.getCollectionItem(page.id)).toBeUndefined();
+    for (const item of [series, chapter, page]) expect((await lib.getCollectionItem(item.id))?.collectionIds).toEqual([]);
   });
 });
 

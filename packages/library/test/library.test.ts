@@ -1053,21 +1053,19 @@ describe("collections filter the library", () => {
     expect(inReading.map((e) => e.seriesId)).toEqual(["s1"]);
   });
 
-  test("deleting a collection un-files its members, and the empty series item is pruned", async () => {
+  test("deleting a collection un-files its members and leaves them in the library", async () => {
     const lib = makeLibrary();
     const temp = await lib.createCollection("Temp");
     await lib.collectSeries(COORD, SNAP);
     await file(lib, "s1", [temp.id]);
+    await lib.markRead(KEY, "c1", true);
 
     await lib.deleteCollection(temp.id);
     expect(await lib.getCollections()).toHaveLength(0);
     expect(await lib.getLibrary({ collection: temp.id })).toHaveLength(0);
-    // The series existed only as a member, so losing its last one removes it outright — under
-    // pure collections there is no library entry left behind to hold it.
-    expect(await lib.getCollectionItems({ type: "series" })).toHaveLength(0);
-    expect(await lib.getSeries(KEY)).toBeUndefined();
-    // And the cascade took its satellites with it (see Library.removeSeries).
-    expect(await lib.getProgress(KEY)).toHaveLength(0);
+    expect((await lib.getLibrary({ uncollected: true })).map((v) => v.seriesId)).toEqual(["s1"]);
+    expect((await lib.getSeries(KEY))?.collectionIds).toEqual([]);
+    expect(await lib.getProgress(KEY)).toHaveLength(1);
   });
 });
 
@@ -1719,7 +1717,7 @@ describe("importLegacyEntries", () => {
 
     const item = await lib.getSeries(KEY);
     expect(item).toMatchObject({ seriesTitle: "Series One", collectedAt: 500, updatedAt: 600 });
-    expect(item?.collectionIds).toEqual([result.collectionId]);
+    expect(item?.collectionIds).toHaveLength(0);
     // The whole point: the library renders again AND the read state is back on it.
     const view = (await lib.getLibrary()).find((v) => v.seriesId === "s1");
     expect(view?.unreadCount).toBe(0);
@@ -1750,13 +1748,12 @@ describe("importLegacyEntries", () => {
     expect(await lib.getResume(KEY)).toBeDefined();
   });
 
-  test("files everything into one collection, reused on a second run", async () => {
+  test("imports unfiled, creating no collection", async () => {
     const lib = makeLibrary();
-    const first = await lib.importLegacyEntries([legacy()]);
-    const second = await lib.importLegacyEntries([legacy({ seriesId: "s2" })]);
-    expect(second.collectionId).toBe(first.collectionId);
-    expect(await lib.getCollections()).toHaveLength(1);
-    expect((await lib.getLibrary({ collection: first.collectionId })).map((v) => v.seriesId).sort()).toEqual(["s1", "s2"]);
+    await lib.importLegacyEntries([legacy()]);
+    await lib.importLegacyEntries([legacy({ seriesId: "s2" })]);
+    expect(await lib.getCollections()).toHaveLength(0);
+    expect((await lib.getLibrary({ uncollected: true })).map((v) => v.seriesId).sort()).toEqual(["s1", "s2"]);
   });
 
   // A series item written by the PRE-DISSOLUTION build: a thin membership pointer with no

@@ -113,9 +113,8 @@ export const chapterProgressSchema = z.object({
 export type ChapterProgress = z.infer<typeof chapterProgressSchema>;
 
 // ── Collections & collection items ────────────────────────────────────────────
-// Local user data. PURE COLLECTIONS: a collection ITEM anchors a series, a chapter, or a single
-// page, and exists only as a member of user-named collections — an item whose memberships reach
-// zero is removed (a fresh item may be transiently uncollected until its first filing). "Favorites"
+// Local user data. A collection ITEM anchors a series, a chapter, or a single page that the user
+// saved, and may be filed into any number of user-named collections — including none. "Favorites"
 // deliberately does not appear on this surface: that word belongs to the bridge-account per-series
 // capability (`/bridges/{id}/favorites`), which is unrelated — nothing here ever touches a bridge.
 //
@@ -236,7 +235,7 @@ const collectionItemBase = {
   id: z.string().min(1),
   /** Epoch ms; the date sort axis. */
   collectedAt: z.number().int(),
-  /** Collection memberships (ids into `Collection`). Empty = uncollected. */
+  /** Collection memberships (ids into `Collection`). Empty = unfiled. */
   collectionIds: z.array(z.string()).default([]),
   seriesTitle: z.string().min(1),
   /**
@@ -251,8 +250,7 @@ const collectionItemBase = {
 
 /**
  * A collected series — and the ONLY record of a tracked series. There is no separate library entry:
- * being "in the library" IS having a series item (which under pure collections means being in at
- * least one collection). It therefore carries both the display snapshot and every piece of tracking
+ * being "in the library" IS having a series item, filed or not. It therefore carries both the display snapshot and every piece of tracking
  * machinery: read state cache, chapter baseline, tracker identity, grouping.
  *
  * Satellite documents (progress, cached detail/chapters, tracker links, activity) stay keyed by

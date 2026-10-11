@@ -80,8 +80,7 @@ export interface LibraryQuery {
   collection?: string;
   /** Filter to series in ANY of these collections. Empty/absent means all. */
   collections?: string[];
-  /** Only series in no collection — a transient state between a collect and its first filing.
-   *  Takes precedence over `collection`/`collections`. */
+  /** Only unfiled series — those in no collection. Takes precedence over `collection`/`collections`. */
   uncollected?: boolean;
   /** Case-insensitive substring search over title + author. */
   q?: string;
@@ -113,8 +112,7 @@ export interface CollectionItemsQuery {
   sort?: CollectionItemsSort;
   /** Sort direction. Defaults to `"desc"` for `added` (newest first) and `"asc"` otherwise. */
   dir?: "asc" | "desc";
-  /** A collection id. (There is no "uncollected" sentinel: items exist only as members, so an
-   *  uncollected item is at most a transient state between a create and its first filing.) */
+  /** A collection id. Empty/absent means every item, filed or not. */
   collection?: string;
   /** Restrict to one series, as an `entryKey` (`${bridgeId}:${seriesId}`). */
   series?: string;
@@ -173,9 +171,8 @@ export class Library {
 
   // ── Collected series ───────────────────────────────────────────────────────
   // A tracked series IS a `CollectionSeriesItem`: there is no separate library entry. "In the
-  // library" means the item exists, which under pure collections means it is in at least one
-  // collection (a freshly-collected series is transiently uncollected until the caller files it).
-  // Satellite documents — progress, cached detail/chapters, tracker links, activity — hang off it.
+  // library" means the item exists; its collections are filing on top of that, and none is a valid
+  // (unfiled) state. Satellite documents — progress, cached detail/chapters, tracker links, activity — hang off it.
 
   /** The derived id of a series item, from its `entryKey`. */
   private seriesItemId(key: string): string {
@@ -203,10 +200,8 @@ export class Library {
    * every other item PUT: a supplied snapshot field wins as the fresher value, an omitted one is
    * preserved, and `collectedAt` / `collectionIds` / all tracking state carry over.
    *
-   * `snap.collectionIds` files the series in the SAME call — the common case, since under pure
-   * collections a series nobody filed is only transiently collected. Unknown ids are dropped, and a
-   * list that resolves empty leaves the memberships alone rather than deleting what was just
-   * collected; `setItemCollections` remains the way to empty them deliberately.
+   * `snap.collectionIds` files the series in the SAME call. Unknown ids are dropped, and a list that
+   * resolves empty leaves the memberships alone; `setItemCollections` is the way to empty them.
    */
   async collectSeries(coord: SeriesItemCoord, snap: SeriesItemSnapshot): Promise<CollectSeriesResult> {
     const key = entryKey(coord.bridgeId, coord.seriesId);
@@ -282,29 +277,9 @@ export class Library {
    * Idempotent: coordinates already collected are left exactly as they are, so a re-run after a
    * crash is safe and can never clobber post-migration edits.
    *
-   * Imported series are filed into `collectionName` (reused if it already exists, created
-   * otherwise) because under pure collections an unfiled series would be swept by the next thing
-   * that touches it. It defaults to "Default" rather than "Library" so a host that migrates without
-   * naming one doesn't end up with a collection called "Library" sitting inside a library — which
-   * for a freshly migrated shelf lists exactly what the unfiltered view does, and reads as one list
-   * rendered twice.
+   * Imported series land unfiled — the legacy library had no collections to carry over.
    */
-  async importLegacyEntries(
-    rows: unknown[],
-    collectionName = "Default",
-  ): Promise<{ imported: number; skipped: number; collectionId: string }> {
-    let collectionId = "";
-    await this.store.updateCollections((collections) => {
-      const found = collections.find((c) => c.name === collectionName);
-      if (found) {
-        collectionId = found.id;
-        return collections;
-      }
-      const order = collections.reduce((max, c) => Math.max(max, c.order), -1) + 1;
-      collectionId = crypto.randomUUID();
-      return [...collections, { id: collectionId, name: collectionName, order }];
-    });
-
+  async importLegacyEntries(rows: unknown[]): Promise<{ imported: number; skipped: number }> {
     const items: CollectionSeriesItem[] = [];
     let skipped = 0;
     for (const row of rows) {
@@ -334,7 +309,7 @@ export class Library {
         seriesTitle: e.title,
         collectedAt: current?.collectedAt ?? e.addedAt,
         updatedAt: e.updatedAt,
-        collectionIds: current?.collectionIds.length ? current.collectionIds : [collectionId],
+        collectionIds: current?.collectionIds ?? [],
         knownChapters: e.knownChapters,
         ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
         ...(e.author !== undefined && { author: e.author }),
@@ -349,7 +324,7 @@ export class Library {
       items.push(item);
     }
     if (items.length > 0) await this.store.putCollectionItems(items);
-    return { imported: items.length, skipped, collectionId };
+    return { imported: items.length, skipped };
   }
 
   /**
@@ -1082,9 +1057,8 @@ export class Library {
   }
 
   // ── Collection items (series / chapter / page) ───────────────────────────────
-  // PURE COLLECTIONS: an item exists to be a member of collections, and one whose memberships reach
-  // zero is removed (a freshly-created item is allowed to be transiently uncollected until its
-  // first filing — the two-PUT flow depends on that). Local user data, independent of the library:
+  // An item exists until it is explicitly uncollected; its collections are filing on top of that,
+  // and an item in none is simply unfiled. Local user data, independent of the library:
   // a page can be collected from a series that was never added, and removing a series from the
   // library leaves its items alone. The word "favorites" is deliberately absent from this surface —
   // it belongs to the bridge-account capability behind `/bridges/{id}/favorites`.
@@ -1454,19 +1428,14 @@ export class Library {
   /**
    * Replace an item's collection memberships. Unknown collection ids are dropped.
    *
-   * PURE COLLECTIONS: an item is its memberships. Emptying them (an empty array, or one that
-   * resolves empty after unknown ids are dropped) REMOVES the item — returns undefined — rather
-   * than leaving an uncollected record behind. There is no bare-heart exception for any type.
+   * Emptying them leaves the item in place, unfiled — removing an item is `uncollectItem`'s job,
+   * never a side effect of unticking its last collection.
    */
-  async setItemCollections(id: string, collectionIds: string[]): Promise<CollectionItem | undefined> {
+  async setItemCollections(id: string, collectionIds: string[]): Promise<CollectionItem> {
     const item = await this.store.getCollectionItem(id);
     if (!item) throw new Error(`item not found: ${id}`);
     const known = new Set((await this.store.listCollections()).map((c) => c.id));
     const resolved = [...new Set(collectionIds)].filter((c) => known.has(c));
-    if (resolved.length === 0) {
-      await this.dropItems([item]);
-      return undefined;
-    }
     const next: CollectionItem = { ...item, collectionIds: resolved };
     await this.store.putCollectionItems([next]);
     return next;
@@ -1504,21 +1473,16 @@ export class Library {
   }
 
   /**
-   * Delete a collection and strip its id from every member.
-   *
-   * PURE COLLECTIONS: any item — series, chapter, or page — left with zero memberships is removed
-   * with it. An item exists only as a member of collections; there is no standalone "favorite"
-   * concept (that word belongs to bridge accounts). Items in other collections merely lose one
-   * membership.
+   * Delete a collection and strip its id from every member. The members stay in the library — an
+   * item whose only collection this was is left unfiled, not removed.
    */
   async deleteCollection(id: string): Promise<void> {
     await this.store.updateCollections((collections) => collections.filter((c) => c.id !== id));
-    // One batched write per side for the whole cascade — a per-member write would rewrite the
-    // items document once per member.
+    // One batched write for every member — a per-member write would rewrite the items document once
+    // per member.
     const members = (await this.store.listCollectionItems()).filter((i) => i.collectionIds.includes(id));
     const stripped = members.map((i) => ({ ...i, collectionIds: i.collectionIds.filter((c) => c !== id) }));
-    await this.dropItems(stripped.filter((i) => i.collectionIds.length === 0));
-    await this.store.putCollectionItems(stripped.filter((i) => i.collectionIds.length > 0));
+    await this.store.putCollectionItems(stripped);
   }
 
   // ── Series groups ─────────────────────────────────────────────────────────────

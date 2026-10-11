@@ -348,7 +348,7 @@ describe("collections", () => {
     expect((await send("PATCH", "/library/collections/ghost", { name: "X" })).status).toBe(404);
   });
 
-  test("membership: assign, filter, empty-to-remove, and cascade on collection delete", async () => {
+  test("membership: assign, filter, empty-to-unfile, and strip on collection delete", async () => {
     const panels = await json<CollectionBody>(await send("POST", "/library/collections", { name: "Panels" }));
     const keep = await json<CollectionBody>(await send("POST", "/library/collections", { name: "Keep" }));
     const p1 = await json<FavoriteBody>(
@@ -369,20 +369,26 @@ describe("collections", () => {
     const inPanels = await json<FavoriteBody[]>(await get(`/library/collected?collection=${panels.id}`));
     expect(inPanels.map((p) => p.id).sort()).toEqual([p1.id, p2.id].sort());
 
-    // PURE COLLECTIONS, route-level: deleting the collection strips survivors and removes items it
-    // was the last membership of — p2 is gone outright, no bare-heart carve-out.
+    // Deleting the collection strips it from every member; p2, whose only collection it was, stays
+    // saved and unfiled.
     await send("DELETE", `/library/collections/${panels.id}`);
     const remaining = await json<FavoriteBody[]>(await get("/library/collected"));
-    expect(remaining.map((i) => i.id)).toEqual([p1.id]);
-    expect(remaining[0]!.collectionIds).toEqual([keep.id]);
+    const byId = new Map(remaining.map((i) => [i.id, i.collectionIds]));
+    expect([...byId.keys()].sort()).toEqual([p1.id, p2.id].sort());
+    expect(byId.get(p1.id)).toEqual([keep.id]);
+    expect(byId.get(p2.id)).toEqual([]);
 
-    // ...and emptying memberships removes the item, reported as such.
-    const emptied = await json<{ removed?: boolean }>(
+    // ...and emptying memberships answers with the still-saved item.
+    const emptied = await json<FavoriteBody>(
       await send("PUT", "/library/collected/page/demo/s1/c1/0/collections", { collectionIds: [] }),
     );
-    expect(emptied).toEqual({ removed: true });
-    expect(await json<FavoriteBody[]>(await get("/library/collected"))).toEqual([]);
+    expect(emptied).toMatchObject({ id: p1.id, collectionIds: [] });
+    expect(await json<FavoriteBody[]>(await get("/library/collected"))).toHaveLength(2);
+
     await send("DELETE", `/library/collections/${keep.id}`);
+    await send("DELETE", "/library/collected/page/demo/s1/c1/0");
+    await send("DELETE", "/library/collected/page/demo/s2/c1/0");
+    expect(await json<FavoriteBody[]>(await get("/library/collected"))).toEqual([]);
   });
 
   test("assigning collections to an unknown favorite 404s; a bad body or index 400s", async () => {
@@ -420,8 +426,14 @@ describe("series and chapter favorites over HTTP", () => {
     const seriesOnly = await json<FavoriteBody[]>(await get(`/library/collected?collection=${shelf.id}&type=series`));
     expect(seriesOnly.map((i) => i.id)).toEqual([series.id]);
 
-    // Deleting the collection prunes both (they only existed as members).
+    // Deleting the collection leaves both saved, unfiled.
     await send("DELETE", `/library/collections/${shelf.id}`);
+    const left = await json<FavoriteBody[]>(await get("/library/collected"));
+    expect(left.map((i) => [i.type, i.collectionIds])).toEqual(expect.arrayContaining([["series", []], ["chapter", []]]));
+    expect(left).toHaveLength(2);
+
+    await send("DELETE", "/library/collected/series/demo/s9");
+    await send("DELETE", "/library/collected/chapter/demo/s9/c1");
     expect(await json<FavoriteBody[]>(await get("/library/collected"))).toEqual([]);
   });
 

@@ -892,35 +892,28 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       );
     });
 
-    // Membership assignment, per type — coordinates in the path, like everything else here.
-    // PURE COLLECTIONS: emptying an item's memberships removes it (`{ removed: true }` comes back
-    // instead of the item), so a client unchecking the last collection needs no separate DELETE.
     // A removed SERIES takes its offline detail doc with it — and that doc is where the captured
     // cover blob's path lives. So the pointer has to be read BEFORE the removal, or the blob is
-    // orphaned on disk with nothing left pointing at it. Every route that can zero a series item
-    // pairs these two.
+    // orphaned on disk with nothing left pointing at it.
     const coverPointer = async (key: string): Promise<string | undefined> =>
       covers ? (await lib.getCachedDetail(key))?.coverFile : undefined;
     const unlinkCover = async (file: string | undefined): Promise<void> => {
       if (file) await covers!.blobs.remove([file]).catch(() => {});
     };
 
-    const setCollections = async (c: Context, id: string, seriesKey?: string) => {
+    // Membership assignment, per type — coordinates in the path, like everything else here. An
+    // empty list leaves the item saved and unfiled; removal is the item's own DELETE.
+    const setCollections = async (c: Context, id: string) => {
       const b = await body<{ collectionIds?: string[] }>(c);
       if (!b?.collectionIds) return c.json({ error: "collectionIds is required" }, 400);
-      const cover = seriesKey ? await coverPointer(seriesKey) : undefined;
-      try {
-        const item = await lib.setItemCollections(id, b.collectionIds);
-        if (!item) await unlinkCover(cover); // emptied to zero — the series was removed
-        return c.json(item ?? { removed: true });
-      } catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
+      try { return c.json(await lib.setItemCollections(id, b.collectionIds)); }
+      catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
     };
 
     app.put("/library/collected/series/:bridgeId/:seriesId/collections", (c) =>
       setCollections(
         c,
         collectionItemId({ type: "series", bridgeId: c.req.param("bridgeId"), seriesId: c.req.param("seriesId") }),
-        keyOf(c),
       ),
     );
     app.put("/library/collected/chapter/:bridgeId/:seriesId/:chapterId/collections", (c) =>
@@ -1072,18 +1065,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 404); }
     });
 
-    // Deleting a collection strips its id from every member and removes any item — every type —
-    // left with zero memberships. Items exist only as members.
+    // Deleting a collection strips its id from every member; the members stay saved.
     app.delete("/library/collections/:id", async (c) => {
-      const id = c.req.param("id");
-      // Series this collection was the LAST membership of are about to be removed, so collect their
-      // cover pointers while the detail docs still exist.
-      const doomed = covers
-        ? (await lib.getCollectionItems({ type: "series", collection: id })).filter((i) => i.collectionIds.length === 1)
-        : [];
-      const pointers = await Promise.all(doomed.map((i) => coverPointer(entryKey(i.bridgeId, i.seriesId))));
-      await lib.deleteCollection(id);
-      await Promise.all(pointers.map(unlinkCover));
+      await lib.deleteCollection(c.req.param("id"));
       return c.json({ ok: true });
     });
 

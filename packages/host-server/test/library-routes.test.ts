@@ -177,13 +177,12 @@ describe("/library lifecycle", () => {
 
     await send("DELETE", `/library/collections/${collection.id}`);
     expect(((await (await get(`/library?collection=${collection.id}`)).json()) as unknown[]).length).toBe(0);
-    // The series existed only as a member, so its last membership going took the series with it.
-    expect((await get("/library/collected/series/demo/s1")).status).toBe(404);
+    // The series stays saved, unfiled.
+    expect((await get("/library?uncollected=true").then((r) => r.json()) as Array<{ seriesId: string }>).map((e) => e.seriesId)).toEqual(["s1"]);
   });
 
   test("query params: search (title/author), unreadOnly, sort, uncollected", async () => {
-    // The prior test's collection delete took s1 with it (its last membership), so re-collect it
-    // and restore the 2-unread state. Both series are then collected but unfiled.
+    // Re-collecting s1 is a merge, then restore the 2-unread state. Both series end up unfiled.
     await send("PUT", "/library/collected/series/demo/s1", { seriesTitle: "Series One" });
     await send("POST", "/library/collected/series/demo/s1/sync", { chapters });
     await send("PUT", "/library/collected/series/demo/s1/progress/c1", { read: true });
