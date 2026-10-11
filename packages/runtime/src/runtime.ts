@@ -593,10 +593,15 @@ export class ComicalRuntime {
    *
    * Without a `selection` this keeps the original behavior: page everything and add whatever isn't
    * already in the library, no cross-bridge linking.
+   *
+   * `collectionIds` files each NEWLY added series, as in {@link importTrackerEntries}. Without it an
+   * import is collected but in no collection, which a client that reads "saved" as "in a collection"
+   * shows as not saved at all.
    */
   async importBridgeFavorites(
     bridgeId: string,
     selection?: FavoritesImportItem[],
+    opts: { collectionIds?: string[] } = {},
   ): Promise<{ imported: number; skipped: number; linked: number }> {
     const lib = this.requireLibrary();
     const items = selection ?? (await this.collectAllFavorites(bridgeId));
@@ -609,6 +614,7 @@ export class ComicalRuntime {
       if (await lib.getSeries(key)) { skipped++; continue; }
       const snap: SeriesItemSnapshot = { seriesTitle: item.title };
       if (item.thumbnailUrl !== undefined) snap.thumbnailUrl = item.thumbnailUrl;
+      if (opts.collectionIds !== undefined) snap.collectionIds = opts.collectionIds;
       await lib.collectSeries({ bridgeId, seriesId: item.seriesId }, snap);
       imported++;
       if (item.linkTo) {

@@ -2059,6 +2059,22 @@ describe("importBridgeFavorites", () => {
     expect(await lib.isCollected(entryKey("test", "s1"))).toBe(true);
   });
 
+  test("collectionIds files new imports and leaves an existing series' collections alone", async () => {
+    const lib = makeLib();
+    const { id: mine } = await lib.createCollection("Mine");
+    const { id: dflt } = await lib.createCollection("Default");
+    await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "First", collectionIds: [mine] });
+
+    const result = await favoritesRuntime(favoritesBridge([]), lib).importBridgeFavorites(
+      "test",
+      [{ seriesId: "s1", title: "First" }, { seriesId: "s2", title: "Second" }],
+      { collectionIds: [dflt] },
+    );
+    expect(result).toEqual({ imported: 1, skipped: 1, linked: 0 });
+    expect((await lib.getSeries(entryKey("test", "s1")))?.collectionIds).toEqual([mine]);
+    expect((await lib.getSeries(entryKey("test", "s2")))?.collectionIds).toEqual([dflt]);
+  });
+
   test("skips a selected series that is already in the library", async () => {
     const lib = makeLib();
     await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "First" });

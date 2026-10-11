@@ -1101,12 +1101,17 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     app.post("/library/import/bridges/:id/favorites", (c) =>
       withContentBridge(c, async (bridge) => {
         if (!bridge.getFavorites) return c.json({ error: "bridge does not support favorites" }, 400);
-        const b = await body<{ items?: FavoritesImportItem[] }>(c);
+        const b = await body<{ items?: FavoritesImportItem[]; collectionIds?: string[] }>(c);
         if (b?.items !== undefined && !Array.isArray(b.items)) {
           return c.json({ error: "items must be an array" }, 400);
         }
+        if (b?.collectionIds !== undefined && (!Array.isArray(b.collectionIds) || !b.collectionIds.every((id) => typeof id === "string"))) {
+          return c.json({ error: "collectionIds must be an array of strings" }, 400);
+        }
         const items = b?.items?.filter((i) => i && typeof i.seriesId === "string" && typeof i.title === "string");
-        return c.json(await runtime!.importBridgeFavorites(c.req.param("id"), items));
+        return c.json(await runtime!.importBridgeFavorites(c.req.param("id"), items, {
+          ...(b?.collectionIds !== undefined && { collectionIds: b.collectionIds }),
+        }));
       }),
     );
 

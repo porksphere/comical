@@ -175,6 +175,22 @@ describe("POST …/favorites", () => {
     expect((await res.json()) as { error: string }).toEqual({ error: "items must be an array" });
   });
 
+  test("collectionIds files each imported series, so it reads as saved", async () => {
+    const { id } = await library.createCollection("Default");
+    await post(IMPORT, { collectionIds: [id] });
+
+    const entries = await library.getLibrary();
+    expect(entries).toHaveLength(favoriteIds.length);
+    expect(entries.every((e) => e.collectionIds.length === 1 && e.collectionIds[0] === id)).toBe(true);
+  });
+
+  test("400 when collectionIds is not an array of strings", async () => {
+    const res = await post(IMPORT, { collectionIds: "Default" });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toEqual({ error: "collectionIds must be an array of strings" });
+    expect(await library.getLibrary()).toHaveLength(0);
+  });
+
   test("malformed entries in items are dropped rather than crashing the import", async () => {
     const preview = (await get(PREVIEW).then((r) => r.json())) as Preview;
     const good = preview.items[0]!;
