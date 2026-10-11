@@ -264,7 +264,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   /** Fetch `target` (optionally with a Referer) and return its bytes. Buffers the body rather than
    *  piping `r.body`: this router is also reused in-process by the on-device runtime
    *  (`@comical/host-rn`), where the RN fetch exposes no streaming `body` and `new Response(r.body,…)`
-   *  would be silently empty. Reading bytes works on every host. */
+   *  would be silently empty. Reading bytes works on every host. Only a success is cacheable: a
+   *  client's retry re-requests the same `/img-proxy?url=…`, so a cached 404/503 would answer every
+   *  retry without ever reaching upstream again. */
   const proxyFetch = async (target: string, referer: string | undefined): Promise<Response> => {
     try {
       const headers: Record<string, string> = {};
@@ -276,11 +278,11 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         status: r.status,
         headers: {
           "Content-Type": r.headers.get("Content-Type") ?? "image/webp",
-          "Cache-Control": "max-age=86400",
+          "Cache-Control": r.ok ? "max-age=86400" : "no-store",
         },
       });
     } catch {
-      return new Response("upstream error", { status: 502 });
+      return new Response("upstream error", { status: 502, headers: { "Cache-Control": "no-store" } });
     }
   };
 

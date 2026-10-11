@@ -355,6 +355,47 @@ describe("GET /img-proxy", () => {
     }
   });
 
+  test("only a successful upstream is cacheable — a failure must not answer the client's retries", async () => {
+    const cdn = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        const status = Number(new URL(req.url).pathname.slice(1).split(".")[0]);
+        return new Response("x", { status, headers: { "Content-Type": "image/png" } });
+      },
+    });
+    const proxyMgr = {
+      list: async () => [
+        {
+          info: {
+            id: "prox", name: "Prox", version: "1.0.0", contractVersion: "2.0.0",
+            languages: ["en"], nsfw: false, capabilities: [],
+            assetProxy: { hosts: ["127.0.0.1"] },
+          },
+          settings: [], configured: true, missingRequired: [], source: "registry" as const,
+        },
+      ],
+      get: async (id: string) => { throw new Error(`not found: ${id}`); },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+    const srv = Bun.serve({ port: 0, fetch: createRouter(proxyMgr).fetch });
+    const proxied = (status: number) =>
+      fetch(`http://localhost:${srv.port}/img-proxy?url=${encodeURIComponent(`http://127.0.0.1:${cdn.port}/${status}.png`)}`);
+    try {
+      const ok = await proxied(200);
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get("Cache-Control")).toBe("max-age=86400");
+      for (const status of [404, 503]) {
+        const res = await proxied(status);
+        expect(res.status).toBe(status);
+        expect(res.headers.get("Cache-Control")).toBe("no-store");
+      }
+    } finally {
+      srv.stop(true);
+      cdn.stop(true);
+    }
+  });
+
   test("does not require auth token even when token is set", async () => {
     const authMgr = {
       list: async () => [],
