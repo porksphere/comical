@@ -6,6 +6,7 @@
 import { makeAsyncHost } from "./adapter-async.ts";
 import { installComicalHarness } from "./runtime.ts";
 import { ComicalURL } from "./url-polyfill.ts";
+import { ComicalTextDecoder, ComicalTextEncoder, comicalAtob, comicalBtoa } from "./text-polyfill.ts";
 
 // QuickJS lacks several Web APIs that bridge code and Zod rely on. Install minimal polyfills.
 // URLSearchParams goes first: ComicalURL builds `.searchParams` from it.
@@ -59,5 +60,13 @@ if (typeof URLSearchParams === "undefined") {
 if (typeof URL === "undefined") {
   (globalThis as unknown as Record<string, unknown>).URL = ComicalURL;
 }
+
+// Text{En,De}coder + atob/btoa — the SDK's cursor helpers use all four on every paged read, so
+// without them every bridge's getListItems throws "'TextEncoder' is not defined".
+const g = globalThis as unknown as Record<string, unknown>;
+if (typeof TextEncoder === "undefined") g.TextEncoder = ComicalTextEncoder;
+if (typeof TextDecoder === "undefined") g.TextDecoder = ComicalTextDecoder;
+if (typeof btoa === "undefined") g.btoa = comicalBtoa;
+if (typeof atob === "undefined") g.atob = comicalAtob;
 
 installComicalHarness(makeAsyncHost);
