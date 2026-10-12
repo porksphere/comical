@@ -19,7 +19,7 @@ type FakeEntry = SeriesEntry & { contentRating?: ContentRating };
 const RATED_ITEMS: FakeEntry[] = [
   { id: "e1", title: "Everyone One", contentRating: "everyone", thumbnailUrl: "http://x/e1.png", badges: [{ text: "EN" }] },
   { id: "m1", title: "Mature One", contentRating: "mature", thumbnailUrl: "http://x/m1.png", badges: [{ text: "EN" }] },
-  { id: "a1", title: "Adult One", contentRating: "adult", thumbnailUrl: "http://x/a1.png", badges: [{ text: "EN" }] },
+  { id: "a1", title: "Adult One", contentRating: "adult", thumbnailUrl: "http://x/a1.png", thumbnailAspect: 0.7, badges: [{ text: "EN" }] },
   { id: "u1", title: "Unrated One", thumbnailUrl: "http://x/u1.png" },
 ];
 
@@ -100,7 +100,7 @@ async function setMaxRating(bridgeId: string, rating: ContentRating | null): Pro
   });
 }
 
-type ItemsBody = { items: Array<{ id: string; title: string; excluded?: boolean; thumbnailUrl?: string; badges?: unknown[] }> };
+type ItemsBody = { items: Array<{ id: string; title: string; excluded?: boolean; thumbnailUrl?: string; thumbnailAspect?: number; badges?: unknown[] }> };
 async function searchItems(bridgeId: string): Promise<ItemsBody["items"]> {
   const data = (await fetch(`${baseUrl}/bridges/${bridgeId}/search?q=`).then((r) => r.json())) as ItemsBody;
   return data.items;
@@ -179,6 +179,7 @@ describe("redaction on a capable bridge (rated)", () => {
       expect(byId.a1?.excluded).toBe(true);
       expect(byId.a1?.title).toBe("Hidden");
       expect(byId.a1?.thumbnailUrl).toBeUndefined();
+      expect(byId.a1?.thumbnailAspect).toBeUndefined();
       expect(byId.a1?.badges).toBeUndefined();
     }
     await setMaxRating("rated", null);

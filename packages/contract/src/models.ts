@@ -63,6 +63,19 @@ export const cardBadgeSchema = z.object({
 });
 export type CardBadge = z.infer<typeof cardBadgeSchema>;
 
+/**
+ * A cover's shape as width / height (e.g. `2 / 3` for a standard portrait cover, `> 1` for a landscape
+ * one), sent next to `thumbnailUrl` so a client can lay out rows of cards at their real height before a
+ * single image has loaded. Purely a layout hint: clients that ignore it, and entries that omit it, fall
+ * back to their default card shape.
+ *
+ * Only set it when the size comes FREE with data the bridge already fetches (dimensions in the list
+ * JSON, inline sizes in the listing HTML, a source whose covers are all one fixed size). Never make an
+ * extra request — let alone fetch the image — just to fill it in. When the cover falls back to an
+ * image of unknown size, omit it rather than guess.
+ */
+export const thumbnailAspectSchema = z.number().positive().finite();
+
 /** A lightweight series entry as returned by search / home / popular / latest. */
 export const seriesEntrySchema = z.object({
   /** Opaque, bridge-namespaced, stable-across-sessions identifier. */
@@ -75,6 +88,11 @@ export const seriesEntrySchema = z.object({
    * in-process transport on device) before rendering.
    */
   thumbnailUrl: z.string().min(1).optional(),
+  /**
+   * The cover's width / height — see {@link thumbnailAspectSchema}. Meaningless without `thumbnailUrl`.
+   * A malformed value is dropped rather than failing the whole response: it's only a layout hint.
+   */
+  thumbnailAspect: thumbnailAspectSchema.optional().catch(undefined),
   subtitle: z.string().optional(),
   /**
    * Bridge-defined badges overlaid on the card's cover (language, rating, "NEW", …). Optional and
@@ -92,8 +110,8 @@ export const seriesEntrySchema = z.object({
   /**
    * Set by the host when this slot matched the user's persistent tag exclusions (capability
    * "exclude-tags") OR exceeded their configured max content rating (capability "content-rating").
-   * The entry is a redacted placeholder: `title` carries no real name and `thumbnailUrl` is
-   * intentionally omitted so the host renders a blank card and never fetches a cover. Hosts unaware
+   * The entry is a redacted placeholder: `title` carries no real name and `thumbnailUrl` (and its
+   * `thumbnailAspect`) are intentionally omitted so the host renders a blank card and never fetches a cover. Hosts unaware
    * of this flag degrade gracefully to a coverless, neutrally-titled card.
    */
   excluded: z.boolean().optional(),
@@ -215,6 +233,11 @@ export const seriesInfoSchema = z.object({
   altTitles: z.array(z.string().min(1)).optional(),
   /** Cover image — absolute URL or server-relative path; see {@link seriesEntrySchema}'s `thumbnailUrl`. */
   thumbnailUrl: z.string().min(1).optional(),
+  /**
+   * The cover's width / height — see {@link thumbnailAspectSchema}. Meaningless without `thumbnailUrl`.
+   * A malformed value is dropped rather than failing the whole response: it's only a layout hint.
+   */
+  thumbnailAspect: thumbnailAspectSchema.optional().catch(undefined),
   /**
    * Author/artist credit lines. `author`/`artist` (+ `*Id`) are the single-value convenience form
    * kept for back-compat; `authors`/`artists` are the richer multi-credit form a bridge fills in when

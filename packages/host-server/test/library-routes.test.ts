@@ -457,3 +457,29 @@ describe("disabled by default", () => {
     }
   });
 });
+
+describe("collecting with a cover aspect", () => {
+  test("a valid aspect is stored with the cover; a malformed one is dropped, not rejected", async () => {
+    const ok = await send("PUT", "/library/collected/series/demo/aspect-1", {
+      seriesTitle: "Aspect One",
+      thumbnailUrl: "https://cdn.example/a1.jpg",
+      thumbnailAspect: 0.7,
+    });
+    expect(ok.status).toBe(200);
+    const one = (await (await get("/library/collected/series/demo/aspect-1")).json()) as { series: Record<string, unknown> };
+    expect(one.series.thumbnailAspect).toBe(0.7);
+
+    for (const bad of [-1, 0, "wide", null]) {
+      const res = await send("PUT", "/library/collected/series/demo/aspect-2", {
+        seriesTitle: "Aspect Two",
+        thumbnailUrl: "https://cdn.example/a2.jpg",
+        thumbnailAspect: bad,
+      });
+      expect(res.status).toBe(200);
+      const two = (await (await get("/library/collected/series/demo/aspect-2")).json()) as { series: Record<string, unknown> };
+      expect(two.series.thumbnailAspect).toBeUndefined();
+    }
+    await send("DELETE", "/library/collected/series/demo/aspect-1");
+    await send("DELETE", "/library/collected/series/demo/aspect-2");
+  });
+});

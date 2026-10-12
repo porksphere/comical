@@ -14,6 +14,7 @@ import {
   CURSOR_MAX_LENGTH,
   EXCLUDED_TAGS_KEY,
   MAX_CONTENT_RATING_KEY,
+  thumbnailAspectSchema,
 } from "@comical/contract";
 import type {
   Chapter,
@@ -946,6 +947,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         (await body<{
           seriesTitle?: string;
           thumbnailUrl?: string;
+          thumbnailAspect?: number;
           author?: string;
           externalIds?: Record<string, string | number>;
           collectionIds?: string[];
@@ -953,6 +955,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       const snap = {
         ...(b.seriesTitle !== undefined && { seriesTitle: b.seriesTitle }),
         ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
+        ...(isAspect(b.thumbnailAspect) && { thumbnailAspect: b.thumbnailAspect }),
         ...(b.author !== undefined && { author: b.author }),
         ...(b.externalIds !== undefined && { externalIds: b.externalIds }),
         ...(b.collectionIds !== undefined && { collectionIds: b.collectionIds }),
@@ -1094,7 +1097,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         if (b?.collectionIds !== undefined && (!Array.isArray(b.collectionIds) || !b.collectionIds.every((id) => typeof id === "string"))) {
           return c.json({ error: "collectionIds must be an array of strings" }, 400);
         }
-        const items = b?.items?.filter((i) => i && typeof i.seriesId === "string" && typeof i.title === "string");
+        const items = b?.items
+          ?.filter((i) => i && typeof i.seriesId === "string" && typeof i.title === "string")
+          .map(({ thumbnailAspect, ...i }) => (isAspect(thumbnailAspect) ? { ...i, thumbnailAspect } : i));
         return c.json(await runtime!.importBridgeFavorites(c.req.param("id"), items, {
           ...(b?.collectionIds !== undefined && { collectionIds: b.collectionIds }),
         }));
@@ -2095,6 +2100,11 @@ async function withDownloadsEntry(
   }
 }
 
+/** A client-sent cover aspect worth storing — anything else is dropped rather than rejected. */
+function isAspect(v: unknown): v is number {
+  return thumbnailAspectSchema.safeParse(v).success;
+}
+
 /** The persisted tag exclusions from a stored-settings map (reserved key, tolerant of bad shapes). */
 function readExcludedTags(stored: Record<string, SettingValue>): string[] {
   const v = stored[EXCLUDED_TAGS_KEY];
@@ -2131,6 +2141,7 @@ async function redactByContentRating(
       item.excluded = true;
       item.title = "Hidden";
       delete item.thumbnailUrl;
+      delete item.thumbnailAspect;
       delete item.badges;
     }
   }

@@ -1904,7 +1904,7 @@ describe("searchTracker", () => {
 // ── Favorites import ─────────────────────────────────────────────────────────
 
 /** A bridge whose favorites are served from a fixed list, paged `perPage` at a time. */
-function favoritesBridge(favorites: Array<{ id: string; title: string; thumbnailUrl?: string }>, perPage = 100): Bridge {
+function favoritesBridge(favorites: Array<{ id: string; title: string; thumbnailUrl?: string; thumbnailAspect?: number }>, perPage = 100): Bridge {
   return {
     info: { ...BRIDGE_INFO, capabilities: ["favorites"] },
     async getSeriesDetails() { return { id: "x", title: "x" }; },
@@ -1932,6 +1932,41 @@ function endlessFavoritesBridge(): Bridge {
 function favoritesRuntime(bridge: Bridge, library: Library) {
   return new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library });
 }
+
+describe("cover aspect reaches the library", () => {
+  test("collectSeries keeps the caller's aspect, or takes the fetched detail's along with its cover", async () => {
+    const lib = makeLib();
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(mockBridge({ id: "s1", title: "One", thumbnailUrl: "http://x/d.jpg", thumbnailAspect: 1.4 })),
+      library: lib,
+    });
+    await runtime.collectSeries("test", "s1");
+    expect((await lib.getSeries("test:s1"))?.thumbnailAspect).toBe(1.4);
+
+    await runtime.collectSeries("test", "s2", { seriesTitle: "Two", thumbnailUrl: "http://x/2.jpg", thumbnailAspect: 0.7 });
+    expect((await lib.getSeries("test:s2"))?.thumbnailAspect).toBe(0.7);
+  });
+
+  test("a favorites import carries each favorite's aspect, from the bridge or the confirmed selection", async () => {
+    const lib = makeLib();
+    const runtime = favoritesRuntime(
+      favoritesBridge([
+        { id: "s1", title: "First", thumbnailUrl: "http://x/1.jpg", thumbnailAspect: 0.7 },
+        { id: "s2", title: "Second", thumbnailUrl: "http://x/2.jpg" },
+      ]),
+      lib,
+    );
+    const preview = await runtime.previewBridgeFavoritesImport("test");
+    expect(preview.items.map((i) => i.thumbnailAspect)).toEqual([0.7, undefined]);
+
+    await runtime.importBridgeFavorites("test");
+    expect((await lib.getSeries("test:s1"))?.thumbnailAspect).toBe(0.7);
+    expect((await lib.getSeries("test:s2"))?.thumbnailAspect).toBeUndefined();
+
+    await runtime.importBridgeFavorites("test", [{ seriesId: "s3", title: "Third", thumbnailUrl: "http://x/3.jpg", thumbnailAspect: 1.2 }]);
+    expect((await lib.getSeries("test:s3"))?.thumbnailAspect).toBe(1.2);
+  });
+});
 
 describe("previewBridgeFavoritesImport", () => {
   test("classifies each favorite as new / in-library / duplicate", async () => {

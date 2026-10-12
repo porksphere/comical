@@ -67,6 +67,8 @@ export interface FavoritesImportCandidate {
   seriesId: string;
   title: string;
   thumbnailUrl?: string;
+  /** `thumbnailUrl`'s width / height, when the bridge sent it. */
+  thumbnailAspect?: number;
   /**
    * `"in-library"` — already added FROM THIS BRIDGE, so there's nothing to import.
    * `"duplicate"` — a normalized-title match on ANOTHER bridge: importing adds a second source for
@@ -88,6 +90,8 @@ export interface FavoritesImportItem {
   seriesId: string;
   title: string;
   thumbnailUrl?: string;
+  /** `thumbnailUrl`'s width / height, when the bridge sent it. */
+  thumbnailAspect?: number;
   linkTo?: string;
 }
 
@@ -376,6 +380,7 @@ export class ComicalRuntime {
 
     let title = snap?.seriesTitle;
     let thumbnailUrl = snap?.thumbnailUrl;
+    let thumbnailAspect = snap?.thumbnailAspect;
     let author = snap?.author;
     let externalIds = snap?.externalIds;
 
@@ -384,7 +389,10 @@ export class ComicalRuntime {
       const bridge = await this.bridges.get(bridgeId);
       fetchedInfo = await bridge.getSeriesDetails(seriesId);
       title = fetchedInfo.title;
-      if (thumbnailUrl === undefined && fetchedInfo.thumbnailUrl !== undefined) thumbnailUrl = fetchedInfo.thumbnailUrl;
+      if (thumbnailUrl === undefined && fetchedInfo.thumbnailUrl !== undefined) {
+        thumbnailUrl = fetchedInfo.thumbnailUrl;
+        thumbnailAspect = fetchedInfo.thumbnailAspect;
+      }
       if (author === undefined && fetchedInfo.author !== undefined) author = fetchedInfo.author;
       if (externalIds === undefined && fetchedInfo.externalIds !== undefined) {
         externalIds = fetchedInfo.externalIds;
@@ -393,6 +401,7 @@ export class ComicalRuntime {
 
     const full: SeriesItemSnapshot = { seriesTitle: title };
     if (thumbnailUrl !== undefined) full.thumbnailUrl = thumbnailUrl;
+    if (thumbnailUrl !== undefined && thumbnailAspect !== undefined) full.thumbnailAspect = thumbnailAspect;
     if (author !== undefined) full.author = author;
     if (externalIds !== undefined) full.externalIds = externalIds;
     if (snap?.collectionIds !== undefined) full.collectionIds = snap.collectionIds;
@@ -563,6 +572,7 @@ export class ComicalRuntime {
   ): Promise<FavoritesImportCandidate> {
     const candidate: FavoritesImportCandidate = { seriesId: entry.id, title: entry.title, status: "new" };
     if (entry.thumbnailUrl !== undefined) candidate.thumbnailUrl = entry.thumbnailUrl;
+    if (entry.thumbnailUrl !== undefined && entry.thumbnailAspect !== undefined) candidate.thumbnailAspect = entry.thumbnailAspect;
 
     if (await lib.getSeries(entryKey(bridgeId, entry.id))) {
       candidate.status = "in-library";
@@ -614,6 +624,7 @@ export class ComicalRuntime {
       if (await lib.getSeries(key)) { skipped++; continue; }
       const snap: SeriesItemSnapshot = { seriesTitle: item.title };
       if (item.thumbnailUrl !== undefined) snap.thumbnailUrl = item.thumbnailUrl;
+      if (item.thumbnailUrl !== undefined && item.thumbnailAspect !== undefined) snap.thumbnailAspect = item.thumbnailAspect;
       if (opts.collectionIds !== undefined) snap.collectionIds = opts.collectionIds;
       await lib.collectSeries({ bridgeId, seriesId: item.seriesId }, snap);
       imported++;
@@ -639,6 +650,7 @@ export class ComicalRuntime {
           seriesId: entry.id,
           title: entry.title,
           ...(entry.thumbnailUrl !== undefined && { thumbnailUrl: entry.thumbnailUrl }),
+          ...(entry.thumbnailUrl !== undefined && entry.thumbnailAspect !== undefined && { thumbnailAspect: entry.thumbnailAspect }),
         });
       }
       if (!result.nextCursor || page >= MAX_IMPORT_PAGES) break;
@@ -887,6 +899,7 @@ export class ComicalRuntime {
     const snap: SeriesItemSnapshot = { seriesTitle: info?.title ?? item.title };
     const thumbnailUrl = info?.thumbnailUrl ?? item.thumbnailUrl;
     if (thumbnailUrl !== undefined) snap.thumbnailUrl = thumbnailUrl;
+    if (info?.thumbnailUrl !== undefined && info.thumbnailAspect !== undefined) snap.thumbnailAspect = info.thumbnailAspect;
     if (info?.author !== undefined) snap.author = info.author;
     if (info?.externalIds !== undefined) snap.externalIds = info.externalIds;
     if (collectionIds !== undefined) snap.collectionIds = collectionIds;

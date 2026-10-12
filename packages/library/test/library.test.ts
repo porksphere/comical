@@ -1,7 +1,7 @@
 /** The Library domain service over the in-memory store: collection, read state, sync, lists. */
 import { describe, expect, test } from "bun:test";
 import type { Chapter } from "@comical/contract";
-import { activityItemSchema, entryKey, InMemoryLibraryStore, Library, normalizeTitle } from "../src/index.ts";
+import { activityItemSchema, collectionSeriesItemSchema, entryKey, InMemoryLibraryStore, Library, normalizeTitle } from "../src/index.ts";
 
 const SERIES = { bridgeId: "demo", seriesId: "s1", title: "Series One" };
 const COORD = { bridgeId: SERIES.bridgeId, seriesId: SERIES.seriesId };
@@ -53,6 +53,81 @@ describe("collection", () => {
     const again = await lib.collectSeries(COORD, { seriesTitle: "Renamed" });
     expect(again.item.collectedAt).toBe(first.item.collectedAt);
     expect(again.item.seriesTitle).toBe("Renamed");
+  });
+});
+
+describe("cover aspect", () => {
+  const A = "https://cdn.example/a.jpg";
+  const B = "https://cdn.example/b.jpg";
+
+  test("is stored with the cover it came with, and only with a cover", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, { ...SNAP, thumbnailUrl: A, thumbnailAspect: 0.7 });
+    expect((await lib.getSeries(KEY))?.thumbnailAspect).toBe(0.7);
+
+    const other = { bridgeId: "demo", seriesId: "s2" };
+    await lib.collectSeries(other, { seriesTitle: "No Cover", thumbnailAspect: 0.7 });
+    expect((await lib.getSeries(entryKey("demo", "s2")))?.thumbnailAspect).toBeUndefined();
+  });
+
+  test("re-collecting keeps it for the same cover and drops it for a new one", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, { ...SNAP, thumbnailUrl: A, thumbnailAspect: 0.7 });
+    await lib.collectSeries(COORD, { ...SNAP, thumbnailUrl: A });
+    expect((await lib.getSeries(KEY))?.thumbnailAspect).toBe(0.7);
+    await lib.collectSeries(COORD, SNAP); // names no cover at all — keeps the stored pair
+    expect((await lib.getSeries(KEY))?.thumbnailAspect).toBe(0.7);
+
+    await lib.collectSeries(COORD, { ...SNAP, thumbnailUrl: B });
+    const item = await lib.getSeries(KEY);
+    expect(item?.thumbnailUrl).toBe(B);
+    expect(item?.thumbnailAspect).toBeUndefined();
+
+    await lib.collectSeries(COORD, { ...SNAP, thumbnailUrl: A, thumbnailAspect: 1.4 });
+    expect((await lib.getSeries(KEY))?.thumbnailAspect).toBe(1.4);
+  });
+
+  test("refreshSnapshot replaces it with a new cover's, or drops it when the new cover has none", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, { ...SNAP, thumbnailUrl: A, thumbnailAspect: 0.7 });
+
+    await lib.refreshSnapshot(KEY, { id: "s1", title: SERIES.title, thumbnailUrl: B, thumbnailAspect: 1.4 });
+    expect((await lib.getSeries(KEY))?.thumbnailAspect).toBe(1.4);
+
+    await lib.refreshSnapshot(KEY, { id: "s1", title: SERIES.title, thumbnailUrl: A });
+    const item = await lib.getSeries(KEY);
+    expect(item?.thumbnailUrl).toBe(A);
+    expect(item?.thumbnailAspect).toBeUndefined();
+  });
+
+  test("refreshSnapshot fills one in for an unchanged cover saved without it", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, { ...SNAP, thumbnailUrl: A });
+    const before = await lib.getSeries(KEY);
+
+    await lib.refreshSnapshot(KEY, { id: "s1", title: SERIES.title, thumbnailUrl: A });
+    expect((await lib.getSeries(KEY))?.updatedAt).toBe(before!.updatedAt); // nothing new: no write
+
+    await lib.refreshSnapshot(KEY, { id: "s1", title: SERIES.title, thumbnailUrl: A, thumbnailAspect: 0.7 });
+    expect((await lib.getSeries(KEY))?.thumbnailAspect).toBe(0.7);
+  });
+
+  test("a corrupt stored aspect parses as absent instead of failing the item", () => {
+    const parsed = collectionSeriesItemSchema.parse({
+      type: "series",
+      id: "x",
+      bridgeId: "demo",
+      seriesId: "s1",
+      seriesTitle: "T",
+      collectedAt: 1,
+      updatedAt: 1,
+      collectionIds: [],
+      knownChapters: [],
+      thumbnailUrl: A,
+      thumbnailAspect: -3,
+    });
+    expect(parsed.thumbnailAspect).toBeUndefined();
+    expect(parsed.thumbnailUrl).toBe(A);
   });
 });
 
