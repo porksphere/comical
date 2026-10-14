@@ -1848,6 +1848,64 @@ describe("backgroundSync — unavailable bridges", () => {
   });
 });
 
+describe("backgroundSync — direct bridges", () => {
+  // A direct (page-flat) series has no chapter list, so it can never produce activity and is never
+  // stamped synced — left in, it would head the stalest-first queue on every run.
+  function directBridge() {
+    let detailCalls = 0;
+    const bridge: Bridge = {
+      info: { ...BRIDGE_INFO, id: "flat", capabilities: ["direct"] },
+      async getSeriesDetails(id: string) {
+        detailCalls++;
+        return { id, title: `Flat ${id}` };
+      },
+    };
+    return { bridge, detailCalls: () => detailCalls };
+  }
+
+  test("direct series are left out, so a chaptered one gets the slot", async () => {
+    const lib = makeLib();
+    const { bridge, calls } = instrumentedBridge();
+    const flat = directBridge();
+    let flatAsked = 0;
+    const runtime = new ComicalRuntime({
+      bridges: {
+        get: async (id) => {
+          if (id === "test") return bridge;
+          flatAsked++;
+          return flat.bridge;
+        },
+      },
+      library: lib,
+    });
+    await runtime.collectSeries("test", "real"); // synced once — older than the window below
+    calls.clear();
+    // Never synced, so they'd sort ahead of "real".
+    await lib.collectSeries({ bridgeId: "flat", seriesId: "d1" }, { seriesTitle: "Flat 1" });
+    await lib.collectSeries({ bridgeId: "flat", seriesId: "d2" }, { seriesTitle: "Flat 2" });
+    await new Promise((r) => setTimeout(r, 2));
+
+    const res = await runtime.backgroundSync({ concurrency: 1, budgetMs: 0, staleMs: 1 });
+
+    expect(calls.get("real")).toBe(1);
+    expect(res).toMatchObject({ updated: 1, newChapters: 0, scanned: 3, skipped: 2, unavailable: 0 });
+    expect(flatAsked).toBe(1); // resolved once per run, not once per series
+    expect(flat.detailCalls()).toBe(0); // no per-entry pass at all, so no detail refresh either
+  });
+
+  test("a library of only direct series syncs nothing, even when forced", async () => {
+    const lib = makeLib();
+    const flat = directBridge();
+    const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(flat.bridge), library: lib });
+    await lib.collectSeries({ bridgeId: "flat", seriesId: "d1" }, { seriesTitle: "Flat 1" });
+
+    const res = await runtime.backgroundSync({ force: true });
+
+    expect(res).toMatchObject({ updated: 0, newChapters: 0, scanned: 1, skipped: 1, unavailable: 0 });
+    expect(flat.detailCalls()).toBe(0);
+  });
+});
+
 // ── searchTracker — the "link tracker" UI flow ────────────────────────────────
 // Directly exercises the method the tracker-link search calls. Its "no trackers configured" guard
 // is the exact error the on-device runtime once threw (see host-rn's install-trackers.test.ts): a
