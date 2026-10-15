@@ -165,6 +165,32 @@ describe("GET /bridges/:id/series/:seriesId/page-image/:hash/:gidRef", () => {
       srv.stop(true);
     }
   });
+
+  test("answers 429 with Retry-After when the bridge reports the source is limiting it", async () => {
+    const mockBridge = {
+      info: { id: "mock", name: "Mock", version: "0.0.1", contractVersion: "2.0.0", capabilities: ["direct"] },
+      getSeriesDetails: async () => ({ id: "test", title: "Test" }),
+      resolvePage: async () => {
+        throw new Error("resolvePage threw: [rate-limited:3600000] image quota exceeded");
+      },
+    };
+    const mockMgr = {
+      list: async () => [],
+      get: async (id: string) => { if (id !== "mock") throw new Error(`not found: ${id}`); return mockBridge; },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+
+    const srv = Bun.serve({ port: 0, fetch: createRouter(mockMgr).fetch });
+    try {
+      const res = await fetch(`http://localhost:${srv.port}/bridges/mock/series/s/page-image/abc/1-1`, { redirect: "manual" });
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBe("3600");
+      expect(((await res.json()) as { error: string }).error).toContain("image quota exceeded");
+    } finally {
+      srv.stop(true);
+    }
+  });
 });
 
 describe("GET /bridges/:id/series/:seriesId/page-thumb/:pageIndex", () => {
@@ -390,6 +416,88 @@ describe("GET /img-proxy", () => {
         expect(res.status).toBe(status);
         expect(res.headers.get("Cache-Control")).toBe("no-store");
       }
+    } finally {
+      srv.stop(true);
+      cdn.stop(true);
+    }
+  });
+
+  test("paces a bridge's proxied images by its assetRateLimit, and holds them through an upstream 429", async () => {
+    const arrivals: number[] = [];
+    let throttle = false;
+    const cdn = Bun.serve({
+      port: 0,
+      fetch: () => {
+        arrivals.push(Date.now());
+        if (throttle) {
+          throttle = false;
+          return new Response("slow down", { status: 429, headers: { "Retry-After": "1" } });
+        }
+        return new Response("bytes", { headers: { "Content-Type": "image/png" } });
+      },
+    });
+    const proxyMgr = {
+      list: async () => [
+        {
+          info: {
+            id: "prox", name: "Prox", version: "1.0.0", contractVersion: "2.0.0",
+            languages: ["en"], nsfw: false, capabilities: [],
+            assetProxy: { hosts: ["127.0.0.1"] },
+            assetRateLimit: { maxConcurrent: 1, minIntervalMs: 120 },
+          },
+          settings: [], configured: true, missingRequired: [], source: "registry" as const,
+        },
+      ],
+      get: async (id: string) => { throw new Error(`not found: ${id}`); },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+    const srv = Bun.serve({ port: 0, fetch: createRouter(proxyMgr).fetch });
+    const proxied = (n: number) =>
+      fetch(`http://localhost:${srv.port}/img-proxy?url=${encodeURIComponent(`http://127.0.0.1:${cdn.port}/${n}.png`)}`);
+    try {
+      const all = await Promise.all([1, 2, 3].map(proxied));
+      expect(all.map((r) => r.status)).toEqual([200, 200, 200]);
+      for (let i = 1; i < arrivals.length; i++) expect(arrivals[i]! - arrivals[i - 1]!).toBeGreaterThanOrEqual(110);
+
+      throttle = true;
+      const limited = await proxied(4);
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get("Retry-After")).toBe("1");
+      const before = Date.now();
+      expect((await proxied(5)).status).toBe(200);
+      expect(arrivals.at(-1)! - before).toBeGreaterThanOrEqual(800);
+    } finally {
+      srv.stop(true);
+      cdn.stop(true);
+    }
+  });
+
+  test("a bridge without an assetRateLimit is proxied unpaced", async () => {
+    const arrivals: number[] = [];
+    const cdn = Bun.serve({ port: 0, fetch: () => (arrivals.push(Date.now()), new Response("b")) });
+    const proxyMgr = {
+      list: async () => [
+        {
+          info: {
+            id: "prox", name: "Prox", version: "1.0.0", contractVersion: "2.0.0",
+            languages: ["en"], nsfw: false, capabilities: [],
+            assetProxy: { hosts: ["127.0.0.1"] },
+          },
+          settings: [], configured: true, missingRequired: [], source: "registry" as const,
+        },
+      ],
+      get: async (id: string) => { throw new Error(`not found: ${id}`); },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+    const srv = Bun.serve({ port: 0, fetch: createRouter(proxyMgr).fetch });
+    try {
+      const t0 = Date.now();
+      await Promise.all([1, 2, 3, 4].map((n) =>
+        fetch(`http://localhost:${srv.port}/img-proxy?url=${encodeURIComponent(`http://127.0.0.1:${cdn.port}/${n}.png`)}`)));
+      expect(arrivals).toHaveLength(4);
+      expect(Date.now() - t0).toBeLessThan(500);
     } finally {
       srv.stop(true);
       cdn.stop(true);

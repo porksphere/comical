@@ -43,6 +43,16 @@ export const registryBridgeEntrySchema = z.object({
    */
   cardSubtitles: z.boolean().optional(),
   ratings: z.boolean().optional(),
+  /**
+   * Mirror of `BridgeInfo.assetRateLimit` — the bridge's page-image budget, which a device's
+   * download engine and img-proxy pace by. In the index for the same reason as above.
+   */
+  assetRateLimit: z
+    .object({
+      maxConcurrent: z.number().int().positive().optional(),
+      minIntervalMs: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
   /** Absolute URL to the CJS bridge bundle. */
   url: z.string().url(),
   /** Lowercase hex SHA-256 of the bundle content. Always required. */

@@ -855,5 +855,21 @@ export const bridgeInfoSchema = z.object({
       referer: z.string().url().optional(),
     })
     .optional(),
+  /**
+   * Politeness budget for this bridge's page IMAGES, separate from `rateLimit` (which only gates
+   * the bridge's own requests — images are fetched by the host, not the bridge). Hosts apply it
+   * where they fetch pages in bulk on the bridge's behalf: the download engine paces every page of
+   * this bridge through it (whatever URL shape the page has), and the image proxy paces the proxied
+   * hosts this bridge declares. A reader loading direct CDN URLs is not throttled. Omit when the
+   * source's image hosts have no known limit.
+   */
+  assetRateLimit: z
+    .object({
+      /** Maximum page images in flight at once. */
+      maxConcurrent: z.number().int().positive().optional(),
+      /** Minimum milliseconds between successive page-image starts. */
+      minIntervalMs: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
 });
 export type BridgeInfo = z.infer<typeof bridgeInfoSchema>;

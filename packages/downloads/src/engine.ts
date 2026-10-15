@@ -15,6 +15,7 @@
  * transitions, deletions, queue idle) instead of polling — the seam that feeds both an SSE stream
  * (remote clients) and direct in-process subscriptions (embedded clients).
  */
+import { RateLimiter, type RateLimitBudget } from "@comical/core/net/rate-limiter";
 import { entryKey, parseEntryKey, type DownloadedChapter, type DownloadedPage } from "./models.ts";
 import type {
   Downloads,
@@ -26,6 +27,7 @@ import type {
 } from "./downloads.ts";
 import type { BlobStore } from "./blob-store.ts";
 import { extFor, relPathFor } from "./paths.ts";
+import { rateLimitWaitOf } from "./rate-limited.ts";
 
 /** One fetched page: its raw bytes plus the response media type (used to pick the file extension). */
 export interface FetchedPage {
@@ -71,6 +73,11 @@ export type DownloadEngineEvent =
   | { type: "changed"; bridgeId: string; seriesId: string }
   /** A chapter/series/everything was deleted (no ids = everything). */
   | { type: "deleted"; bridgeId?: string; seriesId?: string; chapterId?: string }
+  /**
+   * The source refused one of this bridge's pages with "slow down" (a 429, a ban notice, an image
+   * quota): its chapters are held, pages untouched, until `until` (epoch ms), then resume on their own.
+   */
+  | { type: "blocked"; bridgeId: string; until: number }
   /** The drain loop went to sleep (queue empty, gated, stopped, or nothing progressing). */
   | { type: "idle" };
 
@@ -95,6 +102,15 @@ export interface DownloadEngineOptions {
   pageConcurrency?: number;
   /** Fetch attempts per page before it's marked failed. Defaults to 2. */
   attemptsPerPage?: number;
+  /**
+   * The bridge's page-image budget (`BridgeInfo.assetRateLimit`), looked up when the engine picks up
+   * one of its chapters. Every page fetch of that bridge — whatever URL shape it has — goes through
+   * one limiter per bridge, shared across chapters. Undefined (or no lookup) leaves pages unpaced
+   * beyond `pageConcurrency`.
+   */
+  pageRateLimit?: (
+    bridgeId: string,
+  ) => Promise<RateLimitBudget | undefined> | RateLimitBudget | undefined;
   /** Called between attempts on a page that failed once (device hosts bust a stale asset resolve). */
   onPageRetry?: (page: PendingPage) => void;
   /**
@@ -118,7 +134,13 @@ export class DownloadEngine {
   private readonly attemptsPerPage: number;
   private readonly onPageRetry: ((page: PendingPage) => void) | undefined;
   private readonly idleRecheckMs: number | undefined;
+  private readonly pageRateLimit: DownloadEngineOptions["pageRateLimit"];
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private readonly pageLimiters = new Map<string, RateLimiter>();
+  /** Bridges whose source said "slow down", → when their chapters may be picked up again. */
+  private readonly blockedUntil = new Map<string, number>();
+  private unblockTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly listeners = new Set<(e: DownloadEngineEvent) => void>();
   private drainPromise: Promise<void> | null = null;
@@ -143,6 +165,7 @@ export class DownloadEngine {
     this.attemptsPerPage = opts.attemptsPerPage ?? 2;
     this.onPageRetry = opts.onPageRetry;
     this.idleRecheckMs = opts.idleRecheckMs;
+    this.pageRateLimit = opts.pageRateLimit;
   }
 
   // ── Events ───────────────────────────────────────────────────────────────────
@@ -312,6 +335,13 @@ export class DownloadEngine {
   stop(): void {
     this.stopRequested = true;
     this.clearIdleTimer();
+    this.clearUnblockTimer();
+  }
+
+  /** When this bridge's held queue resumes (epoch ms), or undefined when it isn't held. */
+  blockedUntilFor(bridgeId: string): number | undefined {
+    const until = this.blockedUntil.get(bridgeId);
+    return until !== undefined && until > Date.now() ? until : undefined;
   }
 
   /**
@@ -351,6 +381,7 @@ export class DownloadEngine {
       // hiccup) rather than a genuine empty/stop, arm the self-heal so the queue can't wedge until
       // an app restart — see `idleRecheckMs`.
       this.scheduleIdleRecheck();
+      this.scheduleUnblock();
     });
     return this.drainPromise;
   }
@@ -384,6 +415,67 @@ export class DownloadEngine {
     }, this.idleRecheckMs);
   }
 
+  private clearUnblockTimer(): void {
+    if (this.unblockTimer) {
+      clearTimeout(this.unblockTimer);
+      this.unblockTimer = null;
+    }
+  }
+
+  private isBlocked(bridgeId: string): boolean {
+    return this.blockedUntilFor(bridgeId) !== undefined;
+  }
+
+  private block(bridgeId: string, waitMs: number): void {
+    const until = Date.now() + Math.max(0, waitMs);
+    if (until <= (this.blockedUntil.get(bridgeId) ?? 0)) return;
+    this.blockedUntil.set(bridgeId, until);
+    this.pageLimiters.get(bridgeId)?.pauseUntil(until);
+    this.emit({ type: "blocked", bridgeId, until });
+  }
+
+  /**
+   * A held bridge resumes on its own: once the loop settles, one timer wakes it at the earliest
+   * hold's end. A `stop()` cancels it (the host decides when to run again) and the next drain
+   * re-arms it, so a host that stops while backgrounded is never restarted behind its back.
+   */
+  private scheduleUnblock(): void {
+    this.clearUnblockTimer();
+    if (this.stopRequested) return;
+    const now = Date.now();
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const [bridgeId, until] of this.blockedUntil) {
+      if (until <= now) this.blockedUntil.delete(bridgeId);
+      else earliest = Math.min(earliest, until);
+    }
+    if (earliest === Number.POSITIVE_INFINITY) return;
+    this.unblockTimer = setTimeout(() => {
+      this.unblockTimer = null;
+      if (!this.stopRequested) this.kick();
+    }, earliest - now);
+  }
+
+  /** The bridge's shared page limiter, reconfigured from its current budget; none when it declares none. */
+  private async pageLimiterFor(bridgeId: string): Promise<RateLimiter | undefined> {
+    let budget: RateLimitBudget | undefined;
+    try {
+      budget = await this.pageRateLimit?.(bridgeId);
+    } catch {
+      budget = undefined; // a failed lookup must not stall downloads — keep the last budget
+    }
+    let limiter = this.pageLimiters.get(bridgeId);
+    if (!budget) return limiter;
+    if (limiter) limiter.reconfigure(budget);
+    else {
+      limiter = new RateLimiter({
+        maxConcurrent: budget.maxConcurrent ?? Number.MAX_SAFE_INTEGER,
+        minIntervalMs: budget.minIntervalMs ?? 0,
+      });
+      this.pageLimiters.set(bridgeId, limiter);
+    }
+    return limiter;
+  }
+
   private async drainLoop(): Promise<void> {
     for (;;) {
       if (this.stopRequested) break;
@@ -400,7 +492,7 @@ export class DownloadEngine {
       for (const chapter of pending) {
         if (this.stopRequested || !(await this.mayDownload())) break;
         const key = entryKey(chapter.bridgeId, chapter.seriesId);
-        if (this.isCancelled(key, chapter.chapterId)) continue;
+        if (this.isCancelled(key, chapter.chapterId) || this.isBlocked(chapter.bridgeId)) continue;
         try {
           const did = await this.downloadChapter(chapter);
           progressed = progressed || did;
@@ -435,7 +527,14 @@ export class DownloadEngine {
         // the first byte lands — announcing that would flash the chapter back to a queued icon
         // between pickup and its first page. The re-mark below settles it as downloading.
         await this.downloads.resolveChapterPages(key, chapterId, inputs);
-      } catch {
+      } catch (e) {
+        // The source is throttling us: hold the bridge and leave the chapter pending (unresolved), so
+        // resolution is simply retried when the hold ends rather than surfacing as a failure.
+        const wait = rateLimitWaitOf(e);
+        if (wait !== undefined) {
+          this.block(bridgeId, wait);
+          return false;
+        }
         const failed = await this.downloads.failChapter(key, chapterId);
         this.emit({ type: "chapter", chapter: failed });
         return false;
@@ -460,11 +559,12 @@ export class DownloadEngine {
     const picked = await this.downloads.markChapterDownloading(key, chapterId);
     this.emit({ type: "chapter", chapter: picked });
 
+    const limiter = await this.pageLimiterFor(bridgeId);
     let landed = false;
     const queue: DownloadedPage[] = [...outstanding];
     const worker = async (): Promise<void> => {
       for (;;) {
-        if (this.stopRequested || this.isCancelled(key, chapterId)) return;
+        if (this.stopRequested || this.isCancelled(key, chapterId) || this.isBlocked(bridgeId)) return;
         const page = queue.shift();
         if (!page) return;
         const pending: PendingPage = { index: page.index, sourceUrl: page.sourceUrl };
@@ -476,7 +576,13 @@ export class DownloadEngine {
         for (let attempt = 0; attempt < this.attemptsPerPage && !stored; attempt++) {
           if (this.isCancelled(key, chapterId)) return;
           try {
-            const fetched = await this.fetchPage({ bridgeId, seriesId, chapterId }, pending);
+            const release = limiter ? await limiter.acquire() : undefined;
+            let fetched: FetchedPage;
+            try {
+              fetched = await this.fetchPage({ bridgeId, seriesId, chapterId }, pending);
+            } finally {
+              release?.();
+            }
             const relPath = relPathFor(bridgeId, seriesId, chapterId, page.index, extFor(fetched.contentType ?? page.sourceUrl));
             const { bytes } = await this.blobs.write(relPath, fetched.data);
             const updated = await this.downloads.recordPage(key, chapterId, page.index, relPath, bytes);
@@ -494,7 +600,14 @@ export class DownloadEngine {
               state: updated.state,
             });
             if (updated.state === "complete") this.emit({ type: "chapter", chapter: updated });
-          } catch {
+          } catch (e) {
+            // "Slow down" is not this page's fault: hold the whole bridge and leave the page queued,
+            // without spending its attempts.
+            const wait = rateLimitWaitOf(e);
+            if (wait !== undefined) {
+              this.block(bridgeId, wait);
+              return;
+            }
             if (attempt < this.attemptsPerPage - 1) this.onPageRetry?.(pending);
           }
         }

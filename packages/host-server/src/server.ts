@@ -150,6 +150,8 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
       // Lazily-enqueued chapters (the instant bulk-enqueue path) resolve their page lists at
       // download time, through this router's own bridge routes.
       resolvePages: createServerPageResolver(() => routerFetch, opts.token),
+      // Each bridge's declared image budget paces its page downloads, whatever URL shape they use.
+      pageRateLimit: async (id) => (await manager.list()).find((b) => b.info.id === id)?.info.assetRateLimit,
     });
     routerOpts.downloads = downloads;
     routerOpts.downloadEngine = engine;

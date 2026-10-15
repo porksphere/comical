@@ -8,11 +8,13 @@
 import type { DownloadPageInput } from "./downloads.ts";
 import type { PageResolver } from "./engine.ts";
 import { DIRECT_CHAPTER_ID } from "./paths.ts";
+import { rateLimitedFromResponse } from "./rate-limited.ts";
 
 /** The slice of a fetch response the resolver needs (satisfied by `Response` and the RN transport). */
 export interface ResolverResponse {
   ok: boolean;
   status: number;
+  headers?: { get(name: string): string | null };
   json(): Promise<unknown>;
 }
 
@@ -38,7 +40,7 @@ export function createRouterPageResolver(
         ? `${base}/pages`
         : `${base}/chapters/${encodeURIComponent(chapterId)}/pages`;
     const res = await fetchPath(path);
-    if (!res.ok) throw new Error(`page resolution failed: ${res.status}`);
+    if (!res.ok) throw rateLimitedFromResponse(res) ?? new Error(`page resolution failed: ${res.status}`);
     const pages = (await res.json()) as WirePage[];
     if (!Array.isArray(pages) || pages.length === 0) {
       throw new Error("page resolution returned no pages");

@@ -11,6 +11,7 @@
     "./evaluator": "./src/evaluator.ts",
     "./errors": "./src/errors.ts",
     "./settings": "./src/settings.ts",
+    "./net/rate-limiter": "./src/net/rate-limiter.ts",
     "./net/refreshable-network": "./src/net/refreshable-network.ts"
   },
   "types": "./src/index.ts",

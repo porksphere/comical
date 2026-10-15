@@ -28,6 +28,8 @@ import {
   seriesRevisionSchema,
   settingDescriptorSchema,
   MAX_UPDATE_CHECK_BATCH,
+  parseRateLimited,
+  rateLimitedMessage,
   sortOptionSchema,
   sortSelectionSchema,
   tagSchema,
@@ -199,7 +201,7 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   }
 
   // 6. Wrap every method with timeout + output validation.
-  return wrapBridge(raw, info, limits.callTimeoutMs);
+  return wrapBridge(raw, info, limits.callTimeoutMs, gatedNetwork.blockedUntil);
 }
 
 function extractFactory(exports: unknown): BridgeFactory {
@@ -212,7 +214,12 @@ function extractFactory(exports: unknown): BridgeFactory {
   return def as BridgeFactory;
 }
 
-function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBridge {
+function wrapBridge(
+  raw: Bridge,
+  info: BridgeInfo,
+  timeoutMs: number,
+  blockedUntil: () => number = () => 0,
+): LoadedBridge {
   const call = async <S extends z.ZodTypeAny>(
     label: string,
     schema: S,
@@ -222,6 +229,14 @@ function wrapBridge(raw: Bridge, info: BridgeInfo, timeoutMs: number): LoadedBri
     try {
       result = await withTimeout(Promise.resolve().then(fn), timeoutMs, label);
     } catch (cause) {
+      // A call that fails while the source is throttling us failed BECAUSE of it (the bridge saw the
+      // 429, or queued behind the pause until it timed out) — tag it so hosts back off instead of
+      // treating it as a broken bridge. A bridge that tagged its own error keeps its wait.
+      const wait = blockedUntil() - Date.now();
+      const message = errorMessage(cause);
+      if (wait > 0 && !parseRateLimited(message)) {
+        throw new BridgeRuntimeError(`${label} threw: ${rateLimitedMessage(wait, message)}`, cause);
+      }
       if (cause instanceof ComicalError) throw cause;
       throw new BridgeRuntimeError(`${label} threw: ${errorMessage(cause)}`, cause);
     }

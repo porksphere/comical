@@ -15,3 +15,4 @@ export * from "./paths.ts";
 export * from "./blob-store.ts";
 export * from "./engine.ts";
 export * from "./page-resolver.ts";
+export * from "./rate-limited.ts";

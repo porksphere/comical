@@ -11,7 +11,13 @@
  * `getFetch` is late-bound because the router and the engine reference each other at composition
  * time (the router mounts the engine's routes; the engine resolves pages through the router).
  */
-import { createRouterPageResolver, type FetchedPage, type PageFetcher, type PageResolver } from "@comical/downloads";
+import {
+  createRouterPageResolver,
+  rateLimitedFromResponse,
+  type FetchedPage,
+  type PageFetcher,
+  type PageResolver,
+} from "@comical/downloads";
 
 /** Arbitrary in-process origin — the router matches on path only; nothing leaves the host. */
 const ENGINE_ORIGIN = "http://downloads.comical.local";
@@ -50,7 +56,7 @@ export function createServerPageFetcher(
       if (!location) throw new Error("page resolver redirected without a Location");
       return fetchBytes(location, page.headers);
     }
-    if (!routed.ok) throw new Error(`page route failed: ${routed.status}`);
+    if (!routed.ok) throw rateLimitedFromResponse(routed) ?? new Error(`page route failed: ${routed.status}`);
     const data = new Uint8Array(await routed.arrayBuffer());
     return withContentType({ data }, routed.headers.get("Content-Type"));
   };
@@ -58,7 +64,7 @@ export function createServerPageFetcher(
 
 async function fetchBytes(url: string, headers?: Record<string, string>): Promise<FetchedPage> {
   const res = await fetch(url, headers ? { headers } : undefined);
-  if (!res.ok) throw new Error(`page download failed: ${res.status}`);
+  if (!res.ok) throw rateLimitedFromResponse(res) ?? new Error(`page download failed: ${res.status}`);
   const data = new Uint8Array(await res.arrayBuffer());
   return withContentType({ data }, res.headers.get("Content-Type"));
 }

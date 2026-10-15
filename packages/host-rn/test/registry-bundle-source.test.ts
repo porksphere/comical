@@ -37,6 +37,7 @@ async function makeIndex(sha256?: string) {
         assetProxy: { hosts: ["cdn.demo.example"], referer: "https://demo.example/" },
         cardSubtitles: true,
         ratings: true,
+        assetRateLimit: { maxConcurrent: 2, minIntervalMs: 500 },
         url: BUNDLE_URL,
         sha256: digest,
       },
@@ -80,12 +81,15 @@ describe("RegistryBundleSource", () => {
     // is one the app never sees, whatever the bundle itself declares.
     expect(installed[0]?.info.cardSubtitles).toBe(true);
     expect(installed[0]?.info.ratings).toBe(true);
+    // The image budget too, or a device's downloads would go unpaced.
+    expect(installed[0]?.info.assetRateLimit).toEqual({ maxConcurrent: 2, minIntervalMs: 500 });
     expect(installed[0]?.source).toBe("registry");
   });
 
   test("entryToInfo leaves the display flags off an entry that carries neither", async () => {
-    const { cardSubtitles: _cs, ratings: _r, ...bare } = (await makeIndex()).bridges[0]!;
+    const { cardSubtitles: _cs, ratings: _r, assetRateLimit: _arl, ...bare } = (await makeIndex()).bridges[0]!;
     const info = entryToInfo(bare);
+    expect("assetRateLimit" in info).toBe(false);
     expect("cardSubtitles" in info).toBe(false);
     expect("ratings" in info).toBe(false);
   });

@@ -76,6 +76,7 @@ export function entryToInfo(e: RegistryBridgeEntry): BridgeInfo {
     ...(e.assetProxy !== undefined ? { assetProxy: e.assetProxy } : {}),
     ...(e.cardSubtitles !== undefined ? { cardSubtitles: e.cardSubtitles } : {}),
     ...(e.ratings !== undefined ? { ratings: e.ratings } : {}),
+    ...(e.assetRateLimit !== undefined ? { assetRateLimit: e.assetRateLimit } : {}),
   };
 }
 

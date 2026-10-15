@@ -99,6 +99,19 @@ describe("registryBridgeEntrySchema assetProxy", () => {
   });
 });
 
+describe("registryBridgeEntrySchema assetRateLimit", () => {
+  test("carries the bridge's image budget", () => {
+    const entry = registryBridgeEntrySchema.parse({ ...BASE_ENTRY, assetRateLimit: { maxConcurrent: 2, minIntervalMs: 3000 } });
+    expect(entry.assetRateLimit).toEqual({ maxConcurrent: 2, minIntervalMs: 3000 });
+    expect("assetRateLimit" in registryBridgeEntrySchema.parse({ ...BASE_ENTRY })).toBe(false);
+  });
+
+  test("rejects a non-positive concurrency or a negative interval", () => {
+    expect(registryBridgeEntrySchema.safeParse({ ...BASE_ENTRY, assetRateLimit: { maxConcurrent: 0 } }).success).toBe(false);
+    expect(registryBridgeEntrySchema.safeParse({ ...BASE_ENTRY, assetRateLimit: { minIntervalMs: -1 } }).success).toBe(false);
+  });
+});
+
 describe("registryBridgeEntrySchema display flags", () => {
   test("carries cardSubtitles and ratings", () => {
     const entry = registryBridgeEntrySchema.parse({ ...BASE_ENTRY, cardSubtitles: true, ratings: true });

@@ -14,6 +14,8 @@ import {
   CURSOR_MAX_LENGTH,
   EXCLUDED_TAGS_KEY,
   MAX_CONTENT_RATING_KEY,
+  parseRateLimited,
+  retryAfterMs,
   thumbnailAspectSchema,
 } from "@comical/contract";
 import type {
@@ -30,6 +32,7 @@ import type {
 // node:vm-backed default evaluator) so this router can also be bundled into non-Node hosts
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
+import { RateLimiter, type RateLimitBudget } from "@comical/core/net/rate-limiter";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
 import { entryKey, collectionItemId, LibraryBackupError, readLibraryBackup, type ChapterPageRef, type CollectionItemsQuery, type CollectionItemType, type Library, type LibraryBackupSources } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
@@ -221,10 +224,13 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   // entirely from the loaded bridges' `info.assetProxy` declarations, so which hosts may be proxied
   // (and with what Referer) is the bridges' data, not this router's.
 
-  /** A matched allowlist host → the Referer to send upstream for it (undefined = send none). */
+  /** A matched allowlist host → the Referer to send upstream for it (undefined = send none), and
+   *  the declaring bridge with its optional image budget (`info.assetRateLimit`). */
   interface ProxyRule {
     host: string;
     referer: string | undefined;
+    bridgeId: string;
+    assetRateLimit: RateLimitBudget | undefined;
   }
   // Derived allowlist, memoized briefly: a series page can resolve dozens of thumbnails at once, and
   // the installed-bridge set changes rarely. A stale window only delays a just-installed bridge's
@@ -239,7 +245,9 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       for (const b of await manager.list()) {
         const ap = b.info.assetProxy;
         if (!ap) continue;
-        for (const host of ap.hosts) rules.push({ host: host.toLowerCase(), referer: ap.referer });
+        for (const host of ap.hosts) {
+          rules.push({ host: host.toLowerCase(), referer: ap.referer, bridgeId: b.info.id, assetRateLimit: b.info.assetRateLimit });
+        }
       }
     } catch {
       // A listing failure must not 500 image loads — fall back to an empty (deny-all) allowlist.
@@ -268,23 +276,47 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
    *  would be silently empty. Reading bytes works on every host. Only a success is cacheable: a
    *  client's retry re-requests the same `/img-proxy?url=…`, so a cached 404/503 would answer every
    *  retry without ever reaching upstream again. */
-  const proxyFetch = async (target: string, referer: string | undefined): Promise<Response> => {
+  const proxyFetch = async (target: string, referer: string | undefined, limiter?: RateLimiter): Promise<Response> => {
+    const release = limiter ? await limiter.acquire() : undefined;
     try {
       const headers: Record<string, string> = {};
       if (opts.userAgent) headers["User-Agent"] = opts.userAgent;
       if (referer) headers.Referer = referer;
       const r = await fetch(target, { headers });
       const bytes = await r.arrayBuffer();
-      return new Response(bytes, {
-        status: r.status,
-        headers: {
-          "Content-Type": r.headers.get("Content-Type") ?? "image/webp",
-          "Cache-Control": r.ok ? "max-age=86400" : "no-store",
-        },
-      });
+      const out: Record<string, string> = {
+        "Content-Type": r.headers.get("Content-Type") ?? "image/webp",
+        "Cache-Control": r.ok ? "max-age=86400" : "no-store",
+      };
+      // Pass a "slow down" through so the client (and the download engine) can back off — and hold
+      // this bridge's proxied images until it passes.
+      const retryAfter = r.headers.get("Retry-After");
+      if (retryAfter) out["Retry-After"] = retryAfter;
+      if (limiter && (r.status === 429 || r.status === 503)) {
+        const wait = retryAfterMs(retryAfter ? { "retry-after": retryAfter } : undefined);
+        if (wait !== undefined || r.status === 429) limiter.pauseUntil(Date.now() + (wait ?? 10_000));
+      }
+      return new Response(bytes, { status: r.status, headers: out });
     } catch {
       return new Response("upstream error", { status: 502, headers: { "Cache-Control": "no-store" } });
+    } finally {
+      release?.();
     }
+  };
+
+  // One limiter per bridge that declares an image budget, shared by all its proxied hosts and
+  // reconfigured in place if a bridge update changes the budget.
+  const proxyLimiters = new Map<string, RateLimiter>();
+  const proxyLimiter = (rule: ProxyRule): RateLimiter | undefined => {
+    if (!rule.assetRateLimit) return undefined;
+    let limiter = proxyLimiters.get(rule.bridgeId);
+    if (limiter) limiter.reconfigure(rule.assetRateLimit);
+    else {
+      // A key the bridge leaves out is unlimited, matching the download engine's reading.
+      const { maxConcurrent = Number.MAX_SAFE_INTEGER, minIntervalMs = 0 } = rule.assetRateLimit;
+      proxyLimiters.set(rule.bridgeId, (limiter = new RateLimiter({ maxConcurrent, minIntervalMs })));
+    }
+    return limiter;
   };
 
   app.get("/img-proxy", async (c) => {
@@ -295,7 +327,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }
     const rule = matchProxyRule(url, await proxyRules());
     if (!rule) return c.text("Forbidden", 403);
-    return proxyFetch(url, rule.referer);
+    return proxyFetch(url, rule.referer, proxyLimiter(rule));
   });
 
   // ── Bridge registry ──────────────────────────────────────────────────────────
@@ -2074,6 +2106,12 @@ async function withBridge(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.includes("not found")) return c.json({ error: msg }, 404);
+    // The source is throttling or has blocked us (see `rateLimitedMessage`): answer 429 with when to
+    // come back, so clients and the download engine back off instead of retrying into it.
+    const limited = parseRateLimited(msg);
+    if (limited) {
+      return c.json({ error: msg }, 429, { "Retry-After": String(Math.ceil(limited.retryAfterMs / 1000)) });
+    }
     return c.json({ error: msg }, 500);
   }
 }

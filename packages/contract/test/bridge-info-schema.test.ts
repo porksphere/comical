@@ -119,3 +119,23 @@ describe("bridgeInfoSchema assetProxy", () => {
     ).toThrow();
   });
 });
+
+describe("bridgeInfoSchema assetRateLimit", () => {
+  test("accepts a page-image budget alongside the request budget", () => {
+    const info = bridgeInfoSchema.parse({
+      ...BASE,
+      rateLimit: { maxConcurrent: 1, minIntervalMs: 2000 },
+      assetRateLimit: { maxConcurrent: 2, minIntervalMs: 500 },
+    });
+    expect(info.assetRateLimit).toEqual({ maxConcurrent: 2, minIntervalMs: 500 });
+  });
+
+  test("parses when omitted", () => {
+    expect(bridgeInfoSchema.parse({ ...BASE }).assetRateLimit).toBeUndefined();
+  });
+
+  test("rejects a zero concurrency or a negative interval", () => {
+    expect(() => bridgeInfoSchema.parse({ ...BASE, assetRateLimit: { maxConcurrent: 0 } })).toThrow();
+    expect(() => bridgeInfoSchema.parse({ ...BASE, assetRateLimit: { minIntervalMs: -1 } })).toThrow();
+  });
+});
