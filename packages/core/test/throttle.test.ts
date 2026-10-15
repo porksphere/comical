@@ -1,8 +1,9 @@
 /**
  * The gated network honors a source's "slow down": a 429 (or a 503 that names a Retry-After) pauses
- * every request sharing the bridge's limiter, a short wait is sat out and retried once, a long one is
- * handed back and fails later requests fast, and a bridge call failing during a throttle surfaces
- * as rate-limited so hosts back off.
+ * every request sharing the bridge's limiter, and a request is held and retried for as long as that
+ * fits its budget. A wait that can't fit is thrown as rate-limited — a bridge is never handed the
+ * 429 itself, whose body it would misparse — and a bridge call failing during a throttle surfaces as
+ * rate-limited so hosts back off.
  */
 import { describe, expect, test } from "bun:test";
 import { parseRateLimited, type HostCapabilities, type HttpRequest, type HttpResponse } from "@comical/contract";
@@ -41,7 +42,7 @@ describe("RateLimiter.pauseUntil", () => {
 });
 
 describe("gated network throttling", () => {
-  test("sits out a short Retry-After and retries once", async () => {
+  test("sits out a short Retry-After and retries", async () => {
     const { raw, seen } = scripted([{ status: 429, headers: { "Retry-After": "0" } }, { status: 200, body: "ok" }]);
     const { network } = createGatedNetwork(raw, fast);
     const res = await network.request({ url: "https://x.test/a" });
@@ -58,31 +59,57 @@ describe("gated network throttling", () => {
     expect(blockedUntil()).toBeLessThanOrEqual(Date.now());
   });
 
-  test("retries only once — a second 429 goes back to the bridge", async () => {
-    const { raw, seen } = scripted([{ status: 429, headers: { "retry-after": "0" } }]);
+  test("keeps holding through repeated 429s while the wait fits, spacing the retries", async () => {
+    const ra0 = { status: 429, headers: { "Retry-After": "0" } };
+    const { raw, seen } = scripted([ra0, ra0, ra0, { status: 200, body: "ok" }]);
     const { network } = createGatedNetwork(raw, fast);
-    expect((await network.request({ url: "https://x.test/a" })).status).toBe(429);
-    expect(seen).toHaveLength(2);
+    const res = await network.request({ url: "https://x.test/a" });
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(4);
+    expect(seen[2]!.at - seen[1]!.at).toBeGreaterThanOrEqual(45);
   });
 
-  test("hands a long wait straight back and fails later requests fast without sending them", async () => {
-    const { raw, seen } = scripted([{ status: 429, headers: { "Retry-After": "600" } }, { status: 200 }]);
+  test("a source that never relents is given up on at the budget, as rate-limited", async () => {
+    const { raw, seen } = scripted([{ status: 429, headers: { "Retry-After": "0" } }]);
+    const { network } = createGatedNetwork(raw, fast);
+    const t0 = Date.now();
+    const err = (await network.request({ url: "https://x.test/a" }).catch((e: unknown) => e)) as Error;
+    expect(parseRateLimited(err.message)).not.toBeNull();
+    expect(err.message).toContain("HTTP 429 from x.test");
+    expect(Date.now() - t0).toBeLessThan(400);
+    expect(seen.length).toBeLessThanOrEqual(7);
+  });
+
+  test("a wait past the budget throws rate-limited, never returns the 429, and later requests aren't sent", async () => {
+    const { raw, seen } = scripted([{ status: 429, headers: { "Retry-After": "600" }, body: "<html>slow down</html>" }, { status: 200 }]);
     const { network, blockedUntil } = createGatedNetwork(raw, fast);
-    const first = await network.request({ url: "https://x.test/a" });
-    expect(first.status).toBe(429);
+    const first = (await network.request({ url: "https://x.test/a" }).catch((e: unknown) => e)) as Error;
+    expect(first).toBeInstanceOf(Error);
+    expect(parseRateLimited(first.message)?.retryAfterMs).toBeGreaterThan(590_000);
     expect(blockedUntil() - Date.now()).toBeGreaterThan(590_000);
 
-    const second = await network.request({ url: "https://x.test/b" });
-    expect(second.status).toBe(429);
-    expect(Number(second.headers["retry-after"])).toBeGreaterThan(590);
+    const second = (await network.request({ url: "https://x.test/b" }).catch((e: unknown) => e)) as Error;
+    expect(parseRateLimited(second.message)?.retryAfterMs).toBeGreaterThan(590_000);
     expect(seen).toHaveLength(1);
+  });
+
+  test("a request queued behind a short pause is held, not failed", async () => {
+    const { raw, seen } = scripted([{ status: 429, headers: { "Retry-After": "0" } }, { status: 200 }]);
+    const { network } = createGatedNetwork(raw, { ...fast, throttle: { ...fast.throttle, backoffStartMs: 100 } });
+    const [a, b] = await Promise.all([
+      network.request({ url: "https://x.test/a" }),
+      network.request({ url: "https://x.test/b" }),
+    ]);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(seen.length).toBeGreaterThanOrEqual(3);
   });
 
   test("honors X-RateLimit-Retry-After as a UNIX timestamp", async () => {
     const at = Math.ceil(Date.now() / 1000) + 3600;
     const { raw } = scripted([{ status: 429, headers: { "X-RateLimit-Retry-After": String(at) } }]);
     const { network, blockedUntil } = createGatedNetwork(raw, fast);
-    await network.request({ url: "https://x.test/a" });
+    await network.request({ url: "https://x.test/a" }).catch(() => {});
     expect(blockedUntil()).toBe(at * 1000);
   });
 
@@ -103,7 +130,7 @@ describe("gated network throttling", () => {
     const { network, blockedUntil } = createGatedNetwork(raw, { ...fast, throttle: { ...fast.throttle, maxInlineWaitMs: 0 } });
     for (let i = 0; i < 5; i++) {
       await new Promise((r) => setTimeout(r, Math.max(0, blockedUntil() - Date.now())));
-      await network.request({ url: "https://x.test/a" });
+      await network.request({ url: "https://x.test/a" }).catch(() => {});
     }
     expect(blockedUntil() - Date.now()).toBeLessThanOrEqual(120);
   });
@@ -141,6 +168,16 @@ describe("a bridge call during a throttle", () => {
     const parsed = parseRateLimited((err as Error).message);
     expect(parsed?.retryAfterMs).toBeGreaterThan(110_000);
     expect((err as Error).message).toContain("HTTP 429");
+  });
+
+  test("a bridge parsing the response never sees the refusal's body", async () => {
+    const b = await loadBridge({
+      code: code(`const r = await host.network.request({ url: "https://x.test/" + id }); return JSON.parse(r.body);`),
+      capabilities: host(() => ({ status: 429, headers: { "Retry-After": "120" }, body: "" })),
+    });
+    const err = (await b.getSeriesDetails("s").catch((e: unknown) => e)) as Error;
+    expect(parseRateLimited(err.message)).not.toBeNull();
+    expect(err.message).not.toContain("JSON");
   });
 
   test("keeps the wait a bridge tagged itself", async () => {
