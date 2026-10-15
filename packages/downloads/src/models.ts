@@ -86,6 +86,13 @@ export const downloadedChapterSchema = z.object({
    * chapter up, then clears this. Absent means resolved (all pre-lazy records had pages up front).
    */
   pagesResolved: z.boolean().optional(),
+  /**
+   * Set when only SOME of the chapter's pages are wanted — a single saved page, say: the indexes to
+   * keep. Absent means the whole chapter. A partial chapter's page rows, `pageCount` and `complete`
+   * state cover only these pages, so it is never an offline-readable chapter; a later whole-chapter
+   * enqueue drops the marker and fills in the rest, keeping the bytes already on disk.
+   */
+  onlyPages: z.array(z.number().int().nonnegative()).optional(),
   /** Pages with bytes on disk so far — the numerator for a progress radial (denominator `pageCount`). */
   completedPages: z.number().int().nonnegative().default(0),
   /** Rolled-up total bytes across this chapter's pages. */

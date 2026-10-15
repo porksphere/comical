@@ -710,3 +710,46 @@ describe("gate wedge self-heal (idleRecheckMs)", () => {
     expect((await downloads.getChapter(KEY, "c1"))?.state).toBe("queued");
   });
 });
+
+describe("partial chapters (onlyPages)", () => {
+  test("a lazy partial enqueue fetches only the wanted page", async () => {
+    const { fetch, calls } = scriptedFetcher({});
+    const { engine, downloads } = makeEngine(fetch, { resolvePages: async () => pages(6) });
+
+    await engine.enqueue(SNAP, CH, undefined, { onlyPages: [4] });
+    await engine.drain();
+
+    expect(calls.map((p) => p.index)).toEqual([4]);
+    const done = await downloads.getChapter(KEY, "c1");
+    expect(done?.state).toBe("complete");
+    expect(done?.onlyPages).toEqual([4]);
+    expect(await downloads.localFileFor("demo", "s1", "c1", 4)).toBeDefined();
+  });
+
+  test("a partial whose page the chapter doesn't have fails instead of spinning", async () => {
+    const { fetch, calls } = scriptedFetcher({});
+    const { engine, downloads } = makeEngine(fetch, { resolvePages: async () => pages(2) });
+
+    await engine.enqueue(SNAP, CH, undefined, { onlyPages: [5] });
+    await engine.drain();
+
+    expect(calls).toEqual([]);
+    expect((await downloads.getChapter(KEY, "c1"))?.state).toBe("failed");
+  });
+
+  test("upgrading a downloaded partial to the whole chapter fetches only the rest", async () => {
+    const { fetch, calls } = scriptedFetcher({});
+    const { engine, downloads } = makeEngine(fetch, { resolvePages: async () => pages(3) });
+
+    await engine.enqueue(SNAP, CH, undefined, { onlyPages: [1] });
+    await engine.drain();
+    await engine.enqueue(SNAP, CH);
+    await engine.drain();
+
+    expect(calls.map((p) => p.index)).toEqual([1, 0, 2]);
+    const done = await downloads.getChapter(KEY, "c1");
+    expect(done?.state).toBe("complete");
+    expect(done?.pageCount).toBe(3);
+    expect(done?.onlyPages).toBeUndefined();
+  });
+});

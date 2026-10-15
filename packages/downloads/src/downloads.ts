@@ -51,6 +51,16 @@ export interface DownloadPageInput {
   headers?: Record<string, string>;
 }
 
+/** How much of a chapter an enqueue asks for. */
+export interface EnqueueChapterOptions {
+  /**
+   * Download only these page indexes (a partial chapter — see `DownloadedChapter.onlyPages`). Merges
+   * with the pages an existing partial download already wants; ignored when the whole chapter is
+   * already recorded, since that covers them.
+   */
+  onlyPages?: number[];
+}
+
 export interface DownloadsOptions {
   /** Injectable clock for deterministic tests. Defaults to `Date.now`. */
   now?: () => number;
@@ -85,16 +95,24 @@ export class Downloads {
    * the whole queue instantly and survive interruption. Whoever drains the queue resolves the page
    * list later ({@link resolveChapterPages}); the fresh resolution also means the source URLs can't
    * have gone stale between enqueue and download.
+   *
+   * `opts.onlyPages` records a PARTIAL chapter: only those pages get rows and count toward its
+   * state. Asking for part of a chapter whose whole is already recorded changes nothing.
    */
   async enqueueChapter(
     snap: DownloadSeriesSnapshot,
     meta: DownloadChapterMeta,
     pages?: DownloadPageInput[],
+    opts: EnqueueChapterOptions = {},
   ): Promise<DownloadedChapter> {
     const key = entryKey(snap.bridgeId, snap.seriesId);
+    if (opts.onlyPages) {
+      const existing = await this.store.getChapter(key, meta.chapterId);
+      if (existing && existing.onlyPages === undefined) return existing;
+    }
     const t = this.now();
     await this.upsertSeriesSnapshot(snap, t);
-    const chapter = await this.writeChapterQueued(key, snap, meta, t, pages);
+    const chapter = await this.writeChapterQueued(key, snap, meta, t, pages, opts.onlyPages);
     await this.rollUpSeries(key);
     return chapter;
   }
@@ -134,10 +152,13 @@ export class Downloads {
     meta: DownloadChapterMeta,
     t: number,
     pages?: DownloadPageInput[],
+    onlyPages?: number[],
   ): Promise<DownloadedChapter> {
+    const existingChapter = await this.store.getChapter(key, meta.chapterId);
+    const wanted = onlyPages && mergeIndexes(existingChapter?.onlyPages, onlyPages);
+    if (wanted) pages = pages?.filter((p) => wanted.includes(p.index));
     if (pages) await this.writePages(key, meta.chapterId, pages);
 
-    const existingChapter = await this.store.getChapter(key, meta.chapterId);
     const chapter: DownloadedChapter = {
       bridgeId: snap.bridgeId,
       seriesId: snap.seriesId,
@@ -150,6 +171,7 @@ export class Downloads {
       addedAt: existingChapter?.addedAt ?? t,
     };
     if (!pages) chapter.pagesResolved = false;
+    if (wanted) chapter.onlyPages = wanted;
     if (meta.chapterName !== undefined) chapter.chapterName = meta.chapterName;
     if (meta.number !== undefined) chapter.number = meta.number;
     if (meta.languageCode !== undefined) chapter.languageCode = meta.languageCode;
@@ -162,12 +184,22 @@ export class Downloads {
    * Supply the resolved page list for a lazily-enqueued chapter (see {@link enqueueChapter} without
    * `pages`): lays down the page rows (preserving already-complete bytes, exactly like an eager
    * enqueue), sets `pageCount`, and clears the `pagesResolved: false` marker.
+   *
+   * A partial chapter keeps only its wanted pages, and forgets wanted indexes the chapter turned out
+   * not to have; throws when it has none of them, which fails the chapter rather than leaving it
+   * queued with nothing to fetch.
    */
   async resolveChapterPages(key: string, chapterId: string, pages: DownloadPageInput[]): Promise<DownloadedChapter> {
     const chapter = await this.requireChapter(key, chapterId);
+    const wanted = chapter.onlyPages;
+    if (wanted) {
+      pages = pages.filter((p) => wanted.includes(p.index));
+      if (pages.length === 0) throw new Error(`no wanted pages in chapter: ${chapterId}`);
+    }
     await this.writePages(key, chapterId, pages);
     const next: DownloadedChapter = { ...chapter, pageCount: pages.length };
     delete next.pagesResolved;
+    if (wanted) next.onlyPages = pages.map((p) => p.index).sort((a, b) => a - b);
     await this.store.putChapter(next);
     return this.recomputeChapter(key, chapterId);
   }
@@ -439,15 +471,16 @@ export class Downloads {
     const pages = await this.store.listPages(key, chapterId);
     const bytes = pages.reduce((sum, p) => sum + p.bytes, 0);
     const completedPages = pages.filter((p) => p.state === "complete").length;
-    const derived = deriveChapterState(pages);
+    const fromRows = deriveChapterState(pages);
+    // Rows can't prove an unresolved chapter complete: its page list may have grown since they were
+    // written (a lazy re-enqueue, or a partial chapter widened to more pages or the whole chapter).
+    const derived = fromRows === "complete" && chapter.pagesResolved === false ? "queued" : fromRows;
     // `paused` is a chapter-level flag the user set; it survives a recompute until explicitly resumed
     // (or until every page is complete, at which point the chapter is genuinely done).
     const state = chapter.state === "paused" && derived !== "complete" ? "paused" : derived;
     const next: DownloadedChapter = { ...chapter, bytes, completedPages, state };
     if (state === "complete") {
       next.completedAt = chapter.completedAt ?? this.now();
-      // Every page has bytes, so an unresolved-pages marker is stale by definition.
-      delete next.pagesResolved;
     } else {
       delete next.completedAt;
     }
@@ -467,6 +500,11 @@ export class Downloads {
       bytes: chapters.reduce((sum, c) => sum + c.bytes, 0),
     });
   }
+}
+
+/** The union of two index lists, ascending. */
+function mergeIndexes(a: number[] | undefined, b: number[]): number[] {
+  return [...new Set([...(a ?? []), ...b])].sort((x, y) => x - y);
 }
 
 /**

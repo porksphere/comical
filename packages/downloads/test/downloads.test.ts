@@ -336,3 +336,97 @@ describe("lazy enqueue (no pages)", () => {
     expect(eager.pageCount).toBe(1);
   });
 });
+
+describe("partial chapters (onlyPages)", () => {
+  test("an eager partial enqueue keeps only the wanted pages and completes on them", async () => {
+    const dl = makeDownloads();
+    const chapter = await dl.enqueueChapter(SNAP, CH, pages(5), { onlyPages: [3] });
+    expect(chapter.onlyPages).toEqual([3]);
+    expect(chapter.pageCount).toBe(1);
+    expect((await dl.getManifestPages(KEY, CH.chapterId)).map((p) => p.index)).toEqual([3]);
+
+    const done = await dl.recordPage(KEY, CH.chapterId, 3, "demo/s1/c1/3.jpg", 40);
+    expect(done.state).toBe("complete");
+    expect(done.onlyPages).toEqual([3]);
+    expect(await dl.localFileFor("demo", "s1", "c1", 3)).toBe("demo/s1/c1/3.jpg");
+  });
+
+  test("a lazy partial resolves to only its wanted pages, dropping indexes the chapter lacks", async () => {
+    const dl = makeDownloads();
+    const queued = await dl.enqueueChapter(SNAP, CH, undefined, { onlyPages: [1, 9] });
+    expect(queued.pagesResolved).toBe(false);
+    expect(queued.onlyPages).toEqual([1, 9]);
+
+    const resolved = await dl.resolveChapterPages(KEY, CH.chapterId, pages(3));
+    expect(resolved.pageCount).toBe(1);
+    expect(resolved.onlyPages).toEqual([1]);
+    expect((await dl.getManifestPages(KEY, CH.chapterId)).map((p) => p.index)).toEqual([1]);
+  });
+
+  test("resolving a partial with none of its pages throws (so the engine fails the chapter)", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, undefined, { onlyPages: [7] });
+    await expect(dl.resolveChapterPages(KEY, CH.chapterId, pages(3))).rejects.toThrow("no wanted pages");
+  });
+
+  test("a second partial enqueue widens the wanted set and reopens a complete partial", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, pages(4), { onlyPages: [0] });
+    await dl.recordPage(KEY, CH.chapterId, 0, "demo/s1/c1/0.jpg", 10);
+
+    const widened = await dl.enqueueChapter(SNAP, CH, undefined, { onlyPages: [2] });
+    expect(widened.onlyPages).toEqual([0, 2]);
+    // The rows on hand are all complete, but they can't vouch for page 2 until it's resolved.
+    expect(widened.state).toBe("queued");
+    expect(widened.pagesResolved).toBe(false);
+
+    const resolved = await dl.resolveChapterPages(KEY, CH.chapterId, pages(4));
+    expect(resolved.pageCount).toBe(2);
+    expect(resolved.completedPages).toBe(1);
+    expect(resolved.state).toBe("downloading");
+  });
+
+  test("a whole-chapter enqueue upgrades a partial, keeping its downloaded bytes", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, pages(3), { onlyPages: [1] });
+    await dl.recordPage(KEY, CH.chapterId, 1, "demo/s1/c1/1.jpg", 10);
+
+    const lazy = await dl.enqueueChapter(SNAP, CH);
+    expect(lazy.onlyPages).toBeUndefined();
+    expect(lazy.state).toBe("queued");
+
+    const full = await dl.resolveChapterPages(KEY, CH.chapterId, pages(3));
+    expect(full.onlyPages).toBeUndefined();
+    expect(full.pageCount).toBe(3);
+    expect(full.completedPages).toBe(1);
+    const manifest = await dl.getManifestPages(KEY, CH.chapterId);
+    expect(manifest[1]!.file).toBe("demo/s1/c1/1.jpg");
+  });
+
+  test("the bulk enqueue upgrades a partial too", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, pages(3), { onlyPages: [1] });
+    const [upgraded] = await dl.enqueueChapters(SNAP, [CH]);
+    expect(upgraded!.onlyPages).toBeUndefined();
+    expect(upgraded!.pagesResolved).toBe(false);
+  });
+
+  test("asking for part of a chapter already recorded whole changes nothing", async () => {
+    const dl = makeDownloads();
+    await completeChapter(dl, 3, 10);
+    const before = await dl.getChapter(KEY, CH.chapterId);
+    const after = await dl.enqueueChapter(SNAP, CH, undefined, { onlyPages: [1] });
+    expect(after).toEqual(before!);
+    expect(after.state).toBe("complete");
+    expect(after.onlyPages).toBeUndefined();
+  });
+
+  test("a lazy re-enqueue of a complete chapter waits for resolution before reading complete", async () => {
+    const dl = makeDownloads();
+    await completeChapter(dl, 2, 10);
+    const requeued = await dl.enqueueChapter(SNAP, CH);
+    expect(requeued.state).toBe("queued");
+    const resolved = await dl.resolveChapterPages(KEY, CH.chapterId, pages(2));
+    expect(resolved.state).toBe("complete");
+  });
+});

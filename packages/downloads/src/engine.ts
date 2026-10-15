@@ -21,6 +21,7 @@ import type {
   DownloadChapterMeta,
   DownloadPageInput,
   DownloadSeriesSnapshot,
+  EnqueueChapterOptions,
   PendingPage,
 } from "./downloads.ts";
 import type { BlobStore } from "./blob-store.ts";
@@ -167,12 +168,14 @@ export class DownloadEngine {
   /**
    * Enqueue a chapter (idempotent — completed pages are kept) and start draining. Omitting `pages`
    * is the LAZY path: a pure manifest write (instant, crash-safe for bulk enqueues); the engine
-   * resolves the page list via `resolvePages` when the drain picks the chapter up.
+   * resolves the page list via `resolvePages` when the drain picks the chapter up. `opts.onlyPages`
+   * downloads just those pages (a partial chapter).
    */
   async enqueue(
     snap: DownloadSeriesSnapshot,
     meta: DownloadChapterMeta,
     pages?: DownloadPageInput[],
+    opts?: EnqueueChapterOptions,
   ): Promise<DownloadedChapter> {
     const key = entryKey(snap.bridgeId, snap.seriesId);
     // Clear only THIS chapter's stale cancel flag — the series-level flag deliberately survives. A
@@ -180,7 +183,7 @@ export class DownloadEngine {
     // bridge page-resolution before landing; pausing the series mid-collection must also catch the
     // enqueues still in flight, so a late arrival files as paused below instead of starting fresh.
     this.cancelledChapters.delete(chapterCancelKey(key, meta.chapterId));
-    let chapter = await this.downloads.enqueueChapter(snap, meta, pages);
+    let chapter = await this.downloads.enqueueChapter(snap, meta, pages, opts);
     if (chapter.state !== "complete" && this.cancelledSeries.has(key)) {
       const siblingPaused = (await this.downloads.listChapters(key)).some(
         (c) => c.chapterId !== meta.chapterId && c.state === "paused",

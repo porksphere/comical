@@ -1485,13 +1485,23 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     // recorded `queued` with its pages UNRESOLVED (a pure store write, so the response is instant
     // and the intent is durable), and the engine resolves the page list via its own bridge when the
     // drain picks the chapter up. A resolution failure surfaces as a `failed` (retryable) chapter.
+    // `onlyPages` downloads just those page indexes (a partial chapter — one saved page, say).
     app.post("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId", async (c) => {
       const b = await body<{
         title?: string; thumbnailUrl?: string; author?: string;
         chapterName?: string; number?: number; languageCode?: string;
         pages?: DownloadPageInput[];
+        onlyPages?: unknown;
       }>(c);
       if (!b?.title || (!b.pages && !dlEngine)) return c.json({ error: "title and pages are required" }, 400);
+      const onlyPages = b.onlyPages;
+      if (
+        onlyPages !== undefined &&
+        !(Array.isArray(onlyPages) && onlyPages.length > 0 && onlyPages.every((i) => Number.isInteger(i) && i >= 0))
+      ) {
+        return c.json({ error: "onlyPages must be a non-empty list of page indexes" }, 400);
+      }
+      const enqueueOpts = onlyPages ? { onlyPages: onlyPages as number[] } : undefined;
       const snap: DownloadSeriesSnapshot = {
         bridgeId: c.req.param("bridgeId"),
         seriesId: c.req.param("seriesId"),
@@ -1507,8 +1517,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       };
       try {
         const chapter = dlEngine
-          ? await dlEngine.enqueue(snap, meta, b.pages)
-          : await downloads.enqueueChapter(snap, meta, b.pages);
+          ? await dlEngine.enqueue(snap, meta, b.pages, enqueueOpts)
+          : await downloads.enqueueChapter(snap, meta, b.pages, enqueueOpts);
         return c.json(chapter, 201);
       } catch (e) {
         // A delete can race a bulk collection's enqueues — answer with a clean conflict instead of

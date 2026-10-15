@@ -109,6 +109,29 @@ describe("/downloads lifecycle", () => {
     await send("DELETE", "/downloads/entries/demo/s2");
   });
 
+  test("onlyPages enqueues a partial chapter of just those pages", async () => {
+    const enq = await send("POST", "/downloads/entries/demo/s3/chapters/c1", {
+      title: "Series Three",
+      pages: pages(4),
+      onlyPages: [2],
+    });
+    expect(enq.status).toBe(201);
+    const chapter = (await enq.json()) as { pageCount: number; onlyPages?: number[] };
+    expect(chapter.pageCount).toBe(1);
+    expect(chapter.onlyPages).toEqual([2]);
+    const manifest = (await (await get("/downloads/entries/demo/s3/chapters/c1/pages")).json()) as Array<{ index: number }>;
+    expect(manifest.map((p) => p.index)).toEqual([2]);
+    await send("DELETE", "/downloads/entries/demo/s3");
+  });
+
+  test("a malformed onlyPages is a 400", async () => {
+    for (const onlyPages of [[], [-1], [1.5], "2", [null]]) {
+      const res = await send("POST", "/downloads/entries/demo/s4/chapters/c1", { title: "S4", pages: pages(2), onlyPages });
+      expect(res.status).toBe(400);
+    }
+    expect((await get("/downloads/entries/demo/s4")).status).toBe(404);
+  });
+
   test("recording a page for an unknown chapter is 404", async () => {
     const res = await send("POST", "/downloads/entries/demo/nope/chapters/cX/pages/0", { file: "x", bytes: 1 });
     expect(res.status).toBe(404);
