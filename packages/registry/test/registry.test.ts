@@ -110,6 +110,13 @@ describe("registryBridgeEntrySchema assetRateLimit", () => {
     expect(registryBridgeEntrySchema.safeParse({ ...BASE_ENTRY, assetRateLimit: { maxConcurrent: 0 } }).success).toBe(false);
     expect(registryBridgeEntrySchema.safeParse({ ...BASE_ENTRY, assetRateLimit: { minIntervalMs: -1 } }).success).toBe(false);
   });
+
+  test("carries per-host groups through (an unknown key would be stripped, so this must be declared)", () => {
+    const byHost = [{ hosts: ["tn.example.net"] }, { hosts: ["cdn.example.net"], maxConcurrent: 4 }];
+    const entry = registryBridgeEntrySchema.parse({ ...BASE_ENTRY, assetRateLimit: { minIntervalMs: 300, byHost } });
+    expect(entry.assetRateLimit?.byHost).toEqual(byHost);
+    expect(registryBridgeEntrySchema.safeParse({ ...BASE_ENTRY, assetRateLimit: { byHost: [{ hosts: [] }] } }).success).toBe(false);
+  });
 });
 
 describe("registryBridgeEntrySchema display flags", () => {

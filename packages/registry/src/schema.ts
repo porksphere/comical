@@ -51,6 +51,15 @@ export const registryBridgeEntrySchema = z.object({
     .object({
       maxConcurrent: z.number().int().positive().optional(),
       minIntervalMs: z.number().int().nonnegative().optional(),
+      byHost: z
+        .array(
+          z.object({
+            hosts: z.array(z.string().min(1)).min(1),
+            maxConcurrent: z.number().int().positive().optional(),
+            minIntervalMs: z.number().int().nonnegative().optional(),
+          }),
+        )
+        .optional(),
     })
     .optional(),
   /** Absolute URL to the CJS bridge bundle. */

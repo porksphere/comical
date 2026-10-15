@@ -473,6 +473,56 @@ describe("GET /img-proxy", () => {
     }
   });
 
+  test("a byHost group exempts a bridge's cover host from its page budget", async () => {
+    const arrivals: Record<string, number[]> = {};
+    const cdn = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        const path = new URL(req.url).pathname.split("/")[1]!;
+        (arrivals[path] ??= []).push(Date.now());
+        return new Response("bytes", { headers: { "Content-Type": "image/png" } });
+      },
+    });
+    // The group is matched on the host the URL names, so the same local CDN plays both parts:
+    // `localhost` is the exempt cover host, the IP the paced page host.
+    const proxyMgr = {
+      list: async () => [
+        {
+          info: {
+            id: "prox", name: "Prox", version: "1.0.0", contractVersion: "2.0.0",
+            languages: ["en"], nsfw: false, capabilities: [],
+            assetProxy: { hosts: ["127.0.0.1", "localhost"] },
+            assetRateLimit: { maxConcurrent: 1, minIntervalMs: 120, byHost: [{ hosts: ["localhost"] }] },
+          },
+          settings: [], configured: true, missingRequired: [], source: "registry" as const,
+        },
+      ],
+      get: async (id: string) => { throw new Error(`not found: ${id}`); },
+      missingRequired: async () => [],
+      storedSettings: async () => ({}),
+    } as unknown as import("../src/bridge-manager.ts").BridgeManager;
+    const srv = Bun.serve({ port: 0, fetch: createRouter(proxyMgr).fetch });
+    const proxied = (host: string, kind: string, n: number) =>
+      fetch(`http://localhost:${srv.port}/img-proxy?url=${encodeURIComponent(`http://${host}:${cdn.port}/${kind}/${n}.png`)}`);
+    try {
+      const t0 = Date.now();
+      const all = await Promise.all([
+        ...[1, 2, 3].map((n) => proxied("localhost", "cover", n)),
+        ...[1, 2, 3].map((n) => proxied("127.0.0.1", "page", n)),
+      ]);
+      expect(all.map((r) => r.status)).toEqual([200, 200, 200, 200, 200, 200]);
+      const covers = arrivals.cover!;
+      expect(covers).toHaveLength(3);
+      expect(Math.max(...covers) - t0).toBeLessThan(150);
+      const pages = arrivals.page!.sort((a, b) => a - b);
+      expect(pages).toHaveLength(3);
+      for (let i = 1; i < pages.length; i++) expect(pages[i]! - pages[i - 1]!).toBeGreaterThanOrEqual(110);
+    } finally {
+      srv.stop(true);
+      cdn.stop(true);
+    }
+  });
+
   test("a bridge without an assetRateLimit is proxied unpaced", async () => {
     const arrivals: number[] = [];
     const cdn = Bun.serve({ port: 0, fetch: () => (arrivals.push(Date.now()), new Response("b")) });

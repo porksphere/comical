@@ -73,6 +73,57 @@ describe("pageRateLimit", () => {
     expect(fast.at(-1)! - fast[0]!).toBeLessThan(50);
   });
 
+  test("a byHost group paces its hosts apart from the default, and an empty group is unlimited", async () => {
+    const starts: Record<string, number[]> = { pages: [], covers: [] };
+    const { engine } = setup(
+      async (_ctx, page) => {
+        starts[page.sourceUrl.includes("tn.cdn.test") ? "covers" : "pages"]!.push(Date.now());
+        return ok();
+      },
+      {
+        pageConcurrency: 4,
+        pageRateLimit: () => ({ maxConcurrent: 1, minIntervalMs: 60, byHost: [{ hosts: ["tn.cdn.test"] }] }),
+      },
+    );
+    const mixed: DownloadPageInput[] = [
+      ...[0, 1, 2].map((i) => ({ index: i, sourceUrl: `https://a.cdn.test/p/${i}.jpg` })),
+      ...[3, 4, 5].map((i) => ({ index: i, sourceUrl: `/img-proxy?url=${encodeURIComponent(`https://tn.cdn.test/t/${i}.webp`)}` })),
+    ];
+    await engine.enqueue(snap("b"), ch(), mixed);
+    await engine.drain();
+
+    const paced = starts.pages!.sort((a, b) => a - b);
+    expect(paced).toHaveLength(3);
+    for (let i = 1; i < paced.length; i++) expect(paced[i]! - paced[i - 1]!).toBeGreaterThanOrEqual(55);
+    const free = starts.covers!;
+    expect(free).toHaveLength(3);
+    expect(Math.max(...free) - Math.min(...free)).toBeLessThan(50);
+  });
+
+  test("a slow-down holds every budget of the bridge", async () => {
+    let refuse = true;
+    const calls: string[] = [];
+    const { engine } = setup(
+      async (_ctx, page) => {
+        calls.push(page.sourceUrl);
+        if (refuse) {
+          refuse = false;
+          throw new PageRateLimitedError(5_000);
+        }
+        return ok();
+      },
+      { pageConcurrency: 1, pageRateLimit: () => ({ byHost: [{ hosts: ["tn.cdn.test"] }, { hosts: ["a.cdn.test"] }] }) },
+    );
+    await engine.enqueue(snap("b"), ch(), [
+      { index: 0, sourceUrl: "https://a.cdn.test/0.jpg" },
+      { index: 1, sourceUrl: "https://tn.cdn.test/1.webp" },
+    ]);
+    await engine.drain();
+    engine.stop();
+    expect(calls).toEqual(["https://a.cdn.test/0.jpg"]);
+    expect(engine.blockedUntilFor("b")).toBeGreaterThan(Date.now());
+  });
+
   test("a failing budget lookup doesn't stall the download", async () => {
     const { engine, downloads } = setup(async () => ok(), {
       pageRateLimit: () => {

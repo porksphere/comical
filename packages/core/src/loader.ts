@@ -184,6 +184,7 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
       declared.minIntervalMs = info.rateLimit.minIntervalMs;
     }
     gatedNetwork.setRateLimit(declared);
+    if (info.rateLimit.routes) gatedNetwork.setRouteLimits(info.rateLimit.routes);
   }
 
   // 5. Enforce settings: apply declared defaults + coerce/validate present values (in place, so

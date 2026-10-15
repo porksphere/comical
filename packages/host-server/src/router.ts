@@ -19,6 +19,7 @@ import {
   thumbnailAspectSchema,
 } from "@comical/contract";
 import type {
+  AssetRateLimit,
   Chapter,
   ContentRating,
   Cursor,
@@ -32,7 +33,8 @@ import type {
 // node:vm-backed default evaluator) so this router can also be bundled into non-Node hosts
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
-import { RateLimiter, type RateLimitBudget } from "@comical/core/net/rate-limiter";
+import { assetBudgetFor } from "@comical/core/net/asset-budget";
+import { RateLimiter } from "@comical/core/net/rate-limiter";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
 import { entryKey, collectionItemId, LibraryBackupError, readLibraryBackup, type ChapterPageRef, type CollectionItemsQuery, type CollectionItemType, type Library, type LibraryBackupSources } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
@@ -230,7 +232,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     host: string;
     referer: string | undefined;
     bridgeId: string;
-    assetRateLimit: RateLimitBudget | undefined;
+    assetRateLimit: AssetRateLimit | undefined;
   }
   // Derived allowlist, memoized briefly: a series page can resolve dozens of thumbnails at once, and
   // the installed-bridge set changes rarely. A stale window only delays a just-installed bridge's
@@ -304,17 +306,19 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }
   };
 
-  // One limiter per bridge that declares an image budget, shared by all its proxied hosts and
-  // reconfigured in place if a bridge update changes the budget.
+  // One limiter per budget a bridge declares — its default, shared by every proxied host it doesn't
+  // carve out, plus one per `byHost` group — reconfigured in place if a bridge update changes it.
   const proxyLimiters = new Map<string, RateLimiter>();
-  const proxyLimiter = (rule: ProxyRule): RateLimiter | undefined => {
-    if (!rule.assetRateLimit) return undefined;
-    let limiter = proxyLimiters.get(rule.bridgeId);
-    if (limiter) limiter.reconfigure(rule.assetRateLimit);
+  const proxyLimiter = (rule: ProxyRule, target: string): RateLimiter | undefined => {
+    const resolved = assetBudgetFor(rule.assetRateLimit, target);
+    if (!resolved) return undefined;
+    const key = `${rule.bridgeId}#${resolved.key}`;
+    let limiter = proxyLimiters.get(key);
+    if (limiter) limiter.reconfigure(resolved.budget);
     else {
       // A key the bridge leaves out is unlimited, matching the download engine's reading.
-      const { maxConcurrent = Number.MAX_SAFE_INTEGER, minIntervalMs = 0 } = rule.assetRateLimit;
-      proxyLimiters.set(rule.bridgeId, (limiter = new RateLimiter({ maxConcurrent, minIntervalMs })));
+      const { maxConcurrent = Number.MAX_SAFE_INTEGER, minIntervalMs = 0 } = resolved.budget;
+      proxyLimiters.set(key, (limiter = new RateLimiter({ maxConcurrent, minIntervalMs })));
     }
     return limiter;
   };
@@ -327,7 +331,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }
     const rule = matchProxyRule(url, await proxyRules());
     if (!rule) return c.text("Forbidden", 403);
-    return proxyFetch(url, rule.referer, proxyLimiter(rule));
+    return proxyFetch(url, rule.referer, proxyLimiter(rule, url));
   });
 
   // ── Bridge registry ──────────────────────────────────────────────────────────

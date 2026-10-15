@@ -139,3 +139,41 @@ describe("bridgeInfoSchema assetRateLimit", () => {
     expect(() => bridgeInfoSchema.parse({ ...BASE, assetRateLimit: { minIntervalMs: -1 } })).toThrow();
   });
 });
+
+describe("bridgeInfoSchema per-route and per-host budgets", () => {
+  test("accepts per-route quotas on the request budget", () => {
+    const info = bridgeInfoSchema.parse({
+      ...BASE,
+      rateLimit: {
+        minIntervalMs: 700,
+        routes: [
+          { match: "/api/search", limit: 10, windowMs: 60_000 },
+          { match: "/api/galleries/**", host: "api.example.net", limit: 20, windowMs: 60_000 },
+        ],
+      },
+    });
+    expect(info.rateLimit?.routes).toHaveLength(2);
+    expect(info.rateLimit?.routes?.[1]?.host).toBe("api.example.net");
+  });
+
+  test("rejects a route with no match, a zero limit or a zero window", () => {
+    const route = (r: Record<string, unknown>) => bridgeInfoSchema.safeParse({ ...BASE, rateLimit: { routes: [r] } }).success;
+    expect(route({ match: "", limit: 1, windowMs: 1000 })).toBe(false);
+    expect(route({ match: "/a", limit: 0, windowMs: 1000 })).toBe(false);
+    expect(route({ match: "/a", limit: 1, windowMs: 0 })).toBe(false);
+    expect(route({ match: "/a", limit: 1, windowMs: 1000 })).toBe(true);
+  });
+
+  test("accepts per-host asset groups, including an unlimited one", () => {
+    const info = bridgeInfoSchema.parse({
+      ...BASE,
+      assetRateLimit: { maxConcurrent: 2, byHost: [{ hosts: ["tn.example.net"] }, { hosts: ["a.example.net", "b.example.net"], minIntervalMs: 300 }] },
+    });
+    expect(info.assetRateLimit?.byHost?.[0]).toEqual({ hosts: ["tn.example.net"] });
+    expect(info.assetRateLimit?.byHost?.[1]?.minIntervalMs).toBe(300);
+  });
+
+  test("rejects an asset group naming no hosts", () => {
+    expect(bridgeInfoSchema.safeParse({ ...BASE, assetRateLimit: { byHost: [{ hosts: [] }] } }).success).toBe(false);
+  });
+});

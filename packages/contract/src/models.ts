@@ -790,6 +790,48 @@ export function parseBridgeId(id: string): { scope?: string; name: string } {
 }
 
 /**
+ * One per-route quota of a bridge's `rateLimit.routes`: at most `limit` request starts per sliding
+ * `windowMs` on the URLs it matches. `match` is a glob over the URL's pathname, matched whole:
+ * `*` is one path segment, `**` the rest of the path (`/api/galleries/*` matches `/api/galleries/1`
+ * but not `/api/galleries/1/related`; `/api/galleries/**` matches both). `host` narrows it to one
+ * host (exact or parent domain); omitted, the route applies on any host the bridge calls.
+ */
+export const rateLimitRouteSchema = z.object({
+  match: z.string().min(1),
+  host: z.string().min(1).optional(),
+  limit: z.number().int().positive(),
+  windowMs: z.number().int().positive(),
+});
+export type RateLimitRoute = z.infer<typeof rateLimitRouteSchema>;
+
+const rateLimitBudgetShape = {
+  /** Maximum page images in flight at once. */
+  maxConcurrent: z.number().int().positive().optional(),
+  /** Minimum milliseconds between successive page-image starts. */
+  minIntervalMs: z.number().int().nonnegative().optional(),
+};
+
+/**
+ * A bridge's page-image budget (`BridgeInfo.assetRateLimit`). The top-level keys are the default
+ * for every asset host; `byHost` carves out hosts with a budget of their own — a cover CDN that
+ * is unmetered next to a metered page server, say. Groups are checked in order and the first one
+ * naming the asset's host (exactly or as a parent domain) wins; a group's budget stands alone
+ * (it does NOT inherit the defaults), so a group with no limits at all means "unlimited".
+ */
+export const assetRateLimitSchema = z.object({
+  ...rateLimitBudgetShape,
+  byHost: z
+    .array(
+      z.object({
+        hosts: z.array(z.string().min(1)).min(1),
+        ...rateLimitBudgetShape,
+      }),
+    )
+    .optional(),
+});
+export type AssetRateLimit = z.infer<typeof assetRateLimitSchema>;
+
+/**
  * Self-description of a bridge. Note there is deliberately NO backend URL here — the address
  * and credentials of the user's backend arrive at runtime through settings.
  */
@@ -828,7 +870,7 @@ export const bridgeInfoSchema = z.object({
   iconUrl: z.string().url().optional(),
   /**
    * Politeness budget for this bridge's backend. The runtime applies it to the gated network as
-   * the default (a host may still override per key). Omit to accept the runtime default. The
+   * the default (a host may still override per key; `routes` are applied as declared). The
    * bridge author knows the backend's limits; declaring them here means every host — server, web,
    * iOS, Android — throttles correctly with no per-host configuration.
    */
@@ -838,6 +880,14 @@ export const bridgeInfoSchema = z.object({
       maxConcurrent: z.number().int().positive().optional(),
       /** Minimum milliseconds between successive request starts. */
       minIntervalMs: z.number().int().nonnegative().optional(),
+      /**
+       * Per-route quotas layered on top of the pacing above, for an API that budgets each endpoint
+       * separately (e.g. "search: 10/min, galleries: 15/min"). A request is matched against these in
+       * order (first match wins) and additionally waits for that route's window to have room; a
+       * "slow down" earned on a matched route pauses only that route, so a saturated search doesn't
+       * stall unrelated listing calls. Unmatched requests are only paced by the bridge-wide budget.
+       */
+      routes: z.array(rateLimitRouteSchema).optional(),
     })
     .optional(),
   /**
@@ -863,13 +913,6 @@ export const bridgeInfoSchema = z.object({
    * hosts this bridge declares. A reader loading direct CDN URLs is not throttled. Omit when the
    * source's image hosts have no known limit.
    */
-  assetRateLimit: z
-    .object({
-      /** Maximum page images in flight at once. */
-      maxConcurrent: z.number().int().positive().optional(),
-      /** Minimum milliseconds between successive page-image starts. */
-      minIntervalMs: z.number().int().nonnegative().optional(),
-    })
-    .optional(),
+  assetRateLimit: assetRateLimitSchema.optional(),
 });
 export type BridgeInfo = z.infer<typeof bridgeInfoSchema>;

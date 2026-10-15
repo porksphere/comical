@@ -15,7 +15,9 @@
  * transitions, deletions, queue idle) instead of polling — the seam that feeds both an SSE stream
  * (remote clients) and direct in-process subscriptions (embedded clients).
  */
-import { RateLimiter, type RateLimitBudget } from "@comical/core/net/rate-limiter";
+import type { AssetRateLimit } from "@comical/contract";
+import { assetBudgetFor } from "@comical/core/net/asset-budget";
+import { RateLimiter } from "@comical/core/net/rate-limiter";
 import { entryKey, parseEntryKey, type DownloadedChapter, type DownloadedPage } from "./models.ts";
 import type {
   Downloads,
@@ -104,13 +106,13 @@ export interface DownloadEngineOptions {
   attemptsPerPage?: number;
   /**
    * The bridge's page-image budget (`BridgeInfo.assetRateLimit`), looked up when the engine picks up
-   * one of its chapters. Every page fetch of that bridge — whatever URL shape it has — goes through
-   * one limiter per bridge, shared across chapters. Undefined (or no lookup) leaves pages unpaced
-   * beyond `pageConcurrency`.
+   * one of its chapters. Every page fetch of that bridge goes through the limiter its URL's host
+   * resolves to — the bridge's default, or one of its `byHost` groups — shared across chapters.
+   * Undefined (or no lookup) leaves pages unpaced beyond `pageConcurrency`.
    */
   pageRateLimit?: (
     bridgeId: string,
-  ) => Promise<RateLimitBudget | undefined> | RateLimitBudget | undefined;
+  ) => Promise<AssetRateLimit | undefined> | AssetRateLimit | undefined;
   /** Called between attempts on a page that failed once (device hosts bust a stale asset resolve). */
   onPageRetry?: (page: PendingPage) => void;
   /**
@@ -137,7 +139,10 @@ export class DownloadEngine {
   private readonly pageRateLimit: DownloadEngineOptions["pageRateLimit"];
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Keyed `bridgeId#budget` — see `pageLimiterFor`. */
   private readonly pageLimiters = new Map<string, RateLimiter>();
+  /** The budget declaration each bridge last reported, kept so a failed lookup paces as before. */
+  private readonly pageBudgets = new Map<string, AssetRateLimit>();
   /** Bridges whose source said "slow down", → when their chapters may be picked up again. */
   private readonly blockedUntil = new Map<string, number>();
   private unblockTimer: ReturnType<typeof setTimeout> | null = null;
@@ -430,7 +435,9 @@ export class DownloadEngine {
     const until = Date.now() + Math.max(0, waitMs);
     if (until <= (this.blockedUntil.get(bridgeId) ?? 0)) return;
     this.blockedUntil.set(bridgeId, until);
-    this.pageLimiters.get(bridgeId)?.pauseUntil(until);
+    for (const [key, limiter] of this.pageLimiters) {
+      if (key.startsWith(`${bridgeId}#`)) limiter.pauseUntil(until);
+    }
     this.emit({ type: "blocked", bridgeId, until });
   }
 
@@ -455,23 +462,31 @@ export class DownloadEngine {
     }, earliest - now);
   }
 
-  /** The bridge's shared page limiter, reconfigured from its current budget; none when it declares none. */
-  private async pageLimiterFor(bridgeId: string): Promise<RateLimiter | undefined> {
-    let budget: RateLimitBudget | undefined;
+  /** The bridge's current page-image budget declaration; none when it declares none. */
+  private async pageBudgetFor(bridgeId: string): Promise<AssetRateLimit | undefined> {
     try {
-      budget = await this.pageRateLimit?.(bridgeId);
+      const budget = await this.pageRateLimit?.(bridgeId);
+      if (budget) this.pageBudgets.set(bridgeId, budget);
+      else this.pageBudgets.delete(bridgeId);
     } catch {
-      budget = undefined; // a failed lookup must not stall downloads — keep the last budget
+      // a failed lookup must not stall downloads — keep the last budget
     }
-    let limiter = this.pageLimiters.get(bridgeId);
-    if (!budget) return limiter;
-    if (limiter) limiter.reconfigure(budget);
+    return this.pageBudgets.get(bridgeId);
+  }
+
+  /** The shared limiter a page's URL falls under, reconfigured from the budget; none when unpaced. */
+  private pageLimiterFor(bridgeId: string, decl: AssetRateLimit | undefined, sourceUrl: string): RateLimiter | undefined {
+    const resolved = assetBudgetFor(decl, sourceUrl);
+    if (!resolved) return undefined;
+    const key = `${bridgeId}#${resolved.key}`;
+    let limiter = this.pageLimiters.get(key);
+    if (limiter) limiter.reconfigure(resolved.budget);
     else {
       limiter = new RateLimiter({
-        maxConcurrent: budget.maxConcurrent ?? Number.MAX_SAFE_INTEGER,
-        minIntervalMs: budget.minIntervalMs ?? 0,
+        maxConcurrent: resolved.budget.maxConcurrent ?? Number.MAX_SAFE_INTEGER,
+        minIntervalMs: resolved.budget.minIntervalMs ?? 0,
       });
-      this.pageLimiters.set(bridgeId, limiter);
+      this.pageLimiters.set(key, limiter);
     }
     return limiter;
   }
@@ -559,7 +574,7 @@ export class DownloadEngine {
     const picked = await this.downloads.markChapterDownloading(key, chapterId);
     this.emit({ type: "chapter", chapter: picked });
 
-    const limiter = await this.pageLimiterFor(bridgeId);
+    const budget = await this.pageBudgetFor(bridgeId);
     let landed = false;
     const queue: DownloadedPage[] = [...outstanding];
     const worker = async (): Promise<void> => {
@@ -576,6 +591,7 @@ export class DownloadEngine {
         for (let attempt = 0; attempt < this.attemptsPerPage && !stored; attempt++) {
           if (this.isCancelled(key, chapterId)) return;
           try {
+            const limiter = this.pageLimiterFor(bridgeId, budget, page.sourceUrl);
             const release = limiter ? await limiter.acquire() : undefined;
             let fetched: FetchedPage;
             try {
