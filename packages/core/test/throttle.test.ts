@@ -198,3 +198,29 @@ describe("a bridge call during a throttle", () => {
     expect(parseRateLimited((err as Error).message)).toBeNull();
   });
 });
+
+describe("held requests", () => {
+  test("held() counts requests waiting on our pacing and heldClearsAt() says when they'd start", async () => {
+    const { raw } = scripted([{ status: 200 }]);
+    const { network, held, heldClearsAt } = createGatedNetwork(raw, { rateLimit: { maxConcurrent: 1, minIntervalMs: 40 } });
+    expect(held()).toBe(0);
+    expect(heldClearsAt()).toBeLessThanOrEqual(Date.now());
+    const t0 = Date.now();
+    const all = Promise.all([0, 1, 2, 3].map((i) => network.request({ url: "https://x.test/" + i })));
+    await new Promise((r) => setTimeout(r, 5));
+    // The first went straight through; the other three are queued 40ms apart.
+    expect(held()).toBe(3);
+    expect(heldClearsAt() - t0).toBeGreaterThanOrEqual(100);
+    expect(heldClearsAt() - t0).toBeLessThan(200);
+    await all;
+    expect(held()).toBe(0);
+    expect(heldClearsAt()).toBeLessThanOrEqual(Date.now());
+  });
+
+  test("a request that fails to start releases its hold", async () => {
+    const raw = { request: async (): Promise<HttpResponse> => { throw new Error("offline"); } };
+    const { network, held } = createGatedNetwork(raw, fast);
+    await expect(network.request({ url: "https://x.test/" })).rejects.toThrow("offline");
+    expect(held()).toBe(0);
+  });
+});

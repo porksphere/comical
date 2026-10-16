@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CURSOR_MAX_LENGTH, MAX_UPDATE_CHECK_BATCH } from "@comical/contract";
+import { CURSOR_MAX_LENGTH, MAX_UPDATE_CHECK_BATCH, parseRateLimited } from "@comical/contract";
 import type { HostCapabilities, HttpRequest, HttpResponse } from "@comical/contract";
 import {
   BridgeContractError,
@@ -181,6 +181,46 @@ describe("loadBridge", () => {
     const b = await loadBridge({ code, capabilities: mockHost(), limits: { callTimeoutMs: 0 } });
     // A method slower than the tiny timeout above would have rejected; with 0 it resolves.
     expect((await b.getSeriesDetails("x")).id).toBe("x");
+  });
+
+  /** A method that fans out `n` requests at once and resolves when they all return. */
+  const fanOut = (n: number) =>
+    bundle(`{
+      info: ${GOOD_INFO},
+      getSeriesDetails: async (id) => {
+        await Promise.all(Array.from({ length: ${n} }, (_, i) => host.network.request({ url: "https://x.test/" + i })));
+        return { id, title: id };
+      },
+      getChapters: async () => [],
+      getChapterPages: async () => [],
+      getSearchResults: async () => ({ items: [], page: 1, hasNextPage: false }),
+    }`);
+
+  test("a call whose requests are held by our own pacing outlives callTimeoutMs", async () => {
+    // 6 requests one at a time 30ms apart is ~150ms of queue — three times the call budget. The
+    // queue is moving, so the call isn't stalled: the timeout stands down while requests are held.
+    const b = await loadBridge({
+      code: fanOut(6),
+      capabilities: mockHost(),
+      limits: { callTimeoutMs: 50 },
+      network: { rateLimit: { maxConcurrent: 1, minIntervalMs: 30 } },
+    });
+    expect((await b.getSeriesDetails("x")).id).toBe("x");
+  });
+
+  test("a call held past heldCallTimeoutMs fails as rate-limited, naming when the queue clears", async () => {
+    const b = await loadBridge({
+      code: fanOut(10),
+      capabilities: mockHost(),
+      limits: { callTimeoutMs: 20, heldCallTimeoutMs: 60 },
+      network: { rateLimit: { maxConcurrent: 1, minIntervalMs: 50 } },
+    });
+    const err = (await b.getSeriesDetails("x").catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(BridgeRuntimeError);
+    const parsed = parseRateLimited(err.message);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.retryAfterMs).toBeGreaterThan(100);
+    expect(err.message).toContain("held");
   });
 });
 

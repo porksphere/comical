@@ -39,6 +39,18 @@ export class WindowLimiter {
     return this.pausedUntil;
   }
 
+  /** Requests waiting for a start. */
+  get queued(): number {
+    return this.queue.length;
+  }
+
+  /** When the last request now queued could start (epoch ms; `now` when nothing is queued). An
+   *  estimate: each further `limit` of them costs another window. */
+  clearsAt(now = Date.now()): number {
+    if (this.queue.length === 0) return now;
+    return this.nextStartAt(now) + Math.floor((this.queue.length - 1) / this.opts.limit) * this.opts.windowMs;
+  }
+
   /** When the next start could happen if asked now (epoch ms; `now` when the window has room). */
   nextStartAt(now = Date.now()): number {
     this.prune(now);

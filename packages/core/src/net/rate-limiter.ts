@@ -60,6 +60,22 @@ export class RateLimiter {
     return this.pausedUntil;
   }
 
+  /** Requests waiting for a start. */
+  get queued(): number {
+    return this.queue.length;
+  }
+
+  /**
+   * When the last request now queued could start if nothing else arrived (epoch ms; `now` when
+   * nothing is queued). An estimate: starts are spaced by the interval whatever the concurrency, so
+   * it reads the queue as serial and ignores slots still to be released.
+   */
+  clearsAt(now = Date.now()): number {
+    if (this.queue.length === 0) return now;
+    const first = Math.max(now, this.lastStart + this.opts.minIntervalMs, this.pausedUntil);
+    return first + (this.queue.length - 1) * this.opts.minIntervalMs;
+  }
+
   /** Resolves when the caller may start; the caller MUST later call the returned release fn. */
   async acquire(): Promise<() => void> {
     await new Promise<void>((resolve) => {

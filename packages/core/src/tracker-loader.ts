@@ -26,10 +26,10 @@ import {
 import { z } from "zod";
 import { BridgeContractError, BridgeLoadError, BridgeRuntimeError, ComicalError } from "./errors.ts";
 import type { BundleEvaluator } from "./evaluator.ts";
-import { createGatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
+import { createGatedNetwork, type GatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
 import type { RateLimitOptions } from "./net/rate-limiter.ts";
 import { resolveSettings } from "./settings.ts";
-import { errorMessage, withTimeout } from "./util.ts";
+import { errorMessage, withTimeout, type TimeoutPacing } from "./util.ts";
 import { validate, validateInput } from "./validation.ts";
 import { DEFAULT_LIMITS, type RuntimeLimits } from "./loader.ts";
 
@@ -119,7 +119,7 @@ export function loadTracker(opts: LoadTrackerOptions): LoadedTracker {
     gated.settings = values;
   }
 
-  return wrapTracker(raw, info, limits.callTimeoutMs);
+  return wrapTracker(raw, info, limits, gatedNetwork);
 }
 
 function extractFactory(exports: unknown): TrackerFactory {
@@ -130,7 +130,8 @@ function extractFactory(exports: unknown): TrackerFactory {
   return def as TrackerFactory;
 }
 
-function wrapTracker(raw: Tracker, info: TrackerInfo, timeoutMs: number): LoadedTracker {
+function wrapTracker(raw: Tracker, info: TrackerInfo, limits: RuntimeLimits, net: Pick<GatedNetwork, "held">): LoadedTracker {
+  const pacing: TimeoutPacing = { busy: () => net.held() > 0, ceilingMs: limits.heldCallTimeoutMs };
   const call = async <S extends z.ZodTypeAny>(
     label: string,
     schema: S,
@@ -138,7 +139,7 @@ function wrapTracker(raw: Tracker, info: TrackerInfo, timeoutMs: number): Loaded
   ): Promise<z.infer<S>> => {
     let result: unknown;
     try {
-      result = await withTimeout(Promise.resolve().then(fn), timeoutMs, label);
+      result = await withTimeout(Promise.resolve().then(fn), limits.callTimeoutMs, label, pacing);
     } catch (cause) {
       if (cause instanceof ComicalError) throw cause;
       throw new BridgeRuntimeError(`${label} threw: ${errorMessage(cause)}`, cause);

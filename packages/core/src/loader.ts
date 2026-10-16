@@ -39,10 +39,11 @@ import {
   BridgeContractError,
   BridgeLoadError,
   BridgeRuntimeError,
+  BridgeTimeoutError,
   ComicalError,
 } from "./errors.ts";
 import type { BundleEvaluator } from "./evaluator.ts";
-import { createGatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
+import { createGatedNetwork, type GatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
 import type { RateLimitOptions } from "./net/rate-limiter.ts";
 import { resolveSettings } from "./settings.ts";
 
@@ -74,19 +75,24 @@ const listRequestSchema = z.object({ ...refinableRequestShape, query: z.string()
 
 /** Boundary schema for a bare paged request — position only. */
 const pagedRequestSchema = z.object({ cursor: cursorSchema.optional() });
-import { errorMessage, withTimeout } from "./util.ts";
+import { errorMessage, withTimeout, type TimeoutPacing } from "./util.ts";
 import { validate, validateInput } from "./validation.ts";
 
 export interface RuntimeLimits {
   /** Budget for the synchronous evaluation of the bundle. */
   evalTimeoutMs: number;
-  /** Budget for each (async) bridge method call. */
+  /** Budget for each (async) bridge method call to make progress: time its requests spend held by
+   *  the host's own rate limiting doesn't count (see `heldCallTimeoutMs`). 0 disables both. */
   callTimeoutMs: number;
+  /** Ceiling on a call whose requests the rate limiter keeps holding — the most a call may take in
+   *  all. A call that hits it fails as rate-limited, naming when the queue would have cleared. */
+  heldCallTimeoutMs: number;
 }
 
 export const DEFAULT_LIMITS: RuntimeLimits = {
   evalTimeoutMs: 5000,
   callTimeoutMs: 30000,
+  heldCallTimeoutMs: 5 * 60_000,
 };
 
 export interface LoadBridgeOptions {
@@ -202,7 +208,7 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   }
 
   // 6. Wrap every method with timeout + output validation.
-  return wrapBridge(raw, info, limits.callTimeoutMs, gatedNetwork.blockedUntil);
+  return wrapBridge(raw, info, limits, gatedNetwork);
 }
 
 function extractFactory(exports: unknown): BridgeFactory {
@@ -218,9 +224,10 @@ function extractFactory(exports: unknown): BridgeFactory {
 function wrapBridge(
   raw: Bridge,
   info: BridgeInfo,
-  timeoutMs: number,
-  blockedUntil: () => number = () => 0,
+  limits: RuntimeLimits,
+  net: Pick<GatedNetwork, "blockedUntil" | "held" | "heldClearsAt">,
 ): LoadedBridge {
+  const pacing: TimeoutPacing = { busy: () => net.held() > 0, ceilingMs: limits.heldCallTimeoutMs };
   const call = async <S extends z.ZodTypeAny>(
     label: string,
     schema: S,
@@ -228,12 +235,15 @@ function wrapBridge(
   ): Promise<z.infer<S>> => {
     let result: unknown;
     try {
-      result = await withTimeout(Promise.resolve().then(fn), timeoutMs, label);
+      result = await withTimeout(Promise.resolve().then(fn), limits.callTimeoutMs, label, pacing);
     } catch (cause) {
       // A call that fails while the source is throttling us failed BECAUSE of it (the bridge saw the
       // 429, or queued behind the pause until it timed out) — tag it so hosts back off instead of
-      // treating it as a broken bridge. A bridge that tagged its own error keeps its wait.
-      const wait = blockedUntil() - Date.now();
+      // treating it as a broken bridge. A bridge that tagged its own error keeps its wait. A call
+      // that ran out its ceiling still holding requests is the same case with our own pacing as the
+      // throttle: the wait is when that queue clears.
+      const heldOut = cause instanceof BridgeTimeoutError && net.held() > 0;
+      const wait = Math.max(net.blockedUntil(), heldOut ? net.heldClearsAt() : 0) - Date.now();
       const message = errorMessage(cause);
       if (wait > 0 && !parseRateLimited(message)) {
         throw new BridgeRuntimeError(`${label} threw: ${rateLimitedMessage(wait, message)}`, cause);

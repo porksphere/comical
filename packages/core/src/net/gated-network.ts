@@ -63,6 +63,14 @@ export interface GatedNetwork {
    * bridge-wide pause; a single route's pause is surfaced by the requests it holds, not here.
    */
   blockedUntil: () => number;
+  /**
+   * Requests waiting on OUR pacing — the interval, the concurrency cap, a route's window or a pause —
+   * rather than on the source. A bridge call is slow while this is nonzero, not stalled: the loader's
+   * call timeout stands down for as long as it is.
+   */
+  held: () => number;
+  /** When everything now held could have started (epoch ms; `now` when nothing is held). */
+  heldClearsAt: () => number;
 }
 
 interface Route {
@@ -81,6 +89,7 @@ export function createGatedNetwork(
   const throttle = { ...DEFAULT_THROTTLE, ...opts.throttle };
   let routes: Route[] = [];
   let strikes = 0;
+  let held = 0;
 
   /** How long `res` asks us to back off, or undefined when it isn't a throttle response. */
   const throttleWait = (res: HttpResponse): number | undefined => {
@@ -121,8 +130,14 @@ export function createGatedNetwork(
           throw new Error(rateLimitedMessage(Math.max(resumeAt - now, 1000), reason));
         }
 
-        if (route) await route.limiter.acquire();
-        const release = await limiter.acquire();
+        held++;
+        let release!: () => void;
+        try {
+          if (route) await route.limiter.acquire();
+          release = await limiter.acquire();
+        } finally {
+          held--;
+        }
         let response: HttpResponse;
         try {
           response = await raw.request(gatedReq);
@@ -161,6 +176,11 @@ export function createGatedNetwork(
       });
     },
     blockedUntil: () => limiter.pausedUntilMs,
+    held: () => held,
+    heldClearsAt: () => {
+      const now = Date.now();
+      return routes.reduce((at, r) => Math.max(at, r.limiter.clearsAt(now)), limiter.clearsAt(now));
+    },
   };
 }
 
