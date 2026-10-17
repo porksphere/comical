@@ -290,6 +290,37 @@ describe("checkForUpdates (batch update check)", () => {
   });
 });
 
+describe("isFavorite (single-series favorite check)", () => {
+  const withIsFavorite = (body: string) =>
+    loadBridge({
+      code: bundle(`{
+        info: { ...${GOOD_INFO}, capabilities: ["search", "favorites"] },
+        getSeriesDetails: async (id) => ({ id, title: id }),
+        getFavorites: async () => ({ items: [] }),
+        isFavorite: async (id) => (${body}),
+      }`),
+      capabilities: mockHost(),
+    });
+
+  // Dropping it left every host on its fallback: a page-by-page scan of the whole favorites list,
+  // up to 20 rate-limited requests per series open.
+  test("is exposed and passes the series id through", async () => {
+    const b = await withIsFavorite(`id === "fav"`);
+    expect(await b.isFavorite!("fav")).toBe(true);
+    expect(await b.isFavorite!("other")).toBe(false);
+  });
+
+  test("absent on a bridge that doesn't implement it, so the host can fall back to a scan", async () => {
+    const b = await loadBridge({ code: GOOD_BRIDGE, capabilities: mockHost() });
+    expect(b.isFavorite).toBeUndefined();
+  });
+
+  test("a non-boolean answer is rejected", async () => {
+    const b = await withIsFavorite(`"yes"`);
+    await expect(b.isFavorite!("x")).rejects.toBeInstanceOf(BridgeValidationError);
+  });
+});
+
 describe("sandbox isolation", () => {
   test("require / process / fetch / Bun are unavailable to bridge code", async () => {
     const code = bundle(`{

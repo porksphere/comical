@@ -341,6 +341,9 @@ function wrapBridge(
   if (raw.removeFavorite) {
     bridge.removeFavorite = (id) => call("removeFavorite", z.void(), () => raw.removeFavorite!(id));
   }
+  if (raw.isFavorite) {
+    bridge.isFavorite = (id) => call("isFavorite", z.boolean(), () => raw.isFavorite!(id));
+  }
   if (raw.getSettings) {
     const getSettings = raw.getSettings.bind(raw);
     bridge.getSettings = () =>
