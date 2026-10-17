@@ -12,7 +12,12 @@ import { mkdir, readdir, readFile, rm, rmdir, stat, unlink, writeFile } from "no
 import { dirname, join } from "node:path";
 import type { BlobStore } from "@comical/downloads";
 
+const USAGE_TTL_MS = 4000;
+
 export class FileBlobStore implements BlobStore {
+  /** `at` is when the walk FINISHED — a walk still running is always shared, however long it takes. */
+  private usageCache: { bytes: Promise<number>; at: number } | null = null;
+
   constructor(private readonly root: string) {}
 
   /** Resolve a manifest-relative path under the root, rejecting traversal/absolute segments. */
@@ -54,14 +59,38 @@ export class FileBlobStore implements BlobStore {
       await rmdir(chapterDir).catch(() => {});
       await rmdir(seriesDir).catch(() => {});
     }
+    this.usageCache = null;
   }
 
   async removeAll(): Promise<void> {
     await rm(this.root, { recursive: true, force: true });
+    this.usageCache = null;
   }
 
-  /** The actual bytes under the blob root (0 when it doesn't exist yet). */
-  async usage(): Promise<number> {
+  /**
+   * The actual bytes under the blob root (0 when it doesn't exist yet). `GET /downloads` carries
+   * this and clients refetch that on every pause, enqueue and progress event, while one walk of a
+   * large download dir takes about a second — so walk at most once per `USAGE_TTL_MS`, sharing the
+   * walk in progress, and drop the cache on a delete, the one change the number must show promptly.
+   * The same policy as the device's blob store.
+   */
+  usage(): Promise<number> {
+    if (this.usageCache && Date.now() - this.usageCache.at < USAGE_TTL_MS) return this.usageCache.bytes;
+    const bytes = this.walkUsage();
+    const entry = { bytes, at: Number.POSITIVE_INFINITY };
+    this.usageCache = entry;
+    bytes.then(
+      () => {
+        entry.at = Date.now();
+      },
+      () => {
+        if (this.usageCache === entry) this.usageCache = null;
+      },
+    );
+    return bytes;
+  }
+
+  private async walkUsage(): Promise<number> {
     let total = 0;
     const walk = async (dir: string): Promise<void> => {
       let entries;

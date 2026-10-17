@@ -10,7 +10,7 @@
  */
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { DownloadEngine, Downloads } from "@comical/downloads";
 import { FixtureBackend } from "@comical/testkit";
 import { BridgeManager } from "../src/bridge-manager.ts";
@@ -110,8 +110,11 @@ describe("server-managed download lifecycle", () => {
     // Blobs landed under the server's blob root.
     expect(existsSync(join(BLOBS_DIR, "example", "local", "c1"))).toBe(true);
 
-    // The storage tree carries the blob root's actual size when the host owns the bytes.
+    // The storage tree carries the blob root's actual size when the host owns the bytes — walked at
+    // most once per few seconds, so step past the walk the polling above already cached.
+    setSystemTime(new Date(Date.now() + 10_000));
     const withDisk = (await (await get("/downloads")).json()) as { totalBytes: number; diskBytes?: number };
+    setSystemTime();
     expect(withDisk.diskBytes).toBe(withDisk.totalBytes);
 
     // The /file route serves the downloaded bytes with the stored content type.
