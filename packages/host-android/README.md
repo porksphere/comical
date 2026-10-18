@@ -41,14 +41,20 @@ val ctx = ComicalBridgeContext(
 val info = ctx.bridgeInfo
 val results = ctx.call("getSearchResults", listOf("naruto", 1))
 
-// Optional: local HTTP server for a WebView
-val server = ComicalServer(ctx)
-server.start()
-// server.port → pass to WebViewClient
-
 // 4. Clean up
 ctx.close()
 ```
+
+`ComicalTrackerContext` is the same shape for tracker bundles. There is no on-device HTTP server:
+a React Native app drives these contexts through `@comical/host-rn`'s proxy provider instead (see
+the repo README's "Embedding the runtime in React Native"), and a pure Kotlin app calls them directly.
+
+## How it's consumed
+
+Not as a Gradle dependency: `comical-app`'s Expo module compiles `src/main/kotlin` and
+`src/main/assets` straight from the submodule via `sourceSets`, and repeats the runtime
+dependencies below in its own `build.gradle` (the app's CI checks the two lists match). The
+`build.gradle.kts` here and the root Gradle project exist so the instrumented tests can run.
 
 ## Running tests
 
