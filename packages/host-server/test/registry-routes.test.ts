@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { AvailableBridge, SavedRegistry } from "@comical/registry";
 import { BridgeManager } from "../src/bridge-manager.ts";
 import { createRouter } from "../src/router.ts";
-import type { RegistryManager } from "@comical/registry";
+import type { RegistryManager } from "@comical/registry/node";
 import { SettingsStore } from "../src/settings-store.ts";
 
 const BRIDGES_DIR = join(import.meta.dir, "..", "..", "..", "bridges");

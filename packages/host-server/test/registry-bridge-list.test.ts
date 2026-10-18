@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import type { RegistryManager } from "@comical/registry";
+import type { RegistryManager } from "@comical/registry/node";
 import { BridgeManager } from "../src/bridge-manager.ts";
 import { SettingsStore } from "../src/settings-store.ts";
 

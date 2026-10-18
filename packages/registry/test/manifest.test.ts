@@ -5,7 +5,7 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { ManifestStore } from "../src/index.ts";
+import { ManifestStore } from "../src/node.ts";
 
 const DIR = join(import.meta.dir, ".tmp-manifest");
 const PATH = join(DIR, "registry-manifest.json");

@@ -17,7 +17,7 @@ import {
   signSha256,
   verifyChecksum,
   verifySignature,
-} from "../src/index.ts";
+} from "../src/node.ts";
 import { INDEX_MEMO_MS } from "../src/index-memo.ts";
 
 const BUNDLE_PATH = join(import.meta.dir, "..", "..", "..", "bridges", "example-bridge", "dist", "bridge.js");

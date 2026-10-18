@@ -2,9 +2,10 @@
   "name": "@comical/registry",
   "version": "0.0.0",
   "type": "module",
-  "description": "Registry index format, fetcher, verifier, publisher, and manager",
+  "description": "Registry index format, fetcher, verifier, and publisher (root is Node-free); the file-backed ManifestStore + RegistryManager live under ./node",
   "exports": {
     ".": "./src/index.ts",
+    "./node": "./src/node.ts",
     "./fetcher": "./src/fetcher.ts",
     "./verify": "./src/verify.ts",
     "./schema": "./src/schema.ts",

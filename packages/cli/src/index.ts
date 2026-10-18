@@ -19,9 +19,8 @@ import {
   runConformance,
 } from "@comical/testkit";
 import { createServer } from "@comical/host-server";
+import { ManifestStore, RegistryManager } from "@comical/registry/node";
 import {
-  ManifestStore,
-  RegistryManager,
   assertVersionImmutable,
   generateKeyPair,
   resolveRegistryUrl,

@@ -20,7 +20,7 @@ import {
   resolveSettings,
 } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
-import type { RegistryManager } from "@comical/registry";
+import type { RegistryManager } from "@comical/registry/node";
 import type { SettingsStore } from "./settings-store.ts";
 // TrackerSummary lives in the Node-free provider module (so the router can name it); import for
 // local use and re-export to preserve this module's public surface.

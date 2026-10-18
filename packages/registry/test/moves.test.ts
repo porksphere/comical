@@ -15,7 +15,7 @@ import {
   generateKeyPair,
   sha256Hex,
   signSha256,
-} from "../src/index.ts";
+} from "../src/node.ts";
 
 const BUNDLE_PATH = join(import.meta.dir, "..", "..", "..", "bridges", "example-bridge", "dist", "bridge.js");
 const DATA_DIR = join(import.meta.dir, ".tmp-moves");

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { SettingValue } from "@comical/contract";
 import { type LoadedBridge, loadBridge, redactSettingSecrets, resolveSettings, storedSecretKeys } from "@comical/core";
 import { createBunHost } from "@comical/host-bun";
-import type { RegistryManager } from "@comical/registry";
+import type { RegistryManager } from "@comical/registry/node";
 import {
   type DiscoveredBridge,
   discoverBridges,
