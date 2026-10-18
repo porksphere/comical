@@ -117,7 +117,7 @@ correct the design.
 │  rate-limiter · response cache · zod boundary validation              │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Host Adapters  (one per platform)                                    │
-│  host-bun · host-web · host-server · host-ios · host-android         │
+│  host-bun · host-server · host-rn · host-ios · host-android          │
 │  implement HostCapabilities: network · storage · log                  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -310,6 +310,10 @@ bundles or needs CORS at all.
 | `@comical/testkit` | `FixtureBackend` (public-domain demo library), `MockHost`, network record/replay cassettes, the `evaluateBridge` coverage report + `runConformance` strict gate, plus live cover-size metrics (`measureThumbnails`) and transient/blocked-network tolerance (`isTransientError`). See [`packages/testkit/README.md`](packages/testkit/README.md). |
 | `@comical/registry` | Registry index schema + zod validation, GitHub URL auto-resolution, SHA-256 integrity + Ed25519 signature verification, `ManifestStore`, `RegistryManager` (add/remove/browse/install/update/uninstall). |
 | `@comical/library` | **Optional** local, cross-bridge reading library + tracking: collection, read/unread state, per-page resume, history, lists, new-chapter detection. Platform-agnostic `Library` service over a `LibraryStore` seam (in-memory store included). `host-server` mounts `/library` only when enabled. |
+| `@comical/runtime` | **Optional** host-agnostic bridge-library coordination on top of `library`: `addToLibrary`, read-sync, favorites and tracker import, background new-chapter checks. Both `host-server` and `host-rn` build one when a library is enabled. |
+| `@comical/downloads` | **Optional** durable offline downloads: portable manifest model, a `DownloadsStore` seam, the pure `Downloads` service, and `DownloadEngine` (bytes stored per platform through a `BlobStore` / `PageFetcher`). Mounted at `/downloads` only when enabled. |
+| `@comical/sync` | **Optional** cross-device sync: per-device change logs, the merge every device agrees on, and the engine that drives them. Mounted at `/sync` only when enabled. |
+| `@comical/host-native` | The shared JS harness `bun run build:native` bundles into the iOS (JSC) and Android (QuickJS) hosts: runs `@comical/core` with a native separate-context evaluator; the native layer injects `_native_*` callbacks. No platform APIs. |
 
 ### Host adapters
 
@@ -317,8 +321,8 @@ bundles or needs CORS at all.
 |---------|----------|-----------------|
 | `@comical/host-bun` | Desktop / CLI | Bun `fetch` + cookie jar, `FileStorage` / `MemoryStorage`, `node:vm` loader |
 | `@comical/host-server` | LAN / home server | Hono REST API, `BridgeManager` (load on demand, cache), `SettingsStore`, registry-aware |
-| `host-ios` (Swift Package) | iOS / macOS | `JSContext` evaluator, `URLSession`, `FileManager`, on-device `ComicalServer` |
-| `host-android` (Kotlin library) | Android | QuickJS (~1 MB), OkHttp, DataStore, on-device `ComicalServer` |
+| `host-ios` (Swift sources) | iOS / macOS | `ComicalBridgeContext` / `ComicalTrackerContext`: `JSContext` evaluator, `URLSession`, `FileManager`, Keychain. Consumed by source — see [Native hosts](#native-hosts). |
+| `host-android` (Kotlin sources) | Android | `ComicalBridgeContext` / `ComicalTrackerContext`: QuickJS (~1 MB), OkHttp, file storage, `EncryptedFile`. Consumed by source — see [Native hosts](#native-hosts). |
 | `@comical/host-rn` | React Native / Expo | Reusable in-process embedding layer: proxy `BridgeProvider`, reused-router transport, registry-download `BundleSource`, Hermes WebCrypto shim. See below. |
 
 ### Applications
@@ -327,8 +331,10 @@ bundles or needs CORS at all.
 |---------|-------------|
 | `@comical/cli` | `comical` command-line host. Commands: `list`, `serve`, `search`, `details`, `chapters`, `pages`, `test`, `record`, `registry ...` |
 
-The browser UI is a separate deployable app in the **`comical-web`** repo (a thin REST client for a
-running `comical serve` instance) — it is not part of this monorepo.
+The user-facing client is the separate **`comical-app`** repo (React Native + Expo: iOS and Android
+natively, web via react-native-web, desktop via Electron). It is not part of this monorepo; it pins
+this repo as a git submodule and either talks to `host-server` over HTTP or runs the same router
+in-process (see [Embedding the runtime in React Native](#embedding-the-runtime-in-react-native)).
 
 ### Bridges
 
@@ -366,9 +372,10 @@ owns.
 | Platform | Status | How it runs |
 |----------|--------|-------------|
 | Desktop (Windows/macOS/Linux) | ✅ M1 | `comical serve` or direct CLI — `host-bun` |
-| Web browser | ✅ M2 | REST client → `host-server` (recommended) or `host-web` + proxy (no server) |
-| iOS | ✅ M3 | Native Swift app via `ComicalBridgeContext` (JSC) + optional `ComicalServer` |
-| Android | ✅ M3 | Native Kotlin app via `ComicalBridgeContext` (QuickJS) + optional `ComicalServer` |
+| Web browser | ✅ M2 | `comical-app`'s web build, a REST client → `host-server` (the browser runs no bridge code) |
+| iOS | ✅ M3 | `comical-app` running the router in-process via `@comical/host-rn` + `ComicalBridgeContext` (JSC); or any Swift app embedding `host-ios` directly |
+| Android | ✅ M3 | `comical-app` running the router in-process via `@comical/host-rn` + `ComicalBridgeContext` (QuickJS); or any Kotlin app embedding `host-android` directly |
+| Desktop app | ✅ | `comical-app`'s Electron build runs `createHost()` on Electron's Node — `node:vm` bridges, no socket |
 | Bridge registries | ✅ M4 | `comical registry add/install/publish` + `RegistryManager` in `host-server` |
 
 ---
@@ -400,8 +407,8 @@ curl -X PUT http://localhost:3100/bridges/example/settings \
   -d '{"baseUrl": "https://your-komga-instance.example.com"}'
 ```
 
-> A fixture-backed dev server (no real backend needed) plus the browser UI live in the **`comical-web`**
-> repo — run `bun run dev` from the workspace root to start both.
+> For a fixture-backed dev stack (no real backend needed) run `bun run dev` from the workspace root:
+> it starts this repo's `sandbox/demo-server.ts` on :3100 and `comical-app`'s web dev server on :8081.
 
 ### Run with Docker
 
@@ -477,16 +484,17 @@ bun run cli evaluate --bridge example --fixture
 bun run cli serve --port 3100 --data-dir ./.comical
 ```
 
-### Running the browser UI
+### Running the client
 
-The browser UI lives in the separate **`comical-web`** repo. From the workspace root:
+The client lives in the separate **`comical-app`** repo. From the workspace root:
 
 ```sh
-bun run dev        # builds sibling bridges, starts the fixture-backed server (:3100) + UI (:3300)
+bun run dev        # builds sibling bridges, starts the dev host-server (:3100) + the app's web build (:8081)
 ```
 
-Open `http://localhost:3300`. The UI is a thin REST client — the browser makes no direct network
-requests to backends, has no bridge bundles, and runs no bridge code.
+Open `http://localhost:8081`. On the web the app is a thin REST client — the browser makes no direct
+network requests to backends, has no bridge bundles, and runs no bridge code. On iOS/Android the same
+app can instead run bridges on-device (see [Embedding the runtime in React Native](#embedding-the-runtime-in-react-native)).
 
 ---
 
@@ -859,6 +867,13 @@ bun run serve            # start comical-server on :3100
 bun run cli -- --help    # CLI help
 ```
 
+### Embedding the runtime elsewhere
+
+See [`docs/embedding.md`](docs/embedding.md) — the minimal recipe per platform (Bun/Node with
+`loadBridge` + `createBunHost`, a socket-free `createHost()` from `host-server`, Swift/Kotlin via the
+native contexts, React Native via `@comical/host-rn`), which packages are Node-free, and what the
+bridge layer promises a third party who wants bridges but not the library.
+
 ### Adding a new host adapter
 
 1. Create `packages/host-<name>/`.
@@ -866,6 +881,22 @@ bun run cli -- --help    # CLI help
 3. Implement `BundleEvaluator` using your platform's JS engine (JSC, QuickJS, V8, etc.).
 4. Pass your evaluator to `await loadBridge({ ..., evaluator: yourEvaluator })`.
 5. Add a test that loads `example-bridge` and calls `runConformance`.
+
+### Native hosts
+
+`host-ios` and `host-android` are **consumed by source, not as packages.** `comical-app` compiles
+them straight out of its `external/comical` submodule — Gradle `sourceSets` on Android, a prebuild
+plugin that copies the Swift files into its Expo module on iOS — together with the harness that
+`bun run build:native` generates (`host-ios/.../Resources/harness.js`,
+`host-android/src/main/assets/comical_harness.js`, both gitignored). The `Package.swift` and
+`build.gradle.kts` in those directories exist so the native tests can run (`swift test`,
+`./gradlew :host-android:connectedDebugAndroidTest`); they are not published artifacts and nothing
+consumes them as such. The Expo module repeats `host-android`'s runtime dependencies, so a version
+bump there must be mirrored (the app's CI diffs the two lists).
+
+A change to a native capability touches, in order: `@comical/contract` → `host-native`
+(`entry-jsc.ts` / `entry-quickjs.ts`) → both native contexts → `bun run build:native` → a fresh
+dev-client build of the app (the harness is baked in as an asset; a Metro reload will not pick it up).
 
 ### Updating the contract
 

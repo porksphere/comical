@@ -16,7 +16,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "cli": "bun run packages/cli/src/index.ts",
-    "serve": "bun run packages/host-server/src/server.ts"
+    "serve": "bun run packages/host-server/src/server.ts",
+    "check:readme": "bun run scripts/check-readme-packages.ts"
   },
   "type": "module",
   "workspaces": [

@@ -23,6 +23,35 @@ full rationale.
 - **Contract changes are additive and validated.** Prefer new optional fields / discriminated-union
   variants over breaking shapes; validate at the boundary (`pageThumbnailSchema`-style). The contract
   is the one stable seam every platform depends on.
+- **Bun stays at the edges.** `Bun.*` APIs (`Bun.serve`, `Bun.build`, `Bun.file`, `Bun.spawn`) are
+  allowed only in `scripts/`, `sandbox/`, `packages/host-server/src/server.ts`, `packages/cli`, and
+  `packages/testkit`. Every other package must run under plain Node (Electron's main process runs
+  `host-server`'s `createHost()` on Node; Hermes runs `host-rn`). Use `node:*` imports, and keep the
+  socket out of the assembly (`createHost()` returns the router; `createServer()` is the only thing
+  that listens).
+- **Node-free barrels stay Node-free.** The root exports of `contract`, `core`, `registry`,
+  `host-rn`, and `host-server/router` must not reach `node:fs`/`node:path`. Node-bound code goes
+  under a subpath (`@comical/registry/node`, `@comical/host-server/host`) and
+  `packages/host-rn/test/bridges-entry.test.ts` walks the import graph to enforce it for `host-rn`.
+
+## Native hosts (`host-ios`, `host-android`, `host-native`)
+
+The Swift and Kotlin contexts are the native half of the harness protocol `host-native` defines
+(`comical_init` / `comical_call` globals in, `_native_*` capability callbacks out). They are consumed
+**by source** from `comical-app`'s submodule, never as a Swift Package / Gradle artifact — see
+"Native hosts" in `README.md`. A change to a native capability is not done until every step below
+is:
+
+1. `@comical/contract` (the typed shape, zod-validated), then `@comical/core` if the gate changes.
+2. `packages/host-native/src/entry-jsc.ts` **and** `entry-quickjs.ts` (the JS side of the protocol).
+3. `ComicalBridgeContext.swift` **and** `ComicalBridgeContext.kt` (plus the tracker contexts if the
+   capability applies to trackers) — both, or the platforms drift.
+4. `bun run build:native` (the harness is a gitignored asset; it is NOT rebuilt by `bun test` or by
+   the app's Metro). The `swift test` / instrumented tests run from `.github/workflows/native.yml`
+   (weekly + on native-path pushes), not from the per-push CI.
+5. The app needs a **fresh dev-client build** — the harness is baked into the APK/IPA, and
+   `comical-app`'s Expo module repeats `host-android`'s Gradle deps (its CI diffs the two lists; a
+   version bump here must be mirrored there).
 
 ## Testing
 
@@ -42,11 +71,13 @@ full rationale.
   a clone has no bridge bundles and every test that loads one fails — 51 of them, which looks
   exactly like a broken branch and has been misreported as one. Built: 1052 pass, 0 fail.
 - Run `bun test` (full suite) or `bun test packages/host-server` (scoped) to confirm all tests pass.
+- `bun run check:readme` (also in CI) fails when `README.md`'s package reference and `packages/*`
+  disagree — update the table when adding or removing a package.
 - New public APIs must have at least one happy-path and one error/edge-case test.
 
 ### host-server integration test pattern
 
-All `packages/host-server` tests are HTTP integration tests: spin up a real `Bun.serve` on port 0, hit it with `fetch`, assert on HTTP status + JSON body. This pattern exercises the full request/response stack without mocking Hono internals.
+All `packages/host-server` tests are HTTP integration tests: spin up a real `Bun.serve` on port 0, hit it with `fetch`, assert on HTTP status + JSON body. This pattern exercises the full request/response stack without mocking Hono internals. (For the assembled stack, `createHost()` from `src/host.ts` gives you the same router with no socket — `host.fetch("/path")` — see `test/host.test.ts`.)
 
 **Server setup:**
 ```ts

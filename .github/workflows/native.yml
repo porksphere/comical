@@ -1,0 +1,62 @@
+# Native host tests — the Swift (JSC) and Kotlin (QuickJS) halves of the harness protocol.
+#
+# Not part of the per-push CI: the Android managed-device run boots an emulator (~10 min) and the
+# Swift one needs a macOS runner. Runs weekly and on demand, and on pushes that touch the native
+# sources or the harness they evaluate.
+name: Native hosts
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  push:
+    branches: [master]
+    paths:
+      - "packages/host-ios/**"
+      - "packages/host-android/**"
+      - "packages/host-native/**"
+      - "packages/core/**"
+      - "packages/contract/**"
+      - "scripts/build-native-runtime.ts"
+      - ".github/workflows/native.yml"
+
+jobs:
+  swift:
+    name: host-ios (swift test)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "latest"
+      - run: bun install
+      # The harness is a gitignored resource of the Swift package; the tests evaluate it.
+      - run: bun run build:native
+      - name: swift test
+        working-directory: packages/host-ios
+        run: swift test
+
+  android:
+    name: host-android (managed device)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "latest"
+      - run: bun install
+      - run: bun run build:native
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      # The Gradle-managed ATD emulator needs hardware acceleration; GitHub's Linux runners expose
+      # KVM once the device node is group-writable.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Instrumented tests (pixel6Api35, aosp-atd)
+        run: ./gradlew :host-android:pixel6Api35DebugAndroidTest --no-daemon

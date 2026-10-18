@@ -21,6 +21,11 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      # README's package reference must list exactly `packages/*` — a removed/renamed package that
+      # the docs kept describing is how the README rotted in 2026-07.
+      - name: README package reference in sync
+        run: bun run check:readme
+
       # Bridges must be built before the test step: host-server integration and bridge conformance
       # tests load each bridge's compiled dist/bridge.js (gitignored), so an unbuilt tree fails them.
       - name: Build bridges
