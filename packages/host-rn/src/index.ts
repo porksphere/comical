@@ -7,12 +7,15 @@
  * `configureEmbeddedRuntime` + `applyEmbeddedMode`. Everything else (the in-process proxy
  * `BridgeProvider`, the reused-router transport, the registry-download `BundleSource`, the Hermes
  * WebCrypto shim) lives here. The package is Node-free and free of `expo`/RN imports.
+ *
+ * Bridges only, with no library/runtime/downloads code bundled: import `@comical/host-rn/bridges`.
  */
 export { installWebCryptoShim } from "./crypto-shim.ts";
 export { configureEmbeddedRuntime, applyEmbeddedMode } from "./bootstrap.ts";
 export type { EmbeddedBootstrapConfig } from "./bootstrap.ts";
 export { getEmbeddedDownloadEngine, installEmbeddedTransport, uninstallEmbeddedTransport } from "./install.ts";
-export type { EmbeddedRuntimeConfig } from "./install.ts";
+export type { EmbeddedModules, EmbeddedRuntimeConfig } from "./install.ts";
+export { installEmbeddedBridges, type EmbeddedBridgesConfig } from "./bridges.ts";
 export {
   getNativeBridgeRuntime,
   setNativeBridgeRuntime,

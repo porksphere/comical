@@ -1,257 +1,27 @@
 /**
- * Install/remove the embedded transport. The embedder supplies `setTransport` (its `api.ts`'s
- * transport setter) so this package never imports the app; passing `null` there restores the app's
- * remote transport.
- *
- * `installEmbeddedTransport` builds the whole on-device stack — the manifest-backed `BundleSource`,
- * the `EmbeddedRegistryProvider` (per-bridge install/update/uninstall over the app's AsyncStorage
- * stores), the proxy `BridgeProvider`, and the reused-router transport — and makes it active, so
- * browse/search/reader *and* registry management all resolve on-device with no external server. It's
- * a no-op when the native engine is unavailable (web, or before the native module ships), so calling
- * it unconditionally at startup is safe — the app simply stays remote.
+ * The full embedded runtime: bridges + trackers + the on-device library, runtime, and download
+ * engine. This entry supplies the product modules to `install-core.ts`; an embedder that wants only
+ * bridges imports `@comical/host-rn/bridges` instead and never bundles them.
  */
-import type { LogCapability } from "@comical/contract";
 import { createRouterPageResolver, DownloadEngine, Downloads } from "@comical/downloads";
 import { Library } from "@comical/library";
 import { ComicalRuntime } from "@comical/runtime";
-import { getNativeBridgeRuntime, getNativeTrackerRuntime } from "./native-runtime.ts";
-import { EmbeddedBridgeProvider } from "./provider.ts";
-import { EmbeddedRegistryProvider } from "./registry-provider.ts";
-import { ManifestBundleSource, ManifestTrackerBundleSource } from "./registry-bundle-source.ts";
-import type { BundleCache, RegistryFetcher } from "./registry-bundle-source.ts";
-import { EmbeddedTrackerProvider } from "./tracker-provider.ts";
-import { createEmbeddedTransport, type EmbeddedLibrary } from "./transport.ts";
-import type {
-  BridgeProvider,
-  CreateRouter,
-  DownloadsStore,
-  EmbeddedCoversConfig,
-  EmbeddedDownloadsEngineConfig,
-  EmbeddedTransport,
-  InstalledStore,
-  InstalledTrackerStore,
-  LibraryStore,
-  RegistryProvider,
-  RetiredStore,
-  SavedRegistryStore,
-  SettingsStore,
-} from "./types.ts";
+import { installEmbeddedTransportWith, type EmbeddedRuntimeConfig } from "./install-core.ts";
 
-export interface EmbeddedRuntimeConfig {
-  /** `@comical/host-server`'s `createRouter` (from the built package), cast to `CreateRouter`. */
-  createRouter: CreateRouter;
-  /** `@comical/registry`'s `{ fetchIndex, downloadBundle }` (from the built package). */
-  fetcher: RegistryFetcher;
-  /** The installed-bridge manifest (AsyncStorage-backed in an app) — what `installed()` reads. */
-  installed: InstalledStore;
-  /** The saved-registry list (AsyncStorage-backed in an app). */
-  registries: SavedRegistryStore;
-  /** Per-bridge settings persistence (AsyncStorage-backed in an app). */
-  settings: SettingsStore;
-  /** Optional on-device library persistence (AsyncStorage-backed in an app). When supplied, the
-   *  reused router also mounts the `/library*` endpoints so the app's Library/History/Activity work
-   *  on-device — omit it and those endpoints simply 404 (the app shows a "needs a library" state). */
-  libraryStore?: LibraryStore;
-  /** Optional on-device downloads persistence (AsyncStorage-backed in an app). When supplied, the
-   *  reused router also mounts the `/downloads*` endpoints so the app's offline-download manifest works
-   *  on-device — omit it and those endpoints simply 404. This store persists only the manifest. */
-  downloadsStore?: DownloadsStore;
-  /** Optional device seams for the embedded download engine (blob store, page fetcher, policy gate).
-   *  When supplied alongside `downloadsStore`, the engine runs in-process behind the router — the
-   *  router's downloads routes go host-managed (pages-less enqueue, engine-delegated pause/resume,
-   *  host-side blob deletion) and the app observes progress via `getEmbeddedDownloadEngine()`. */
-  downloadsEngine?: EmbeddedDownloadsEngineConfig;
-  /** Optional device seams for guaranteed-offline library covers (a covers-rooted blob store with
-   *  `read`, plus the page fetcher). Supplied alongside `libraryStore`; the reused router captures
-   *  covers on library-add/browse and serves them at `/library/collected/series/:b/:s/cover`. */
-  covers?: EmbeddedCoversConfig;
-  /** The embedder's transport setter — passed the embedded transport (or `null` to restore remote). */
-  setTransport: (transport: EmbeddedTransport | null) => void;
-  /** The installed-tracker manifest (AsyncStorage-backed in an app) — what `EmbeddedRegistryProvider`'s
-   *  tracker methods write to and `ManifestTrackerBundleSource` reads from. Trackers are installed
-   *  exactly like bridges (registry-backed), not a static app-bundled map. Supplying `trackerSettings`
-   *  alongside a registered native tracker runtime (`setNativeTrackerRuntime`) mounts the `/trackers*`
-   *  endpoints; omitting either leaves them unmounted (they 404), matching the
-   *  `libraryStore`/`downloadsStore` optional-capability pattern. */
-  installedTrackers: InstalledTrackerStore;
-  /** Where uninstalled bridges are remembered, so the library can still name and filter their
-   *  series (`GET /library/missing-bridges`). Optional: without it an uninstall keeps nothing. */
-  retired?: RetiredStore;
-  /** Per-tracker settings persistence (AsyncStorage-backed in an app; reuses the same store shape as
-   *  bridge `settings`, just keyed by tracker id). */
-  trackerSettings?: SettingsStore;
-  /** Refuse unsigned bundles (default false — SHA-256 integrity is always enforced). */
-  requireSignature?: boolean;
-  /** Persistent bundle cache (defaults to in-memory). */
-  cache?: BundleCache;
-  /** Optional GatedNetworkOptions overrides forwarded into each bridge load. */
-  networkJson?: string;
-  /** Fired after an install/update/uninstall so the embedder can refetch data screens (epoch bump). */
-  onRegistryChange?: () => void;
-  /**
-   * Wraps the registry provider the router installs through — what `@comical/sync`'s
-   * `wrapRegistryProvider` does, so an install made from the app's own screens is recorded. The
-   * bridge and tracker providers keep the plain one: they only read.
-   */
-  decorateRegistry?: (registry: RegistryProvider) => RegistryProvider;
-  /**
-   * Wraps the bridge provider the router writes settings through — what `@comical/sync`'s
-   * `wrapBridgeSettings` does, so a setting changed from the app's own screens is recorded. The
-   * runtime and the registry keep the plain one.
-   */
-  decorateBridges?: (bridges: BridgeProvider) => BridgeProvider;
-  /** Optional sink for the embedded runtime's own diagnostics — currently the best-effort tracker
-   *  pushes that happen after a read. Those are fire-and-forget by design, so without this a failing
-   *  push (expired token, offline) is invisible on-device: nothing in the UI would ever report it.
-   *  Defaults to `console`; pass the app's diagnostics logger to surface it in-app instead. */
-  log?: LogCapability;
-}
-
-let provider: EmbeddedBridgeProvider | null = null;
-let activeTrackerProvider: EmbeddedTrackerProvider | null = null;
-let activeSetTransport: ((transport: EmbeddedTransport | null) => void) | null = null;
-let activeEngine: DownloadEngine | null = null;
+export { getEmbeddedDownloadEngine, uninstallEmbeddedTransport } from "./install-core.ts";
+export type { EmbeddedModules, EmbeddedRuntimeConfig } from "./install-core.ts";
 
 /**
- * The in-process download engine while the embedded transport is active, else `null`. The app
- * subscribes to it for live progress (embedded mode never streams `/downloads/events` — the
- * buffering in-process transport can't) and drives boot-resume/backgrounding via `kick()`/`stop()`.
- */
-export function getEmbeddedDownloadEngine(): DownloadEngine | null {
-  return activeEngine;
-}
-
-/**
- * Install the embedded transport via the supplied `setTransport`.
+ * Install the embedded transport via the supplied `setTransport`, with every optional module
+ * available (`libraryStore`, `downloadsStore`, `downloadsEngine`, `covers` all honored).
  * @returns true if installed, false if the native runtime is unavailable (stayed remote).
  */
 export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean {
-  const native = getNativeBridgeRuntime();
-  if (!native) return false;
-
-  const bundles = new ManifestBundleSource({
-    installed: config.installed,
-    fetcher: config.fetcher,
-    ...(config.cache ? { cache: config.cache } : {}),
-    ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
+  return installEmbeddedTransportWith(config, {
+    Library,
+    ComicalRuntime,
+    Downloads,
+    DownloadEngine,
+    createRouterPageResolver,
   });
-  const registry = new EmbeddedRegistryProvider({
-    registries: config.registries,
-    installed: config.installed,
-    installedTrackers: config.installedTrackers,
-    fetcher: config.fetcher,
-    ...(config.retired ? { retired: config.retired } : {}),
-  });
-
-  const bridgeProvider = new EmbeddedBridgeProvider({
-    native,
-    bundles,
-    settings: config.settings,
-    ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
-    refreshUpdates: () => registry.checkUpdates().then(() => undefined),
-  });
-
-  // Trackers: mounted only when the app supplied a tracker settings store AND a native tracker
-  // runtime is registered — a build with bridge-only native support (no ComicalTrackerContext yet)
-  // simply leaves `/trackers*` unmounted, the same "absent capability 404s" shape as downloads.
-  // Built before `registry.onChange` below so that callback can refresh it too.
-  const nativeTrackerRuntime = getNativeTrackerRuntime();
-  const trackerBundles = new ManifestTrackerBundleSource({
-    installed: config.installedTrackers,
-    fetcher: config.fetcher,
-    ...(config.cache ? { cache: config.cache } : {}),
-    ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
-  });
-  const trackerProvider =
-    config.trackerSettings && nativeTrackerRuntime
-      ? new EmbeddedTrackerProvider({
-          native: nativeTrackerRuntime,
-          bundles: trackerBundles,
-          settings: config.trackerSettings,
-          ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
-          refreshUpdates: () => registry.checkTrackerUpdates().then(() => undefined),
-        })
-      : undefined;
-
-  // An install/update/uninstall changes what's installed: drop the proxy providers' cached
-  // bridge/tracker state so the next `list()`/`get()` re-reads the manifest, then let the app
-  // refetch its screens.
-  registry.onChange = () => {
-    bridgeProvider.refresh();
-    trackerProvider?.refresh();
-    config.onRegistryChange?.();
-  };
-
-  // When a library store is supplied, build the same Library + ComicalRuntime the standalone server
-  // wires (host-server/server.ts) — but over the app's on-device store — so the reused router mounts
-  // the `/library*` endpoints in-process. `ComicalRuntime`'s bridge provider is just `{ get(id) }`,
-  // which `EmbeddedBridgeProvider` already satisfies (it's the same object driving the router).
-  let embeddedLibrary: EmbeddedLibrary | undefined;
-  if (config.libraryStore) {
-    const library = new Library(config.libraryStore);
-    // Pass the tracker provider through so the runtime-backed tracker routes (`/trackers/:id/search`,
-    // the per-link `.../tracker-links/:trackerId/sync`) work on-device — without it `ComicalRuntime` throws "no trackers
-    // configured", even though the separate TrackerManager makes the list/settings/connect routes
-    // work. Mirrors host-server/server.ts, which passes `trackers: trackerManager`.
-    const runtime = new ComicalRuntime({
-      bridges: bridgeProvider,
-      library,
-      ...(trackerProvider ? { trackers: trackerProvider } : {}),
-      log: config.log ?? console,
-    });
-    embeddedLibrary = { library, runtime };
-  }
-
-  // Same for downloads: when an on-device store is supplied, build the Downloads service so the reused
-  // router mounts `/downloads*` in-process. With engine seams too, build the DownloadEngine over the
-  // app's blob store / page fetcher, so the router's downloads routes go host-managed exactly like the
-  // standalone server's — one behavior on every host.
-  const embeddedDownloads = config.downloadsStore ? new Downloads(config.downloadsStore) : undefined;
-  // Lazily-enqueued chapters resolve their page lists through the reused router in-process. The
-  // transport can't exist until the engine is threaded into it (the router mounts the engine's
-  // routes), so the resolver's fetch is late-bound — resolution only ever runs from a drain, well
-  // after installation completes.
-  let transport: EmbeddedTransport | null = null;
-  const embeddedEngine =
-    embeddedDownloads && config.downloadsEngine
-      ? new DownloadEngine({
-          downloads: embeddedDownloads,
-          resolvePages: createRouterPageResolver(async (path) => transport!(path)),
-          pageRateLimit: async (id) => (await bridgeProvider.list()).find((b) => b.info.id === id)?.info.assetRateLimit,
-          // The embedded engine ALWAYS gates on `mayDownload` (the app's Wi-Fi-only policy), so it's
-          // exactly where a transient gate-false could wedge the queue until an app restart. Arm the
-          // self-heal by default (the app may override via its downloadsEngine config) — the
-          // standalone server has no gate and omits it. See `DownloadEngineOptions.idleRecheckMs`.
-          idleRecheckMs: 15_000,
-          ...config.downloadsEngine,
-        })
-      : undefined;
-
-  provider = bridgeProvider;
-  activeTrackerProvider = trackerProvider ?? null;
-  activeSetTransport = config.setTransport;
-  activeEngine = embeddedEngine ?? null;
-  transport = createEmbeddedTransport(
-    config.decorateBridges ? config.decorateBridges(bridgeProvider) : bridgeProvider,
-    config.createRouter,
-    config.decorateRegistry ? config.decorateRegistry(registry) : registry,
-    embeddedLibrary,
-    embeddedDownloads,
-    embeddedEngine,
-    embeddedLibrary ? config.covers : undefined, // covers only make sense with a library
-    trackerProvider,
-  );
-  config.setTransport(transport);
-  return true;
-}
-
-/** Restore the remote transport and tear down native bridge + tracker contexts. */
-export function uninstallEmbeddedTransport(): void {
-  provider?.refresh();
-  provider = null;
-  activeTrackerProvider?.refresh();
-  activeTrackerProvider = null;
-  activeEngine?.stop();
-  activeEngine = null;
-  activeSetTransport?.(null);
 }

@@ -5,6 +5,7 @@
   "description": "Reusable glue for embedding the Comical bridge runtime in a React Native / Expo app: an in-process BridgeProvider backed by a native JS engine, the router transport, a registry-download BundleSource, and a Hermes WebCrypto shim. Node-free.",
   "exports": {
     ".": "./src/index.ts",
+    "./bridges": "./src/bridges.ts",
     "./types": "./src/types.ts"
   },
   "types": "./src/index.ts",
