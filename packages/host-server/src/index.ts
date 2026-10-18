@@ -10,6 +10,7 @@ export { FileLibraryStore } from "./library-store.ts";
 export { migrateLegacyEntries, type LegacyEntriesMigration } from "./legacy-entries.ts";
 export { createRouter, type RouterOptions } from "./router.ts";
 export { SettingsStore } from "./settings-store.ts";
+export { createHost, type ComicalHost, type HostOptions } from "./host.ts";
 export { createServer, type ServerOptions } from "./server.ts";
 export { createSyncRoutes } from "./sync-routes.ts";
 export { FileSegmentStore } from "./sync-segment-store.ts";

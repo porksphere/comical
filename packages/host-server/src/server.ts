@@ -1,166 +1,26 @@
 /**
- * Assembles the complete server: SettingsStore + BridgeManager + RegistryManager + Hono router.
+ * The standalone server: `createHost()` (host.ts) behind `Bun.serve`.
+ *
+ * This is the only Bun-specific line in the package. Everything the host does — the Hono router,
+ * `BridgeManager`, the `node:vm` evaluator, the file stores — is plain Node; see host.ts. A Node
+ * embedder (Electron, a test) uses `createHost()` and picks its own listener, or none.
  */
 import { join } from "node:path";
-import { DownloadEngine, Downloads } from "@comical/downloads";
-import { DEFAULT_USER_AGENT } from "@comical/host-bun";
-import { Library, type LibraryStore } from "@comical/library";
-import { ManifestStore, RegistryManager } from "@comical/registry";
-import { ComicalRuntime } from "@comical/runtime";
-import { BridgeManager } from "./bridge-manager.ts";
-import { FileBlobStore } from "./blob-store.ts";
-import { FileDownloadsStore } from "./downloads-store.ts";
-import { FileLibraryStore } from "./library-store.ts";
-import { createSyncHost, dropStaleLoads } from "./sync-host.ts";
-import { migrateLegacyEntries } from "./legacy-entries.ts";
-import { createServerPageFetcher, createServerPageResolver } from "./page-fetcher.ts";
-import { createRouter, type RouterOptions } from "./router.ts";
-import { SettingsStore } from "./settings-store.ts";
-import { TrackerManager } from "./tracker-manager.ts";
+import { createHost, type HostOptions } from "./host.ts";
 
-export interface ServerOptions {
+export interface ServerOptions extends HostOptions {
+  /** Defaults to 3100. Also the default `hostUrl`'s port. */
   port?: number;
-  bridgesDir: string | string[];
-  dataDir: string;
-  origin?: string;
-  token?: string;
-  /**
-   * Enable the optional local library/tracking module. `true` stores it under `{dataDir}/library`;
-   * pass `{ dir }` to override. Omit to leave the `/library` endpoints unmounted entirely.
-   */
-  library?: boolean | { dir?: string };
-  /**
-   * Make this server a sync hub (`/sync`) that its own library also syncs through. Needs `library`.
-   * `true` keeps the hub under `{dataDir}/sync`; pass `{ dir }` to override.
-   */
-  sync?: boolean | { dir?: string };
-  /**
-   * Enable the optional offline-downloads module: the manifest under `{dataDir}/downloads` plus a
-   * server-side download engine that fetches page bytes via the server's own bridges and stores them
-   * under `{dataDir}/downloads/blobs` (served back at `/downloads/.../file`, progress at
-   * `/downloads/events`). Pass `{ dir }` to override the root. Omit to leave `/downloads` unmounted.
-   */
-  downloads?: boolean | { dir?: string };
-  /**
-   * Enable the tracker plugin system. Pass a path (or array of paths) to scan for tracker bundles.
-   * Omit to leave `/trackers` endpoints unmounted entirely.
-   */
-  trackersDir?: string | string[];
 }
 
 export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> {
-  const settings = new SettingsStore(opts.dataDir);
-  const manifest = new ManifestStore(opts.dataDir);
-  const registry = new RegistryManager({
-    cacheDir: join(opts.dataDir, "bridge-cache"),
-    manifest,
+  const port = opts.port ?? 3100;
+  const host = createHost({
+    hostUrl: `http://localhost:${port}`,
+    ...(process.env.COMICAL_OAUTH_REDIRECT_URL ? { oauthRedirectUrl: process.env.COMICAL_OAUTH_REDIRECT_URL } : {}),
+    ...opts,
   });
-  const manager = new BridgeManager({
-    bridgesDir: opts.bridgesDir,
-    dataDir: opts.dataDir,
-    settings,
-    registry,
-    hostUrl: `http://localhost:${opts.port ?? 3100}`,
-  });
-  // What the router writes settings through; with sync on, the recording one.
-  let bridges = manager;
-
-  const routerOpts: RouterOptions = {
-    registry,
-    userAgent: DEFAULT_USER_AGENT,
-  };
-  // A self-hosted deployment that registered its own relay page with its providers.
-  if (process.env.COMICAL_OAUTH_REDIRECT_URL) routerOpts.oauthRedirectUrl = process.env.COMICAL_OAUTH_REDIRECT_URL;
-  if (opts.origin) routerOpts.origin = opts.origin;
-  if (opts.token) routerOpts.token = opts.token;
-
-  // Always create TrackerManager so that registry-installed trackers work
-  // even when no local trackersDir is configured.
-  const trackerManager = new TrackerManager({
-    ...(opts.trackersDir ? { trackersDir: opts.trackersDir } : {}),
-    dataDir: opts.dataDir,
-    settings,
-    registry,
-  });
-  routerOpts.trackers = trackerManager;
-
-  // Shared late-bound in-process fetch: the download engine AND the cover capture both resolve
-  // server-relative asset URLs by driving this router directly, but the router can't exist until
-  // its options (which reference them) are assembled — so the fetch is assigned after creation.
-  let routerFetch: (req: Request) => Response | Promise<Response> = () =>
-    new Response(null, { status: 503 });
-  const pageFetcher = createServerPageFetcher(() => routerFetch, opts.token);
-
-  if (opts.library) {
-    const dir = typeof opts.library === "object" && opts.library.dir
-      ? opts.library.dir
-      : join(opts.dataDir, "library");
-    let store: LibraryStore = new FileLibraryStore(dir);
-    if (opts.sync) {
-      const syncDir = typeof opts.sync === "object" && opts.sync.dir ? opts.sync.dir : join(opts.dataDir, "sync");
-      const host = createSyncHost({
-        dir: syncDir,
-        store,
-        registry,
-        bridges: manager,
-        lists: {
-          registries: () => manifest.allRegistries(),
-          installed: () => manifest.allInstalled(),
-          installedTrackers: () => manifest.allInstalledTrackers(),
-        },
-        onRegistryApplied: dropStaleLoads(manager, trackerManager),
-      });
-      store = host.store;
-      routerOpts.sync = host.backend;
-      // The router's installs are recorded; the managers keep the plain one, they only read.
-      routerOpts.registry = host.registry;
-      bridges = host.bridges;
-    }
-    const lib = new Library(store);
-    // Rebuild series items from a pre-collections entries.json, if one is still there. Everything
-    // else a series owns survived the dissolution orphaned, so this reattaches it. No-op once run.
-    void migrateLegacyEntries(dir, lib)
-      .then((m) => {
-        if (m) console.log(`library: migrated ${m.imported} legacy entries (${m.skipped} skipped)`);
-      })
-      .catch((e: unknown) => console.error("library: legacy entry migration failed", e));
-    routerOpts.library = lib;
-    routerOpts.runtime = new ComicalRuntime({
-      bridges: manager,
-      library: lib,
-      ...(trackerManager ? { trackers: trackerManager } : {}),
-      // So a best-effort tracker push that fails (expired token, network) shows up in the server log
-      // instead of vanishing — it's fire-and-forget, nothing else would ever report it.
-      log: console,
-    });
-    // Guaranteed-offline covers for library entries, under the library's own dir.
-    routerOpts.covers = { blobs: new FileBlobStore(join(dir, "covers")), fetchPage: pageFetcher };
-  }
-
-  let engine: DownloadEngine | undefined;
-  if (opts.downloads) {
-    const dir = typeof opts.downloads === "object" && opts.downloads.dir
-      ? opts.downloads.dir
-      : join(opts.dataDir, "downloads");
-    const downloads = new Downloads(new FileDownloadsStore(dir));
-    engine = new DownloadEngine({
-      downloads,
-      blobs: new FileBlobStore(join(dir, "blobs")),
-      fetchPage: pageFetcher,
-      // Lazily-enqueued chapters (the instant bulk-enqueue path) resolve their page lists at
-      // download time, through this router's own bridge routes.
-      resolvePages: createServerPageResolver(() => routerFetch, opts.token),
-      // Each bridge's declared image budget paces its page downloads, whatever URL shape they use.
-      pageRateLimit: async (id) => (await manager.list()).find((b) => b.info.id === id)?.info.assetRateLimit,
-    });
-    routerOpts.downloads = downloads;
-    routerOpts.downloadEngine = engine;
-  }
-  const router = createRouter(bridges, routerOpts);
-  routerFetch = (req) => router.fetch(req);
-  engine?.kick(); // resume any downloads interrupted by the previous run
-
-  return Bun.serve({ port: opts.port ?? 3100, fetch: router.fetch });
+  return Bun.serve({ port, fetch: host.router.fetch });
 }
 
 // ── Standalone entry point ────────────────────────────────────────────────────
