@@ -15,7 +15,7 @@
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
 import type { Chapter, Cursor, LogCapability, PagedResults, SeriesEntry, SeriesInfo, SeriesRevision, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult, TrackerStatus } from "@comical/contract";
-import { MAX_UPDATE_CHECK_BATCH, trackerEntryUpdateSchema } from "@comical/contract";
+import { MAX_UPDATE_CHECK_BATCH, parseSeriesGone, trackerEntryUpdateSchema } from "@comical/contract";
 import type { z } from "zod";
 import { matchSearchResults, sharesName, trackerEntryNames, type trackerImportItemSchema, type trackerImportResolveRequestSchema } from "./tracker-import.ts";
 // Import from Node-free subpaths (not the `@comical/core` barrel, which registers the
@@ -182,6 +182,12 @@ export interface BackgroundSyncOptions {
   force?: boolean;
   /** Skip entries whose chapters were synced more recently than this. Default 6 hours. */
   staleMs?: number;
+  /**
+   * The same window for an entry whose removal from the source is confirmed — it's only re-asked in
+   * case the source restores it, so far less often. Default 7 days. Applies under `force` too: a
+   * manual "Check for updates" shouldn't re-ask every removed series.
+   */
+  removedStaleMs?: number;
   /** Max entries synced in parallel. Default 4 — conservative so same-bridge rate limits don't pile up. */
   concurrency?: number;
   /** Wall-clock budget: stop starting new entries once exceeded (short OS background windows). */
@@ -961,6 +967,7 @@ export class ComicalRuntime {
     const {
       force = false,
       staleMs = 6 * 60 * 60 * 1000,
+      removedStaleMs = 7 * 24 * 60 * 60 * 1000,
       concurrency = 4,
       budgetMs,
       detailStaleMs,
@@ -968,9 +975,11 @@ export class ComicalRuntime {
     const startedAt = Date.now();
 
     const entries = await lib.getLibrary();
-    const stale = force
-      ? [...entries]
-      : entries.filter((e) => e.chaptersSyncedAt === undefined || startedAt - e.chaptersSyncedAt > staleMs);
+    const isStale = (e: CollectionSeriesItemView, window: number) =>
+      e.chaptersSyncedAt === undefined || startedAt - e.chaptersSyncedAt > window;
+    const stale = entries.filter((e) =>
+      e.removal?.confirmedAt !== undefined ? isStale(e, removedStaleMs) : force || isStale(e, staleMs),
+    );
     // Stalest first (never-synced entries lead) so a truncated run picks up the remainder next time.
     stale.sort((a, b) => (a.chaptersSyncedAt ?? -1) - (b.chaptersSyncedAt ?? -1));
 
@@ -1157,8 +1166,13 @@ export class ComicalRuntime {
       }
 
       await this.syncEntryToTrackers(entry.bridgeId, entry.seriesId).catch(() => {});
-    } catch {
-      // continue — one bad bridge or deleted series should not abort the sync
+    } catch (e) {
+      // continue — one bad bridge or deleted series should not abort the sync. A series the source
+      // says is gone is recorded (and stamped checked), or it would stay the stalest and head every run.
+      const gone = parseSeriesGone(e instanceof Error ? e.message : String(e));
+      if (gone) {
+        await lib.recordSeriesGone(entryKey(entry.bridgeId, entry.seriesId), gone.reason, { checked: true }).catch(() => {});
+      }
     }
   }
 

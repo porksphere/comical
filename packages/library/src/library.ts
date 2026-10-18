@@ -16,6 +16,7 @@ import {
   legacyLibraryEntrySchema,
   collectionItemId,
   parseEntryKey,
+  REMOVAL_CONFIRM_MS,
   type ActivityItem,
   type ActivityItemView,
   type BridgePrefs,
@@ -42,6 +43,7 @@ import {
   type ReadState,
   type ResumePoint,
   type SeriesGroup,
+  type SeriesRemoval,
   type TrackerLink,
 } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
@@ -88,6 +90,8 @@ export interface LibraryQuery {
   unreadOnly?: boolean;
   /** Only series in this reading state (see {@link ReadState}). */
   readState?: ReadState;
+  /** Only series whose removal from the source is confirmed (see `CollectionSeriesItem.removal`). */
+  removed?: boolean;
   /** Sort key. Defaults to `"added"`. */
   sort?: LibrarySort;
   /** Sort direction. Defaults to `"asc"` for `title`, `"desc"` otherwise. */
@@ -433,6 +437,40 @@ export class Library {
     if (existing?.coverFile !== undefined) doc.coverFile = existing.coverFile;
     if (existing?.coverSourceUrl !== undefined) doc.coverSourceUrl = existing.coverSourceUrl;
     await this.store.putSeriesDetail(key, doc);
+    // Every caller hands this a live, successful detail — the series is evidently still there.
+    await this.clearSeriesGone(key);
+  }
+
+  /**
+   * Record the source's "this series is gone" answer for a library entry and return the resulting
+   * removal (undefined when the series isn't collected). The first answer only opens a suspicion; one
+   * at least {@link REMOVAL_CONFIRM_MS} later confirms it. Touches nothing but the removal record —
+   * progress, saved detail/chapters and downloads all stay readable.
+   *
+   * `checked` also stamps `chaptersSyncedAt`: the background sync asked, and "gone" is its answer, so
+   * the entry moves to the back of the stalest-first queue instead of heading every run.
+   */
+  async recordSeriesGone(key: string, reason: string, opts: { checked?: boolean } = {}): Promise<SeriesRemoval | undefined> {
+    const item = await this.getSeriesItem(key);
+    if (!item) return undefined;
+    const now = this.now();
+    const prev = item.removal;
+    const removal: SeriesRemoval = prev
+      ? { ...prev, reason, lastSeenAt: now }
+      : { reason, firstSeenAt: now, lastSeenAt: now };
+    if (removal.confirmedAt === undefined && now - removal.firstSeenAt >= REMOVAL_CONFIRM_MS) removal.confirmedAt = now;
+    item.removal = removal;
+    if (opts.checked) item.chaptersSyncedAt = now;
+    await this.putSeriesItem(item);
+    return removal;
+  }
+
+  /** Drop a library entry's removal record — the source served it again. No-op when there's none. */
+  async clearSeriesGone(key: string): Promise<void> {
+    const item = await this.getSeriesItem(key);
+    if (!item?.removal) return;
+    delete item.removal;
+    await this.putSeriesItem(item);
   }
 
   /** Record where the host stored this series' cover bytes (and the URL they came from, for the
@@ -553,6 +591,7 @@ export class Library {
     let views = await Promise.all(filtered.map((i) => this.toView(i)));
     if (opts.unreadOnly) views = views.filter((v) => v.unreadCount > 0);
     if (opts.readState) views = views.filter((v) => v.readState === opts.readState);
+    if (opts.removed) views = views.filter((v) => v.removal?.confirmedAt !== undefined);
 
     // Sort. Title defaults to ascending (A–Z); the recency/count keys default to descending
     // (newest / most-unread first) since that's the useful direction.
@@ -662,6 +701,8 @@ export class Library {
       return k;
     });
     entry.chaptersSyncedAt = t;
+    // A real chapter list came back, so the source still has the series.
+    delete entry.removal;
     // Record the fingerprint this list came with, so the next batch check has a baseline to compare
     // against. Written only alongside a real chapter list: a revision without the chapters it
     // describes would let a later check match and skip a fetch that never actually happened.

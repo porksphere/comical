@@ -15,6 +15,7 @@ import {
   EXCLUDED_TAGS_KEY,
   MAX_CONTENT_RATING_KEY,
   parseRateLimited,
+  parseSeriesGone,
   retryAfterMs,
   thumbnailAspectSchema,
 } from "@comical/contract";
@@ -678,18 +679,25 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json(info);
     });
     if (live.ok || !libMeta) return live;
+    // A gone answer is recorded on the entry (a suspicion until a later one confirms it); any other
+    // failure still reports a removal recorded earlier, so the page keeps saying so while offline.
+    const gone = await goneAnswer(live);
+    const removal = gone
+      ? await libMeta.recordSeriesGone(key, gone.reason).catch(() => undefined)
+      : (await libMeta.getSeries(key).catch(() => undefined))?.removal;
     const cached = await libMeta.getCachedDetail(key).catch(() => undefined);
     if (!cached) return live;
     // Additive fields on the SeriesInfo shape — clients render the saved detail and may show a
-    // "showing saved details" affordance off `cached`/`cachedAt`. A captured cover replaces the
-    // (likely unreachable) live thumbnail URL with this host's own cover route.
+    // "showing saved details" affordance off `cached`/`cachedAt`, or a "removed from the source" one
+    // off `removal`. A captured cover replaces the (likely unreachable) live thumbnail URL with this
+    // host's own cover route.
     const info = cached.coverFile
       ? {
           ...cached.info,
           thumbnailUrl: `/library/collected/series/${encodeURIComponent(c.req.param("id"))}/${encodeURIComponent(c.req.param("seriesId"))}/cover`,
         }
       : cached.info;
-    return c.json({ ...info, cached: true, cachedAt: cached.cachedAt });
+    return c.json({ ...info, cached: true, cachedAt: cached.cachedAt, ...(removal && { removal }) });
   });
 
   app.get("/bridges/:id/series/:seriesId/related", (c) =>
@@ -709,6 +717,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return c.json(chapters);
     });
     if (live.ok || !libMeta) return live;
+    const gone = await goneAnswer(live);
+    if (gone) await libMeta.recordSeriesGone(key, gone.reason).catch(() => undefined);
     const cached = await libMeta.getCachedChapters(key).catch(() => undefined);
     if (!cached) return live;
     return c.json(cached.chapters); // same Chapter[] shape as live — array responses carry no marker
@@ -817,6 +827,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
           ...(c.req.query("uncollected") === "true" && { uncollected: true }),
           ...(q && { q }),
           ...(c.req.query("unreadOnly") === "true" && { unreadOnly: true }),
+          ...(c.req.query("removed") === "true" && { removed: true }),
           ...(validReadState && { readState }),
           ...(validSort && { sort: sort as "added" | "title" | "lastRead" | "unread" }),
           ...((dir === "asc" || dir === "desc") && { dir }),
@@ -2109,6 +2120,10 @@ async function withBridge(
     return await fn(bridge);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    // The source says the series no longer exists (see `seriesGoneMessage`) — checked before the
+    // "not found" sniff below, which means a missing BRIDGE, not a missing series.
+    const gone = parseSeriesGone(msg);
+    if (gone) return c.json({ error: msg, gone }, 410);
     if (msg.includes("not found")) return c.json({ error: msg }, 404);
     // The source is throttling or has blocked us (see `rateLimitedMessage`): answer 429 with when to
     // come back, so clients and the download engine back off instead of retrying into it.
@@ -2214,6 +2229,13 @@ async function excludedTagsFor(
 }
 
 /** Like `withBridge`, but refuses to dispatch a content call to a bridge missing required settings. */
+/** The `{ reason }` of a 410 from {@link withBridge} — a bridge's `seriesGoneMessage` — else null. */
+async function goneAnswer(res: Response): Promise<{ reason: string } | null> {
+  if (res.status !== 410) return null;
+  const body = (await res.clone().json().catch(() => null)) as { gone?: { reason?: unknown } } | null;
+  return typeof body?.gone?.reason === "string" ? { reason: body.gone.reason } : null;
+}
+
 async function withContentBridge(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   c: any,

@@ -300,6 +300,19 @@ export const seriesInfoSchema = z.object({
    * share sheet). Distinct from any bridge-internal id — this must be a URL a browser can open.
    */
   shareUrl: z.string().min(1).optional(),
+  /**
+   * The source has hidden this series from its listings but still serves it (e.g. a withdrawn or
+   * superseded upload). It stays readable — hosts only note it. A series that's actually gone is
+   * an error instead: see `seriesGoneMessage`. `newerVersionId` is this bridge's id for the series'
+   * current version when the source names one. Malformed → dropped: it's only a notice.
+   */
+  delisted: z
+    .object({
+      reason: z.string().min(1).max(120).optional(),
+      newerVersionId: z.string().min(1).optional(),
+    })
+    .optional()
+    .catch(undefined),
 });
 export type SeriesInfo = z.infer<typeof seriesInfoSchema>;
 

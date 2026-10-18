@@ -296,6 +296,27 @@ export const legacyLibraryEntrySchema = z.object({
 });
 export type LegacyLibraryEntry = z.infer<typeof legacyLibraryEntrySchema>;
 
+/**
+ * The source's "this series is gone" answer (`seriesGoneMessage`) for a library entry. One answer is
+ * a suspicion — sources blip, and a single 404 mustn't badge someone's library — so `confirmedAt` is
+ * stamped only by a second answer at least `REMOVAL_CONFIRM_MS` after the first. Any live success
+ * clears the whole record. Nothing else changes: progress, downloads, saved detail and chapters stay.
+ */
+export const seriesRemovalSchema = z.object({
+  /** The bridge's short user-facing reason, e.g. "Copyright claim by …". */
+  reason: z.string().min(1),
+  /** First gone answer (epoch ms). */
+  firstSeenAt: z.number().int(),
+  /** Most recent gone answer (epoch ms). */
+  lastSeenAt: z.number().int(),
+  /** When the removal was confirmed — the entry is badged and its sync slowed from here on. */
+  confirmedAt: z.number().int().optional(),
+});
+export type SeriesRemoval = z.infer<typeof seriesRemovalSchema>;
+
+/** How far apart two gone answers must be before a removal counts as confirmed. */
+export const REMOVAL_CONFIRM_MS = 6 * 60 * 60 * 1000;
+
 export const collectionSeriesItemSchema = z.object({
   type: z.literal("series"),
   bridgeId: z.string().min(1),
@@ -335,8 +356,11 @@ export const collectionSeriesItemSchema = z.object({
    * tracker id (e.g. "anilist", "mal"). Used for auto-linking groups and for tracker sync matching.
    */
   externalIds: z.record(z.string(), z.union([z.string().min(1), z.number().int().positive()])).optional(),
+  /** Set while the source answers that this series is gone — see {@link seriesRemovalSchema}. */
+  removal: seriesRemovalSchema.optional().catch(undefined),
 });
 export type CollectionSeriesItem = z.infer<typeof collectionSeriesItemSchema>;
+
 
 /**
  * Where the reader stands on a collected series, derived from read state and the cached series
