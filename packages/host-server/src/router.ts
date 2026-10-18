@@ -724,20 +724,34 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     return c.json(cached.chapters); // same Chapter[] shape as live — array responses carry no marker
   });
 
-  app.get("/bridges/:id/series/:seriesId/chapters/:chapterId/pages", (c) =>
-    withContentBridge(c, async (bridge) => {
-      if (!bridge.getChapterPages) return c.json({ error: "not supported" }, 400);
-      return c.json(
-        await bridge.getChapterPages(c.req.param("seriesId"), c.req.param("chapterId")),
-      );
-    }),
+  // Pages have no saved fallback here (downloads are read without asking), but a gone answer still
+  // goes on the entry: opening a chapter may be the first thing to hear it.
+  const recordGone = async (c: { req: { param: (k: string) => string } }, live: Response): Promise<Response> => {
+    const gone = libMeta && (await goneAnswer(live));
+    if (gone) await libMeta!.recordSeriesGone(entryKey(c.req.param("id"), c.req.param("seriesId")), gone.reason).catch(() => undefined);
+    return live;
+  };
+
+  app.get("/bridges/:id/series/:seriesId/chapters/:chapterId/pages", async (c) =>
+    recordGone(
+      c,
+      await withContentBridge(c, async (bridge) => {
+        if (!bridge.getChapterPages) return c.json({ error: "not supported" }, 400);
+        return c.json(
+          await bridge.getChapterPages(c.req.param("seriesId"), c.req.param("chapterId")),
+        );
+      }),
+    ),
   );
 
-  app.get("/bridges/:id/series/:seriesId/pages", (c) =>
-    withContentBridge(c, async (bridge) => {
-      if (!bridge.getSeriesPages) return c.json({ error: "not supported" }, 400);
-      return c.json(await bridge.getSeriesPages(c.req.param("seriesId")));
-    }),
+  app.get("/bridges/:id/series/:seriesId/pages", async (c) =>
+    recordGone(
+      c,
+      await withContentBridge(c, async (bridge) => {
+        if (!bridge.getSeriesPages) return c.json({ error: "not supported" }, 400);
+        return c.json(await bridge.getSeriesPages(c.req.param("seriesId")));
+      }),
+    ),
   );
 
   // Lazy per-page image resolver: the bridge's getSeriesPages returns proxy URLs pointing here

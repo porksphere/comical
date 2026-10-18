@@ -5,7 +5,7 @@
  * saved detail (flagged with the `removal`) and chapter list.
  */
 import { describe, expect, test } from "bun:test";
-import { seriesGoneMessage, type BridgeInfo, type Chapter, type SeriesInfo } from "@comical/contract";
+import { seriesGoneMessage, type BridgeInfo, type Chapter, type Page, type SeriesInfo } from "@comical/contract";
 import { entryKey, InMemoryLibraryStore, Library, REMOVAL_CONFIRM_MS } from "@comical/library";
 import type { BridgeProvider } from "../src/bridge-provider.ts";
 import { createRouter } from "../src/router.ts";
@@ -37,6 +37,14 @@ function setup() {
     getChapters: async (id: string): Promise<Chapter[]> => {
       fail(id);
       return [{ id: "c1", name: "Chapter 1", number: 1 }];
+    },
+    getChapterPages: async (id: string): Promise<Page[]> => {
+      fail(id);
+      return [{ index: 0, imageUrl: "https://example.test/1.jpg" }];
+    },
+    getSeriesPages: async (id: string): Promise<Page[]> => {
+      fail(id);
+      return [{ index: 0, imageUrl: "https://example.test/1.jpg" }];
     },
   };
   const manager: BridgeProvider = {
@@ -132,6 +140,24 @@ describe("series removed from the source", () => {
     gone.add("a");
     await get("/bridges/src/series/a/chapters");
     expect((await library.getSeries(entryKey("src", "a")))?.removal?.reason).toBe("Taken down by the source");
+  });
+
+  test("the pages routes record a gone answer too, and still answer 410", async () => {
+    for (const path of ["/chapters/c1/pages", "/pages"]) {
+      const { gone, library, get } = setup();
+      await library.collectSeries({ bridgeId: "src", seriesId: "a" }, { seriesTitle: "Series a" });
+      gone.add("a");
+      expect((await get(`/bridges/src/series/a${path}`)).status).toBe(410);
+      expect((await library.getSeries(entryKey("src", "a")))?.removal?.reason).toBe("Taken down by the source");
+    }
+  });
+
+  test("a pages failure that isn't gone records nothing", async () => {
+    const { down, library, get } = setup();
+    await library.collectSeries({ bridgeId: "src", seriesId: "a" }, { seriesTitle: "Series a" });
+    down.add("a");
+    expect((await get("/bridges/src/series/a/chapters/c1/pages")).ok).toBe(false);
+    expect((await library.getSeries(entryKey("src", "a")))?.removal).toBeUndefined();
   });
 
   test("the series coming back clears the removal", async () => {
