@@ -2228,7 +2228,6 @@ async function excludedTagsFor(
   return readExcludedTags(stored);
 }
 
-/** Like `withBridge`, but refuses to dispatch a content call to a bridge missing required settings. */
 /** The `{ reason }` of a 410 from {@link withBridge} — a bridge's `seriesGoneMessage` — else null. */
 async function goneAnswer(res: Response): Promise<{ reason: string } | null> {
   if (res.status !== 410) return null;
@@ -2236,6 +2235,7 @@ async function goneAnswer(res: Response): Promise<{ reason: string } | null> {
   return typeof body?.gone?.reason === "string" ? { reason: body.gone.reason } : null;
 }
 
+/** Like `withBridge`, but refuses to dispatch a content call to a bridge missing required settings. */
 async function withContentBridge(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   c: any,
