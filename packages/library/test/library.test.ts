@@ -9,6 +9,7 @@ import {
   Library,
   normalizeTitle,
   REMOVAL_CONFIRM_MS,
+  removedActivityChapterId,
 } from "../src/index.ts";
 
 const SERIES = { bridgeId: "demo", seriesId: "s1", title: "Series One" };
@@ -643,6 +644,61 @@ describe("removed from the source", () => {
     expect(await lib.recordSeriesGone(KEY, "gone")).toBeUndefined();
     await lib.clearSeriesGone(KEY);
     expect(await lib.isCollected(KEY)).toBe(false);
+  });
+
+  test("a confirmed removal is one feed event that never counts as unread", async () => {
+    const { lib, advance } = steppedLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.recordSeriesGone(KEY, "gone");
+    expect(await lib.getActivity()).toHaveLength(0);
+
+    advance(REMOVAL_CONFIRM_MS);
+    await lib.recordSeriesGone(KEY, "gone");
+    advance(60_000);
+    await lib.recordSeriesGone(KEY, "gone");
+
+    const feed = await lib.getActivity();
+    expect(feed).toHaveLength(1);
+    expect(feed[0]).toMatchObject({
+      kind: "removed",
+      bridgeId: SERIES.bridgeId,
+      seriesId: SERIES.seriesId,
+      chapterId: removedActivityChapterId(1_000 + REMOVAL_CONFIRM_MS),
+      title: SERIES.title,
+      detectedAt: 1_000 + REMOVAL_CONFIRM_MS,
+      read: true,
+    });
+    expect(await lib.unreadActivityCount()).toBe(0);
+    expect(await lib.getActivity({ unreadOnly: true })).toHaveLength(0);
+    // Acknowledging the row reads no chapter: there isn't one behind the event.
+    expect((await lib.markActivityRead(SERIES.bridgeId, SERIES.seriesId)).marked).toBe(0);
+    expect(await lib.getProgress(KEY)).toHaveLength(0);
+
+    await lib.clearActivityForEntry(SERIES.bridgeId, SERIES.seriesId);
+    expect(await lib.getActivity()).toHaveLength(0);
+  });
+
+  test("the series coming back withdraws its removed event; a second removal is news again", async () => {
+    const { lib, advance } = steppedLibrary();
+    const confirm = async () => {
+      await lib.recordSeriesGone(KEY, "gone");
+      advance(REMOVAL_CONFIRM_MS);
+      await lib.recordSeriesGone(KEY, "gone");
+    };
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    await confirm();
+    expect(await lib.getActivity()).toHaveLength(1);
+    await lib.cacheSeriesDetail(KEY, { id: SERIES.seriesId, title: SERIES.title });
+    expect(await lib.getActivity()).toHaveLength(0);
+
+    advance(1);
+    await confirm();
+    const again = await lib.getActivity();
+    expect(again).toHaveLength(1);
+    expect(again[0]?.detectedAt).toBe((await lib.getSeries(KEY))?.removal?.confirmedAt);
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    expect(await lib.getActivity()).toHaveLength(0);
   });
 
   test("a malformed stored removal is dropped rather than failing the item", () => {

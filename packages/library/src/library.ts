@@ -17,6 +17,7 @@ import {
   collectionItemId,
   parseEntryKey,
   REMOVAL_CONFIRM_MS,
+  removedActivityChapterId,
   type ActivityItem,
   type ActivityItemView,
   type BridgePrefs,
@@ -444,8 +445,9 @@ export class Library {
   /**
    * Record the source's "this series is gone" answer for a library entry and return the resulting
    * removal (undefined when the series isn't collected). The first answer only opens a suspicion; one
-   * at least {@link REMOVAL_CONFIRM_MS} later confirms it. Touches nothing but the removal record —
-   * progress, saved detail/chapters and downloads all stay readable.
+   * at least {@link REMOVAL_CONFIRM_MS} later confirms it, and puts a `kind: "removed"` event in the
+   * activity feed. Touches nothing else — progress, saved detail/chapters and downloads all stay
+   * readable.
    *
    * `checked` also stamps `chaptersSyncedAt`: the background sync asked, and "gone" is its answer, so
    * the entry moves to the back of the stalest-first queue instead of heading every run.
@@ -462,6 +464,18 @@ export class Library {
     item.removal = removal;
     if (opts.checked) item.chaptersSyncedAt = now;
     await this.putSeriesItem(item);
+    if (removal.confirmedAt === now) {
+      const event: ActivityItem = {
+        bridgeId: item.bridgeId,
+        seriesId: item.seriesId,
+        chapterId: removedActivityChapterId(now),
+        title: item.seriesTitle,
+        detectedAt: now,
+        kind: "removed",
+      };
+      if (item.thumbnailUrl !== undefined) event.thumbnailUrl = item.thumbnailUrl;
+      await this.store.putActivity(event);
+    }
     return removal;
   }
 
@@ -767,6 +781,7 @@ export class Library {
           (a) =>
             a.bridgeId === entry.bridgeId &&
             a.seriesId === entry.seriesId &&
+            a.kind === undefined &&
             a.behind !== "unseen" &&
             !read.has(logicalChapterKey(a, a.chapterId)),
         )
@@ -1052,6 +1067,16 @@ export class Library {
       // Sorted newest-first, so the first at-or-before-`since` item ends the scan (large-feed fast path).
       if (opts.since !== undefined && item.detectedAt <= opts.since) break;
       if (opts.caughtUpOnly && item.behind === "unseen") continue;
+      if (item.kind === "removed") {
+        if (opts.unreadOnly) continue;
+        // Shown only while it is still the series' removal: a live answer since (on any device —
+        // the record syncs, a withdrawn event doesn't) or a later removal makes it stale.
+        const removal = (await this.getSeriesItem(entryKey(item.bridgeId, item.seriesId)))?.removal;
+        if (removal?.confirmedAt !== item.detectedAt) continue;
+        views.push({ ...item, read: true });
+        if (opts.limit !== undefined && views.length >= opts.limit) break;
+        continue;
+      }
       const read = (await readSet(entryKey(item.bridgeId, item.seriesId))).has(logicalChapterKey(item, item.chapterId));
       if (opts.unreadOnly && read) continue;
       views.push({ ...item, read });
@@ -1096,7 +1121,11 @@ export class Library {
   ): Promise<{ marked: number }> {
     const key = entryKey(bridgeId, seriesId);
     const items = (await this.store.listActivity()).filter(
-      (a) => a.bridgeId === bridgeId && a.seriesId === seriesId && !(opts.caughtUpOnly && a.behind === "unseen"),
+      (a) =>
+        a.bridgeId === bridgeId &&
+        a.seriesId === seriesId &&
+        a.kind === undefined &&
+        !(opts.caughtUpOnly && a.behind === "unseen"),
     );
     return this.reconcileRead(
       key,

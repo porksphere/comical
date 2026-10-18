@@ -529,8 +529,22 @@ export const activityItemSchema = z.object({
    * recorded before the field existed.
    */
   behind: z.enum(["joined", "unseen"]).optional(),
+  /**
+   * What the event is about, when it isn't a new chapter. `"removed"` — the source confirmed the series
+   * is gone: `detectedAt` is that `SeriesRemoval.confirmedAt`, `chapterId` names the removal rather
+   * than a chapter ({@link removedActivityChapterId}), and it is never unread, so it is news in the
+   * feed without ever counting toward the badge.
+   */
+  kind: z.enum(["removed"]).optional(),
 });
 export type ActivityItem = z.infer<typeof activityItemSchema>;
+
+/**
+ * The `chapterId` a `kind: "removed"` event is stored under. One per REMOVAL, not per series: sync
+ * never re-admits an event id it has met, so a series that comes back and is removed again needs a
+ * new one to be news again.
+ */
+export const removedActivityChapterId = (confirmedAt: number): string => `~removed:${confirmedAt}`;
 
 /**
  * An activity item augmented with derived read state. `read` is computed by cross-referencing the
