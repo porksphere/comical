@@ -51,6 +51,12 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: android-actions/setup-android@v3
+        with:
+          # The action's default package list still names the retired `tools` package, which
+          # sdkmanager can no longer find (exit 1). Only platform-tools is needed up front — the
+          # Gradle build fetches the platform, build-tools, emulator and system image itself,
+          # once the action has accepted the SDK licenses.
+          packages: platform-tools
       # The Gradle-managed ATD emulator needs hardware acceleration; GitHub's Linux runners expose
       # KVM once the device node is group-writable.
       - name: Enable KVM
@@ -59,4 +65,5 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Instrumented tests (pixel6Api35, aosp-atd)
-        run: ./gradlew :host-android:pixel6Api35DebugAndroidTest --no-daemon
+        # Headless runner: no GPU, so the emulator renders through SwiftShader.
+        run: ./gradlew :host-android:pixel6Api35DebugAndroidTest --no-daemon -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect

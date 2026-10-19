@@ -27,7 +27,8 @@ module.exports = { default: function (host) { return {
   getSeriesDetails: async function (id) { return { id: id, title: "Title " + id }; },
   getChapters: async function () { return []; },
   getChapterPages: async function () { return []; },
-  getSearchResults: async function (q, p) { return { items: [{ id: "m1", title: q }], page: p, hasNextPage: false }; }
+  // Paged reads take one request object ({ text, cursor?, ... }) and return { items, nextCursor? }.
+  getSearchResults: async function (req) { return { items: [{ id: "m1", title: req.text }] }; }
 }; } };
 """
 
@@ -38,7 +39,7 @@ module.exports = { default: function (host) { return {
   getSeriesDetails: async function (id) { return { id: id, title: id }; },
   getChapters: async function () { return []; },
   getChapterPages: async function () { return []; },
-  getSearchResults: async function () { return { items: [], page: 1, hasNextPage: false }; }
+  getSearchResults: async function () { return { items: [] }; }
 }; } };
 """
 
@@ -59,10 +60,11 @@ class ComicalBridgeContextInstrumentedTest {
     @Test
     fun callRoundTripsThroughCore() = runTest {
         val ctx = ComicalBridgeContext.create(appContext, GOOD_BUNDLE)
-        val result = ctx.call("getSearchResults", listOf("naruto", 1)) as JSONObject
+        // Core rejects a bare string at the boundary — the search request is an object.
+        val result = ctx.call("getSearchResults", listOf(mapOf("text" to "naruto"))) as JSONObject
         val first = result.getJSONArray("items").getJSONObject(0)
         assertEquals("naruto", first.getString("title"))
-        assertEquals(1, result.getInt("page"))
+        assertTrue(!result.has("nextCursor"))
         ctx.close()
     }
 
@@ -83,7 +85,7 @@ class ComicalBridgeContextInstrumentedTest {
           },
           getChapters: async function () { return []; },
           getChapterPages: async function () { return []; },
-          getSearchResults: async function () { return { items: [], page: 1, hasNextPage: false }; }
+          getSearchResults: async function () { return { items: [] }; }
         }; } };
         """
         val ctx = ComicalBridgeContext.create(appContext, bundle)

@@ -1,9 +1,8 @@
 /**
  * Unit tests for ComicalTrackerContext.
  *
- * NOTE: These tests cannot run on this machine (no Swift toolchain / iOS SDK here).
- * They document the expected behaviour and serve as a test spec for CI on a Mac runner.
- * Run with: swift test  (from packages/host-ios/)
+ * Run with: swift test  (from packages/host-ios/, after `bun run build:native` at the repo root).
+ * CI runs them on a macOS runner from `.github/workflows/native.yml`.
  *
  * Mirrors `ComicalBridgeContextTests` — same synthetic-bundle, no-external-dependency approach,
  * just built against the `Tracker` contract (`getSettings`/`getLibrary`/`search`/`updateEntry`)
@@ -27,15 +26,14 @@ module.exports = {
       getSettings: function() {
         return [{ type: "string", key: "token", label: "Token", required: true }];
       },
-      getLibrary: async function(page) {
+      // Paged reads take an optional `{ cursor? }` request and return `{ items, nextCursor? }`.
+      getLibrary: async function(req) {
         return {
-          items: [{ externalId: "1", title: "Series " + (host.settings.token || ""), status: "reading" }],
-          page: page,
-          hasNextPage: false
+          items: [{ externalId: "1", title: "Series " + (host.settings.token || ""), status: "reading" }]
         };
       },
-      search: async function(q, p) {
-        return { items: [{ externalId: "s1", title: q }], page: p, hasNextPage: false };
+      search: async function(q, req) {
+        return { items: [{ externalId: "s1", title: q }] };
       },
       updateEntry: async function(externalId, update) {
         return undefined;
@@ -64,15 +62,17 @@ final class ComicalTrackerContextTests: XCTestCase {
 
     func testGetLibrarySeesStoredSettings() async throws {
         // Proves the settings passed at init actually reach the sandboxed tracker context.
-        let result = try await context.call("getLibrary", args: [1])
+        // No cursor = first page. (A bare page number is rejected at the boundary — the paged
+        // request is an object.)
+        let result = try await context.call("getLibrary", args: [])
         let dict = result as? [String: Any]
         let items = dict?["items"] as? [[String: Any]]
         XCTAssertEqual(items?.first?["title"] as? String, "Series t1")
-        XCTAssertEqual(dict?["page"] as? Int, 1)
+        XCTAssertNil(dict?["nextCursor"])
     }
 
     func testSearch() async throws {
-        let result = try await context.call("search", args: ["naruto", 1])
+        let result = try await context.call("search", args: ["naruto"])
         let dict = result as? [String: Any]
         let items = dict?["items"] as? [[String: Any]]
         XCTAssertEqual(items?.first?["title"] as? String, "naruto")
@@ -103,7 +103,7 @@ final class ComicalTrackerContextTests: XCTestCase {
         module.exports = { default: function(host) { return {
           info: { id: "t", name: "T", version: "0", contractVersion: "999.0.0",
                   capabilities: ["search"] },
-          search: async function() { return { items: [], page: 1, hasNextPage: false }; },
+          search: async function() { return { items: [] }; },
         }; } };
         """
         XCTAssertThrowsError(try ComicalTrackerContext(trackerBundle: bundle))

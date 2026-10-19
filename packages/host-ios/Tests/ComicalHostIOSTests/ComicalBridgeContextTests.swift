@@ -1,9 +1,8 @@
 /**
  * Unit tests for ComicalBridgeContext.
  *
- * NOTE: These tests cannot run on this machine (no Swift toolchain / iOS SDK here).
- * They document the expected behaviour and serve as a test spec for CI on a Mac runner.
- * Run with: swift test  (from packages/host-ios/)
+ * Run with: swift test  (from packages/host-ios/, after `bun run build:native` at the repo root).
+ * CI runs them on a macOS runner from `.github/workflows/native.yml`.
  *
  * The bridge bundle used here is a minimal synthetic CJS bundle (not the real example-bridge)
  * so these tests have no external dependencies.
@@ -35,14 +34,16 @@ module.exports = {
       },
       getChapters: async function() { return [{ id: "c1", name: "Chapter 1", number: 1 }]; },
       getChapterPages: async function() { return [{ index: 0, imageUrl: "https://img.example.test/0.png" }]; },
-      getSearchResults: async function(q, p) {
-        return { items: [{ id: "m1", title: q }], page: p, hasNextPage: false };
+      // Paged reads take one request object (`{ text, cursor?, filters?, sort? }`) and return
+      // `{ items, nextCursor? }` — cursor paging, not page numbers.
+      getSearchResults: async function(req) {
+        return { items: [{ id: "m1", title: req.text }] };
       },
       getLists: async function() {
         return [{ id: "popular", name: "Popular", layout: "carousel", featured: true }];
       },
-      getListItems: async function(listId, p) {
-        return { items: [{ id: "m1", title: "Item" }], page: p, hasNextPage: false };
+      getListItems: async function(listId, req) {
+        return { items: [{ id: "m1", title: "Item" }] };
       }
     };
   }
@@ -63,7 +64,7 @@ final class ComicalBridgeContextTests: XCTestCase {
         let info = context.bridgeInfo
         XCTAssertEqual(info?.id, "test-ios")
         XCTAssertEqual(info?.contractVersion, "2.0.0")
-        XCTAssertEqual(info?.capabilities, ["search"])
+        XCTAssertEqual(info?.capabilities, ["lists", "search"])
     }
 
     func testGetSeriesDetails() async throws {
@@ -74,11 +75,13 @@ final class ComicalBridgeContextTests: XCTestCase {
     }
 
     func testGetSearchResults() async throws {
-        let result = try await context.call("getSearchResults", args: ["naruto", 1])
+        // Core validates the request at the boundary: a bare string is rejected before the bridge
+        // runs, so the args must carry a `SearchRequest` object.
+        let result = try await context.call("getSearchResults", args: [["text": "naruto"]])
         let dict = result as? [String: Any]
         let items = dict?["items"] as? [[String: Any]]
         XCTAssertEqual(items?.first?["title"] as? String, "naruto")
-        XCTAssertEqual(dict?["page"] as? Int, 1)
+        XCTAssertNil(dict?["nextCursor"])
     }
 
     func testGetChapters() async throws {
@@ -107,7 +110,7 @@ final class ComicalBridgeContextTests: XCTestCase {
           },
           getChapters: async function() { return []; },
           getChapterPages: async function() { return []; },
-          getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
+          getSearchResults: async function() { return { items: [] }; },
         }; } };
         """
         let ctx = try await ComicalBridgeContext(bridgeBundle: bundle)
@@ -125,7 +128,7 @@ final class ComicalBridgeContextTests: XCTestCase {
           getSeriesDetails: async function(id) { return { id: id, title: String(typeof fetch) }; },
           getChapters: async function() { return []; },
           getChapterPages: async function() { return []; },
-          getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
+          getSearchResults: async function() { return { items: [] }; },
         }; } };
         """
         let ctx = try await ComicalBridgeContext(bridgeBundle: bundle)
@@ -150,7 +153,7 @@ final class ComicalBridgeContextTests: XCTestCase {
           },
           getChapters: async function() { return []; },
           getChapterPages: async function() { return []; },
-          getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
+          getSearchResults: async function() { return { items: [] }; },
         }; } };
         """
         let ctx = try await ComicalBridgeContext(bridgeBundle: bundle)
@@ -178,7 +181,7 @@ final class ComicalBridgeContextTests: XCTestCase {
           getSeriesDetails: async function(id) { return { id: id, title: id }; },
           getChapters: async function() { return []; },
           getChapterPages: async function() { return []; },
-          getSearchResults: async function() { return { items: [], page: 1, hasNextPage: false }; },
+          getSearchResults: async function() { return { items: [] }; },
         }; } };
         """
         do {

@@ -116,7 +116,7 @@ public final class ComicalTrackerContext {
             let thenFn: @convention(block) (JSValue) -> Void = { result in
                 guard let str = result.toString(),
                       let data = str.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: data)
+                      let obj = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
                 else {
                     continuation.resume(throwing: ComicalError(message: "failed to parse result for \(method)"))
                     return

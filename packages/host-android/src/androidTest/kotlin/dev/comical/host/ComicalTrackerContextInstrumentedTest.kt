@@ -27,10 +27,11 @@ module.exports = { default: function (host) { return {
           capabilities: ["library-sync", "search", "settings"],
           rateLimit: { maxConcurrent: 1, minIntervalMs: 50 } },
   getSettings: function () { return [{ type: "string", key: "token", label: "Token", required: true }]; },
-  getLibrary: async function (page) {
-    return { items: [{ externalId: "1", title: "Series " + (host.settings.token || ""), status: "reading" }], page: page, hasNextPage: false };
+  // Paged reads take an optional { cursor? } request and return { items, nextCursor? }.
+  getLibrary: async function (req) {
+    return { items: [{ externalId: "1", title: "Series " + (host.settings.token || ""), status: "reading" }] };
   },
-  search: async function (q, p) { return { items: [{ externalId: "s1", title: q }], page: p, hasNextPage: false }; },
+  search: async function (q, req) { return { items: [{ externalId: "s1", title: q }] }; },
   updateEntry: async function (externalId, update) { return undefined; }
 }; } };
 """
@@ -39,7 +40,7 @@ private const val BAD_CONTRACT_TRACKER_BUNDLE = """
 module.exports = { default: function (host) { return {
   info: { id: "test-tracker-android", name: "T", version: "0", contractVersion: "999.0.0",
           capabilities: ["search"] },
-  search: async function () { return { items: [], page: 1, hasNextPage: false }; }
+  search: async function () { return { items: [] }; }
 }; } };
 """
 
@@ -61,7 +62,8 @@ class ComicalTrackerContextInstrumentedTest {
     fun getLibrarySeesStoredSettings() = runTest {
         // Proves the settings passed at create() actually reach the sandboxed tracker context.
         val ctx = ComicalTrackerContext.create(appContext, GOOD_TRACKER_BUNDLE, mapOf("token" to "t1"))
-        val result = ctx.call("getLibrary", listOf(1)) as JSONObject
+        // No cursor = first page; a bare page number is rejected at the boundary.
+        val result = ctx.call("getLibrary", emptyList()) as JSONObject
         val first = result.getJSONArray("items").getJSONObject(0)
         assertEquals("Series t1", first.getString("title"))
         ctx.close()
@@ -70,10 +72,10 @@ class ComicalTrackerContextInstrumentedTest {
     @Test
     fun callRoundTripsThroughCore() = runTest {
         val ctx = ComicalTrackerContext.create(appContext, GOOD_TRACKER_BUNDLE)
-        val result = ctx.call("search", listOf("naruto", 1)) as JSONObject
+        val result = ctx.call("search", listOf("naruto")) as JSONObject
         val first = result.getJSONArray("items").getJSONObject(0)
         assertEquals("naruto", first.getString("title"))
-        assertEquals(1, result.getInt("page"))
+        assertTrue(!result.has("nextCursor"))
         ctx.close()
     }
 
