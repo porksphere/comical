@@ -47,5 +47,7 @@ export function methodsForBridge(info: BridgeInfo): string[] {
   const methods = new Set<string>(ALWAYS);
   for (const cap of caps) for (const m of CAPABILITY_METHODS[cap] ?? []) methods.add(m);
   if (!caps.includes("direct")) for (const m of CHAPTERED) methods.add(m);
+  // Data, not a capability: the loader refuses a bridge that declares interception without the method.
+  if (info.images?.intercept) methods.add("interceptImageRequest");
   return [...methods];
 }

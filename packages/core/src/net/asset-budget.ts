@@ -4,7 +4,7 @@
  * read the declaration the same way. The result's `key` names the budget (one limiter per key per
  * bridge); the default budget is `""`, a `byHost` group its index.
  */
-import type { AssetRateLimit } from "@comical/contract";
+import { parseBridgeImagePath, type AssetRateLimit } from "@comical/contract";
 import { findHostRule, hostOf } from "./url-match.ts";
 import type { RateLimitBudget } from "./rate-limiter.ts";
 
@@ -13,8 +13,13 @@ export interface ResolvedAssetBudget {
   budget: RateLimitBudget;
 }
 
-/** The host an asset is really fetched from: a server-relative `/img-proxy?url=…` is unwrapped. */
+/**
+ * The host an asset is really fetched from: a server-relative `/img-proxy?url=…` or image-route
+ * path is unwrapped. (An intercepted image may end up on another host; pacing reads the original.)
+ */
 export function assetHostOf(url: string): string | undefined {
+  const routed = parseBridgeImagePath(url);
+  if (routed) return hostOf(routed.url);
   const proxied = /^(?:[a-z][a-z0-9+.-]*:\/\/[^/?#]*)?\/img-proxy\?(?:.*&)?url=([^&#]+)/i.exec(url);
   const target = proxied ? safeDecode(proxied[1]!) : url;
   return hostOf(target);

@@ -9,7 +9,7 @@
  * GitHub repo URLs are auto-resolved to their raw content (see url.ts).
  */
 import { z } from "zod";
-import { BRIDGE_ID_PATTERN } from "@comical/contract";
+import { BRIDGE_ID_PATTERN, bridgeImagesSchema } from "@comical/contract";
 
 /** A single bridge entry in the registry index. */
 export const registryBridgeEntrySchema = z.object({
@@ -62,6 +62,12 @@ export const registryBridgeEntrySchema = z.object({
         .optional(),
     })
     .optional(),
+  /**
+   * Mirror of `BridgeInfo.images` — where this bridge's images load from and what they need. In the
+   * index for the reason `assetProxy` is: the image route reads it from a device's listing, so an
+   * image that needs no interception is served without loading the bridge.
+   */
+  images: bridgeImagesSchema.optional(),
   /** Absolute URL to the CJS bridge bundle. */
   url: z.string().url(),
   /** Lowercase hex SHA-256 of the bundle content. Always required. */

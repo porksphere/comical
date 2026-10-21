@@ -43,4 +43,20 @@ describe("CAPABILITY_METHODS", () => {
     expect(methods).toContain("getChapterPages");
     expect(methods).toContain("getSeriesDetails");
   });
+
+  test("a bridge that intercepts images gets interceptImageRequest, and one that doesn't, not", () => {
+    const info = {
+      id: "x",
+      name: "X",
+      version: "1.0.0",
+      contractVersion: "2.1.0",
+      languages: ["en"],
+      nsfw: false,
+      capabilities: ["search" as const],
+    };
+    expect(methodsForBridge({ ...info, images: { hosts: ["a.example"], intercept: ["a.example"] } })).toContain(
+      "interceptImageRequest",
+    );
+    expect(methodsForBridge({ ...info, images: { hosts: ["a.example"] } })).not.toContain("interceptImageRequest");
+  });
 });

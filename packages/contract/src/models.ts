@@ -82,10 +82,11 @@ export const seriesEntrySchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   /**
-   * Cover image: an absolute URL, OR a server-relative path (e.g. `/img-proxy?url=…`) for a
-   * source whose cover CDN needs host-applied headers — same "absolute or server-relative" rule as
-   * {@link pageSchema}'s `imageUrl`. Clients resolve a relative path against the host (or the
-   * in-process transport on device) before rendering.
+   * Cover image: an absolute URL, OR a server-relative path — same "absolute or server-relative"
+   * rule as {@link pageSchema}'s `imageUrl`. Clients resolve a relative path against the host (or
+   * the in-process transport on device) before rendering. A bridge emits the source's real URL and
+   * declares what loading it needs in `BridgeInfo.images`; server-relative paths come from the host
+   * (or, before contract 2.1, from bridges building `/img-proxy?url=…` themselves).
    */
   thumbnailUrl: z.string().min(1).optional(),
   /**
@@ -383,7 +384,12 @@ export const pageThumbnailSchema = z.discriminatedUnion("kind", [
 ]);
 export type PageThumbnail = z.infer<typeof pageThumbnailSchema>;
 
-/** A single readable page. `imageUrl` is an absolute URL or a server-relative path (e.g. `/bridges/…/page-image/…`); `headers` carry any referer/auth. */
+/**
+ * A single readable page. A bridge emits the source's real `imageUrl` and declares what fetching it
+ * needs in `BridgeInfo.images`; hosts may hand clients a server-relative path instead (the image
+ * route, or the older `/bridges/…/page-image/…` and `/img-proxy` paths). `headers` carry any
+ * referer/auth for this page alone.
+ */
 export const pageSchema = z.object({
   index: z.number().int().nonnegative(),
   imageUrl: z.string().min(1),
@@ -832,6 +838,48 @@ export const assetRateLimitSchema = z.object({
 export type AssetRateLimit = z.infer<typeof assetRateLimitSchema>;
 
 /**
+ * `BridgeInfo.images`. Every entry matches a host exactly or as a parent domain (`"example.net"`
+ * also covers `cdn.example.net`), like `assetProxy.hosts`.
+ *
+ * - `hosts` — the allowlist: the hosts this bridge's images may be fetched from on its behalf,
+ *   including wherever `interceptImageRequest` sends a request. The host refuses anything else, so
+ *   this is an SSRF boundary; keep it to the hosts genuinely needed.
+ * - `headers` — sent with every image request to these hosts (a `Referer` a CDN insists on, say).
+ *   A static header is data, not code: declare it here rather than intercepting just to add it.
+ * - `intercept` — the subset of `hosts` whose URLs are passed through the bridge's
+ *   `interceptImageRequest` at fetch time, for URLs that expire or need a lookup first.
+ *
+ * An image URL on a host that needs nothing (no headers, not intercepted) is loaded directly by the
+ * client. One that needs either is served through the host's image route
+ * (`/bridges/:id/image?url=…`), which applies them; a bridge never builds that path itself.
+ */
+export const bridgeImagesSchema = z
+  .object({
+    hosts: z.array(z.string().min(1)).min(1),
+    headers: z.record(z.string(), z.string()).optional(),
+    intercept: z.array(z.string().min(1)).min(1).optional(),
+  })
+  .refine(
+    (v) => (v.intercept ?? []).every((i) => v.hosts.some((h) => coversHost(i.toLowerCase(), h.toLowerCase()))),
+    { message: "every images.intercept entry must be covered by images.hosts", path: ["intercept"] },
+  );
+export type BridgeImages = z.infer<typeof bridgeImagesSchema>;
+
+function coversHost(host: string, rule: string): boolean {
+  return host === rule || host.endsWith(`.${rule}`);
+}
+
+/**
+ * What `Bridge.interceptImageRequest` returns: the URL to actually fetch (absolute http(s), on one
+ * of `images.hosts`) and any headers to add for it, on top of `images.headers`.
+ */
+export const imageRequestSchema = z.object({
+  url: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional(),
+});
+export type ImageRequest = z.infer<typeof imageRequestSchema>;
+
+/**
  * Self-description of a bridge. Note there is deliberately NO backend URL here — the address
  * and credentials of the user's backend arrive at runtime through settings.
  */
@@ -891,6 +939,9 @@ export const bridgeInfoSchema = z.object({
     })
     .optional(),
   /**
+   * Superseded by `images` (contract 2.1); still honored for bridges that emit their own
+   * `/img-proxy` URLs.
+   *
    * Declares the hosts this bridge serves assets from through the host's image proxy (the routes
    * behind the server-relative `/img-proxy?url=…` URLs this bridge emits), plus an optional Referer
    * some backends require to serve them. The host derives its proxy allowlist *entirely* from the
@@ -914,5 +965,13 @@ export const bridgeInfoSchema = z.object({
    * source's image hosts have no known limit.
    */
   assetRateLimit: assetRateLimitSchema.optional(),
+  /**
+   * Where this bridge's images (covers, pages, page thumbnails, sprite sheets) load from, and what
+   * loading them needs. Supersedes `assetProxy` for bridges targeting contract 2.1+: the bridge
+   * emits the source's REAL image URLs and the host decides how to fetch them, instead of the
+   * bridge building host paths itself. See {@link bridgeImagesSchema}.
+   */
+  images: bridgeImagesSchema.optional(),
 });
 export type BridgeInfo = z.infer<typeof bridgeInfoSchema>;
+

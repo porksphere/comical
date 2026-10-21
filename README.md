@@ -164,6 +164,25 @@ be queried (e.g. an infinite "trending" feed) simply omits the flag and ignores 
 REST it's `?q=&filters=&sort=&dir=` on the list-items route; via the CLI, `comical lists <listId>
 --query Q [--filter k=v] [--sort key]`.
 
+**Image requests.** A bridge emits the source's real image URLs and declares, in
+`BridgeInfo.images`, which hosts they live on and what fetching them takes:
+
+```ts
+images: {
+  hosts: ["cdn.example.com"],                        // the only hosts the host will fetch for this bridge
+  headers: { Referer: "https://example.com/" },      // sent with every image on those hosts
+  intercept: ["cdn.example.com"],                    // hosts whose URLs go through interceptImageRequest
+}
+```
+
+`interceptImageRequest(url) → { url, headers? }` runs at *fetch* time, every time, and its result
+is never stored — so it is where anything that expires belongs (a rotating CDN path, a signed URL,
+a viewer page to look up). The core rewrites an image URL that needs headers or interception into
+the host's `/bridges/:id/image?url=<original>` route; every other URL reaches the client untouched.
+The route redirects when the resolved request needs no headers and proxies when it does, refuses
+any URL (original or intercepted) off `images.hosts`, and maps a `rateLimitedMessage` thrown by the
+interceptor to a 429. `images` supersedes `assetProxy` and `resolvePage`, which keep working.
+
 ### Settings
 
 Settings are declared by **value kind**, not UI widget — `getSettings()` returns
@@ -531,7 +550,7 @@ class MyBridge extends BridgeBase<Settings> {
     id: "my-bridge",
     name: "My Bridge",
     version: "0.1.0",
-    contractVersion: "2.0.0",
+    contractVersion: "2.1.0",
     languages: ["en"],
     nsfw: false,
     capabilities: ["lists", "settings"],

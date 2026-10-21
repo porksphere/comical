@@ -38,6 +38,7 @@ async function makeIndex(sha256?: string) {
         cardSubtitles: true,
         ratings: true,
         assetRateLimit: { maxConcurrent: 2, minIntervalMs: 500 },
+        images: { hosts: ["img.demo.example"], intercept: ["img.demo.example"] },
         url: BUNDLE_URL,
         sha256: digest,
       },
@@ -83,13 +84,16 @@ describe("RegistryBundleSource", () => {
     expect(installed[0]?.info.ratings).toBe(true);
     // The image budget too, or a device's downloads would go unpaced.
     expect(installed[0]?.info.assetRateLimit).toEqual({ maxConcurrent: 2, minIntervalMs: 500 });
+    // And the image hosts, which the on-device image route reads without loading the bridge.
+    expect(installed[0]?.info.images).toEqual({ hosts: ["img.demo.example"], intercept: ["img.demo.example"] });
     expect(installed[0]?.source).toBe("registry");
   });
 
   test("entryToInfo leaves the display flags off an entry that carries neither", async () => {
-    const { cardSubtitles: _cs, ratings: _r, assetRateLimit: _arl, ...bare } = (await makeIndex()).bridges[0]!;
+    const { cardSubtitles: _cs, ratings: _r, assetRateLimit: _arl, images: _i, ...bare } = (await makeIndex()).bridges[0]!;
     const info = entryToInfo(bare);
     expect("assetRateLimit" in info).toBe(false);
+    expect("images" in info).toBe(false);
     expect("cardSubtitles" in info).toBe(false);
     expect("ratings" in info).toBe(false);
   });

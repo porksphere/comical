@@ -9,6 +9,7 @@ import type {
   Chapter,
   Filter,
   FilterValue,
+  ImageRequest,
   Page,
   PageThumbnail,
   PagedRequest,
@@ -101,7 +102,7 @@ export interface Bridge {
    */
   checkForUpdates?(seriesIds: string[]): Promise<Record<string, SeriesRevision>>;
 
-  /** Resolve the readable pages for a chapter. `imageUrl` may be absolute or a server-relative proxy path. */
+  /** Resolve the readable pages for a chapter. Emit the source's real image URLs; see `BridgeInfo.images`. */
   getChapterPages?(seriesId: string, chapterId: string): Promise<Page[]>;
 
   // ---- Direct-read (capability "direct") ----
@@ -110,6 +111,9 @@ export interface Bridge {
   getSeriesPages?(seriesId: string): Promise<Page[]>;
 
   /**
+   * Superseded by `interceptImageRequest` (contract 2.1), which does the same lazily for any image
+   * URL on a declared host; kept for bridges that still emit `/page-image` paths.
+   *
    * Resolve the full image URL for a single page, given its filehash and page reference.
    * Used by the host-server's page-image proxy endpoint to lazily fetch CDN URLs on demand
    * rather than resolving all pages upfront in `getSeriesPages`. (capability "direct")
@@ -128,6 +132,22 @@ export interface Bridge {
    * (capability "direct")
    */
   getPageThumbnail?(seriesId: string, pageIndex: number): Promise<PageThumbnail>;
+
+  // ---- Image requests ----
+
+  /**
+   * Turn an image URL this bridge emitted into the request that actually fetches it. Called by the
+   * host every time it fetches an image on one of `info.images.intercept`'s hosts — at fetch time,
+   * not when the URL was emitted — so it is the place for anything that goes stale: a CDN path
+   * that rotates, a signed URL that expires, a viewer page that has to be looked up for the real
+   * image. Encode whatever you need into the URL you emit; this gets only that URL.
+   *
+   * The result is never persisted: the host stores the original URL and asks again next time. It
+   * must land on one of `info.images.hosts` (anything else is refused), and its `headers` are added
+   * on top of `info.images.headers`. Keep it fast — it runs once per image. To make the host back
+   * off, throw a `rateLimitedMessage` error, as from any other method.
+   */
+  interceptImageRequest?(url: string): Promise<ImageRequest>;
 
   // ---- Read-sync (capability "read-sync") ----
   // Bridges that can write reading state back to their source implement these.

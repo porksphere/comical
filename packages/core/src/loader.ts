@@ -10,12 +10,14 @@ import {
   type ListRequest,
   type PagedRequest,
   type SearchRequest,
+  type SeriesEntry,
   bridgeInfoSchema,
   CONTRACT_VERSION,
   chapterSchema,
   cursorSchema,
   filterSchema,
   filterValueSchema,
+  imageRequestSchema,
   type HostCapabilities,
   isContractCompatible,
   pageSchema,
@@ -43,6 +45,7 @@ import {
   ComicalError,
 } from "./errors.ts";
 import type { BundleEvaluator } from "./evaluator.ts";
+import { createImageRouter } from "./images.ts";
 import { createGatedNetwork, type GatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
 import type { RateLimitOptions } from "./net/rate-limiter.ts";
 import { resolveSettings } from "./settings.ts";
@@ -177,6 +180,9 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
         `incompatible with runtime ${runtimeVersion}`,
     );
   }
+  if (info.images?.intercept && typeof raw.interceptImageRequest !== "function") {
+    throw new BridgeContractError(`bridge "${info.id}" declares images.intercept but no interceptImageRequest`);
+  }
 
   // 4b. Apply the bridge's declared rate limit as the default. Precedence per key:
   //     explicit host override (already set on the limiter) > info.rateLimit > runtime default.
@@ -255,6 +261,14 @@ function wrapBridge(
   };
 
   const entryPage = pagedResultsSchema(seriesEntrySchema);
+  // Image URLs a client can't load by itself become the host's image route (see images.ts).
+  const images = createImageRouter(info);
+  const routed = <T>(result: Promise<T>, rewrite: (value: T) => T): Promise<T> =>
+    images ? result.then(rewrite) : result;
+  const routeEntries = <T extends { items: SeriesEntry[] }>(page: T): T => {
+    for (const item of page.items) images!.entry(item);
+    return page;
+  };
   // An empty batch would be a pointless round-trip, and an oversized one breaks the promise the
   // contract makes to bridges about how many ids they must cope with — both are host bugs, so they
   // reject before the bridge is entered.
@@ -263,12 +277,16 @@ function wrapBridge(
 
   const bridge: LoadedBridge = {
     info,
-    getSeriesDetails: (id) => call("getSeriesDetails", seriesInfoSchema, () => raw.getSeriesDetails(id)),
+    getSeriesDetails: (id) =>
+      routed(call("getSeriesDetails", seriesInfoSchema, () => raw.getSeriesDetails(id)), (s) => images!.entry(s)),
   };
 
   if (raw.getRelatedSeries) {
     bridge.getRelatedSeries = (id) =>
-      call("getRelatedSeries", z.array(relatedSeriesGroupSchema), () => raw.getRelatedSeries!(id));
+      routed(call("getRelatedSeries", z.array(relatedSeriesGroupSchema), () => raw.getRelatedSeries!(id)), (groups) => {
+        for (const g of groups) for (const e of g.series) images!.entry(e);
+        return groups;
+      });
   }
 
   // Chapter methods are omitted for direct-only bridges (capability "direct").
@@ -276,7 +294,7 @@ function wrapBridge(
     bridge.getChapters = (id) =>
       call("getChapters", z.array(chapterSchema), () => raw.getChapters!(id));
     bridge.getChapterPages = (m, c) =>
-      call("getChapterPages", z.array(pageSchema), () => raw.getChapterPages!(m, c));
+      routed(call("getChapterPages", z.array(pageSchema), () => raw.getChapterPages!(m, c)), (p) => images!.pages(p));
 
     if (raw.checkForUpdates) {
       bridge.checkForUpdates = async (seriesIds) => {
@@ -301,17 +319,23 @@ function wrapBridge(
   // synchronously out of a call the caller only ever `await`s or `.catch()`es.
   if (raw.getListItems) {
     bridge.getListItems = (listId, req) =>
-      call("getListItems", entryPage, () =>
-        raw.getListItems!(
-          listId,
-          req === undefined ? undefined : (validateInput(listRequestSchema, req, "list request") as ListRequest),
+      routed(
+        call("getListItems", entryPage, () =>
+          raw.getListItems!(
+            listId,
+            req === undefined ? undefined : (validateInput(listRequestSchema, req, "list request") as ListRequest),
+          ),
         ),
+        routeEntries,
       );
   }
   if (raw.getSearchResults) {
     bridge.getSearchResults = (req) =>
-      call("getSearchResults", entryPage, () =>
-        raw.getSearchResults!(validateInput(searchRequestSchema, req, "search request") as SearchRequest),
+      routed(
+        call("getSearchResults", entryPage, () =>
+          raw.getSearchResults!(validateInput(searchRequestSchema, req, "search request") as SearchRequest),
+        ),
+        routeEntries,
       );
   }
   if (raw.getFilters) {
@@ -329,10 +353,13 @@ function wrapBridge(
   }
   if (raw.getFavorites) {
     bridge.getFavorites = (req) =>
-      call("getFavorites", entryPage, () =>
-        raw.getFavorites!(
-          req === undefined ? undefined : (validateInput(pagedRequestSchema, req, "paged request") as PagedRequest),
+      routed(
+        call("getFavorites", entryPage, () =>
+          raw.getFavorites!(
+            req === undefined ? undefined : (validateInput(pagedRequestSchema, req, "paged request") as PagedRequest),
+          ),
         ),
+        routeEntries,
       );
   }
   if (raw.addFavorite) {
@@ -351,7 +378,7 @@ function wrapBridge(
   }
   if (raw.getSeriesPages) {
     bridge.getSeriesPages = (id) =>
-      call("getSeriesPages", z.array(pageSchema), () => raw.getSeriesPages!(id));
+      routed(call("getSeriesPages", z.array(pageSchema), () => raw.getSeriesPages!(id)), (p) => images!.pages(p));
   }
   if (raw.resolvePage) {
     bridge.resolvePage = (seriesId, hash, gidRef) =>
@@ -359,7 +386,16 @@ function wrapBridge(
   }
   if (raw.getPageThumbnail) {
     bridge.getPageThumbnail = (seriesId, pageIndex) =>
-      call("getPageThumbnail", pageThumbnailSchema, () => raw.getPageThumbnail!(seriesId, pageIndex));
+      routed(
+        call("getPageThumbnail", pageThumbnailSchema, () => raw.getPageThumbnail!(seriesId, pageIndex)),
+        (t) => images!.thumbnail(t),
+      );
+  }
+  if (raw.interceptImageRequest) {
+    bridge.interceptImageRequest = (url) =>
+      call("interceptImageRequest", imageRequestSchema, () =>
+        raw.interceptImageRequest!(validateInput(z.string().min(1), url, "image url")),
+      );
   }
   if (raw.getReadChapters) {
     bridge.getReadChapters = (seriesId) =>

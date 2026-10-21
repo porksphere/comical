@@ -14,6 +14,7 @@ export * from "./net/window-limiter.ts";
 export * from "./net/url-match.ts";
 export * from "./net/asset-budget.ts";
 export * from "./net/refreshable-network.ts";
+export * from "./images.ts";
 export * from "./evaluator.ts";
 export * from "./globals.ts";
 export { evaluateBundle, NodeVmEvaluator } from "./sandbox.ts";

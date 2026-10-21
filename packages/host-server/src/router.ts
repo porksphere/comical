@@ -21,6 +21,7 @@ import {
 } from "@comical/contract";
 import type {
   AssetRateLimit,
+  BridgeInfo,
   Chapter,
   ContentRating,
   Cursor,
@@ -34,6 +35,7 @@ import type {
 // node:vm-backed default evaluator) so this router can also be bundled into non-Node hosts
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
+import { ImageRequestRefusedError, resolveImageRequest, type ResolvedImageRequest } from "@comical/core/images";
 import { assetBudgetFor } from "@comical/core/net/asset-budget";
 import { RateLimiter } from "@comical/core/net/rate-limiter";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
@@ -238,14 +240,17 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   // Derived allowlist, memoized briefly: a series page can resolve dozens of thumbnails at once, and
   // the installed-bridge set changes rarely. A stale window only delays a just-installed bridge's
   // images by a few seconds (they retry); never a correctness issue.
+  // The same listing feeds the image route, which reads a bridge's `images` without loading it.
   const PROXY_RULES_TTL_MS = 5000;
-  let proxyRulesCache: { at: number; rules: ProxyRule[] } | null = null;
-  const proxyRules = async (): Promise<ProxyRule[]> => {
+  let listingCache: { at: number; infos: Map<string, BridgeInfo>; rules: ProxyRule[] } | null = null;
+  const listing = async (): Promise<{ infos: Map<string, BridgeInfo>; rules: ProxyRule[] }> => {
     const now = Date.now();
-    if (proxyRulesCache && now - proxyRulesCache.at < PROXY_RULES_TTL_MS) return proxyRulesCache.rules;
+    if (listingCache && now - listingCache.at < PROXY_RULES_TTL_MS) return listingCache;
+    const infos = new Map<string, BridgeInfo>();
     const rules: ProxyRule[] = [];
     try {
       for (const b of await manager.list()) {
+        infos.set(b.info.id, b.info);
         const ap = b.info.assetProxy;
         if (!ap) continue;
         for (const host of ap.hosts) {
@@ -255,9 +260,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     } catch {
       // A listing failure must not 500 image loads — fall back to an empty (deny-all) allowlist.
     }
-    proxyRulesCache = { at: now, rules };
-    return rules;
+    listingCache = { at: now, infos, rules };
+    return listingCache;
   };
+  const proxyRules = async (): Promise<ProxyRule[]> => (await listing()).rules;
 
   /** Match an absolute target URL against the derived allowlist. Returns the rule (for its Referer)
    *  or null → 403. Enforces http(s) and matches a host exactly or as a parent domain. */
@@ -273,18 +279,18 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     return rules.find((r) => host === r.host || host.endsWith(`.${r.host}`)) ?? null;
   };
 
-  /** Fetch `target` (optionally with a Referer) and return its bytes. Buffers the body rather than
+  /** Fetch `target` with `extra` headers (over the host's User-Agent) and return its bytes. Buffers the body rather than
    *  piping `r.body`: this router is also reused in-process by the on-device runtime
    *  (`@comical/host-rn`), where the RN fetch exposes no streaming `body` and `new Response(r.body,…)`
    *  would be silently empty. Reading bytes works on every host. Only a success is cacheable: a
    *  client's retry re-requests the same `/img-proxy?url=…`, so a cached 404/503 would answer every
    *  retry without ever reaching upstream again. */
-  const proxyFetch = async (target: string, referer: string | undefined, limiter?: RateLimiter): Promise<Response> => {
+  const proxyFetch = async (target: string, extra: Record<string, string>, limiter?: RateLimiter): Promise<Response> => {
     const release = limiter ? await limiter.acquire() : undefined;
     try {
-      const headers: Record<string, string> = {};
-      if (opts.userAgent) headers["User-Agent"] = opts.userAgent;
-      if (referer) headers.Referer = referer;
+      const headers = new Headers();
+      if (opts.userAgent) headers.set("User-Agent", opts.userAgent);
+      for (const [k, v] of Object.entries(extra)) headers.set(k, v);
       const r = await fetch(target, { headers });
       const bytes = await r.arrayBuffer();
       const out: Record<string, string> = {
@@ -310,10 +316,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   // One limiter per budget a bridge declares — its default, shared by every proxied host it doesn't
   // carve out, plus one per `byHost` group — reconfigured in place if a bridge update changes it.
   const proxyLimiters = new Map<string, RateLimiter>();
-  const proxyLimiter = (rule: ProxyRule, target: string): RateLimiter | undefined => {
-    const resolved = assetBudgetFor(rule.assetRateLimit, target);
+  const proxyLimiter = (bridgeId: string, decl: AssetRateLimit | undefined, target: string): RateLimiter | undefined => {
+    const resolved = assetBudgetFor(decl, target);
     if (!resolved) return undefined;
-    const key = `${rule.bridgeId}#${resolved.key}`;
+    const key = `${bridgeId}#${resolved.key}`;
     let limiter = proxyLimiters.get(key);
     if (limiter) limiter.reconfigure(resolved.budget);
     else {
@@ -328,11 +334,40 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     const url = c.req.query("url") ?? "";
     // The host's own test-sprite sheet is same-origin (no external host, no allowlist needed).
     if (url === "/test-sprite.svg" || url === "/test-sprite-var.svg") {
-      return proxyFetch(new URL(url, c.req.url).href, undefined);
+      return proxyFetch(new URL(url, c.req.url).href, {});
     }
     const rule = matchProxyRule(url, await proxyRules());
     if (!rule) return c.text("Forbidden", 403);
-    return proxyFetch(url, rule.referer, proxyLimiter(rule, url));
+    return proxyFetch(url, rule.referer ? { Referer: rule.referer } : {}, proxyLimiter(rule.bridgeId, rule.assetRateLimit, url));
+  });
+
+  // ── Image route (`BridgeInfo.images`, contract 2.1) ─────────────────────────
+  // The loader rewrites a bridge's image URLs into `/bridges/:id/image?url=<original>` when a client
+  // can't load them by itself; this applies the bridge's headers and interceptor at fetch time, so
+  // a URL that expires is re-resolved on every load instead of being re-requested dead. An image
+  // that ends up needing no headers is a redirect (the client loads it directly, from its own
+  // cache); one that needs headers is proxied. The bridge is only loaded to intercept.
+  app.get("/bridges/:id/image", async (c) => {
+    const id = c.req.param("id");
+    const url = c.req.query("url") ?? "";
+    const info = (await listing()).infos.get(id);
+    if (!info) return c.json({ error: `bridge not found: ${id}` }, 404);
+    let req: ResolvedImageRequest;
+    try {
+      req = await resolveImageRequest(info, url, async (u) => {
+        const bridge = await manager.get(id);
+        if (!bridge.interceptImageRequest) throw new ImageRequestRefusedError(`bridge "${id}" has no interceptImageRequest`);
+        return bridge.interceptImageRequest(u);
+      });
+    } catch (e) {
+      if (e instanceof ImageRequestRefusedError) return c.text("Forbidden", 403);
+      return bridgeErrorResponse(c, e);
+    }
+    if (Object.keys(req.headers).length === 0) {
+      // Never cached: an intercepted target can expire, and this path is the stable name for it.
+      return new Response(null, { status: 302, headers: { Location: req.url, "Cache-Control": "no-store" } });
+    }
+    return proxyFetch(req.url, req.headers, proxyLimiter(id, info.assetRateLimit, req.url));
   });
 
   // ── Bridge registry ──────────────────────────────────────────────────────────
@@ -2133,20 +2168,26 @@ async function withBridge(
     // here and returned as a clean JSON error rather than a bare 500.
     return await fn(bridge);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    // The source says the series no longer exists (see `seriesGoneMessage`) — checked before the
-    // "not found" sniff below, which means a missing BRIDGE, not a missing series.
-    const gone = parseSeriesGone(msg);
-    if (gone) return c.json({ error: msg, gone }, 410);
-    if (msg.includes("not found")) return c.json({ error: msg }, 404);
-    // The source is throttling or has blocked us (see `rateLimitedMessage`): answer 429 with when to
-    // come back, so clients and the download engine back off instead of retrying into it.
-    const limited = parseRateLimited(msg);
-    if (limited) {
-      return c.json({ error: msg }, 429, { "Retry-After": String(Math.ceil(limited.retryAfterMs / 1000)) });
-    }
-    return c.json({ error: msg }, 500);
+    return bridgeErrorResponse(c, e);
   }
+}
+
+/** A bridge failure as a JSON error response: 410 gone, 404 missing bridge, 429 throttled, else 500. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function bridgeErrorResponse(c: any, e: unknown): Response {
+  const msg = e instanceof Error ? e.message : String(e);
+  // The source says the series no longer exists (see `seriesGoneMessage`) — checked before the
+  // "not found" sniff below, which means a missing BRIDGE, not a missing series.
+  const gone = parseSeriesGone(msg);
+  if (gone) return c.json({ error: msg, gone }, 410);
+  if (msg.includes("not found")) return c.json({ error: msg }, 404);
+  // The source is throttling or has blocked us (see `rateLimitedMessage`): answer 429 with when to
+  // come back, so clients and the download engine back off instead of retrying into it.
+  const limited = parseRateLimited(msg);
+  if (limited) {
+    return c.json({ error: msg }, 429, { "Retry-After": String(Math.ceil(limited.retryAfterMs / 1000)) });
+  }
+  return c.json({ error: msg }, 500);
 }
 
 /** Run a library mutation, mapping a missing-entry error to 404 and a void result to `{ ok: true }`. */
