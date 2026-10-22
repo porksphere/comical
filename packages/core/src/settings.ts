@@ -11,7 +11,13 @@
  * value is set aside and reported in `dropped`; a required key with nothing usable is reported in
  * `missingRequired`. The strict check is `validateSettingsInput`, on the save path.
  */
-import type { SettingDescriptor, SettingValue } from "@comical/contract";
+import type {
+  SettingDescriptor,
+  SettingsForm,
+  SettingsFormItem,
+  SettingsSection,
+  SettingValue,
+} from "@comical/contract";
 import { BridgeSettingsError } from "./errors.ts";
 
 export interface ResolveResult {
@@ -190,4 +196,83 @@ export function resolveSettings(
   }
 
   return { values, missingRequired, dropped };
+}
+
+export interface NormalizedForm {
+  form: SettingsForm;
+  /** What was dropped from the bridge's form, and why — for the host to log. */
+  issues: string[];
+}
+
+/**
+ * Hold a `loadSettings()` form to the settings `getSettings()` declares. A value item stands only
+ * for a declared descriptor of the same key and type, and is rebuilt FROM that descriptor: the form
+ * contributes presentation (label, description, placeholder, and an enum's option labels and
+ * subset) while the descriptor keeps everything that decides what may be stored — type, default,
+ * required, secret, range, the exchange. An item that matches nothing is dropped, as is a repeat of
+ * a key or an action that reuses a setting's key. A required setting the form leaves out is put back
+ * at the end, since nothing else on the screen could fill it.
+ */
+export function normalizeSettingsForm(
+  form: SettingsForm,
+  descriptors: readonly SettingDescriptor[],
+): NormalizedForm {
+  const byKey = new Map(descriptors.map((d) => [d.key, d]));
+  const seen = new Set<string>();
+  const issues: string[] = [];
+
+  const present = (item: SettingsFormItem): SettingsFormItem | undefined => {
+    if (seen.has(item.key)) {
+      issues.push(`"${item.key}" appears more than once`);
+      return undefined;
+    }
+    if (item.type === "action") {
+      if (byKey.has(item.key)) {
+        issues.push(`action "${item.key}" reuses a setting's key`);
+        return undefined;
+      }
+      seen.add(item.key);
+      return item;
+    }
+    const declared = byKey.get(item.key);
+    if (!declared || declared.type !== item.type) {
+      issues.push(`"${item.key}" isn't a ${item.type} setting getSettings() declares`);
+      return undefined;
+    }
+    seen.add(item.key);
+    const shown: SettingDescriptor = { ...declared, label: item.label };
+    if (item.description !== undefined) shown.description = item.description;
+    if (shown.type === "string" && item.type === "string" && item.placeholder !== undefined) {
+      shown.placeholder = item.placeholder;
+    }
+    if (shown.type === "enum" && item.type === "enum") {
+      const allowed = new Set(shown.options.map((o) => o.value));
+      const options = item.options.filter((o) => allowed.has(o.value));
+      if (options.length < item.options.length) issues.push(`"${item.key}" offers options getSettings() doesn't`);
+      if (options.length > 0) shown.options = options;
+    }
+    return shown;
+  };
+
+  const sections: SettingsSection[] = [];
+  for (const section of form.sections) {
+    const items = section.items.map(present).filter((i): i is SettingsFormItem => i !== undefined);
+    if (items.length > 0) sections.push({ ...section, items });
+  }
+  const missing = descriptors.filter((d) => d.required && !seen.has(d.key));
+  if (missing.length > 0) {
+    issues.push(`required setting(s) left out of the form: ${missing.map((d) => d.key).join(", ")}`);
+    sections.push({ items: missing });
+  }
+  return { form: { sections }, issues };
+}
+
+/** `redactSettingSecrets` over a form's settings. */
+export function redactSettingsForm(form: SettingsForm): SettingsForm {
+  return {
+    sections: form.sections.map((s) => ({
+      ...s,
+      items: s.items.map((i) => (i.type === "action" ? i : redactSettingSecrets([i])[0]!)),
+    })),
+  };
 }

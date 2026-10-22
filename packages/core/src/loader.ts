@@ -29,7 +29,9 @@ import {
   seriesInfoSchema,
   seriesListSchema,
   seriesRevisionSchema,
+  settingActionResultSchema,
   settingDescriptorSchema,
+  settingsFormSchema,
   MAX_UPDATE_CHECK_BATCH,
   parseRateLimited,
   rateLimitedMessage,
@@ -49,7 +51,7 @@ import type { BundleEvaluator } from "./evaluator.ts";
 import { createImageRouter } from "./images.ts";
 import { createGatedNetwork, type GatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
 import type { RateLimitOptions } from "./net/rate-limiter.ts";
-import { resolveSettings } from "./settings.ts";
+import { normalizeSettingsForm, resolveSettings } from "./settings.ts";
 
 /**
  * The evaluator used when a caller doesn't pass one. Registered by the Node entry (`index.ts`,
@@ -218,7 +220,7 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   }
 
   // 6. Wrap every method with timeout + output validation.
-  return wrapBridge(raw, info, limits, gatedNetwork);
+  return wrapBridge(raw, info, limits, gatedNetwork, opts.capabilities.log);
 }
 
 function extractFactory(exports: unknown): BridgeFactory {
@@ -236,6 +238,7 @@ function wrapBridge(
   info: BridgeInfo,
   limits: RuntimeLimits,
   net: Pick<GatedNetwork, "blockedUntil" | "held" | "heldClearsAt">,
+  log: HostCapabilities["log"],
 ): LoadedBridge {
   const pacing: TimeoutPacing = { busy: () => net.held() > 0, ceilingMs: limits.heldCallTimeoutMs };
   const call = async <S extends z.ZodTypeAny>(
@@ -379,6 +382,21 @@ function wrapBridge(
     const getSettings = raw.getSettings.bind(raw);
     bridge.getSettings = () =>
       validate(z.array(settingDescriptorSchema), getSettings(), "getSettings");
+  }
+  if (raw.loadSettings) {
+    bridge.loadSettings = async () => {
+      const form = await call("loadSettings", settingsFormSchema, () => raw.loadSettings!());
+      const declared = bridge.getSettings?.() ?? [];
+      const { form: shown, issues } = normalizeSettingsForm(form, declared);
+      if (issues.length > 0) log.warn(`bridge "${info.id}": loadSettings form adjusted: ${issues.join("; ")}`);
+      return shown;
+    };
+  }
+  if (raw.runSettingAction) {
+    bridge.runSettingAction = (key) =>
+      call("runSettingAction", settingActionResultSchema, () =>
+        raw.runSettingAction!(validateInput(z.string().min(1), key, "settings action")),
+      );
   }
   if (raw.getSeriesPages) {
     bridge.getSeriesPages = (id) =>

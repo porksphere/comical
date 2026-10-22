@@ -39,7 +39,7 @@ import { ImageRequestRefusedError, resolveImageRequest, type ResolvedImageReques
 import { resolveLink } from "@comical/core/links";
 import { assetBudgetFor } from "@comical/core/net/asset-budget";
 import { RateLimiter } from "@comical/core/net/rate-limiter";
-import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
+import { redactSettingSecrets, redactSettingsForm, validateSettingsInput } from "@comical/core/settings";
 import { entryKey, collectionItemId, LibraryBackupError, readLibraryBackup, type ChapterPageRef, type CollectionItemsQuery, type CollectionItemType, type Library, type LibraryBackupSources } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
 import type { BlobStore, DownloadChapterMeta, DownloadEngine, DownloadPageInput, Downloads, DownloadSeriesSnapshot, PageFetcher } from "@comical/downloads";
@@ -433,7 +433,29 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         excludedTagLabels: await tagLabels.resolve(bridge, excludedTags),
         // Reserved host-managed ceiling (capability "content-rating"); absent/null = no limit.
         maxContentRating: readMaxContentRating(stored) ?? null,
+        // The bridge also builds a live form (`/settings/form`); `settings` stays the fallback.
+        settingsForm: !!bridge.loadSettings,
       });
+    });
+  });
+
+  /**
+   * The bridge's settings screen as it wants it now (`loadSettings`), already held to its declared
+   * settings by the loader. Separate from `GET /bridges/:id` because it may cost the bridge a request
+   * to the site, and that route is read far more often than the screen is opened.
+   */
+  app.get("/bridges/:id/settings/form", async (c) => {
+    return withBridge(c, async (bridge) => {
+      if (!bridge.loadSettings) return c.json({ error: `bridge "${bridge.info.id}" has no settings form` }, 404);
+      return c.json(redactSettingsForm(await bridge.loadSettings()));
+    });
+  });
+
+  /** Press a settings form's action button. Runs against the saved settings; the client saves first. */
+  app.post("/bridges/:id/settings/actions/:key", async (c) => {
+    return withBridge(c, async (bridge) => {
+      if (!bridge.runSettingAction) return c.json({ error: `bridge "${bridge.info.id}" has no settings actions` }, 404);
+      return c.json(await bridge.runSettingAction(c.req.param("key")));
     });
   });
 

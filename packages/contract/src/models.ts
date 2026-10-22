@@ -696,6 +696,49 @@ export const settingDescriptorSchema = z.discriminatedUnion("type", [
 ]);
 export type SettingDescriptor = z.infer<typeof settingDescriptorSchema>;
 
+/**
+ * A button in a settings form (`Bridge.loadSettings`, contract 2.1): "Test login", "Clear session".
+ * It stores nothing; pressing it calls `Bridge.runSettingAction(key)` and shows the result. Only a
+ * form can carry one — `getSettings()` describes values, and an action isn't one.
+ */
+export const settingActionSchema = z.object({
+  type: z.literal("action"),
+  key: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().optional(),
+});
+export type SettingAction = z.infer<typeof settingActionSchema>;
+
+export const settingsFormItemSchema = z.union([settingDescriptorSchema, settingActionSchema]);
+export type SettingsFormItem = z.infer<typeof settingsFormItemSchema>;
+
+export const settingsSectionSchema = z.object({
+  title: z.string().optional(),
+  /** Shown under the section, for what applies to all of it. */
+  footer: z.string().optional(),
+  items: z.array(settingsFormItemSchema),
+});
+export type SettingsSection = z.infer<typeof settingsSectionSchema>;
+
+/**
+ * The settings screen as the bridge wants it right now (`Bridge.loadSettings`): grouped into
+ * sections, with labels and options it may have looked up from the site, and action buttons.
+ *
+ * A form PRESENTS the settings `getSettings()` declares; it never adds to them. Every value item
+ * must be one of those descriptors, by key and type — it may relabel it, describe it, narrow or
+ * rename an enum's options, or leave it out — and anything else is dropped by the host. So what a
+ * user can store is always what `getSettings()` says, whether or not the form loads.
+ */
+export const settingsFormSchema = z.object({ sections: z.array(settingsSectionSchema) });
+export type SettingsForm = z.infer<typeof settingsFormSchema>;
+
+/** What pressing a settings action did, as a line to show the user. */
+export const settingActionResultSchema = z.object({
+  ok: z.boolean(),
+  message: z.string().optional(),
+});
+export type SettingActionResult = z.infer<typeof settingActionResultSchema>;
+
 /** Capabilities a bridge advertises so hosts can adapt UI/behaviour. */
 export const bridgeCapabilitySchema = z.enum([
   "lists",

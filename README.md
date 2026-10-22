@@ -142,6 +142,7 @@ interface (from `@comical/contract`) defines:
 | `getFilters()` | optional | `filters` | Declarative search filter descriptors |
 | `getTags()` | optional | `tags` | Tag/genre catalog |
 | `getSettings()` | optional | `settings` | Declarative settings (backend URL, credentials) |
+| `loadSettings()` / `runSettingAction(key)` | optional | — | Live settings form + action buttons (contract 2.1) |
 
 Only the read path (details/chapters/pages) is mandatory. **Browse** and **search** are separate
 optional capabilities — a bridge may offer lists, search, both, or neither.
@@ -219,6 +220,17 @@ changed range) is set aside on load and logged by key: the setting falls back to
 counts as unset), so an update or reinstall never fails to load over an old choice. The host won't
 dispatch content calls to a bridge whose **required** settings are unset (`GET /bridges/:id`
 reports `missingRequired`).
+
+**Live form (contract 2.1).** `getSettings()` is static and stays the source of truth for what can
+be stored. A bridge may also implement `loadSettings() → { sections: [{ title?, footer?, items }] }`
+for how the screen should look *now* — grouped, with labels or options looked up from the site, and
+`{ type: "action", key, label }` buttons that call `runSettingAction(key) → { ok, message? }`
+("Test login"). The form presents the declared settings and nothing else: the loader rebuilds each
+value item from the descriptor of the same key and type, keeping only its label, description,
+placeholder and (a subset of) enum options, drops anything else, and puts back a required setting
+the form left out. `GET /bridges/:id` reports `settingsForm: true` when a bridge has one; the form
+is `GET /bridges/:id/settings/form` and an action is `POST /bridges/:id/settings/actions/:key`,
+which runs against the *saved* settings. A client falls back to `settings` if the form fails.
 
 ### Search filters and sort
 

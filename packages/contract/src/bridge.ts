@@ -20,7 +20,9 @@ import type {
   SeriesInfo,
   SeriesList,
   SeriesRevision,
+  SettingActionResult,
   SettingDescriptor,
+  SettingsForm,
   SortOption,
   SortSelection,
   Tag,
@@ -220,6 +222,23 @@ export interface Bridge {
    * through `HostCapabilities.settings`.
    */
   getSettings?(): SettingDescriptor[];
+
+  /**
+   * The settings screen as it should look right now (contract 2.1): sections, labels and options
+   * looked up from the site (an account's own names for its favorite slots), and action buttons. A
+   * host shows this when it loads and falls back to `getSettings()` when it is absent, throws or is
+   * slow, so keep `getSettings()` complete — it is still what values are validated against, and the
+   * form can only present those settings (see {@link SettingsForm}). Runs with the saved settings,
+   * so it may use credentials; it is called each time the screen opens.
+   */
+  loadSettings?(): Promise<SettingsForm>;
+
+  /**
+   * Run the action button `key` from `loadSettings()`'s form, against the saved settings (the host
+   * saves pending edits first), and say how it went: `{ ok: false, message }` for an expected
+   * failure such as a rejected login. Throw only for what isn't an answer.
+   */
+  runSettingAction?(key: string): Promise<SettingActionResult>;
 
   // ---- Favorites — capability "favorites" ----
   // Backed by the backend's own account bookmarks/follows, so these need auth: the bridge declares
