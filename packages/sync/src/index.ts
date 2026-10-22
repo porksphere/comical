@@ -83,7 +83,7 @@ export {
   type SyncStateSnapshot,
   type SyncStats,
 } from "./engine.ts";
-export { adoptLibrary, LIBRARY_TABLES, librarySyncStore, wrapLibraryStore } from "./library.ts";
+export { adoptLibrary, LIBRARY_TABLES, librarySyncStore, wrapLibraryStore, type LibrarySyncHooks } from "./library.ts";
 export {
   adoptRegistry,
   REGISTRY_TABLES,

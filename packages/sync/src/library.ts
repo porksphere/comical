@@ -40,6 +40,7 @@ import {
   type CollectionSeriesItem,
   type HistoryItem,
   type LibraryStore,
+  type SeriesItemCoord,
 } from "@comical/library";
 import { z } from "zod";
 import type { SyncEngine } from "./engine.ts";
@@ -110,7 +111,19 @@ function progressValue(p: ChapterProgress): ProgressValue {
   };
 }
 
-export function librarySyncStore(store: LibraryStore, now: () => number = Date.now): SyncStore {
+export interface LibrarySyncHooks {
+  /**
+   * Another device's record put a series in this library that it didn't hold. Not called for one it
+   * already had, so re-applying a log this library has seen (a reset hub, a re-pair) reports nothing.
+   */
+  onSeriesAdded?: (series: SeriesItemCoord) => void;
+}
+
+export function librarySyncStore(
+  store: LibraryStore,
+  now: () => number = Date.now,
+  hooks: LibrarySyncHooks = {},
+): SyncStore {
   async function seriesItem(key: string): Promise<CollectionSeriesItem | undefined> {
     const item = await store.getCollectionItem(seriesItemIdOf(key));
     return item?.type === "series" ? item : undefined;
@@ -183,6 +196,9 @@ export function librarySyncStore(store: LibraryStore, now: () => number = Date.n
         const parsed = collectionItemSchema.safeParse({ ...incoming, ...kept, ...(incoming.type === "series" && { updatedAt: now() }) });
         if (!parsed.success || parsed.data.id !== id) return;
         await store.putCollectionItems([parsed.data]);
+        if (!local && parsed.data.type === "series") {
+          hooks.onSeriesAdded?.({ bridgeId: parsed.data.bridgeId, seriesId: parsed.data.seriesId });
+        }
         return;
       }
       case "seriesResume": {

@@ -12,7 +12,7 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeJsonFile } from "@comical/host-bun";
-import type { LibraryStore } from "@comical/library";
+import type { LibraryStore, SeriesItemCoord } from "@comical/library";
 import {
   adoptBridgeSettings,
   adoptLibrary,
@@ -82,7 +82,7 @@ export interface SyncHostOptions<R extends RegistryMutations, B extends BridgeSe
    * Called after a round changed this server's own library, registry or bridge settings from
    * another device's records — the moment anything showing them is out of date.
    */
-  onApplied?: () => void;
+  onApplied?: (applied: SyncApplied) => void;
   /**
    * Called after each registry change sync performed here — another device's install, uninstall or
    * registry removal — so the host drops what it loaded under the old manifest. The router does the
@@ -90,6 +90,12 @@ export interface SyncHostOptions<R extends RegistryMutations, B extends BridgeSe
    */
   onRegistryApplied?: (change: RegistryChange) => void;
   log?: Pick<Console, "error">;
+}
+
+/** What a round brought in from other devices, beyond "something changed". */
+export interface SyncApplied {
+  /** Series this library didn't hold until the round, e.g. for a host that downloads what's saved. */
+  addedSeries: SeriesItemCoord[];
 }
 
 /** A registry change applied from another device: one bridge, one tracker, or the registry list. */
@@ -137,9 +143,10 @@ export function createSyncHost<R extends RegistryMutations, B extends BridgeSett
   const registry = { ...opts.lists, ...bind(opts.registry, opts.onRegistryApplied ?? (() => {})) };
   const registryStore = registrySyncStore(registry, { log });
   const settingsStore = bridgeSettingsSyncStore(opts.bridges, { log });
+  let addedSeries: SeriesItemCoord[] = [];
   const engine = new SyncEngine({
     store: composeSyncStores([
-      [LIBRARY_TABLES, librarySyncStore(opts.store)],
+      [LIBRARY_TABLES, librarySyncStore(opts.store, Date.now, { onSeriesAdded: (series) => addedSeries.push(series) })],
       [REGISTRY_TABLES, registryStore],
       [SETTINGS_TABLES, settingsStore],
     ]),
@@ -162,7 +169,11 @@ export function createSyncHost<R extends RegistryMutations, B extends BridgeSett
         // After the registry's, so a setting held for a bridge that just installed lands this round.
         // Under the engine's lock, so the recording wrapper never takes it for a change made here.
         const late = await engine.exclusive(() => settingsStore.retry());
-        if (stats.applied > 0 || late > 0) opts.onApplied?.();
+        // Taken whatever this round's own count says: rounds can overlap, and a series an
+        // overlapping round applied is reported by whichever finishes first.
+        const applied: SyncApplied = { addedSeries };
+        addedSeries = [];
+        if (stats.applied > 0 || late > 0 || applied.addedSeries.length > 0) opts.onApplied?.(applied);
       })
       .catch((err: unknown) => log.error("sync: round failed", err));
   function schedule(): void {

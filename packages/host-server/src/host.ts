@@ -17,7 +17,7 @@ import { BridgeManager } from "./bridge-manager.ts";
 import { FileBlobStore } from "./blob-store.ts";
 import { FileDownloadsStore } from "./downloads-store.ts";
 import { FileLibraryStore } from "./library-store.ts";
-import { createSyncHost, dropStaleLoads } from "./sync-host.ts";
+import { createSyncHost, dropStaleLoads, type SyncApplied } from "./sync-host.ts";
 import { migrateLegacyEntries } from "./legacy-entries.ts";
 import { createServerPageFetcher, createServerPageResolver } from "./page-fetcher.ts";
 import { createRouter, type RouterOptions } from "./router.ts";
@@ -50,7 +50,7 @@ export interface HostOptions {
    */
   sync?: boolean | { dir?: string };
   /** Another device's changes have just landed in this library or its bridges (sync only). */
-  onSynced?: () => void;
+  onSynced?: (applied: SyncApplied) => void;
   /**
    * Enable the optional offline-downloads module: the manifest under `{dataDir}/downloads` plus a
    * host-side download engine that fetches page bytes via the host's own bridges and stores them

@@ -361,6 +361,31 @@ describe("createSyncHost", () => {
     expect(applied).toBe(1);
   });
 
+  test("onApplied names the series a phone collected that the server didn't hold", async () => {
+    const reports: string[][] = [];
+    const host = createSyncHost({
+      ...hostOptions(),
+      onApplied: (a) => reports.push(a.addedSeries.map((s) => `${s.bridgeId}/${s.seriesId}`)),
+    });
+    const serverLib = new Library(host.store);
+    await host.ready;
+    await serverLib.collectSeries({ bridgeId: "bridge-a", seriesId: "mine" }, { seriesTitle: "Mine" });
+    await host.flush();
+
+    const p = phone(host.backend);
+    await p.engine.sync();
+    await p.library.collectSeries({ bridgeId: "bridge-a", seriesId: "mine" }, { seriesTitle: "Mine", author: "Both" });
+    await p.library.collectSeries({ bridgeId: "bridge-a", seriesId: "theirs" }, { seriesTitle: "Theirs" });
+    await p.engine.sync();
+    await host.flush();
+    expect(reports).toEqual([["bridge-a/theirs"]]);
+
+    await p.library.createCollection("Later");
+    await p.engine.sync();
+    await host.flush();
+    expect(reports).toEqual([["bridge-a/theirs"], []]);
+  });
+
   test("stop drops the pending round and a later push schedules none, but the change survives for the next run", async () => {
     let applied = 0;
     const host = createSyncHost({ ...hostOptions(), onApplied: () => applied++, debounceMs: 10 });

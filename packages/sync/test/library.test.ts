@@ -1,13 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { entryKey, InMemoryLibraryStore, Library, type CollectionSeriesItem } from "@comical/library";
-import { adoptLibrary, librarySyncStore, MemoryBackend, SyncEngine, wrapLibraryStore, type SyncBackend } from "../src/index.ts";
+import {
+  adoptLibrary,
+  librarySyncStore,
+  MemoryBackend,
+  SyncEngine,
+  wrapLibraryStore,
+  type LibrarySyncHooks,
+  type SyncBackend,
+} from "../src/index.ts";
 
 let wall = 1_700_000_000_000;
 const now = () => (wall += 10);
 const KEY = entryKey("bridge-a", "s1");
 
-function device(backend: SyncBackend, name: string, inner = new InMemoryLibraryStore()) {
-  const engine = new SyncEngine({ store: librarySyncStore(inner, now), backend, device: name, name: () => name, newDeviceId: () => `${name}-2`, now });
+function device(backend: SyncBackend, name: string, inner = new InMemoryLibraryStore(), hooks: LibrarySyncHooks = {}) {
+  const engine = new SyncEngine({ store: librarySyncStore(inner, now, hooks), backend, device: name, name: () => name, newDeviceId: () => `${name}-2`, now });
   const store = wrapLibraryStore(inner, engine);
   return { inner, engine, store, library: new Library(store, { now }) };
 }
@@ -516,5 +524,69 @@ describe("library sync", () => {
     await store.write("groups", "g", { id: "other" });
     expect(await inner.listCollections()).toEqual([]);
     expect(await inner.listGroups()).toEqual([]);
+  });
+});
+
+describe("onSeriesAdded", () => {
+  function watched(hub: SyncBackend, name: string, inner = new InMemoryLibraryStore()) {
+    const added: string[] = [];
+    const d = device(hub, name, inner, { onSeriesAdded: (s) => added.push(entryKey(s.bridgeId, s.seriesId)) });
+    return { ...d, added };
+  }
+
+  test("reports a series another device collected, once", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = watched(hub, "b");
+    await collect(a.library);
+    await a.engine.sync();
+    await b.engine.sync();
+    expect(b.added).toEqual([KEY]);
+
+    const c = await a.library.createCollection("Reading");
+    await collect(a.library, [c.id]);
+    await a.engine.sync();
+    await b.engine.sync();
+    expect(b.added).toEqual([KEY]);
+  });
+
+  test("not for a series collected here, nor one this library already held", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = watched(hub, "b");
+    await collect(b.library);
+    await collect(a.library);
+    await b.engine.sync();
+    await a.engine.sync();
+    await b.engine.sync();
+    expect(b.added).toEqual([]);
+  });
+
+  test("a series removed here and collected again elsewhere is reported again", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = watched(hub, "b");
+    await collect(a.library);
+    await a.engine.sync();
+    await b.engine.sync();
+    await b.library.removeSeries(KEY);
+    await b.engine.sync();
+    await a.engine.sync();
+    await collect(a.library);
+    await a.engine.sync();
+    await b.engine.sync();
+    expect(b.added).toEqual([KEY, KEY]);
+  });
+
+  test("a fresh engine over a library that already holds the log reports nothing", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    await collect(a.library);
+    await a.engine.sync();
+    await b.engine.sync();
+    const again = watched(hub, "b-again", b.inner);
+    await again.engine.sync();
+    expect(again.added).toEqual([]);
   });
 });
