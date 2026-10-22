@@ -159,6 +159,34 @@ describe("evaluateBridge", () => {
     expect(r.summary.verdict).toBe("pass");
   });
 
+  // A block on the probe's own follow-up request is the same block that only warns on the first search.
+  for (const [label, thrown, severity] of [
+    ["a Cloudflare challenge", "[rate-limited:300000] challenged by Cloudflare", "warn"],
+    ["a logic error", "Cannot read properties of undefined", "fail"],
+  ] as const) {
+    test(`filter and sort probes that hit ${label} → ${severity}`, async () => {
+      const items = [
+        { id: "a", title: "Alpha", thumbnailUrl: "https://x/a.png" },
+        { id: "b", title: "Beta", thumbnailUrl: "https://x/b.png" },
+      ];
+      const r = await evaluateBridge(
+        bridge({
+          info: INFO(["search", "filters", "sort"]),
+          getFilters: async () => [
+            { key: "genre", label: "Genre", type: "select", options: [{ value: "action", label: "Action" }] },
+          ],
+          getSortOptions: async () => [{ key: "date", label: "Date" }],
+          getSearchResults: async (q) => {
+            if (q.filters || q.sort) throw new Error(thrown);
+            return { items };
+          },
+        }),
+      );
+      expect(r.results.find((x) => x.id === "filters.effect")?.severity).toBe(severity);
+      expect(r.results.find((x) => x.id === "sort.effect")?.severity).toBe(severity);
+    });
+  }
+
   test("runConformance throws on a failing bridge, resolves on a clean one", async () => {
     await expect(runConformance(bridge({ info: INFO(["search", "filters"]) }))).rejects.toThrow();
     const ok = await runConformance(bridge());

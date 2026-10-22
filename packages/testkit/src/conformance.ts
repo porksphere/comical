@@ -251,7 +251,7 @@ export async function evaluateBridge(
           }
         }
         pass("filters", "filters.descriptors", `getFilters returned ${filters.length} filter(s)`);
-        await probeFilterEffect(bridge, filters, options.searchQuery ?? "", skip, pass, fail);
+        await probeFilterEffect(bridge, filters, options.searchQuery ?? "", { skip, pass, warn, fail });
       }
     } catch (e) {
       rec("filters", isTransientError(e) ? "warn" : "fail", "filters.threw", `getFilters threw: ${msg(e)}`);
@@ -268,7 +268,7 @@ export async function evaluateBridge(
       } else {
         for (const s of sorts) if (!s.key) fail("sort", "sort.key", "a sort option has an empty key");
         pass("sort", "sort.options", `getSortOptions returned ${sorts.length} option(s)`);
-        await probeSortEffect(bridge, sorts[0]!.key, options.searchQuery ?? "", skip, pass, fail);
+        await probeSortEffect(bridge, sorts[0]!.key, options.searchQuery ?? "", { skip, pass, warn, fail });
       }
     } catch (e) {
       rec("sort", isTransientError(e) ? "warn" : "fail", "sort.threw", `getSortOptions threw: ${msg(e)}`);
@@ -482,7 +482,7 @@ async function probeCursor<T extends { id: string }>(
       rec.pass(cap, `${cap}.cursor`, `nextCursor advanced to ${next.items.length} further item(s)`);
     }
   } catch (e) {
-    rec.fail(cap, `${cap}.cursor`, `following nextCursor threw: ${msg(e)}`);
+    (isTransientError(e) ? rec.warn : rec.fail)(cap, `${cap}.cursor`, `following nextCursor threw: ${msg(e)}`);
   }
 }
 
@@ -508,7 +508,7 @@ async function probeInListSearch(
       warn("search", "search.inList", "in-list search did not narrow results");
     }
   } catch (e) {
-    fail("search", "search.inList", `in-list search threw: ${msg(e)}`);
+    (isTransientError(e) ? warn : fail)("search", "search.inList", `in-list search threw: ${msg(e)}`);
   }
 }
 
@@ -516,9 +516,7 @@ async function probeFilterEffect(
   bridge: Bridge,
   filters: Filter[],
   query: string,
-  skip: Rec,
-  pass: Rec,
-  fail: Rec,
+  { skip, pass, warn, fail }: { skip: Rec; pass: Rec; warn: Rec; fail: Rec },
 ): Promise<void> {
   if (!bridge.getSearchResults) {
     skip("filters", "filters.effect", "cannot probe filter effect without search");
@@ -544,7 +542,7 @@ async function probeFilterEffect(
       pass("filters", "filters.effect", `filter "${picked.key}" changed results (${base.items.length}→${filtered.items.length})`);
     }
   } catch (e) {
-    fail("filters", "filters.effect", `applying a filter threw: ${msg(e)}`);
+    (isTransientError(e) ? warn : fail)("filters", "filters.effect", `applying a filter threw: ${msg(e)}`);
   }
 }
 
@@ -552,9 +550,7 @@ async function probeSortEffect(
   bridge: Bridge,
   sortKey: string,
   query: string,
-  skip: Rec,
-  pass: Rec,
-  fail: Rec,
+  { skip, pass, warn, fail }: { skip: Rec; pass: Rec; warn: Rec; fail: Rec },
 ): Promise<void> {
   if (!bridge.getSearchResults) {
     skip("sort", "sort.effect", "cannot probe sort effect without search");
@@ -572,6 +568,6 @@ async function probeSortEffect(
       pass("sort", "sort.effect", `sort "${sortKey}" reorders results (asc ≠ desc)`);
     }
   } catch (e) {
-    fail("sort", "sort.effect", `applying a sort threw: ${msg(e)}`);
+    (isTransientError(e) ? warn : fail)("sort", "sort.effect", `applying a sort threw: ${msg(e)}`);
   }
 }
