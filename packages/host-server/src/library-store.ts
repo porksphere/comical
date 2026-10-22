@@ -24,8 +24,10 @@ export class FileLibraryStore implements LibraryStore {
   private readonly bridgePrefsDoc: JsonDoc<Map<string, BridgePrefs>>;
   private readonly activityDoc: JsonDoc<Map<string, ActivityItem>>;
   private readonly collectionsDoc: JsonDoc<Collection[]>;
+  private readonly idMigrationsDoc: JsonDoc<Map<string, string>>;
 
   constructor(private readonly dir: string) {
+    this.idMigrationsDoc = jsonMapDoc(join(dir, "id-migrations.json"));
     this.groupsDoc = jsonMapDoc(join(dir, "groups.json"));
     this.trackerLinksDoc = jsonMapDoc(join(dir, "tracker-links.json"));
     this.readingLogDoc = jsonMapDoc(join(dir, "reading-log.json"));
@@ -117,6 +119,13 @@ export class FileLibraryStore implements LibraryStore {
   }
   async deleteProgressForEntry(key: string): Promise<void> {
     await this.progressDoc(key).replace(new Map());
+  }
+  async deleteProgress(key: string, chapterIds: string[]): Promise<void> {
+    const current = await this.progressDoc(key).get();
+    if (!chapterIds.some((id) => current.has(id))) return;
+    await this.progressDoc(key).update((map) => {
+      for (const id of chapterIds) map.delete(id);
+    });
   }
 
   // ── Groups ───────────────────────────────────────────────────────────────────────
@@ -324,5 +333,17 @@ export class FileLibraryStore implements LibraryStore {
     await this.activityDoc.update((map) => {
       for (const k of keys) map.delete(k);
     });
+  }
+
+  // ── Id migration marks ──────────────────────────────────────────────────────
+
+  async getIdMigrationMark(bridgeId: string): Promise<string | undefined> {
+    return (await this.idMigrationsDoc.get()).get(bridgeId);
+  }
+  async setIdMigrationMark(bridgeId: string, version: string): Promise<void> {
+    await this.idMigrationsDoc.update((map) => map.set(bridgeId, version));
+  }
+  async clearIdMigrationMarks(): Promise<void> {
+    await this.idMigrationsDoc.replace(new Map());
   }
 }

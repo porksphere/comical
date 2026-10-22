@@ -230,6 +230,27 @@ describe("FileLibraryStore enumeration", () => {
   });
 });
 
+describe("FileLibraryStore id migrations", () => {
+  test("deleteProgress removes only the chapters named, on disk too", async () => {
+    const store = new FileLibraryStore(LIB);
+    await store.putProgress("demo:s1", { chapterId: "c1", read: true, updatedAt: 1 });
+    await store.putProgress("demo:s1", { chapterId: "c2", read: true, updatedAt: 2 });
+    await store.deleteProgress("demo:s1", ["c1", "missing"]);
+    expect((await new FileLibraryStore(LIB).listProgress("demo:s1")).map((p) => p.chapterId)).toEqual(["c2"]);
+  });
+
+  test("marks are kept per bridge across a reopen, and clear together", async () => {
+    const store = new FileLibraryStore(LIB);
+    expect(await store.getIdMigrationMark("demo")).toBeUndefined();
+    await store.setIdMigrationMark("demo", "2.0.0");
+    await store.setIdMigrationMark("other", "1.0.0");
+    const reopened = new FileLibraryStore(LIB);
+    expect(await reopened.getIdMigrationMark("demo")).toBe("2.0.0");
+    await reopened.clearIdMigrationMarks();
+    expect(await new FileLibraryStore(LIB).getIdMigrationMark("other")).toBeUndefined();
+  });
+});
+
 describe("FileLibraryStore corruption", () => {
   const silenced = async <T>(fn: () => Promise<T>): Promise<T> => {
     const warn = console.warn;

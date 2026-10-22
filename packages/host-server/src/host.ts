@@ -12,7 +12,7 @@ import { DownloadEngine, Downloads } from "@comical/downloads";
 import { DEFAULT_USER_AGENT } from "@comical/host-bun";
 import { Library, type LibraryStore } from "@comical/library";
 import { ManifestStore, RegistryManager } from "@comical/registry/node";
-import { ComicalRuntime } from "@comical/runtime";
+import { ComicalRuntime, migrateInstalledBridges, withIdMigration } from "@comical/runtime";
 import { BridgeManager } from "./bridge-manager.ts";
 import { FileBlobStore } from "./blob-store.ts";
 import { FileDownloadsStore } from "./downloads-store.ts";
@@ -84,13 +84,20 @@ export function createHost(opts: HostOptions): ComicalHost {
     cacheDir: join(opts.dataDir, "bridge-cache"),
     manifest,
   });
-  const manager = new BridgeManager({
-    bridgesDir: opts.bridgesDir ?? join(opts.dataDir, "bridges"),
-    dataDir: opts.dataDir,
-    settings,
-    registry,
-    hostUrl: opts.hostUrl ?? "http://localhost:3100",
-  });
+  // The library and the download engine are built further down, from options that need the manager.
+  let lib: Library | undefined;
+  let engine: DownloadEngine | undefined;
+  // Wrapped before anything else holds it, so no caller can reach a bridge before its ids migrate.
+  const manager = withIdMigration(
+    new BridgeManager({
+      bridgesDir: opts.bridgesDir ?? join(opts.dataDir, "bridges"),
+      dataDir: opts.dataDir,
+      settings,
+      registry,
+      hostUrl: opts.hostUrl ?? "http://localhost:3100",
+    }),
+    { library: () => lib, downloads: () => engine, log: console },
+  );
   // What the router writes settings through; with sync on, the recording one.
   let bridges = manager;
 
@@ -147,7 +154,7 @@ export function createHost(opts: HostOptions): ComicalHost {
       bridges = host.bridges;
       stopSync = () => host.stop();
     }
-    const lib = new Library(store);
+    lib = new Library(store);
     // Rebuild series items from a pre-collections entries.json, if one is still there. Everything
     // else a series owns survived the dissolution orphaned, so this reattaches it. No-op once run.
     void migrateLegacyEntries(dir, lib)
@@ -168,7 +175,6 @@ export function createHost(opts: HostOptions): ComicalHost {
     routerOpts.covers = { blobs: new FileBlobStore(join(dir, "covers")), fetchPage: pageFetcher };
   }
 
-  let engine: DownloadEngine | undefined;
   if (opts.downloads) {
     const dir = typeof opts.downloads === "object" && opts.downloads.dir
       ? opts.downloads.dir
@@ -190,6 +196,8 @@ export function createHost(opts: HostOptions): ComicalHost {
   const router = createRouter(bridges, routerOpts);
   routerFetch = (req) => router.fetch(req);
   engine?.kick(); // resume any downloads interrupted by the previous run
+  // Bridges updated while this host was down move their records now, not on first use.
+  if (lib) void migrateInstalledBridges(manager, lib, console).catch((e: unknown) => console.error("id migration failed", e));
 
   return {
     router,

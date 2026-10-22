@@ -91,6 +91,8 @@ export interface EmbeddedRuntimeConfig {
   networkJson?: string;
   /** Fired after an install/update/uninstall so the embedder can refetch data screens (epoch bump). */
   onRegistryChange?: () => void;
+  /** Fired after a bridge update moved the library's records onto new ids — refetch anything keyed by them. */
+  onIdsMigrated?: (bridgeId: string) => void;
   /**
    * Wraps the registry provider the router installs through — what `@comical/sync`'s
    * `wrapRegistryProvider` does, so an install made from the app's own screens is recorded. The
@@ -118,6 +120,8 @@ export interface EmbeddedRuntimeConfig {
 export interface EmbeddedModules {
   Library?: typeof import("@comical/library").Library;
   ComicalRuntime?: typeof import("@comical/runtime").ComicalRuntime;
+  withIdMigration?: typeof import("@comical/runtime").withIdMigration;
+  migrateInstalledBridges?: typeof import("@comical/runtime").migrateInstalledBridges;
   Downloads?: typeof import("@comical/downloads").Downloads;
   DownloadEngine?: typeof import("@comical/downloads").DownloadEngine;
   createRouterPageResolver?: typeof import("@comical/downloads").createRouterPageResolver;
@@ -175,13 +179,31 @@ export function installEmbeddedTransportWith(config: EmbeddedRuntimeConfig, modu
     ...(config.retired ? { retired: config.retired } : {}),
   });
 
-  const bridgeProvider = new EmbeddedBridgeProvider({
+  const rawBridgeProvider = new EmbeddedBridgeProvider({
     native,
     bundles,
     settings: config.settings,
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
     refreshUpdates: () => registry.checkUpdates().then(() => undefined),
   });
+  // Built below; the migration only needs it once a bridge is first loaded.
+  let library: import("@comical/library").Library | undefined;
+  let embeddedEngine: import("@comical/downloads").DownloadEngine | undefined;
+  const log = config.log ?? console;
+  // Wrapped before anything else holds it, so nothing reaches a bridge before its ids migrate.
+  const bridgeProvider =
+    config.libraryStore && modules.withIdMigration
+      ? modules.withIdMigration(rawBridgeProvider, {
+          library: () => library,
+          downloads: () => embeddedEngine,
+          log,
+          ...(config.onIdsMigrated ? { onMigrated: config.onIdsMigrated } : {}),
+        })
+      : rawBridgeProvider;
+  const migrateInstalled = () => {
+    if (!library || !modules.migrateInstalledBridges) return;
+    void modules.migrateInstalledBridges(bridgeProvider, library, log).catch((e: unknown) => log.warn("id migration failed", e));
+  };
 
   // Trackers: mounted only when the app supplied a tracker settings store AND a native tracker
   // runtime is registered — a build with bridge-only native support (no ComicalTrackerContext yet)
@@ -212,6 +234,7 @@ export function installEmbeddedTransportWith(config: EmbeddedRuntimeConfig, modu
     bridgeProvider.refresh();
     trackerProvider?.refresh();
     config.onRegistryChange?.();
+    migrateInstalled();
   };
 
   // When a library store is supplied, build the same Library + ComicalRuntime the standalone server
@@ -221,7 +244,7 @@ export function installEmbeddedTransportWith(config: EmbeddedRuntimeConfig, modu
   let embeddedLibrary: EmbeddedLibrary | undefined;
   if (config.libraryStore) {
     const { Library, ComicalRuntime } = modules as Required<Pick<EmbeddedModules, "Library" | "ComicalRuntime">>;
-    const library = new Library(config.libraryStore);
+    library = new Library(config.libraryStore);
     // Pass the tracker provider through so the runtime-backed tracker routes (`/trackers/:id/search`,
     // the per-link `.../tracker-links/:trackerId/sync`) work on-device — without it `ComicalRuntime` throws "no trackers
     // configured", even though the separate TrackerManager makes the list/settings/connect routes
@@ -230,7 +253,7 @@ export function installEmbeddedTransportWith(config: EmbeddedRuntimeConfig, modu
       bridges: bridgeProvider,
       library,
       ...(trackerProvider ? { trackers: trackerProvider } : {}),
-      log: config.log ?? console,
+      log,
     });
     embeddedLibrary = { library, runtime };
   }
@@ -245,7 +268,7 @@ export function installEmbeddedTransportWith(config: EmbeddedRuntimeConfig, modu
   // routes), so the resolver's fetch is late-bound — resolution only ever runs from a drain, well
   // after installation completes.
   let transport: EmbeddedTransport | null = null;
-  const embeddedEngine =
+  embeddedEngine =
     embeddedDownloads && config.downloadsEngine
       ? new modules.DownloadEngine!({
           downloads: embeddedDownloads,
@@ -260,7 +283,7 @@ export function installEmbeddedTransportWith(config: EmbeddedRuntimeConfig, modu
         })
       : undefined;
 
-  provider = bridgeProvider;
+  provider = rawBridgeProvider;
   activeTrackerProvider = trackerProvider ?? null;
   activeSetTransport = config.setTransport;
   activeEngine = embeddedEngine ?? null;
@@ -275,6 +298,7 @@ export function installEmbeddedTransportWith(config: EmbeddedRuntimeConfig, modu
     trackerProvider,
   );
   config.setTransport(transport);
+  migrateInstalled();
   return true;
 }
 

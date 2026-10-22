@@ -5,7 +5,7 @@
  */
 import { createRouterPageResolver, DownloadEngine, Downloads } from "@comical/downloads";
 import { Library } from "@comical/library";
-import { ComicalRuntime } from "@comical/runtime";
+import { ComicalRuntime, migrateInstalledBridges, withIdMigration } from "@comical/runtime";
 import { installEmbeddedTransportWith, type EmbeddedRuntimeConfig } from "./install-core.ts";
 
 export { getEmbeddedDownloadEngine, uninstallEmbeddedTransport } from "./install-core.ts";
@@ -20,6 +20,8 @@ export function installEmbeddedTransport(config: EmbeddedRuntimeConfig): boolean
   return installEmbeddedTransportWith(config, {
     Library,
     ComicalRuntime,
+    withIdMigration,
+    migrateInstalledBridges,
     Downloads,
     DownloadEngine,
     createRouterPageResolver,

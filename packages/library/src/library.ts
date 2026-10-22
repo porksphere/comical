@@ -8,6 +8,7 @@
 import type { Chapter, SeriesInfo, SeriesRevision, SeriesStatus } from "@comical/contract";
 import { exportLibrary, restoreLibrary, type LibraryBackup, type LibraryRestoreCounts } from "./backup.ts";
 import { normalizeTitle } from "./match.ts";
+import { libraryIdReferences, remapLibraryIds, type IdRemap } from "./id-remap.ts";
 import {
   activityKey,
   cachedChaptersSchema,
@@ -166,6 +167,7 @@ function compareSeries(a: CollectionSeriesItemView, b: CollectionSeriesItemView,
 
 export class Library {
   private readonly now: () => number;
+  private idMigrationRound = 0;
 
   constructor(
     private readonly store: LibraryStore,
@@ -419,7 +421,39 @@ export class Library {
 
   /** Merge a backup back in — its records win, nothing it lacks is removed. */
   async restoreBackup(backup: LibraryBackup): Promise<LibraryRestoreCounts> {
-    return restoreLibrary(this.store, backup);
+    const counts = await restoreLibrary(this.store, backup);
+    // The backup can carry records under ids a bridge has since moved off: check every bridge again.
+    await this.store.clearIdMigrationMarks();
+    this.idMigrationRound++;
+    return counts;
+  }
+
+  // ── Id migrations ──────────────────────────────────────────────────────────────
+  // A bridge update that changes its ids moves this library's records onto the new ones. The
+  // runtime drives it (`withIdMigration`); the library only knows what it holds and how to move it.
+
+  /** The series of `bridgeId` the library holds anything under, each with the chapter ids it holds. */
+  async idReferences(bridgeId: string): Promise<Map<string, Set<string>>> {
+    return libraryIdReferences(this.store, bridgeId);
+  }
+
+  /** Move every record of `bridgeId` onto the ids in `remap`. Safe to repeat. */
+  async remapIds(bridgeId: string, remap: IdRemap): Promise<void> {
+    await remapLibraryIds(this.store, bridgeId, remap);
+  }
+
+  /** The bridge version this device's records were last migrated for. Device-local. */
+  async idMigrationMark(bridgeId: string): Promise<string | undefined> {
+    return this.store.getIdMigrationMark(bridgeId);
+  }
+
+  async setIdMigrationMark(bridgeId: string, version: string): Promise<void> {
+    await this.store.setIdMigrationMark(bridgeId, version);
+  }
+
+  /** Bumped whenever every mark is forgotten (a restore), so a caller caching marks knows to re-read. */
+  get idMigrationGeneration(): number {
+    return this.idMigrationRound;
   }
 
   // ── Offline metadata cache ─────────────────────────────────────────────────────

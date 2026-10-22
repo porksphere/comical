@@ -958,6 +958,45 @@ export const linkTargetSchema = z.object({
 export type LinkTarget = z.infer<typeof linkTargetSchema>;
 
 /**
+ * What `Bridge.migrateIds` is asked: ids this device holds records under, in whatever format the
+ * bridge used at `fromVersion` — its own `info.version` when the device last migrated, or null when
+ * the device never has (the ids can be from any older version, or already current).
+ */
+export const idMigrationRequestSchema = z.object({
+  fromVersion: z.string().min(1).nullable(),
+  series: z.array(
+    z.object({
+      id: z.string().min(1),
+      /** Chapter ids held under this series. May be empty: the series itself is still referenced. */
+      chapterIds: z.array(z.string().min(1)),
+    }),
+  ),
+});
+export type IdMigrationRequest = z.infer<typeof idMigrationRequestSchema>;
+
+/**
+ * What `Bridge.migrateIds` answers. List only what changed: a series or chapter left out keeps its
+ * id. `newId` is the series' current id; `chapters` maps the chapters whose ids changed.
+ */
+export const idMigrationResultSchema = z.object({
+  series: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        newId: z.string().min(1).optional(),
+        chapters: z.array(z.object({ id: z.string().min(1), newId: z.string().min(1) })).optional(),
+      }),
+    )
+    .default([]),
+  /**
+   * Series ids the bridge couldn't translate this time (the source didn't answer). Their records
+   * stay as they are and the host asks again later; everything else in the answer is applied.
+   */
+  failed: z.array(z.string().min(1)).optional(),
+});
+export type IdMigrationResult = z.infer<typeof idMigrationResultSchema>;
+
+/**
  * Self-description of a bridge. Note there is deliberately NO backend URL here — the address
  * and credentials of the user's backend arrive at runtime through settings.
  */
@@ -1056,6 +1095,11 @@ export const bridgeInfoSchema = z.object({
    * shared link, so a bridge never sees another site's URLs. Requires `resolveUrl`.
    */
   linkHosts: z.array(z.string().min(1)).min(1).optional(),
+  /**
+   * This version can translate ids from earlier versions (`migrateIds`): set it on a release that
+   * changes the ids the bridge gives its series or chapters. Requires `migrateIds`.
+   */
+  migratesIds: z.boolean().optional(),
 });
 export type BridgeInfo = z.infer<typeof bridgeInfoSchema>;
 

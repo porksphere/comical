@@ -479,6 +479,36 @@ describe("library sync", () => {
     });
   });
 
+  test("an id migration's moved progress reaches the other device, and its own run there un-reads nothing", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    await collect(a.library);
+    await a.library.markRead(KEY, "c1", true);
+    await a.engine.sync();
+    await b.engine.sync();
+
+    const remap = { series: new Map(), chapters: new Map([["s1", new Map([["c1", "n1"]])]]) };
+    await a.library.remapIds("bridge-a", remap);
+    await a.library.setIdMigrationMark("bridge-a", "2.0.0");
+    await a.engine.sync();
+    await b.engine.sync();
+
+    const readOn = async (d: ReturnType<typeof device>, chapterId: string) =>
+      (await d.library.getProgress(KEY)).find((p) => p.chapterId === chapterId)?.read;
+    expect(await readOn(b, "n1")).toBe(true);
+    // The mark is this device's own: b still has its caches and downloads to move.
+    expect(await b.library.idMigrationMark("bridge-a")).toBeUndefined();
+
+    // Sync can't delete a progress row, so b holds the old id as a newer, unread row. Its own
+    // migration must fold that in without un-reading the chapter here or, through sync, on a.
+    await b.library.remapIds("bridge-a", remap);
+    expect(await readOn(b, "n1")).toBe(true);
+    await b.engine.sync();
+    await a.engine.sync();
+    expect(await readOn(a, "n1")).toBe(true);
+  });
+
   test("a remote record that doesn't validate is dropped, not applied", async () => {
     const inner = new InMemoryLibraryStore();
     const store = librarySyncStore(inner);

@@ -50,5 +50,6 @@ export function methodsForBridge(info: BridgeInfo): string[] {
   // Data, not a capability: the loader refuses a bridge that declares interception without the method.
   if (info.images?.intercept) methods.add("interceptImageRequest");
   if (info.linkHosts) methods.add("resolveUrl");
+  if (info.migratesIds) methods.add("migrateIds");
   return [...methods];
 }

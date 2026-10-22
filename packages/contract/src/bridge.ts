@@ -9,6 +9,8 @@ import type {
   Chapter,
   Filter,
   FilterValue,
+  IdMigrationRequest,
+  IdMigrationResult,
   ImageRequest,
   LinkTarget,
   Page,
@@ -161,6 +163,21 @@ export interface Bridge {
    * can — a user is waiting on the answer.
    */
   resolveUrl?(url: string): Promise<LinkTarget | null>;
+
+  // ---- Id migration ----
+
+  /**
+   * Translate ids an earlier version of this bridge gave out into this version's — set
+   * `info.migratesIds` on the release that changes them. The host calls it once per device after
+   * the update, with every id it holds records under (in batches), before anything else uses the
+   * bridge, and moves those records (library, progress, downloads…) onto the answer.
+   *
+   * Must be idempotent: an id that is already current comes back unchanged (or is left out), since
+   * `fromVersion` can be null and the host may ask again after an interruption. List only ids that
+   * change. A series you can't translate right now goes in `failed` — the host asks again later.
+   * Throwing fails the whole batch the same way.
+   */
+  migrateIds?(req: IdMigrationRequest): Promise<IdMigrationResult>;
 
   // ---- Read-sync (capability "read-sync") ----
   // Bridges that can write reading state back to their source implement these.

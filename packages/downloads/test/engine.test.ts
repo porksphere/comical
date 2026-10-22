@@ -753,3 +753,35 @@ describe("partial chapters (onlyPages)", () => {
     expect(done?.onlyPages).toBeUndefined();
   });
 });
+
+describe("remapIds", () => {
+  test("moves the manifest, removes the blobs of a copy it made redundant, and tells subscribers", async () => {
+    const { engine, downloads, blobs, events } = makeEngine(scriptedFetcher({}).fetch);
+    const other = { ...SNAP, seriesId: "s2" };
+    await downloads.enqueueChapter(SNAP, CH, pages(1));
+    await downloads.recordPage(KEY, "c1", 0, "old.jpg", 10);
+    await downloads.enqueueChapter(other, { chapterId: "n1" }, pages(1));
+    await downloads.recordPage(entryKey("demo", "s2"), "n1", 0, "new.jpg", 10);
+    blobs.blobs.set("old.jpg", new Uint8Array(10));
+    blobs.blobs.set("new.jpg", new Uint8Array(10));
+    events.length = 0;
+
+    const result = await engine.remapIds("demo", {
+      series: new Map([["s1", "s2"]]),
+      chapters: new Map([["s1", new Map([["c1", "n1"]])]]),
+    });
+
+    expect(result.deferred).toBe(false);
+    expect(blobs.removed).toEqual(["old.jpg"]);
+    expect(blobs.blobs.has("new.jpg")).toBe(true);
+    expect(await downloads.getSeries(KEY)).toBeUndefined();
+    expect(events).toContainEqual({ type: "deleted", bridgeId: "demo" });
+  });
+
+  test("with nothing to move, removes nothing", async () => {
+    const { engine, blobs } = makeEngine(scriptedFetcher({}).fetch);
+    const result = await engine.remapIds("demo", { series: new Map([["s1", "s2"]]), chapters: new Map() });
+    expect(result).toEqual({ deferred: false, files: [] });
+    expect(blobs.removed).toEqual([]);
+  });
+});

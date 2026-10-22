@@ -28,6 +28,7 @@ import type {
   PendingPage,
 } from "./downloads.ts";
 import type { BlobStore } from "./blob-store.ts";
+import type { DownloadsRemapResult, IdRemap } from "./id-remap.ts";
 import { extFor, relPathFor } from "./paths.ts";
 import { rateLimitWaitOf } from "./rate-limited.ts";
 
@@ -327,6 +328,22 @@ export class DownloadEngine {
     this.cancelledChapters.clear();
     this.cancelledSeries.clear();
     this.emit({ type: "deleted" });
+  }
+
+  // ── Id migrations ──────────────────────────────────────────────────────────────
+
+  /** The series of `bridgeId` with downloads, each with its downloaded chapter ids. */
+  idReferences(bridgeId: string): Promise<Map<string, Set<string>>> {
+    return this.downloads.idReferences(bridgeId);
+  }
+
+  /** Move `bridgeId`'s downloads onto new ids, removing the blobs of any copy the move made redundant. */
+  async remapIds(bridgeId: string, remap: IdRemap): Promise<DownloadsRemapResult> {
+    const result = await this.downloads.remapIds(bridgeId, remap);
+    if (result.files.length > 0) await this.blobs.remove(result.files);
+    this.emit({ type: "deleted", bridgeId });
+    this.kick();
+    return result;
   }
 
   // ── The drain loop ──────────────────────────────────────────────────────────────

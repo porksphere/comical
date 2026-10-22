@@ -19,6 +19,8 @@ import {
   filterValueSchema,
   imageRequestSchema,
   linkTargetSchema,
+  idMigrationRequestSchema,
+  idMigrationResultSchema,
   type HostCapabilities,
   isContractCompatible,
   pageSchema,
@@ -188,6 +190,9 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   }
   if (info.linkHosts && typeof raw.resolveUrl !== "function") {
     throw new BridgeContractError(`bridge "${info.id}" declares linkHosts but no resolveUrl`);
+  }
+  if (info.migratesIds && typeof raw.migrateIds !== "function") {
+    throw new BridgeContractError(`bridge "${info.id}" declares migratesIds but no migrateIds`);
   }
 
   // 4b. Apply the bridge's declared rate limit as the default. Precedence per key:
@@ -423,6 +428,13 @@ function wrapBridge(
     bridge.resolveUrl = (url) =>
       call("resolveUrl", linkTargetSchema.nullable(), () =>
         raw.resolveUrl!(validateInput(z.string().min(1), url, "link url")),
+      );
+  }
+  // The flag, not the method, is what hosts check before migrating, so an undeclared one is dropped.
+  if (info.migratesIds && raw.migrateIds) {
+    bridge.migrateIds = (req) =>
+      call("migrateIds", idMigrationResultSchema, () =>
+        raw.migrateIds!(validateInput(idMigrationRequestSchema, req, "id migration request")),
       );
   }
   if (raw.getReadChapters) {

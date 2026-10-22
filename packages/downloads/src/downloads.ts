@@ -26,6 +26,7 @@ import {
   type StorageUsageSeries,
 } from "./models.ts";
 import type { DownloadsStore } from "./store.ts";
+import { downloadIdReferences, remapDownloadIds, type DownloadsRemapResult, type IdRemap } from "./id-remap.ts";
 
 /** A series snapshot supplied when enqueuing (cached for offline rendering / bridge removal). */
 export interface DownloadSeriesSnapshot {
@@ -400,6 +401,18 @@ export class Downloads {
       files.push(...(await this.deleteSeries(entryKey(series.bridgeId, series.seriesId))));
     }
     return files;
+  }
+
+  // ── Id migrations ──────────────────────────────────────────────────────────────
+
+  /** The series of `bridgeId` with downloads, each with its downloaded chapter ids. */
+  async idReferences(bridgeId: string): Promise<Map<string, Set<string>>> {
+    return downloadIdReferences(this.store, bridgeId);
+  }
+
+  /** Move `bridgeId`'s downloads onto the ids in `remap`. The host removes the returned `files`. */
+  async remapIds(bridgeId: string, remap: IdRemap): Promise<DownloadsRemapResult> {
+    return remapDownloadIds(this.store, bridgeId, remap);
   }
 
   // ── Storage accounting ─────────────────────────────────────────────────────────

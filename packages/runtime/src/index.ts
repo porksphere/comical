@@ -24,3 +24,9 @@ export {
   trackerImportRequestSchema,
   trackerImportResolveRequestSchema,
 } from "./tracker-import.ts";
+export {
+  migrateInstalledBridges,
+  withIdMigration,
+  type IdMigrationDownloads,
+  type IdMigrationOptions,
+} from "./id-migration.ts";

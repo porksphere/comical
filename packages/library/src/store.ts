@@ -33,6 +33,8 @@ export interface LibraryStore {
   putProgress(key: string, progress: ChapterProgress): Promise<void>;
   /** Drop all progress for a series (called when an entry is removed). */
   deleteProgressForEntry(key: string): Promise<void>;
+  /** Drop progress for these chapters of a series — chapters an id migration moved elsewhere. */
+  deleteProgress(key: string, chapterIds: string[]): Promise<void>;
 
   // ── Series groups ────────────────────────────────────────────────────────
   listGroups(): Promise<SeriesGroup[]>;
@@ -106,4 +108,14 @@ export interface LibraryStore {
    * that syncs keeps this to itself: each device bounds its own feed.
    */
   dropActivity(keys: string[]): Promise<void>;
+
+  // ── Id migrations ─────────────────────────────────────────────────────────
+  // The bridge version this device's records were last rewritten for (see `Library.remapIds`).
+  // DEVICE-LOCAL: never synced and never in a backup. Synced records arrive already rewritten, but
+  // each device still has its own caches and downloads to move, so each device keeps its own mark.
+
+  getIdMigrationMark(bridgeId: string): Promise<string | undefined>;
+  setIdMigrationMark(bridgeId: string, version: string): Promise<void>;
+  /** Forget every mark, so each bridge re-checks its ids on its next load. */
+  clearIdMigrationMarks(): Promise<void>;
 }

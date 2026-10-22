@@ -327,6 +327,11 @@ export function wrapLibraryStore(inner: LibraryStore, engine: SyncEngine): Libra
         async () => (await inner.listProgress(key)).map((p): Target => ["progress", compositeId.progress(key, p.chapterId)]),
         () => inner.deleteProgressForEntry(key),
       ),
+    deleteProgress: (key, chapterIds) =>
+      recorded(
+        chapterIds.map((id): Target => ["progress", compositeId.progress(key, id)]),
+        () => inner.deleteProgress(key, chapterIds),
+      ),
 
     listGroups: () => inner.listGroups(),
     putGroup: (group) => recorded([["groups", group.id]], () => inner.putGroup(group)),
@@ -385,6 +390,10 @@ export function wrapLibraryStore(inner: LibraryStore, engine: SyncEngine): Libra
     deleteActivityForEntry: (key) => removingActivity(() => inner.deleteActivityForEntry(key)),
     clearActivity: () => removingActivity(() => inner.clearActivity()),
     dropActivity: (keys) => inner.dropActivity(keys),
+
+    getIdMigrationMark: (bridgeId) => inner.getIdMigrationMark(bridgeId),
+    setIdMigrationMark: (bridgeId, version) => inner.setIdMigrationMark(bridgeId, version),
+    clearIdMigrationMarks: () => inner.clearIdMigrationMarks(),
   };
 }
 

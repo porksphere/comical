@@ -192,6 +192,19 @@ link, in order, and answers `{ bridgeId, seriesId, chapterId? }` — or 404 with
 `no-bridge` (nothing installed covers the site) or `not-recognized` (one does, but not that page).
 Parse the URL rather than fetch it where you can; a user is waiting on the answer.
 
+**Id migrations.** A release that changes the ids a bridge gives out sets `BridgeInfo.migratesIds`
+and implements `migrateIds({ fromVersion, series: [{ id, chapterIds }] }) → { series: [{ id, newId?,
+chapters?: [{ id, newId }] }], failed? }`, listing only what changed. On each device, the first load
+of that version (runtime `withIdMigration`, which host-server and host-rn wrap their providers in)
+holds the bridge back, asks it — in batches — about every id the library and downloads hold, and
+moves those records onto the answer: collected items, progress, history, activity, groups, tracker
+links, the offline caches and the download manifest (page files stay where they are). A per-device
+mark records the version once the move is complete; a series in `failed`, a throw, or a chapter
+mid-download leaves it unset, so the next load asks again. The answer must be idempotent:
+`fromVersion` is null on a device that never ran one, and an interrupted run is repeated. Records
+another device already moved arrive through sync and merge with this device's own (progress only
+ever moves forward), so nothing read is un-read.
+
 ### Settings
 
 Settings are declared by **value kind**, not UI widget — `getSettings()` returns

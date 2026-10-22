@@ -3,7 +3,7 @@
  * through the `fetch(path, init)` seam (what Electron's main process and the tests use), with no
  * `Bun.serve` involved, and checks the optional modules mount only when asked for.
  */
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -50,6 +50,17 @@ describe("createHost", () => {
     const h = await host({ library: true, downloads: true });
     expect((await h.fetch("/library/collected")).status).toBe(200);
     expect((await h.fetch("/downloads")).status).toBe(200);
+  });
+
+  test("with a library, loading a bridge records its id-migration mark", async () => {
+    const h = await host({ library: true });
+    const res = await h.fetch("/bridges/example");
+    expect(res.status).toBe(200);
+    const { info } = (await res.json()) as { info: { version: string } };
+    const dir = open.at(-1)!.dir;
+    const marks = JSON.parse(await readFile(join(dir, "library", "id-migrations.json"), "utf8")) as unknown;
+    expect(JSON.stringify(marks)).toContain(`"example"`);
+    expect(JSON.stringify(marks)).toContain(`"${info.version}"`);
   });
 
   test("a token gates the API, an origin narrows CORS", async () => {

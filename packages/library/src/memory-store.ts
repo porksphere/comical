@@ -19,6 +19,7 @@ export class InMemoryLibraryStore implements LibraryStore {
   private chaptersCache = new Map<string, CachedChapters>();
   private collectionItems = new Map<string, CollectionItem>();
   private collections: Collection[] = [];
+  private idMigrationMarks = new Map<string, string>();
 
   async getSeriesDetail(key: string): Promise<CachedSeriesDetail | undefined> {
     const d = this.details.get(key);
@@ -54,6 +55,10 @@ export class InMemoryLibraryStore implements LibraryStore {
   }
   async deleteProgressForEntry(key: string): Promise<void> {
     this.progress.delete(key);
+  }
+  async deleteProgress(key: string, chapterIds: string[]): Promise<void> {
+    const map = this.progress.get(key);
+    for (const id of chapterIds) map?.delete(id);
   }
 
   async listGroups(): Promise<SeriesGroup[]> {
@@ -150,5 +155,15 @@ export class InMemoryLibraryStore implements LibraryStore {
   }
   async dropActivity(keys: string[]): Promise<void> {
     for (const k of keys) this.activity.delete(k);
+  }
+
+  async getIdMigrationMark(bridgeId: string): Promise<string | undefined> {
+    return this.idMigrationMarks.get(bridgeId);
+  }
+  async setIdMigrationMark(bridgeId: string, version: string): Promise<void> {
+    this.idMigrationMarks.set(bridgeId, version);
+  }
+  async clearIdMigrationMarks(): Promise<void> {
+    this.idMigrationMarks.clear();
   }
 }

@@ -9,3 +9,4 @@ export * from "./store.ts";
 export * from "./memory-store.ts";
 export * from "./backup.ts";
 export * from "./library.ts";
+export { libraryIdReferences, remapLibraryIds, type IdRemap } from "./id-remap.ts";

@@ -73,4 +73,18 @@ describe("CAPABILITY_METHODS", () => {
     expect(methodsForBridge({ ...info, linkHosts: ["a.example"] })).toContain("resolveUrl");
     expect(methodsForBridge(info)).not.toContain("resolveUrl");
   });
+
+  test("a bridge that migrates ids gets migrateIds, and one that doesn't, not", () => {
+    const info = {
+      id: "x",
+      name: "X",
+      version: "1.0.0",
+      contractVersion: "2.1.0",
+      languages: ["en"],
+      nsfw: false,
+      capabilities: ["search" as const],
+    };
+    expect(methodsForBridge({ ...info, migratesIds: true })).toContain("migrateIds");
+    expect(methodsForBridge(info)).not.toContain("migrateIds");
+  });
 });
