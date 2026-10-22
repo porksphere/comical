@@ -14,7 +14,8 @@
     "./net/rate-limiter": "./src/net/rate-limiter.ts",
     "./net/asset-budget": "./src/net/asset-budget.ts",
     "./net/refreshable-network": "./src/net/refreshable-network.ts",
-    "./images": "./src/images.ts"
+    "./images": "./src/images.ts",
+    "./links": "./src/links.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {

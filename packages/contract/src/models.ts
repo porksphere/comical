@@ -880,6 +880,16 @@ export const imageRequestSchema = z.object({
 export type ImageRequest = z.infer<typeof imageRequestSchema>;
 
 /**
+ * What `Bridge.resolveUrl` returns for a link it recognizes: the series it opens and, when the link
+ * points at one chapter, that chapter. Both are this bridge's own ids, as its other methods take them.
+ */
+export const linkTargetSchema = z.object({
+  seriesId: z.string().min(1),
+  chapterId: z.string().min(1).optional(),
+});
+export type LinkTarget = z.infer<typeof linkTargetSchema>;
+
+/**
  * Self-description of a bridge. Note there is deliberately NO backend URL here — the address
  * and credentials of the user's backend arrive at runtime through settings.
  */
@@ -972,6 +982,12 @@ export const bridgeInfoSchema = z.object({
    * bridge building host paths itself. See {@link bridgeImagesSchema}.
    */
   images: bridgeImagesSchema.optional(),
+  /**
+   * Hostnames whose web links this bridge can open (`resolveUrl`), each matching itself and its
+   * subdomains like `images.hosts`. Hosts ask only the bridges whose `linkHosts` cover a pasted or
+   * shared link, so a bridge never sees another site's URLs. Requires `resolveUrl`.
+   */
+  linkHosts: z.array(z.string().min(1)).min(1).optional(),
 });
 export type BridgeInfo = z.infer<typeof bridgeInfoSchema>;
 

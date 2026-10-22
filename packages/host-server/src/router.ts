@@ -36,6 +36,7 @@ import type {
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
 import { ImageRequestRefusedError, resolveImageRequest, type ResolvedImageRequest } from "@comical/core/images";
+import { resolveLink } from "@comical/core/links";
 import { assetBudgetFor } from "@comical/core/net/asset-budget";
 import { RateLimiter } from "@comical/core/net/rate-limiter";
 import { redactSettingSecrets, validateSettingsInput } from "@comical/core/settings";
@@ -368,6 +369,27 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       return new Response(null, { status: 302, headers: { Location: req.url, "Cache-Control": "no-store" } });
     }
     return proxyFetch(req.url, req.headers, proxyLimiter(id, info.assetRateLimit, req.url));
+  });
+
+  // ── Links (`BridgeInfo.linkHosts`, contract 2.1) ────────────────────────────
+  // Open a pasted or shared web link: ask the installed bridges that cover its host which series
+  // (and chapter) it points at. 404 with a `reason` when nothing opens it — `no-bridge` (no
+  // installed bridge covers the site) or `not-recognized` (one does, but not this kind of page).
+  app.get("/resolve-link", async (c) => {
+    const url = c.req.query("url") ?? "";
+    try {
+      const res = await resolveLink((await listing()).infos.values(), url, async (id, u) => {
+        const bridge = await manager.get(id);
+        return bridge.resolveUrl ? bridge.resolveUrl(u) : null;
+      });
+      if (!res.ok) {
+        if (res.reason === "invalid-url") return c.json({ error: "not a web link", reason: res.reason }, 400);
+        return c.json({ error: "no installed bridge opens this link", reason: res.reason }, 404);
+      }
+      return c.json({ bridgeId: res.bridgeId, ...res.target });
+    } catch (e) {
+      return bridgeErrorResponse(c, e);
+    }
   });
 
   // ── Bridge registry ──────────────────────────────────────────────────────────

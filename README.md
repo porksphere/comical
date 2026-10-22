@@ -183,6 +183,14 @@ The route redirects when the resolved request needs no headers and proxies when 
 any URL (original or intercepted) off `images.hosts`, and maps a `rateLimitedMessage` thrown by the
 interceptor to a 429. `images` supersedes `assetProxy` and `resolvePage`, which keep working.
 
+**Links.** A bridge that can open web links to its source declares the sites in
+`BridgeInfo.linkHosts` (each matching its subdomains too) and implements
+`resolveUrl(url) → { seriesId, chapterId? } | null`, returning null for a page that isn't a series
+or chapter. The host's `GET /resolve-link?url=` asks only the bridges whose `linkHosts` cover the
+link, in order, and answers `{ bridgeId, seriesId, chapterId? }` — or 404 with a `reason`:
+`no-bridge` (nothing installed covers the site) or `not-recognized` (one does, but not that page).
+Parse the URL rather than fetch it where you can; a user is waiting on the answer.
+
 ### Settings
 
 Settings are declared by **value kind**, not UI widget — `getSettings()` returns

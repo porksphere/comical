@@ -10,6 +10,7 @@ import type {
   Filter,
   FilterValue,
   ImageRequest,
+  LinkTarget,
   Page,
   PageThumbnail,
   PagedRequest,
@@ -148,6 +149,16 @@ export interface Bridge {
    * off, throw a `rateLimitedMessage` error, as from any other method.
    */
   interceptImageRequest?(url: string): Promise<ImageRequest>;
+
+  // ---- Links ----
+
+  /**
+   * Open a web link to the source: return the series (and chapter, for a chapter link) it points
+   * at, or null when this URL isn't one this bridge can open (a search page, a user profile). The
+   * host only calls it with links on `info.linkHosts`. Parse the URL rather than fetch it where you
+   * can — a user is waiting on the answer.
+   */
+  resolveUrl?(url: string): Promise<LinkTarget | null>;
 
   // ---- Read-sync (capability "read-sync") ----
   // Bridges that can write reading state back to their source implement these.

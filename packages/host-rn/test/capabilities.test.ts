@@ -59,4 +59,18 @@ describe("CAPABILITY_METHODS", () => {
     );
     expect(methodsForBridge({ ...info, images: { hosts: ["a.example"] } })).not.toContain("interceptImageRequest");
   });
+
+  test("a bridge that opens links gets resolveUrl, and one that doesn't, not", () => {
+    const info = {
+      id: "x",
+      name: "X",
+      version: "1.0.0",
+      contractVersion: "2.1.0",
+      languages: ["en"],
+      nsfw: false,
+      capabilities: ["search" as const],
+    };
+    expect(methodsForBridge({ ...info, linkHosts: ["a.example"] })).toContain("resolveUrl");
+    expect(methodsForBridge(info)).not.toContain("resolveUrl");
+  });
 });

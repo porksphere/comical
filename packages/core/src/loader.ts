@@ -18,6 +18,7 @@ import {
   filterSchema,
   filterValueSchema,
   imageRequestSchema,
+  linkTargetSchema,
   type HostCapabilities,
   isContractCompatible,
   pageSchema,
@@ -182,6 +183,9 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   }
   if (info.images?.intercept && typeof raw.interceptImageRequest !== "function") {
     throw new BridgeContractError(`bridge "${info.id}" declares images.intercept but no interceptImageRequest`);
+  }
+  if (info.linkHosts && typeof raw.resolveUrl !== "function") {
+    throw new BridgeContractError(`bridge "${info.id}" declares linkHosts but no resolveUrl`);
   }
 
   // 4b. Apply the bridge's declared rate limit as the default. Precedence per key:
@@ -395,6 +399,12 @@ function wrapBridge(
     bridge.interceptImageRequest = (url) =>
       call("interceptImageRequest", imageRequestSchema, () =>
         raw.interceptImageRequest!(validateInput(z.string().min(1), url, "image url")),
+      );
+  }
+  if (raw.resolveUrl) {
+    bridge.resolveUrl = (url) =>
+      call("resolveUrl", linkTargetSchema.nullable(), () =>
+        raw.resolveUrl!(validateInput(z.string().min(1), url, "link url")),
       );
   }
   if (raw.getReadChapters) {

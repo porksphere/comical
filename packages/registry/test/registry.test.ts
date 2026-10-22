@@ -119,6 +119,17 @@ describe("registryBridgeEntrySchema assetRateLimit", () => {
   });
 });
 
+describe("registryBridgeEntrySchema linkHosts", () => {
+  test("carries the sites a bridge opens links for", () => {
+    expect(registryBridgeEntrySchema.parse({ ...BASE_ENTRY, linkHosts: ["site.example"] }).linkHosts).toEqual(["site.example"]);
+    expect("linkHosts" in registryBridgeEntrySchema.parse({ ...BASE_ENTRY })).toBe(false);
+  });
+
+  test("rejects an empty list", () => {
+    expect(registryBridgeEntrySchema.safeParse({ ...BASE_ENTRY, linkHosts: [] }).success).toBe(false);
+  });
+});
+
 describe("registryBridgeEntrySchema display flags", () => {
   test("carries cardSubtitles and ratings", () => {
     const entry = registryBridgeEntrySchema.parse({ ...BASE_ENTRY, cardSubtitles: true, ratings: true });

@@ -68,6 +68,11 @@ export const registryBridgeEntrySchema = z.object({
    * image that needs no interception is served without loading the bridge.
    */
   images: bridgeImagesSchema.optional(),
+  /**
+   * Mirror of `BridgeInfo.linkHosts` — the sites whose links this bridge opens. In the index so a
+   * device's listing knows which bridge to ask about a pasted link without loading every bundle.
+   */
+  linkHosts: z.array(z.string().min(1)).min(1).optional(),
   /** Absolute URL to the CJS bridge bundle. */
   url: z.string().url(),
   /** Lowercase hex SHA-256 of the bundle content. Always required. */
