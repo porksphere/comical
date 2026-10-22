@@ -407,12 +407,10 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       const settings = bridge.getSettings?.() ?? [];
       const missingRequired = await manager.missingRequired(bridge.info.id);
 
-      // Return current stored values so a UI can prefill the form, but never expose secret
-      // string values — instead report which secret keys are set.
+      // Return current stored values so a UI can prefill the form, but never expose a credential
+      // (any kind — a sign-in's cookies too) — instead report which secret keys are set.
       const stored = await manager.storedSettings(bridge.info.id);
-      const secretKeys = new Set(
-        settings.filter((d) => (d.type === "string" && !!d.secret) || d.type === "oauth-pin").map((d) => d.key),
-      );
+      const secretKeys = new Set(settings.filter(isSecretSetting).map((d) => d.key));
       const values: Record<string, SettingValue> = {};
       const secretsSet: string[] = [];
       for (const [k, v] of Object.entries(stored)) {
