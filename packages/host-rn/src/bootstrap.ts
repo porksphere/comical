@@ -70,6 +70,8 @@ export interface EmbeddedBootstrapConfig {
   networkJson?: string;
   /** Fired after an install/update/uninstall so the embedder can refetch data screens. */
   onRegistryChange?: () => void;
+  /** Fired after a bridge update moved the library's records onto new ids — refetch anything keyed by them. */
+  onIdsMigrated?: (bridgeId: string) => void;
   /** See `EmbeddedRuntimeConfig.decorateRegistry`. */
   decorateRegistry?: EmbeddedRuntimeConfig["decorateRegistry"];
   /** See `EmbeddedRuntimeConfig.decorateBridges`. */
@@ -110,6 +112,7 @@ export function applyEmbeddedMode(enabled: boolean): boolean {
     ...(config.requireSignature !== undefined ? { requireSignature: config.requireSignature } : {}),
     ...(config.networkJson !== undefined ? { networkJson: config.networkJson } : {}),
     ...(config.onRegistryChange ? { onRegistryChange: config.onRegistryChange } : {}),
+    ...(config.onIdsMigrated ? { onIdsMigrated: config.onIdsMigrated } : {}),
     ...(config.decorateRegistry ? { decorateRegistry: config.decorateRegistry } : {}),
     ...(config.decorateBridges ? { decorateBridges: config.decorateBridges } : {}),
   });
