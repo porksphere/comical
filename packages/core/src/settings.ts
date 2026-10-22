@@ -11,6 +11,7 @@
  * value is set aside and reported in `dropped`; a required key with nothing usable is reported in
  * `missingRequired`. The strict check is `validateSettingsInput`, on the save path.
  */
+import { isSecretSetting } from "@comical/contract";
 import type {
   SettingDescriptor,
   SettingsForm,
@@ -74,8 +75,9 @@ function coerce(
       return { value: raw };
     }
     case "oauth-pin":
-    case "oauth-callback": {
-      // The stored value is the access token (or a JSON blob) — treat it as a plain string.
+    case "oauth-callback":
+    case "web-login": {
+      // The stored value is the access token, a JSON blob or a cookie string — a plain string.
       if (typeof raw === "string") return { value: raw };
       return { error: `"${descriptor.key}" must be a string token` };
     }
@@ -133,8 +135,8 @@ export function redactSettingSecrets(descriptors: readonly SettingDescriptor[]):
 }
 
 /**
- * The secret setting keys that currently hold a value — a `secret` string, or an OAuth flow's
- * stored token. This is what "logged in" means for a bridge whose account is optional: its login
+ * The secret setting keys that currently hold a value — a `secret` string, an OAuth flow's
+ * stored token, or a web sign-in's cookies. This is what "logged in" means for a bridge whose account is optional: its login
  * fields are secrets that aren't `required` (browsing works without them), so `missingRequired`
  * says nothing about them, and a host that wants to know whether account-backed features
  * (favorites) can work needs this instead. Keys only — never the values.
@@ -143,11 +145,7 @@ export function storedSecretKeys(
   descriptors: readonly SettingDescriptor[],
   stored: Readonly<Record<string, SettingValue>>,
 ): string[] {
-  const secretKeys = new Set(
-    descriptors
-      .filter((d) => (d.type === "string" && !!d.secret) || d.type === "oauth-pin" || d.type === "oauth-callback")
-      .map((d) => d.key),
-  );
+  const secretKeys = new Set(descriptors.filter(isSecretSetting).map((d) => d.key));
   return Object.entries(stored)
     .filter(([k, v]) => secretKeys.has(k) && v !== undefined && v !== "")
     .map(([k]) => k);

@@ -11,4 +11,5 @@ export * from "./bridge.ts";
 export * from "./tracker.ts";
 export * from "./rate-limited.ts";
 export * from "./series-gone.ts";
+export * from "./login-required.ts";
 export * from "./image-route.ts";

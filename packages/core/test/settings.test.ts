@@ -202,6 +202,26 @@ describe("storedSecretKeys", () => {
   });
 });
 
+describe("web-login settings", () => {
+  const login: SettingDescriptor = {
+    type: "web-login",
+    key: "cookies",
+    label: "Account",
+    url: "https://example.com/login",
+    cookies: ["sid"],
+  };
+
+  test("store the collected cookie string as given", () => {
+    expect(validateSettingsInput({ cookies: "sid=1; uid=2" }, [login])).toEqual({ cookies: "sid=1; uid=2" });
+    expect(() => validateSettingsInput({ cookies: 7 }, [login])).toThrow(BridgeSettingsError);
+  });
+
+  test("count as signed in once stored", () => {
+    expect(storedSecretKeys([login], { cookies: "sid=1" })).toEqual(["cookies"]);
+    expect(storedSecretKeys([login], { cookies: "" })).toEqual([]);
+  });
+});
+
 describe("loader settings wiring", () => {
   test("declared defaults are applied and visible to the running bridge", async () => {
     const b = await loadBridge({ code: SETTINGS_BRIDGE, capabilities: mockHost({ baseUrl: "https://x" }) });

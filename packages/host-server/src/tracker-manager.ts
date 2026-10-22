@@ -9,7 +9,7 @@
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { HostCapabilities, SettingValue } from "@comical/contract";
+import { isSecretSetting, type HostCapabilities, type SettingValue } from "@comical/contract";
 import {
   buildRefreshConfigs,
   type LoadedTracker,
@@ -136,9 +136,7 @@ export class TrackerManager {
     const settings = tracker.getSettings?.() ?? [];
     const stored = (await this.opts.settings.get(id)) as Record<string, SettingValue>;
     const { missingRequired } = resolveSettings(stored, settings);
-    const secretKeys = new Set(
-      settings.filter((d) => (d.type === "string" && !!d.secret) || d.type === "oauth-pin" || d.type === "oauth-callback").map((d) => d.key),
-    );
+    const secretKeys = new Set(settings.filter(isSecretSetting).map((d) => d.key));
     const values: Record<string, SettingValue> = {};
     const secretsSet: string[] = [];
     for (const [k, v] of Object.entries(stored)) {

@@ -13,7 +13,9 @@ import {
   CONTENT_RATING_ORDER,
   CURSOR_MAX_LENGTH,
   EXCLUDED_TAGS_KEY,
+  isSecretSetting,
   MAX_CONTENT_RATING_KEY,
+  parseLoginRequired,
   parseRateLimited,
   parseSeriesGone,
   retryAfterMs,
@@ -1849,7 +1851,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         const tracker = await trackerMgr.get(id);
         const settings = tracker.getSettings?.() ?? [];
         const stored = await trackerMgr.storedSettings(id);
-        const secretKeys = new Set(settings.filter((d) => (d.type === "string" && !!d.secret) || d.type === "oauth-pin" || d.type === "oauth-callback").map((d) => d.key));
+        const secretKeys = new Set(settings.filter(isSecretSetting).map((d) => d.key));
         const values: Record<string, SettingValue> = {};
         const secretsSet: string[] = [];
         for (const [k, v] of Object.entries(stored)) {
@@ -2216,7 +2218,7 @@ async function withBridge(
   }
 }
 
-/** A bridge failure as a JSON error response: 410 gone, 404 missing bridge, 429 throttled, else 500. */
+/** A bridge failure as a JSON error response: 410 gone, 401 signed out, 404 missing bridge, 429 throttled, else 500. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function bridgeErrorResponse(c: any, e: unknown): Response {
   const msg = e instanceof Error ? e.message : String(e);
@@ -2224,6 +2226,10 @@ function bridgeErrorResponse(c: any, e: unknown): Response {
   // "not found" sniff below, which means a missing BRIDGE, not a missing series.
   const gone = parseSeriesGone(msg);
   if (gone) return c.json({ error: msg, gone }, 410);
+  // Nobody is signed in, or the session ended (see `loginRequiredMessage`): name the setting that
+  // fixes it, so a client can send the user there.
+  const loginRequired = parseLoginRequired(msg);
+  if (loginRequired) return c.json({ error: msg, loginRequired }, 401);
   if (msg.includes("not found")) return c.json({ error: msg }, 404);
   // The source is throttling or has blocked us (see `rateLimitedMessage`): answer 429 with when to
   // come back, so clients and the download engine back off instead of retrying into it.

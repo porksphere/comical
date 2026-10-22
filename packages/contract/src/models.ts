@@ -693,8 +693,33 @@ export const settingDescriptorSchema = z.discriminatedUnion("type", [
       refreshUrl: z.string().optional(),
     }),
   }),
+  /**
+   * A sign-in the user does on the site itself (contract 2.1), for a site with no API to sign in
+   * through. The host opens `url` in a browser it can read cookies from and, once every name in
+   * `cookies` is set, stores what it collected as this setting's value: a `Cookie` header string,
+   * `"a=1; b=2"`, which the bridge sends as it would a pasted one. It is a secret, like a password.
+   *
+   * Where no such browser exists (a web page can't read another site's cookies) the host lets the
+   * user paste the same string instead, so a bridge reads one value either way.
+   */
+  z.object({
+    type: z.literal("web-login"),
+    ...settingBase,
+    /** The site's own sign-in page. */
+    url: z.string().url(),
+    /** The cookies that mean "signed in": the host waits for all of them. */
+    cookies: z.array(z.string().min(1)).min(1),
+    /** Other sites the session also sets cookies on, collected with `url`'s. */
+    cookieUrls: z.array(z.string().url()).optional(),
+  }),
 ]);
 export type SettingDescriptor = z.infer<typeof settingDescriptorSchema>;
+
+/** Whether a setting's value is a credential: masked in UIs, kept in secure storage, never echoed back. */
+export function isSecretSetting(d: SettingDescriptor): boolean {
+  return (d.type === "string" && d.secret === true) || d.type === "oauth-pin" || d.type === "oauth-callback" ||
+    d.type === "web-login";
+}
 
 /**
  * A button in a settings form (`Bridge.loadSettings`, contract 2.1): "Test login", "Clear session".

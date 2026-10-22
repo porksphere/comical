@@ -17,7 +17,7 @@
  * `TrackerManager.get()`'s `RefreshableNetwork` `onRefreshed` callback, just polled after the fact
  * instead of pushed mid-request, since the sandboxed native context has no other channel out.
  */
-import type { SettingDescriptor, SettingValue } from "@comical/contract";
+import { isSecretSetting, type SettingDescriptor, type SettingValue } from "@comical/contract";
 import type { LoadedTracker } from "@comical/core/tracker-loader";
 import { redactSettingSecrets, resolveSettings } from "@comical/core/settings";
 import { KeyedQueue } from "./keyed-queue.ts";
@@ -165,11 +165,7 @@ export class EmbeddedTrackerProvider implements TrackerProvider {
     const { tracker, descriptors } = await this.load(id);
     const stored = await this.deps.settings.get(id);
     const { missingRequired } = resolveSettings(stored, descriptors);
-    const secretKeys = new Set(
-      descriptors
-        .filter((d) => (d.type === "string" && !!d.secret) || d.type === "oauth-pin" || d.type === "oauth-callback")
-        .map((d) => d.key),
-    );
+    const secretKeys = new Set(descriptors.filter(isSecretSetting).map((d) => d.key));
     const values: Record<string, SettingValue> = {};
     const secretsSet: string[] = [];
     for (const [k, v] of Object.entries(stored)) {

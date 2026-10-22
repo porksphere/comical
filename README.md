@@ -203,6 +203,7 @@ Settings are declared by **value kind**, not UI widget — `getSettings()` retur
 | `number` | `number` | `min?`, `max?`, `default?` |
 | `boolean` | `boolean` | `default?` |
 | `enum` | one of `options[].value` (or `string[]` if `multiple`) | `options: {value,label}[]`, `default?` |
+| `web-login` (2.1) | `string` — a `Cookie` header, `"a=1; b=2"` (secret) | `url` (the site's sign-in page), `cookies: string[]` (names that mean signed in), `cookieUrls?` |
 
 All share `key`, `label`, `description?`, `required?`. There is no `password` type — any `string`
 sets `secret: true`; the host masks it. An `enum` carries the expected-values list so a UI can
@@ -231,6 +232,14 @@ placeholder and (a subset of) enum options, drops anything else, and puts back a
 the form left out. `GET /bridges/:id` reports `settingsForm: true` when a bridge has one; the form
 is `GET /bridges/:id/settings/form` and an action is `POST /bridges/:id/settings/actions/:key`,
 which runs against the *saved* settings. A client falls back to `settings` if the form fails.
+
+**Web sign-in (contract 2.1).** For a site with no API to sign in through, a `web-login` setting has
+the user sign in on the site itself: the app opens `url` in a web view (an Electron window on
+desktop), waits until every name in `cookies` is set, and stores the cookies it collected — from
+`url` and each of `cookieUrls` — as the setting's value. A browser page can't read another site's
+cookies, so there the user pastes the same string. When the site turns a request away for want of
+a session, the bridge throws `loginRequiredMessage(key, reason?)`; the router answers `401
+{ error, loginRequired: { key, reason } }` and the app offers to open that setting.
 
 ### Search filters and sort
 
