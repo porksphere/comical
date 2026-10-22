@@ -23,7 +23,7 @@ export function defineSettings<const T extends readonly SettingDescriptor[]>(des
 }
 
 /** The value type a single descriptor resolves to. */
-export type SettingValueOf<D> = D extends { type: "string" }
+export type SettingValueOf<D> = D extends { type: "string" | "oauth-pin" | "oauth-callback" | "web-login" }
   ? string
   : D extends { type: "number" }
     ? number
