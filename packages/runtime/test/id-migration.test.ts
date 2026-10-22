@@ -224,6 +224,15 @@ describe("migrateInstalledBridges", () => {
     expect(got).toEqual([]);
   });
 
+  test("with no migrating bridge installed, the library isn't scanned at all", async () => {
+    const lib = await libraryWith("old");
+    lib.referencedBridgeIds = async () => {
+      throw new Error("scanned");
+    };
+    const prov = { list: async () => [{ info: info("1.0.0", false) }], get: async () => undefined };
+    await migrateInstalledBridges(prov, lib);
+  });
+
   test("a bridge that fails to load is logged and skipped", async () => {
     const lib = await libraryWith("old");
     const warnings: string[] = [];

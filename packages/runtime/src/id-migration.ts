@@ -159,9 +159,13 @@ export async function migrateInstalledBridges(
   library: Library,
   log?: LogCapability,
 ): Promise<void> {
+  const migrating = (await provider.list()).filter(({ info }) => info.migratesIds);
+  // Finding what's referenced reads every progress document — don't pay that on each start for
+  // nothing when no installed bridge migrates.
+  if (migrating.length === 0) return;
   const referenced = new Set(await library.referencedBridgeIds());
-  for (const { info } of await provider.list()) {
-    if (!info.migratesIds || !referenced.has(info.id)) continue;
+  for (const { info } of migrating) {
+    if (!referenced.has(info.id)) continue;
     if ((await library.idMigrationMark(info.id)) === info.version) continue;
     try {
       await provider.get(info.id);
