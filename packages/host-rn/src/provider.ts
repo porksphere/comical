@@ -77,11 +77,14 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
 
   constructor(private readonly deps: EmbeddedProviderDeps) {}
 
+  /** A miss is re-checked against the manifest before it counts: `list()` fills the cache one bridge
+   *  at a time, so a lookup racing it (a startup chapter check, say) sees a partial set. */
   private async installedFor(id: string): Promise<InstalledBridge> {
-    if (this.installedCache.size === 0) {
+    let found = this.installedCache.get(id);
+    if (!found) {
       for (const b of await this.deps.bundles.installed()) this.installedCache.set(b.info.id, b);
+      found = this.installedCache.get(id);
     }
-    const found = this.installedCache.get(id);
     if (!found) throw new Error(`bridge not found: ${id}`);
     return found;
   }

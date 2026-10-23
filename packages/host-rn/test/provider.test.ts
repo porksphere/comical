@@ -279,6 +279,42 @@ describe("embedded transport (real router + core, node:vm engine stand-in)", () 
     expect(a).toBe(b); // same cached entry, not two independently-built proxies
   });
 
+  test("get() racing a list() still finds a bridge the list hasn't reached yet", async () => {
+    // list() fills the installed cache one bridge at a time and loads each settings-bearing bridge
+    // in between, so at startup a get() for a later bridge used to see a non-empty, partial cache
+    // and throw "bridge not found" for a bridge that was installed all along.
+    let releaseCfg!: () => void;
+    let cfgInitStarted!: () => void;
+    const cfgGate = new Promise<void>((r) => (releaseCfg = r));
+    const cfgStarted = new Promise<void>((r) => (cfgInitStarted = r));
+    const base = makeFakeNative();
+    const native: NativeBridgeRuntime = {
+      ...base,
+      initBridge: async (id, ...rest) => {
+        if (id === "cfg") {
+          cfgInitStarted();
+          await cfgGate;
+        }
+        return base.initBridge(id, ...rest);
+      },
+    };
+    const cfgFirst: BundleSource = { ...bundles, installed: async () => [...installed].reverse() };
+    const provider = new EmbeddedBridgeProvider({ native, bundles: cfgFirst, settings: memorySettings() });
+
+    const listing = provider.list();
+    await cfgStarted;
+    const demo = await provider.get("demo");
+    expect(demo.info.id).toBe("demo");
+    releaseCfg();
+    expect((await listing).map((s) => s.info.id)).toEqual(["cfg", "demo"]);
+  });
+
+  test("get() for a bridge that really isn't installed still throws not found", async () => {
+    const provider = makeProvider();
+    await provider.list();
+    await expect(provider.get("nope")).rejects.toThrow("bridge not found: nope");
+  });
+
   test("updateSettings serializes concurrent writes for the same id so neither is lost", async () => {
     // A plain get-merge-set composed across two `await`s is a lost-update race: two concurrent
     // updateSettings calls for the same id can both read the pre-write value before either set()
