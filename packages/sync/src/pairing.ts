@@ -59,12 +59,29 @@ export interface PairingGateOptions {
   pairings: StoredPairing[];
   /** Called with every pairing whenever one changes. These hold keys: keep them where the hub's own data is. */
   save(pairings: StoredPairing[]): void;
-  /** Answers a paired device's push or pull, the way the hub's routes would in the clear. */
-  forward(path: string, body: string): Promise<{ status: number; body: string }>;
+  /** Answers a paired device's request, the way the hub's routes would in the clear. */
+  forward(request: ForwardedRequest): Promise<{ status: number; body: string }>;
+  /**
+   * Routes a paired device may read besides syncing — what this hub has downloaded, say — so a
+   * phone on the same network can take pages from here instead of the source. Forwarded as a GET
+   * with the device's body ignored, so nothing a device says here can change anything; everything
+   * not named is answered 404, as it was. Without this, a device reaches push and pull and nothing
+   * else.
+   */
+  reads?(path: string): boolean;
   /** Called when `devices()` has a new answer. */
   onDevices?(devices: PairedDevice[]): void;
   now?(): number;
 }
+
+/** A paired device's request after the gate opened it: a sync as a POST with its body, a read as a GET. */
+export type ForwardedRequest = {
+  method: "GET" | "POST";
+  path: string;
+  body: string;
+  /** The pairing it came under — whose read this is, for a hub that hands out anything per device. */
+  device: string;
+};
 
 export interface PairingGate {
   /** A fresh code for one device to pair with. Any code still open stops working. */
@@ -161,14 +178,17 @@ export function pairingGate(opts: PairingGateOptions): PairingGate {
         changed();
         return reply(204);
       }
-      if (path !== SYNC_PUSH_PATH && path !== SYNC_PULL_PATH) return reply(404, JSON.stringify({ error: "not found" }));
+      const read = path !== SYNC_PUSH_PATH && path !== SYNC_PULL_PATH;
+      if (read && !opts.reads?.(path)) return reply(404, JSON.stringify({ error: "not found" }));
       if (path === SYNC_PULL_PATH) {
         const name = deviceNameSchema.safeParse((parseJson(request.body) as { name?: unknown } | undefined)?.name);
         if (name.success) pairing.name = name.data;
         pairing.lastSeenAt = now();
         changed();
       }
-      const answer = await opts.forward(path, request.body);
+      // A read is not marked as activity: it can come with every chapter opened, and `changed`
+      // writes the pairings out each time.
+      const answer = await opts.forward({ method: read ? "GET" : "POST", path, body: request.body, device: pairing.id });
       return reply(answer.status, answer.body);
     },
   };

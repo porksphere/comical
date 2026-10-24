@@ -92,6 +92,15 @@ export class HttpBackend implements SyncBackend {
     throw new SyncHttpError(status, `sync: push refused (${status}): ${describe(body)}`);
   }
 
+  /**
+   * A read the hub lets paired devices make besides syncing (`PairingGateOptions.reads`) — what it
+   * has downloaded, say. Sealed like a sync; the hub answers it as a GET of that route, and a hub that
+   * doesn't offer the route says 404 here. The body is whatever the route answered, parsed.
+   */
+  async read(path: string): Promise<{ status: number; body: unknown }> {
+    return this.post(path, {});
+  }
+
   async pull(request: PullRequest): Promise<PullResult> {
     const { status, body } = await this.post(SYNC_PULL_PATH, request);
     if (!ok(status)) throw new SyncHttpError(status, `sync: pull refused (${status}): ${describe(body)}`);

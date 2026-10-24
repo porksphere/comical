@@ -86,6 +86,21 @@ describe("HttpBackend over the sealed channel", () => {
     await expect(backend.unpair()).resolves.toBeUndefined();
   });
 
+  test("read asks a route the hub offers, and is told 404 by one that doesn't", async () => {
+    const offering = await gatedHub([], { reads: (path) => path === "/downloads" });
+    const backend = await paired(offering);
+    expect(await backend.read("/downloads")).toEqual({ status: 200, body: { path: "/downloads", device: expect.any(String) } });
+    expect((await backend.read("/downloads/prefs")).status).toBe(404);
+    expect(offering.forwarded).toEqual(["GET /downloads"]);
+    for (const body of offering.wire) expect(body).not.toContain("downloads");
+
+    const plain = await gatedHub();
+    expect((await (await paired(plain)).read("/downloads")).status).toBe(404);
+    // Unlinked, a read is refused the same way a sync is.
+    offering.gate.unlink(offering.gate.devices()[0]!.id);
+    await expect(backend.read("/downloads")).rejects.toBeInstanceOf(SyncUnlinkedError);
+  });
+
   test("unpair has the hub forget the device, whose key then opens nothing", async () => {
     const hub = await gatedHub();
     const backend = await paired(hub);

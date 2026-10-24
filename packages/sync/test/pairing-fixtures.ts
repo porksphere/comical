@@ -28,8 +28,15 @@ export type GatedHub = {
   clock: { now: number };
 };
 
+export type GatedHubOptions = {
+  clock?: { now: number };
+  /** Routes paired devices may read (`PairingGateOptions.reads`); answered with `{ path, device }`. */
+  reads?: (path: string) => boolean;
+};
+
 /** A hub behind a pairing gate. `pairings` is what an earlier run saved. */
-export async function gatedHub(pairings: StoredPairing[] = [], clock = { now: 1_000 }): Promise<GatedHub> {
+export async function gatedHub(pairings: StoredPairing[] = [], opts: GatedHubOptions = {}): Promise<GatedHub> {
+  const clock = opts.clock ?? { now: 1_000 };
   const hub = await SyncHub.open(new MemorySegmentStore());
   const wire: string[] = [];
   const forwarded: string[] = [];
@@ -42,8 +49,10 @@ export async function gatedHub(pairings: StoredPairing[] = [], clock = { now: 1_
     },
     onDevices: (devices) => notified.push(devices),
     now: () => clock.now,
-    forward: async (path, body) => {
-      forwarded.push(path);
+    ...(opts.reads ? { reads: opts.reads } : {}),
+    forward: async ({ method, path, body, device }) => {
+      forwarded.push(`${method} ${path}`);
+      if (method === "GET") return { status: 200, body: JSON.stringify({ path, device }) };
       try {
         if (path === "/sync/push") {
           await hub.push(JSON.parse(body) as Segment);

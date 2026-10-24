@@ -170,7 +170,7 @@ describe("pairing", () => {
     hub.gate.unlink(gone.id);
 
     const clock = { now: 1_000 + 29 * DAY };
-    const restarted = await gatedHub(hub.saved(), clock);
+    const restarted = await gatedHub(hub.saved(), { clock });
     expect(restarted.gate.devices().map((d) => d.name)).toEqual(["Kept"]);
     await expect(backend(restarted, gone).pull(pull("Gone"))).rejects.toBeInstanceOf(SyncUnlinkedError);
 
@@ -194,5 +194,34 @@ describe("pairing", () => {
     const forPull = channel.sealRequest("/sync/pull", JSON.stringify(pull("A phone")));
     expect(await hub.gate.handle("/sync/push", forPull.envelope)).toBeNull();
     expect(await hub.gate.handle("/sync/pull", "not an envelope")).toBeNull();
+  });
+
+  test("a hub that offers reads answers them as GETs of that device, and nothing beyond them", async () => {
+    const hub = await gatedHub([], { reads: (path) => path === "/downloads" || path.startsWith("/downloads/entries/") });
+    const pairing = await enrol(hub, hub.gate.openCode().code);
+    const channel = sealedChannel(pairing.key, pairing.id);
+    const ask = async (path: string, body = "{}") => {
+      const { nonce, envelope } = channel.sealRequest(path, body);
+      return channel.openResponse(nonce, (await hub.gate.handle(path, envelope))!);
+    };
+
+    // Whatever the device sends along is not what the hub acts on: a read is a GET.
+    const have = await ask("/downloads", JSON.stringify({ delete: "everything" }));
+    expect(have?.status).toBe(200);
+    expect(JSON.parse(have!.body)).toEqual({ path: "/downloads", device: pairing.id });
+    expect((await ask("/downloads/entries/b/s"))?.status).toBe(200);
+    expect(hub.forwarded).toEqual(["GET /downloads", "GET /downloads/entries/b/s"]);
+
+    // A route the hub didn't name is as unknown as it was; a read is not a sync, so it isn't activity.
+    expect((await ask("/downloads/prefs"))?.status).toBe(404);
+    expect((await ask("/bridges"))?.status).toBe(404);
+    expect(hub.forwarded).toHaveLength(2);
+    expect(hub.gate.devices()[0]?.lastSeenAt).toBeNull();
+
+    // A stranger's read opens nothing, and an unlinked device is told so instead.
+    const other = sealedChannel("not the key", pairing.id);
+    expect(await hub.gate.handle("/downloads", other.sealRequest("/downloads", "{}").envelope)).toBeNull();
+    hub.gate.unlink(pairing.id);
+    expect((await ask("/downloads"))?.status).toBe(410);
   });
 });

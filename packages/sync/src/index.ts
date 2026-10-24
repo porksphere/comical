@@ -67,6 +67,7 @@ export {
   PAIRING_CODE_TTL_MS,
   pairingGate,
   SyncPairingError,
+  type ForwardedRequest,
   type PairedDevice,
   type Pairing,
   type PairingCode,
