@@ -7,6 +7,11 @@
  * Per-series documents are keyed by `entryKey(bridgeId, seriesId)`; collection items by their
  * derived `collectionItemId`. There is no separate "entries" document — a tracked series IS a
  * `CollectionSeriesItem`.
+ *
+ * A record a store returns, or is handed, belongs to the caller from then on: a store that caches
+ * must copy on the way in and out. `Library` edits what it reads before writing it back, and sync
+ * records a write by comparing the record before and after it — handed the cached object, it sees
+ * no change and the edit never leaves the device. `@comical/sync/conformance` checks a store for it.
  */
 import type { ActivityItem, BridgePrefs, CachedChapters, CachedSeriesDetail, ChapterProgress, Collection, CollectionItem, CollectionItemScope, HistoryItem, SeriesGroup, TrackerLink } from "./models.ts";
 

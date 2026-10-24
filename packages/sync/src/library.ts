@@ -293,15 +293,21 @@ export function wrapLibraryStore(inner: LibraryStore, engine: SyncEngine): Libra
   ): Promise<T> {
     return engine.exclusive(async () => {
       const keys = typeof targets === "function" ? await targets() : targets;
-      const before = await Promise.all(keys.map(([t, id]) => view.read(t, id)));
+      // Serialized now, not compared later: a store that hands back the object it keeps would have
+      // the write change it in place, and the "before" would read as the "after".
+      const before = await Promise.all(
+        keys.map(async ([t, id]) => {
+          const value = await view.read(t, id);
+          return { json: stableJson(value), present: value !== undefined, read: (value as ProgressValue | undefined)?.read === true };
+        }),
+      );
       const result = await write();
       for (let i = 0; i < keys.length; i++) {
         const [table, id] = keys[i]!;
         const after = await view.read(table, id);
-        if (stableJson(before[i]) === stableJson(after)) continue;
-        const wasRead = (before[i] as ProgressValue | undefined)?.read === true;
+        if (before[i]!.json === stableJson(after)) continue;
         const isRead = (after as ProgressValue | undefined)?.read === true;
-        const rewind = table === "progress" && ((wasRead && !isRead) || (before[i] !== undefined && after === undefined));
+        const rewind = table === "progress" && ((before[i]!.read && !isRead) || (before[i]!.present && after === undefined));
         engine.touch(table, id, { rewind });
       }
       return result;

@@ -226,13 +226,16 @@ export function bridgeSettingsSyncStore(provider: BridgeSettingsProvider, opts: 
 export function wrapBridgeSettings<P extends BridgeSettingsProvider>(provider: P, engine: SyncEngine): P {
   const update = (id: string, values: Record<string, SettingValue>) =>
     engine.exclusive(async () => {
-      const before = await provider.storedSettings(id);
+      // Serialized now, not compared later: a provider may hand back the object it keeps, and the
+      // write may then change it in place — the "before" would read as the "after".
+      const stored = await provider.storedSettings(id);
+      const before = new Map(Object.keys(values).map((key) => [key, stableJson(stored[key])]));
       // Asked before the write: a host drops its loaded bridge on a settings change, so asking
       // after would load it again only to answer this.
       const keys = await travelling(provider, id, Object.keys(values));
       const after = await provider.updateSettings(id, values);
       for (const key of keys) {
-        if (stableJson(before[key]) !== stableJson(after[key])) engine.touch("bridgeSettings", compositeId.bridgeSetting(id, key));
+        if (before.get(key) !== stableJson(after[key])) engine.touch("bridgeSettings", compositeId.bridgeSetting(id, key));
       }
       return after;
     });

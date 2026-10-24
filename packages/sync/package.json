@@ -4,7 +4,8 @@
   "type": "module",
   "description": "Cross-device sync: per-device change logs, the merge every device agrees on, and the engine that drives them",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./conformance": "./src/conformance.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {
