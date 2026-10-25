@@ -1169,9 +1169,12 @@ export class ComicalRuntime {
     } catch (e) {
       // continue — one bad bridge or deleted series should not abort the sync. A series the source
       // says is gone is recorded (and stamped checked), or it would stay the stalest and head every run.
+      // Only the chapter pull can throw it here: the detail refresh swallows its own errors.
       const gone = parseSeriesGone(e instanceof Error ? e.message : String(e));
       if (gone) {
-        await lib.recordSeriesGone(entryKey(entry.bridgeId, entry.seriesId), gone.reason, { checked: true }).catch(() => {});
+        await lib
+          .recordSeriesGone(entryKey(entry.bridgeId, entry.seriesId), gone.reason, { checked: true, via: "chapters" })
+          .catch(() => {});
       }
     }
   }

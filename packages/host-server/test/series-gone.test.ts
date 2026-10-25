@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { seriesGoneMessage, type BridgeInfo, type Chapter, type Page, type SeriesInfo } from "@comical/contract";
-import { entryKey, InMemoryLibraryStore, Library, REMOVAL_CONFIRM_MS } from "@comical/library";
+import { entryKey, InMemoryLibraryStore, Library } from "@comical/library";
 import type { BridgeProvider } from "../src/bridge-provider.ts";
 import { createRouter } from "../src/router.ts";
 
@@ -20,30 +20,34 @@ const INFO: BridgeInfo = {
   capabilities: [],
 };
 
-/** A bridge whose `gone` set of series answer with the series-gone marker; `down` throws a plain error. */
+/**
+ * A bridge whose `gone` set of series answer with the series-gone marker — on every call for an id,
+ * or on one call for `"<id>:<surface>"` (the shape of a source whose metadata API still describes a
+ * taken-down gallery, only the page reader hits the notice); `down` throws a plain error.
+ */
 function setup() {
   const gone = new Set<string>();
   const down = new Set<string>();
-  const fail = (id: string) => {
-    if (gone.has(id)) throw new Error(`getSeriesDetails threw: ${seriesGoneMessage("Taken down by the source")}`);
-    if (down.has(id)) throw new Error("getSeriesDetails threw: network unreachable");
+  const fail = (id: string, surface: "details" | "chapters" | "pages") => {
+    if (gone.has(id) || gone.has(`${id}:${surface}`)) throw new Error(`${surface} threw: ${seriesGoneMessage("Taken down by the source")}`);
+    if (down.has(id)) throw new Error(`${surface} threw: network unreachable`);
   };
   const bridge = {
     info: INFO,
     getSeriesDetails: async (id: string): Promise<SeriesInfo> => {
-      fail(id);
+      fail(id, "details");
       return { id, title: `Series ${id}` };
     },
     getChapters: async (id: string): Promise<Chapter[]> => {
-      fail(id);
+      fail(id, "chapters");
       return [{ id: "c1", name: "Chapter 1", number: 1 }];
     },
     getChapterPages: async (id: string): Promise<Page[]> => {
-      fail(id);
+      fail(id, "pages");
       return [{ index: 0, imageUrl: "https://example.test/1.jpg" }];
     },
     getSeriesPages: async (id: string): Promise<Page[]> => {
-      fail(id);
+      fail(id, "pages");
       return [{ index: 0, imageUrl: "https://example.test/1.jpg" }];
     },
   };
@@ -85,7 +89,7 @@ describe("series removed from the source", () => {
   });
 
   test("a collected series keeps serving its saved detail and chapters, flagged with the removal", async () => {
-    const { gone, library, get, advance } = setup();
+    const { gone, library, get } = setup();
     await library.collectSeries({ bridgeId: "src", seriesId: "a" }, { seriesTitle: "Series a" });
     expect((await get("/bridges/src/series/a")).status).toBe(200); // live → cached detail
     expect((await get("/bridges/src/series/a/chapters")).status).toBe(200); // live → saved chapters
@@ -96,20 +100,16 @@ describe("series removed from the source", () => {
     const detail = (await first.json()) as {
       title: string;
       cached?: boolean;
-      removal?: { reason: string; firstSeenAt: number; confirmedAt?: number };
+      removal?: { reason: string; firstSeenAt: number; confirmedAt?: number; via?: string };
     };
     expect(detail.title).toBe("Series a");
     expect(detail.cached).toBe(true);
-    expect(detail.removal?.reason).toBe("Taken down by the source");
-    expect(detail.removal?.confirmedAt).toBeUndefined(); // one answer is only a suspicion
+    expect(detail.removal).toMatchObject({ reason: "Taken down by the source", confirmedAt: 1_000_000, via: "details" }); // one answer confirms it
 
     const chapters = await get("/bridges/src/series/a/chapters");
     expect(chapters.status).toBe(200);
     expect(((await chapters.json()) as Chapter[]).map((c) => c.id)).toEqual(["c1"]);
 
-    advance(REMOVAL_CONFIRM_MS + 1);
-    const second = (await (await get("/bridges/src/series/a")).json()) as { removal?: { confirmedAt?: number } };
-    expect(second.removal?.confirmedAt).toBeDefined();
     expect((await library.getLibrary({ removed: true })).map((v) => v.seriesId)).toEqual(["a"]);
     const listed = (await (await get("/library?removed=true")).json()) as Array<{ seriesId: string; removal?: unknown }>;
     expect(listed.map((v) => v.seriesId)).toEqual(["a"]);
@@ -124,14 +124,47 @@ describe("series removed from the source", () => {
     await get("/bridges/src/series/a");
     gone.delete("a");
     down.add("a");
-    advance(REMOVAL_CONFIRM_MS + 1);
+    advance(1);
     const res = (await (await get("/bridges/src/series/a")).json()) as {
       cached?: boolean;
-      removal?: { reason: string; confirmedAt?: number };
+      removal?: { reason: string; lastSeenAt: number };
     };
     expect(res.cached).toBe(true);
     expect(res.removal?.reason).toBe("Taken down by the source");
-    expect(res.removal?.confirmedAt).toBeUndefined(); // a network error is no second answer
+    expect(res.removal?.lastSeenAt).toBe(1_000_000); // a network error is no gone answer
+  });
+
+  test("a live detail reports a removal the pages call heard; only the pages coming back clears it", async () => {
+    const { gone, library, get } = setup();
+    await library.collectSeries({ bridgeId: "src", seriesId: "a" }, { seriesTitle: "Series a" });
+    expect((await get("/bridges/src/series/a")).status).toBe(200);
+
+    gone.add("a:pages");
+    expect((await get("/bridges/src/series/a/pages")).status).toBe(410);
+    const res = (await (await get("/bridges/src/series/a")).json()) as {
+      title: string;
+      cached?: boolean;
+      removal?: { reason: string; via?: string };
+    };
+    expect(res.title).toBe("Series a");
+    expect(res.cached).toBeUndefined(); // the live answer…
+    expect(res.removal).toMatchObject({ reason: "Taken down by the source", via: "pages" }); // …still says removed
+    expect((await library.getSeries(entryKey("src", "a")))?.removal?.via).toBe("pages");
+    // A chapter list coming back doesn't disprove it either.
+    expect((await get("/bridges/src/series/a/chapters")).status).toBe(200);
+    expect((await library.getSeries(entryKey("src", "a")))?.removal?.via).toBe("pages");
+
+    gone.delete("a:pages");
+    expect((await get("/bridges/src/series/a/pages")).status).toBe(200);
+    expect((await library.getSeries(entryKey("src", "a")))?.removal).toBeUndefined();
+    const after = (await (await get("/bridges/src/series/a")).json()) as { removal?: unknown };
+    expect(after.removal).toBeUndefined();
+  });
+
+  test("an uncollected series' live detail carries no removal field", async () => {
+    const { get } = setup();
+    const res = (await (await get("/bridges/src/series/x")).json()) as { removal?: unknown };
+    expect("removal" in res).toBe(false);
   });
 
   test("the chapters route records a gone answer too", async () => {

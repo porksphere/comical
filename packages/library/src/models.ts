@@ -296,11 +296,18 @@ export const legacyLibraryEntrySchema = z.object({
 });
 export type LegacyLibraryEntry = z.infer<typeof legacyLibraryEntrySchema>;
 
+/** The bridge call that heard a gone answer — see `seriesRemovalSchema.via`. */
+export const seriesRemovalSurfaceSchema = z.enum(["details", "chapters", "pages"]);
+export type SeriesRemovalSurface = z.infer<typeof seriesRemovalSurfaceSchema>;
+
 /**
- * The source's "this series is gone" answer (`seriesGoneMessage`) for a library entry. One answer is
- * a suspicion — sources blip, and a single 404 mustn't badge someone's library — so `confirmedAt` is
- * stamped only by a second answer at least `REMOVAL_CONFIRM_MS` after the first. Any live success
- * clears the whole record. Nothing else changes: progress, downloads, saved detail and chapters stay.
+ * The source's "this series is gone" answer (`seriesGoneMessage`) for a library entry. One answer
+ * confirms it: every bridge's gone assertion names a permanent state (a takedown, an id the source no
+ * longer knows), and a source that is merely struggling answers rate-limited or with a plain error
+ * instead, which records nothing. `via` names the call that heard it, and only that same call
+ * succeeding clears the record — some sources' metadata API still describes a taken-down series, so a
+ * detail call coming back fine says nothing about the pages call that read the takedown notice.
+ * Nothing else changes: progress, downloads, saved detail and chapters stay.
  */
 export const seriesRemovalSchema = z.object({
   /** The bridge's short user-facing reason, e.g. "Copyright claim by …". */
@@ -309,13 +316,21 @@ export const seriesRemovalSchema = z.object({
   firstSeenAt: z.number().int(),
   /** Most recent gone answer (epoch ms). */
   lastSeenAt: z.number().int(),
-  /** When the removal was confirmed — the entry is badged and its sync slowed from here on. */
+  /**
+   * When the removal was confirmed — the entry is badged and its sync slowed from here on. Stamped by
+   * the first answer; a record from before that rule (one that was waiting on a second answer) is
+   * stamped by its next.
+   */
   confirmedAt: z.number().int().optional(),
+  /** The call that heard the latest answer. Absent on records from before calls were told apart, which any success clears. */
+  via: seriesRemovalSurfaceSchema.optional().catch(undefined),
 });
 export type SeriesRemoval = z.infer<typeof seriesRemovalSchema>;
 
-/** How far apart two gone answers must be before a removal counts as confirmed. */
-export const REMOVAL_CONFIRM_MS = 6 * 60 * 60 * 1000;
+/** Whether a success on `via` disproves this removal: the same call heard it, or none is recorded. */
+export function removalClearedBy(removal: SeriesRemoval, via: SeriesRemovalSurface): boolean {
+  return removal.via === undefined || removal.via === via;
+}
 
 export const collectionSeriesItemSchema = z.object({
   type: z.literal("series"),

@@ -8,7 +8,6 @@ import {
   InMemoryLibraryStore,
   Library,
   normalizeTitle,
-  REMOVAL_CONFIRM_MS,
   removedActivityChapterId,
 } from "../src/index.ts";
 
@@ -562,43 +561,33 @@ describe("an empty chapter list after a known one (source glitch)", () => {
 });
 
 describe("removed from the source", () => {
-  /** A settable clock: removal confirmation is about how far apart the gone answers are. */
+  /** A settable clock: the removal's stamps are what's asserted. */
   function steppedLibrary() {
     let t = 1_000;
     const lib = new Library(new InMemoryLibraryStore(), { now: () => t });
     return { lib, advance: (ms: number) => (t += ms) };
   }
 
-  test("one gone answer is a suspicion; a second one far enough later confirms it", async () => {
+  test("one gone answer confirms the removal; later ones only refresh it", async () => {
     const { lib, advance } = steppedLibrary();
     await lib.collectSeries(COORD, SNAP);
-    const first = await lib.recordSeriesGone(KEY, "Removed from Demo");
-    expect(first).toEqual({ reason: "Removed from Demo", firstSeenAt: 1_000, lastSeenAt: 1_000 });
+    const first = await lib.recordSeriesGone(KEY, "Removed from Demo", { via: "details" });
+    expect(first).toEqual({ reason: "Removed from Demo", firstSeenAt: 1_000, lastSeenAt: 1_000, confirmedAt: 1_000, via: "details" });
+    expect((await lib.getLibrary({ removed: true })).map((v) => v.seriesId)).toEqual([SERIES.seriesId]);
 
-    // Another answer inside the window (the user re-opening the page) doesn't confirm it.
     advance(60_000);
-    expect((await lib.recordSeriesGone(KEY, "Removed from Demo"))?.confirmedAt).toBeUndefined();
-    expect(await lib.getLibrary({ removed: true })).toHaveLength(0);
-
-    advance(REMOVAL_CONFIRM_MS);
-    const confirmed = await lib.recordSeriesGone(KEY, "Copyright claim by X");
-    expect(confirmed?.confirmedAt).toBe(1_000 + 60_000 + REMOVAL_CONFIRM_MS);
-    expect(confirmed?.firstSeenAt).toBe(1_000);
-    expect(confirmed?.reason).toBe("Copyright claim by X");
-    const removed = await lib.getLibrary({ removed: true });
-    expect(removed.map((v) => v.seriesId)).toEqual([SERIES.seriesId]);
+    const again = await lib.recordSeriesGone(KEY, "Copyright claim by X", { via: "pages" });
+    expect(again).toEqual({ reason: "Copyright claim by X", firstSeenAt: 1_000, lastSeenAt: 61_000, confirmedAt: 1_000, via: "pages" });
   });
 
   test("progress, saved detail and chapters survive a removal untouched", async () => {
-    const { lib, advance } = steppedLibrary();
+    const { lib } = steppedLibrary();
     await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1), ch("c2", 2)]);
     await lib.cacheSeriesDetail(KEY, { id: SERIES.seriesId, title: SERIES.title });
     await lib.markRead(KEY, "c1", true);
 
-    await lib.recordSeriesGone(KEY, "gone");
-    advance(REMOVAL_CONFIRM_MS);
-    await lib.recordSeriesGone(KEY, "gone");
+    await lib.recordSeriesGone(KEY, "gone", { via: "pages" });
 
     expect(await lib.isCollected(KEY)).toBe(true);
     expect((await lib.getProgress(KEY)).map((p) => p.chapterId)).toEqual(["c1"]);
@@ -608,15 +597,44 @@ describe("removed from the source", () => {
     expect(view?.unreadCount).toBe(1);
   });
 
-  test("a live detail or a real chapter list clears the record", async () => {
+  test("a success clears only a removal the same call heard", async () => {
+    const { lib } = steppedLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    // The pages said gone; the detail and chapter calls coming back fine don't disprove that.
+    await lib.recordSeriesGone(KEY, "gone", { via: "pages" });
+    await lib.cacheSeriesDetail(KEY, { id: SERIES.seriesId, title: SERIES.title });
+    expect((await lib.getSeries(KEY))?.removal?.via).toBe("pages");
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    expect((await lib.getSeries(KEY))?.removal?.via).toBe("pages");
+    await lib.clearSeriesGone(KEY, "details");
+    expect((await lib.getSeries(KEY))?.removal?.via).toBe("pages");
+    await lib.clearSeriesGone(KEY, "pages");
+    expect((await lib.getSeries(KEY))?.removal).toBeUndefined();
+
+    // The same call coming back does.
+    await lib.recordSeriesGone(KEY, "gone", { via: "details" });
+    await lib.cacheSeriesDetail(KEY, { id: SERIES.seriesId, title: SERIES.title });
+    expect((await lib.getSeries(KEY))?.removal).toBeUndefined();
+    await lib.recordSeriesGone(KEY, "gone", { via: "chapters" });
+    await lib.syncChapters(KEY, [ch("c1", 1)]);
+    expect((await lib.getSeries(KEY))?.removal).toBeUndefined();
+  });
+
+  test("a record that doesn't say which call heard it clears on any success", async () => {
     const { lib } = steppedLibrary();
     await lib.collectSeries(COORD, SNAP);
     await lib.recordSeriesGone(KEY, "gone");
+    expect((await lib.getSeries(KEY))?.removal?.via).toBeUndefined();
     await lib.cacheSeriesDetail(KEY, { id: SERIES.seriesId, title: SERIES.title });
     expect((await lib.getSeries(KEY))?.removal).toBeUndefined();
 
     await lib.recordSeriesGone(KEY, "gone");
     await lib.syncChapters(KEY, [ch("c1", 1)]);
+    expect((await lib.getSeries(KEY))?.removal).toBeUndefined();
+
+    // Clearing without naming a call drops whatever is recorded.
+    await lib.recordSeriesGone(KEY, "gone", { via: "pages" });
+    await lib.clearSeriesGone(KEY);
     expect((await lib.getSeries(KEY))?.removal).toBeUndefined();
   });
 
@@ -624,7 +642,7 @@ describe("removed from the source", () => {
     const { lib } = steppedLibrary();
     await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)]);
-    await lib.recordSeriesGone(KEY, "gone");
+    await lib.recordSeriesGone(KEY, "gone", { via: "chapters" });
     await lib.syncChapters(KEY, []);
     expect((await lib.getSeries(KEY))?.removal?.reason).toBe("gone");
   });
@@ -646,13 +664,9 @@ describe("removed from the source", () => {
     expect(await lib.isCollected(KEY)).toBe(false);
   });
 
-  test("a confirmed removal is one feed event that never counts as unread", async () => {
+  test("a removal is one feed event that never counts as unread", async () => {
     const { lib, advance } = steppedLibrary();
     await lib.collectSeries(COORD, SNAP);
-    await lib.recordSeriesGone(KEY, "gone");
-    expect(await lib.getActivity()).toHaveLength(0);
-
-    advance(REMOVAL_CONFIRM_MS);
     await lib.recordSeriesGone(KEY, "gone");
     advance(60_000);
     await lib.recordSeriesGone(KEY, "gone");
@@ -663,9 +677,9 @@ describe("removed from the source", () => {
       kind: "removed",
       bridgeId: SERIES.bridgeId,
       seriesId: SERIES.seriesId,
-      chapterId: removedActivityChapterId(1_000 + REMOVAL_CONFIRM_MS),
+      chapterId: removedActivityChapterId(1_000),
       title: SERIES.title,
-      detectedAt: 1_000 + REMOVAL_CONFIRM_MS,
+      detectedAt: 1_000,
       read: true,
     });
     expect(await lib.unreadActivityCount()).toBe(0);
@@ -680,20 +694,15 @@ describe("removed from the source", () => {
 
   test("the series coming back withdraws its removed event; a second removal is news again", async () => {
     const { lib, advance } = steppedLibrary();
-    const confirm = async () => {
-      await lib.recordSeriesGone(KEY, "gone");
-      advance(REMOVAL_CONFIRM_MS);
-      await lib.recordSeriesGone(KEY, "gone");
-    };
     await lib.collectSeries(COORD, SNAP);
     await lib.syncChapters(KEY, [ch("c1", 1)]);
-    await confirm();
+    await lib.recordSeriesGone(KEY, "gone", { via: "details" });
     expect(await lib.getActivity()).toHaveLength(1);
     await lib.cacheSeriesDetail(KEY, { id: SERIES.seriesId, title: SERIES.title });
     expect(await lib.getActivity()).toHaveLength(0);
 
     advance(1);
-    await confirm();
+    await lib.recordSeriesGone(KEY, "gone", { via: "chapters" });
     const again = await lib.getActivity();
     expect(again).toHaveLength(1);
     expect(again[0]?.detectedAt).toBe((await lib.getSeries(KEY))?.removal?.confirmedAt);
@@ -714,6 +723,21 @@ describe("removed from the source", () => {
       removal: { reason: 5 },
     });
     expect(parsed.removal).toBeUndefined();
+  });
+
+  test("an unknown `via` is dropped, keeping the record (so any success clears it)", () => {
+    const parsed = collectionSeriesItemSchema.parse({
+      type: "series",
+      id: "x",
+      bridgeId: "demo",
+      seriesId: "s1",
+      seriesTitle: "S",
+      collectedAt: 1,
+      updatedAt: 1,
+      collectionIds: [],
+      removal: { reason: "gone", firstSeenAt: 1, lastSeenAt: 1, via: "search" },
+    });
+    expect(parsed.removal).toEqual({ reason: "gone", firstSeenAt: 1, lastSeenAt: 1 });
   });
 });
 

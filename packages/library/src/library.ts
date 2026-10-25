@@ -17,7 +17,7 @@ import {
   legacyLibraryEntrySchema,
   collectionItemId,
   parseEntryKey,
-  REMOVAL_CONFIRM_MS,
+  removalClearedBy,
   removedActivityChapterId,
   type ActivityItem,
   type ActivityItemView,
@@ -46,6 +46,7 @@ import {
   type ResumePoint,
   type SeriesGroup,
   type SeriesRemoval,
+  type SeriesRemovalSurface,
   type TrackerLink,
 } from "./models.ts";
 import type { LibraryStore } from "./store.ts";
@@ -472,21 +473,27 @@ export class Library {
     if (existing?.coverFile !== undefined) doc.coverFile = existing.coverFile;
     if (existing?.coverSourceUrl !== undefined) doc.coverSourceUrl = existing.coverSourceUrl;
     await this.store.putSeriesDetail(key, doc);
-    // Every caller hands this a live, successful detail — the series is evidently still there.
-    await this.clearSeriesGone(key);
+    // Every caller hands this a live, successful detail — as far as the detail call can tell, the
+    // series is still there. A removal another call heard stays (see `seriesRemovalSchema`).
+    await this.clearSeriesGone(key, "details");
   }
 
   /**
    * Record the source's "this series is gone" answer for a library entry and return the resulting
-   * removal (undefined when the series isn't collected). The first answer only opens a suspicion; one
-   * at least {@link REMOVAL_CONFIRM_MS} later confirms it, and puts a `kind: "removed"` event in the
-   * activity feed. Touches nothing else — progress, saved detail/chapters and downloads all stay
-   * readable.
+   * removal (undefined when the series isn't collected). The first answer confirms it (see
+   * `seriesRemovalSchema` for why one is enough) and puts a `kind: "removed"` event in the activity
+   * feed; later ones only refresh the reason and `lastSeenAt`. Touches nothing else — progress, saved
+   * detail/chapters and downloads all stay readable.
    *
+   * `via` names the call that heard the answer, so that only the same call succeeding clears it.
    * `checked` also stamps `chaptersSyncedAt`: the background sync asked, and "gone" is its answer, so
    * the entry moves to the back of the stalest-first queue instead of heading every run.
    */
-  async recordSeriesGone(key: string, reason: string, opts: { checked?: boolean } = {}): Promise<SeriesRemoval | undefined> {
+  async recordSeriesGone(
+    key: string,
+    reason: string,
+    opts: { checked?: boolean; via?: SeriesRemovalSurface } = {},
+  ): Promise<SeriesRemoval | undefined> {
     const item = await this.getSeriesItem(key);
     if (!item) return undefined;
     const now = this.now();
@@ -494,7 +501,9 @@ export class Library {
     const removal: SeriesRemoval = prev
       ? { ...prev, reason, lastSeenAt: now }
       : { reason, firstSeenAt: now, lastSeenAt: now };
-    if (removal.confirmedAt === undefined && now - removal.firstSeenAt >= REMOVAL_CONFIRM_MS) removal.confirmedAt = now;
+    if (removal.confirmedAt === undefined) removal.confirmedAt = now;
+    if (opts.via !== undefined) removal.via = opts.via;
+    else delete removal.via;
     item.removal = removal;
     if (opts.checked) item.chaptersSyncedAt = now;
     await this.putSeriesItem(item);
@@ -513,10 +522,16 @@ export class Library {
     return removal;
   }
 
-  /** Drop a library entry's removal record — the source served it again. No-op when there's none. */
-  async clearSeriesGone(key: string): Promise<void> {
+  /**
+   * Drop a library entry's removal record — the source served it again. `via` names the call that
+   * succeeded: it clears a record that same call heard (or one from before calls were told apart),
+   * never one another call heard, since the two needn't agree (see `seriesRemovalSchema`). Without
+   * `via` the record goes regardless. No-op when there's none.
+   */
+  async clearSeriesGone(key: string, via?: SeriesRemovalSurface): Promise<void> {
     const item = await this.getSeriesItem(key);
     if (!item?.removal) return;
+    if (via !== undefined && !removalClearedBy(item.removal, via)) return;
     delete item.removal;
     await this.putSeriesItem(item);
   }
@@ -749,8 +764,9 @@ export class Library {
       return k;
     });
     entry.chaptersSyncedAt = t;
-    // A real chapter list came back, so the source still has the series.
-    delete entry.removal;
+    // A real chapter list came back, so the source still has the series — as far as the chapters
+    // call can tell; a removal another call heard stays (see `seriesRemovalSchema`).
+    if (entry.removal && removalClearedBy(entry.removal, "chapters")) delete entry.removal;
     // Record the fingerprint this list came with, so the next batch check has a baseline to compare
     // against. Written only alongside a real chapter list: a revision without the chapters it
     // describes would let a later check match and skip a fetch that never actually happened.

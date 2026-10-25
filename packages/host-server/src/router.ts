@@ -768,26 +768,31 @@ ${url}`;
           );
         }
       }
+      if (!libMeta) return c.json(info);
+      const lib = libMeta;
       // Write-through for library entries: refresh the offline detail doc AND reconcile the entry's
       // display snapshot with this fresh, successful info (the source is authoritative for its own
       // metadata — a renamed series or changed cover heals here). Snapshot first-then-cover, so the
       // capture's staleness check sees the entry's up-to-date thumbnailUrl.
-      if (libMeta) {
-        const lib = libMeta;
-        void (async () => {
-          await lib.cacheSeriesDetail(key, info);
-          await lib.refreshSnapshot(key, info);
-          captureCover(c.req.param("id"), c.req.param("seriesId"));
-        })().catch(() => {});
-      }
-      return c.json(info);
+      //
+      // The detail write is awaited because the answer carries whatever removal record it leaves: a
+      // detail succeeding clears only a removal the detail call heard, and one the pages call heard
+      // (some sources' metadata API still describes a taken-down series) stays and rides on this live
+      // answer, so the page says "removed" without waiting for the pages to fail again.
+      await lib.cacheSeriesDetail(key, info).catch(() => {});
+      void (async () => {
+        await lib.refreshSnapshot(key, info);
+        captureCover(c.req.param("id"), c.req.param("seriesId"));
+      })().catch(() => {});
+      const removal = (await lib.getSeries(key).catch(() => undefined))?.removal;
+      return c.json(removal ? { ...info, removal } : info);
     });
     if (live.ok || !libMeta) return live;
-    // A gone answer is recorded on the entry (a suspicion until a later one confirms it); any other
-    // failure still reports a removal recorded earlier, so the page keeps saying so while offline.
+    // A gone answer is recorded on the entry; any other failure still reports a removal recorded
+    // earlier, so the page keeps saying so while offline.
     const gone = await goneAnswer(live);
     const removal = gone
-      ? await libMeta.recordSeriesGone(key, gone.reason).catch(() => undefined)
+      ? await libMeta.recordSeriesGone(key, gone.reason, { via: "details" }).catch(() => undefined)
       : (await libMeta.getSeries(key).catch(() => undefined))?.removal;
     const cached = await libMeta.getCachedDetail(key).catch(() => undefined);
     if (!cached) return live;
@@ -822,17 +827,24 @@ ${url}`;
     });
     if (live.ok || !libMeta) return live;
     const gone = await goneAnswer(live);
-    if (gone) await libMeta.recordSeriesGone(key, gone.reason).catch(() => undefined);
+    if (gone) await libMeta.recordSeriesGone(key, gone.reason, { via: "chapters" }).catch(() => undefined);
     const cached = await libMeta.getCachedChapters(key).catch(() => undefined);
     if (!cached) return live;
     return c.json(cached.chapters); // same Chapter[] shape as live — array responses carry no marker
   });
 
-  // Pages have no saved fallback here (downloads are read without asking), but a gone answer still
-  // goes on the entry: opening a chapter may be the first thing to hear it.
+  // Pages have no saved fallback here (downloads are read without asking), but their answer still
+  // goes on the entry: opening a chapter may be the first thing to hear the series is gone, and the
+  // pages coming back is the only thing that disproves a removal the pages call heard.
   const recordGone = async (c: { req: { param: (k: string) => string } }, live: Response): Promise<Response> => {
-    const gone = libMeta && (await goneAnswer(live));
-    if (gone) await libMeta!.recordSeriesGone(entryKey(c.req.param("id"), c.req.param("seriesId")), gone.reason).catch(() => undefined);
+    if (!libMeta) return live;
+    const key = entryKey(c.req.param("id"), c.req.param("seriesId"));
+    if (live.ok) {
+      await libMeta.clearSeriesGone(key, "pages").catch(() => undefined);
+    } else {
+      const gone = await goneAnswer(live);
+      if (gone) await libMeta.recordSeriesGone(key, gone.reason, { via: "pages" }).catch(() => undefined);
+    }
     return live;
   };
 

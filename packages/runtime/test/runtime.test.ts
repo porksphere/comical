@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Bridge, BridgeInfo, Chapter, PagedRequest, SeriesInfo, Tracker, TrackerEntryUpdate, TrackerInfo, TrackerLibraryEntry } from "@comical/contract";
 import { MAX_UPDATE_CHECK_BATCH, seriesGoneMessage, trackerEntryUpdateSchema } from "@comical/contract";
-import { entryKey, InMemoryLibraryStore, Library, REMOVAL_CONFIRM_MS, type TrackerLink } from "@comical/library";
+import { entryKey, InMemoryLibraryStore, Library, type TrackerLink } from "@comical/library";
 import { ComicalRuntime, type BridgeProvider, type TrackerImportItem, type TrackerProvider } from "@comical/runtime";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -1422,12 +1422,6 @@ describe("backgroundSync — best-effort", () => {
 
 describe("backgroundSync — a series the source says is gone", () => {
   /** A library whose clock runs `skew` ms ahead of real time — lets a test age a removal. */
-  function skewedLib() {
-    let skew = 0;
-    const lib = new Library(new InMemoryLibraryStore(), { now: () => Date.now() + skew });
-    return { lib, advance: (ms: number) => (skew += ms) };
-  }
-
   function goneBridge() {
     const calls = { chapters: 0 };
     const bridge: Bridge = {
@@ -1441,41 +1435,39 @@ describe("backgroundSync — a series the source says is gone", () => {
     return { bridge, calls };
   }
 
-  test("records the removal and stamps the entry checked, so it stops heading every run", async () => {
-    const { lib } = skewedLib();
+  test("records the removal (heard on the chapters call) and stamps the entry checked, so it stops heading every run", async () => {
+    const lib = makeLib();
     const { bridge, calls } = goneBridge();
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
     await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "S1" });
 
     await runtime.backgroundSync();
     const item = await lib.getSeries(entryKey("test", "s1"));
-    expect(item?.removal?.reason).toBe("Removed from Test");
-    expect(item?.removal?.confirmedAt).toBeUndefined();
+    expect(item?.removal).toMatchObject({ reason: "Removed from Test", via: "chapters" });
+    expect(item?.removal?.confirmedAt).toBeDefined();
     expect(item?.chaptersSyncedAt).toBeDefined();
 
-    // Inside the normal window now — the next run leaves it alone.
+    // Confirmed, so the next run leaves it alone until the long window passes.
     await runtime.backgroundSync();
     expect(calls.chapters).toBe(1);
   });
 
-  test("a confirmed removal is re-asked only on the long window, even under force", async () => {
-    const { lib, advance } = skewedLib();
+  test("a removal is re-asked only on the long window, even under force", async () => {
+    const lib = makeLib();
     const { bridge, calls } = goneBridge();
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
     const key = entryKey("test", "s1");
     await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "S1" });
-    await lib.recordSeriesGone(key, "gone");
-    advance(REMOVAL_CONFIRM_MS);
-    await lib.recordSeriesGone(key, "gone", { checked: true });
+    await lib.recordSeriesGone(key, "gone", { checked: true, via: "chapters" });
     expect((await lib.getSeries(key))?.removal?.confirmedAt).toBeDefined();
 
     const res = await runtime.backgroundSync({ force: true });
     expect(calls.chapters).toBe(0);
     expect(res).toMatchObject({ skipped: 1 });
 
-    // Once its window passes it is asked again (in case the source restored it).
-    // (The library clock runs ahead of the runtime's, so "passed" needs a window below that skew.)
-    await runtime.backgroundSync({ removedStaleMs: -2 * REMOVAL_CONFIRM_MS });
+    // Once its window passes it is asked again (in case the source restored it). A negative window:
+    // the check stamp was written moments ago.
+    await runtime.backgroundSync({ removedStaleMs: -1 });
     expect(calls.chapters).toBe(1);
   });
 
@@ -1485,7 +1477,7 @@ describe("backgroundSync — a series the source says is gone", () => {
     const runtime = new ComicalRuntime({ bridges: mockBridgeProvider(bridge), library: lib });
     const key = entryKey("test", "s1");
     await lib.collectSeries({ bridgeId: "test", seriesId: "s1" }, { seriesTitle: "S1" });
-    await lib.recordSeriesGone(key, "gone");
+    await lib.recordSeriesGone(key, "gone", { via: "chapters" });
 
     await runtime.backgroundSync();
     expect(calls.get("s1")).toBe(1);
