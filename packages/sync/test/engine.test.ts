@@ -187,7 +187,23 @@ describe("SyncEngine", () => {
     await a.put("groups", "g", 1);
     await a.engine.sync();
     await b.engine.sync();
-    expect(await b.engine.sync()).toEqual({ pushed: 0, pulled: 0, applied: 0 });
+    expect(await b.engine.sync()).toEqual({ pushed: 0, pulled: 0, applied: 0, tables: [] });
+  });
+
+  test("a round names the tables its applied records landed in", async () => {
+    const hub = new MemoryBackend();
+    const a = device(hub, "a");
+    const b = device(hub, "b");
+    await a.put("groups", "g1", 1);
+    await a.put("groups", "g2", 2);
+    await a.put("readingLog", "r", 3);
+    await a.engine.sync();
+    expect((await b.engine.sync()).tables.sort()).toEqual(["groups", "readingLog"]);
+
+    await b.put("groups", "g1", 9);
+    await b.engine.sync();
+    expect((await a.engine.sync()).tables).toEqual(["groups"]);
+    expect((await b.engine.sync()).tables).toEqual([]);
   });
 
   test("large backlogs split into segments and pull in pages", async () => {

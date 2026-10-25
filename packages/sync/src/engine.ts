@@ -32,7 +32,8 @@ export type SyncStateSnapshot = {
   adopted?: string[];
 };
 
-export type SyncStats = { pushed: number; pulled: number; applied: number };
+/** `tables`: the tables at least one applied record landed in, so a host can tell what to refresh. */
+export type SyncStats = { pushed: number; pulled: number; applied: number; tables: TableId[] };
 
 export type SyncEngineOptions = {
   store: SyncStore;
@@ -185,7 +186,8 @@ export class SyncEngine {
   // when applied — but nothing of this device's leaves until the hub has answered, which over a
   // sealed channel is the hub proving itself; and a write that would have lost is never sent.
   private async round(): Promise<SyncStats> {
-    const stats: SyncStats = { pushed: 0, pulled: 0, applied: 0 };
+    const stats: SyncStats = { pushed: 0, pulled: 0, applied: 0, tables: [] };
+    const tables = new Set<TableId>();
     for (;;) {
       const { segments, more } = await this.opts.backend.pull({
         device: this.device,
@@ -194,7 +196,7 @@ export class SyncEngine {
         ...(this.opts.pullLimit !== undefined && { limit: this.opts.pullLimit }),
       });
       if (segments.length > 0) {
-        stats.applied += await this.exclusive(() => this.applySegments(segments));
+        stats.applied += await this.exclusive(() => this.applySegments(segments, tables));
         await this.persist();
       }
       stats.pulled += segments.reduce((n, s) => n + s.records.length, 0);
@@ -209,6 +211,7 @@ export class SyncEngine {
       this.held.clear();
       await this.persist();
     }
+    stats.tables = [...tables];
     return stats;
   }
 
@@ -259,10 +262,14 @@ export class SyncEngine {
     return this.pending;
   }
 
-  private async applySegments(segments: Segment[]): Promise<number> {
+  private async applySegments(segments: Segment[], tables: Set<TableId>): Promise<number> {
     let applied = 0;
     for (const seg of segments) {
-      for (const rec of seg.records) if (await this.applyRecord(rec)) applied++;
+      for (const rec of seg.records) {
+        if (!(await this.applyRecord(rec))) continue;
+        applied++;
+        tables.add(rec.table);
+      }
       this.vector[seg.device] = Math.max(this.vector[seg.device] ?? 0, seg.seq);
     }
     return applied;

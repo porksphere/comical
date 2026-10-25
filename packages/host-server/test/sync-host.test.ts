@@ -386,6 +386,24 @@ describe("createSyncHost", () => {
     expect(reports).toEqual([["bridge-a/theirs"], []]);
   });
 
+  test("onApplied names the tables a round's records landed in", async () => {
+    const reports: string[][] = [];
+    const host = createSyncHost({ ...hostOptions(), onApplied: (a) => reports.push([...a.tables].sort()) });
+    await host.ready;
+    const p = phone(host.backend);
+    await p.engine.sync();
+
+    await p.library.createCollection("From phone");
+    await p.engine.sync();
+    await host.flush();
+    expect(reports).toEqual([["collections"]]);
+
+    await p.bridges.updateSettings("bridge-a", { dataSaver: true });
+    await p.engine.sync();
+    await host.flush();
+    expect(reports).toEqual([["collections"], ["bridgeSettings"]]);
+  });
+
   test("stop drops the pending round and a later push schedules none, but the change survives for the next run", async () => {
     let applied = 0;
     const host = createSyncHost({ ...hostOptions(), onApplied: () => applied++, debounceMs: 10 });

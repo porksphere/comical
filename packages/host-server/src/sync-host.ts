@@ -36,6 +36,7 @@ import {
   type Segment,
   type SyncBackend,
   type SyncStateSnapshot,
+  type TableId,
 } from "@comical/sync";
 import { FileSegmentStore } from "./sync-segment-store.ts";
 
@@ -96,6 +97,9 @@ export interface SyncHostOptions<R extends RegistryMutations, B extends BridgeSe
 export interface SyncApplied {
   /** Series this library didn't hold until the round, e.g. for a host that downloads what's saved. */
   addedSeries: SeriesItemCoord[];
+  /** The tables the round's records landed in. Only registry and settings tables change what a
+   *  bridge serves, so a host showing bridge content can leave it alone when no other kind came. */
+  tables: TableId[];
 }
 
 /** A registry change applied from another device: one bridge, one tracker, or the registry list. */
@@ -171,7 +175,7 @@ export function createSyncHost<R extends RegistryMutations, B extends BridgeSett
         const late = await engine.exclusive(() => settingsStore.retry());
         // Taken whatever this round's own count says: rounds can overlap, and a series an
         // overlapping round applied is reported by whichever finishes first.
-        const applied: SyncApplied = { addedSeries };
+        const applied: SyncApplied = { addedSeries, tables: late > 0 ? [...new Set([...stats.tables, ...SETTINGS_TABLES])] : stats.tables };
         addedSeries = [];
         if (stats.applied > 0 || late > 0 || applied.addedSeries.length > 0) opts.onApplied?.(applied);
       })
