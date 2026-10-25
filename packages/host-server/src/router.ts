@@ -347,28 +347,53 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   // ── Image route (`BridgeInfo.images`, contract 2.1) ─────────────────────────
   // The loader rewrites a bridge's image URLs into `/bridges/:id/image?url=<original>` when a client
   // can't load them by itself; this applies the bridge's headers and interceptor at fetch time, so
-  // a URL that expires is re-resolved on every load instead of being re-requested dead. An image
-  // that ends up needing no headers is a redirect (the client loads it directly, from its own
-  // cache); one that needs headers is proxied. The bridge is only loaded to intercept.
+  // a URL that expires is re-resolved instead of being re-requested dead. An image that ends up
+  // needing no headers is a redirect (the client loads it directly, from its own cache); one that
+  // needs headers is proxied. The bridge is only loaded to intercept.
+  //
+  // What the interceptor answered is remembered for a while, and the redirect is handed to the
+  // browser with the same lifetime. An interceptor is a live, rate-limited round-trip to the source
+  // per page, and a reader re-requests this path every time a page it unmounted scrolls back into
+  // view — with nothing remembered, paging back over ten pages cost ten of those round-trips in a
+  // row. A client that found the remembered target dead asks again with `refresh=<anything>`, which
+  // skips and replaces the memory. Failures are never remembered.
+  const IMAGE_RESOLVE_TTL_MS = 10 * 60_000;
+  const IMAGE_RESOLVE_MAX = 4096;
+  const resolvedImages = new Map<string, { req: ResolvedImageRequest; expires: number }>();
   app.get("/bridges/:id/image", async (c) => {
     const id = c.req.param("id");
     const url = c.req.query("url") ?? "";
+    const refresh = c.req.query("refresh") !== undefined;
     const info = (await listing()).infos.get(id);
     if (!info) return c.json({ error: `bridge not found: ${id}` }, 404);
-    let req: ResolvedImageRequest;
-    try {
-      req = await resolveImageRequest(info, url, async (u) => {
-        const bridge = await manager.get(id);
-        if (!bridge.interceptImageRequest) throw new ImageRequestRefusedError(`bridge "${id}" has no interceptImageRequest`);
-        return bridge.interceptImageRequest(u);
-      });
-    } catch (e) {
-      if (e instanceof ImageRequestRefusedError) return c.text("Forbidden", 403);
-      return bridgeErrorResponse(c, e);
+    const memoKey = `${id}
+${info.version}
+${url}`;
+    const now = Date.now();
+    let memo = refresh ? undefined : resolvedImages.get(memoKey);
+    if (memo && memo.expires <= now) memo = undefined;
+    if (!memo) {
+      let req: ResolvedImageRequest;
+      try {
+        req = await resolveImageRequest(info, url, async (u) => {
+          const bridge = await manager.get(id);
+          if (!bridge.interceptImageRequest) throw new ImageRequestRefusedError(`bridge "${id}" has no interceptImageRequest`);
+          return bridge.interceptImageRequest(u);
+        });
+      } catch (e) {
+        if (e instanceof ImageRequestRefusedError) return c.text("Forbidden", 403);
+        return bridgeErrorResponse(c, e);
+      }
+      memo = { req, expires: now + IMAGE_RESOLVE_TTL_MS };
+      // Re-inserting moves the key to the end, so the Map's own order is "least recently resolved".
+      resolvedImages.delete(memoKey);
+      resolvedImages.set(memoKey, memo);
+      while (resolvedImages.size > IMAGE_RESOLVE_MAX) resolvedImages.delete(resolvedImages.keys().next().value!);
     }
+    const { req } = memo;
     if (Object.keys(req.headers).length === 0) {
-      // Never cached: an intercepted target can expire, and this path is the stable name for it.
-      return new Response(null, { status: 302, headers: { Location: req.url, "Cache-Control": "no-store" } });
+      const maxAge = Math.max(0, Math.floor((memo.expires - now) / 1000));
+      return new Response(null, { status: 302, headers: { Location: req.url, "Cache-Control": `private, max-age=${maxAge}` } });
     }
     return proxyFetch(req.url, req.headers, proxyLimiter(id, info.assetRateLimit, req.url));
   });

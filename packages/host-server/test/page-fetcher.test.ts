@@ -59,6 +59,26 @@ describe("createServerPageFetcher rate limits", () => {
     expect(rateLimitWaitOf(err)).toBe(90_000);
   });
 
+  test("a page that failed past the router asks it to resolve afresh on the next attempt", async () => {
+    const paths: string[] = [];
+    const fetcher = createServerPageFetcher(() => (req) => {
+      const u = new URL(req.url);
+      paths.push(u.pathname + u.search);
+      // The first resolution points at a target that has since died; every later one is good.
+      const dead = paths.length === 1;
+      return new Response(null, { status: 302, headers: { Location: `${base}/${dead ? "gone" : "ok"}` } });
+    });
+    const src = "/bridges/b/image?url=x";
+    await expect(fetcher(CTX, page(src))).rejects.toThrow();
+    const got = await fetcher(CTX, page(src));
+    expect([...got.data]).toEqual([1, 2, 3]);
+    expect(paths[0]).toBe(src);
+    expect(paths[1]).toMatch(/^\/bridges\/b\/image\?url=x&refresh=\d+$/);
+    // Back to the plain path once an attempt succeeded.
+    await fetcher(CTX, page(src));
+    expect(paths[2]).toBe(src);
+  });
+
   test("a healthy page still lands with its content type", async () => {
     const got = await createServerPageFetcher(noRouter)(CTX, page(`${base}/ok`));
     expect([...got.data]).toEqual([1, 2, 3]);

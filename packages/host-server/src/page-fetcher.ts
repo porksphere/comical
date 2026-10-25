@@ -44,21 +44,32 @@ export function createServerPageFetcher(
   /** The server's bearer token, if auth is enabled — in-process requests must pass their own guard. */
   token?: string,
 ): PageFetcher {
+  // Pages whose last attempt failed past the router: the image route remembers what it resolved
+  // a URL to, so the retry asks it to resolve afresh rather than be sent to the same dead target.
+  const failed = new Set<string>();
   return async (_ctx, page) => {
     if (!page.sourceUrl.startsWith("/")) return fetchBytes(page.sourceUrl, page.headers);
 
+    const path = failed.delete(page.sourceUrl)
+      ? `${page.sourceUrl}${page.sourceUrl.includes("?") ? "&" : "?"}refresh=${Date.now()}`
+      : page.sourceUrl;
     const routed = await getFetch()(
-      new Request(`${ENGINE_ORIGIN}${page.sourceUrl}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined),
+      new Request(`${ENGINE_ORIGIN}${path}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined),
     );
-    // The lazy page-image resolver 302s to the upstream CDN URL — follow it with the page's headers.
-    if (routed.status >= 300 && routed.status < 400) {
-      const location = routed.headers.get("Location");
-      if (!location) throw new Error("page resolver redirected without a Location");
-      return fetchBytes(location, page.headers);
+    try {
+      // The lazy page-image resolver 302s to the upstream CDN URL — follow it with the page's headers.
+      if (routed.status >= 300 && routed.status < 400) {
+        const location = routed.headers.get("Location");
+        if (!location) throw new Error("page resolver redirected without a Location");
+        return await fetchBytes(location, page.headers);
+      }
+      if (!routed.ok) throw rateLimitedFromResponse(routed) ?? new Error(`page route failed: ${routed.status}`);
+      const data = new Uint8Array(await routed.arrayBuffer());
+      return withContentType({ data }, routed.headers.get("Content-Type"));
+    } catch (e) {
+      failed.add(page.sourceUrl);
+      throw e;
     }
-    if (!routed.ok) throw rateLimitedFromResponse(routed) ?? new Error(`page route failed: ${routed.status}`);
-    const data = new Uint8Array(await routed.arrayBuffer());
-    return withContentType({ data }, routed.headers.get("Content-Type"));
   };
 }
 

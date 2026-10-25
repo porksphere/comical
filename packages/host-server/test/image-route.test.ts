@@ -53,15 +53,15 @@ function serve(images: BridgeImages | undefined, bridge: MockBridge = {}) {
   } as unknown as BridgeManager;
   const srv = Bun.serve({ port: 0, fetch: createRouter(mgr).fetch });
   return {
-    get: (id: string, url: string) =>
-      fetch(`http://localhost:${srv.port}${bridgeImagePath(id, url)}`, { redirect: "manual" }),
+    get: (id: string, url: string, extra = "") =>
+      fetch(`http://localhost:${srv.port}${bridgeImagePath(id, url)}${extra}`, { redirect: "manual" }),
     loads: () => loads,
     stop: () => srv.stop(true),
   };
 }
 
 describe("GET /bridges/:id/image", () => {
-  test("redirects an image that needs no headers to where the interceptor sent it, uncached", async () => {
+  test("redirects an image that needs no headers to where the interceptor sent it, cacheable for a while", async () => {
     const s = serve(
       { hosts: ["localhost", "127.0.0.1"], intercept: ["localhost"] },
       { interceptImageRequest: async (u) => ({ url: u.replace("localhost", "127.0.0.1").replace("/old/", "/new/") }) },
@@ -70,7 +70,50 @@ describe("GET /bridges/:id/image", () => {
       const res = await s.get("img", `http://localhost:${cdn.port}/old/0.png`);
       expect(res.status).toBe(302);
       expect(res.headers.get("location")).toBe(`${origin}/new/0.png`);
-      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("cache-control")).toMatch(/^private, max-age=(600|599)$/);
+    } finally {
+      s.stop();
+    }
+  });
+
+  test("remembers what the interceptor answered, until asked to refresh", async () => {
+    let n = 0;
+    const s = serve(
+      { hosts: ["localhost", "127.0.0.1"], intercept: ["localhost"] },
+      { interceptImageRequest: async (u) => ({ url: u.replace("localhost", "127.0.0.1").replace("/old/", `/v${++n}/`) }) },
+    );
+    try {
+      const url = `http://localhost:${cdn.port}/old/0.png`;
+      expect((await s.get("img", url)).headers.get("location")).toBe(`${origin}/v1/0.png`);
+      expect((await s.get("img", url)).headers.get("location")).toBe(`${origin}/v1/0.png`);
+      expect(s.loads()).toBe(1);
+      // Another URL is its own entry.
+      expect((await s.get("img", `http://localhost:${cdn.port}/old/1.png`)).headers.get("location")).toBe(`${origin}/v2/1.png`);
+      // A refresh re-runs the interceptor and replaces what was remembered.
+      expect((await s.get("img", url, `&refresh=${Date.now()}`)).headers.get("location")).toBe(`${origin}/v3/0.png`);
+      expect((await s.get("img", url)).headers.get("location")).toBe(`${origin}/v3/0.png`);
+      expect(s.loads()).toBe(3);
+    } finally {
+      s.stop();
+    }
+  });
+
+  test("does not remember a failed interception", async () => {
+    let fail = true;
+    const s = serve(
+      { hosts: ["127.0.0.1"], intercept: ["127.0.0.1"] },
+      {
+        interceptImageRequest: async (u) => {
+          if (fail) throw new Error("lookup page changed");
+          return { url: u };
+        },
+      },
+    );
+    try {
+      expect((await s.get("img", `${origin}/a.png`)).status).toBe(500);
+      fail = false;
+      expect((await s.get("img", `${origin}/a.png`)).status).toBe(302);
+      expect(s.loads()).toBe(2);
     } finally {
       s.stop();
     }
@@ -102,9 +145,9 @@ describe("GET /bridges/:id/image", () => {
       expect(res.status).toBe(200);
       expect(await res.text()).toBe("bytes:/b.png");
       expect(seen).toEqual([{ path: "/b.png", referer: "https://site.example/", token: "t1" }]);
-      // Re-resolved on every fetch: nothing the interceptor returned is remembered.
-      await s.get("img", `${origin}/a.png`);
-      expect(s.loads()).toBe(2);
+      // The interceptor's answer is remembered: the second fetch proxies without loading the bridge again.
+      expect(await (await s.get("img", `${origin}/a.png`)).text()).toBe("bytes:/b.png");
+      expect(s.loads()).toBe(1);
     } finally {
       s.stop();
     }
