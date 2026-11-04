@@ -76,6 +76,29 @@ export type CardBadge = z.infer<typeof cardBadgeSchema>;
  */
 export const thumbnailAspectSchema = z.number().positive().finite();
 
+/**
+ * What a series is as a physical object, for a client that draws its card as one — a bound book, an
+ * unbound strip, a pile of loose pictures. Presentation-as-data, like {@link cardBadgeSchema}: a
+ * client that draws every card flat ignores it and loses nothing.
+ *  - `volume` — a bound book: manga volumes, graphic novels, anything sold collected.
+ *  - `issue` — a thin stapled booklet: doujinshi, oneshots, single issues.
+ *  - `scroll` — never bound: webtoons and other strips read top to bottom.
+ *  - `sheets` — loose pictures with no binding: artist CG sets, illustration galleries.
+ *
+ * A bridge sets it where the source knows (a type or category field, a gallery's kind); a client
+ * guesses without it, and can't tell a CG set from a doujinshi on the same gallery site at all.
+ */
+export const coverFormSchema = z.enum(["volume", "issue", "scroll", "sheets"]);
+export type CoverForm = z.infer<typeof coverFormSchema>;
+
+/**
+ * How a series reads: `ltr` or `rtl` for paged reading, `vertical` for a strip read top to bottom. A
+ * hint for a client's defaults — where its reader starts, and which edge a cover's spine is drawn on
+ * (a right-to-left volume is bound on the right) — never a setting the reader can't change.
+ */
+export const readingDirectionSchema = z.enum(["ltr", "rtl", "vertical"]);
+export type ReadingDirection = z.infer<typeof readingDirectionSchema>;
+
 /** A lightweight series entry as returned by search / home / popular / latest. */
 export const seriesEntrySchema = z.object({
   /** Opaque, bridge-namespaced, stable-across-sessions identifier. */
@@ -94,6 +117,13 @@ export const seriesEntrySchema = z.object({
    * A malformed value is dropped rather than failing the whole response: it's only a layout hint.
    */
   thumbnailAspect: thumbnailAspectSchema.optional().catch(undefined),
+  /**
+   * What this series is as an object — see {@link coverFormSchema}. Overrides `BridgeInfo.coverForm`.
+   * Like `thumbnailAspect`, a malformed value is dropped rather than failing the whole response.
+   */
+  coverForm: coverFormSchema.optional().catch(undefined),
+  /** How this series reads — see {@link readingDirectionSchema}. Overrides `BridgeInfo.readingDirection`. */
+  readingDirection: readingDirectionSchema.optional().catch(undefined),
   subtitle: z.string().optional(),
   /**
    * Bridge-defined badges overlaid on the card's cover (language, rating, "NEW", …). Optional and
@@ -239,6 +269,10 @@ export const seriesInfoSchema = z.object({
    * A malformed value is dropped rather than failing the whole response: it's only a layout hint.
    */
   thumbnailAspect: thumbnailAspectSchema.optional().catch(undefined),
+  /** What this series is as an object — see {@link coverFormSchema} and `seriesEntrySchema.coverForm`. */
+  coverForm: coverFormSchema.optional().catch(undefined),
+  /** How this series reads — see {@link readingDirectionSchema} and `seriesEntrySchema.readingDirection`. */
+  readingDirection: readingDirectionSchema.optional().catch(undefined),
   /**
    * Author/artist credit lines. `author`/`artist` (+ `*Id`) are the single-value convenience form
    * kept for back-compat; `authors`/`artists` are the richer multi-credit form a bridge fills in when
@@ -1031,6 +1065,16 @@ export const bridgeInfoSchema = z.object({
    * here — clients may say so). Additive and optional — omitted means "no ratings".
    */
   ratings: z.boolean().optional(),
+  /**
+   * The {@link coverFormSchema} of every series this bridge serves unless an entry says otherwise —
+   * for a source that is all one thing (a webtoon platform, a CG gallery). Optional.
+   */
+  coverForm: coverFormSchema.optional(),
+  /**
+   * The {@link readingDirectionSchema} of every series this bridge serves unless an entry says
+   * otherwise — `rtl` for a source of Japanese manga, `vertical` for a webtoon platform. Optional.
+   */
+  readingDirection: readingDirectionSchema.optional(),
   /** Absolute URL (or data URI) to a small square icon representing the bridge/source. Optional. */
   iconUrl: z.string().url().optional(),
   /**
