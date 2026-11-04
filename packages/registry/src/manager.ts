@@ -148,7 +148,7 @@ export class RegistryManager {
     const result = await downloadBundle(entry, downloadOpts);
 
     // Cache the bundle on disk.
-    const bundlePath = join(this.opts.cacheDir, bridgeId, entry.version, "bridge.js");
+    const bundlePath = this.bridgeBundlePath(bridgeId, entry.version);
     await mkdir(dirname(bundlePath), { recursive: true });
     await writeFile(bundlePath, result.text, "utf8");
 
@@ -258,10 +258,16 @@ export class RegistryManager {
     return !reg;
   }
 
-  /** Bundle path for an installed bridge (orphaned or not), or null if it isn't installed. */
+  /** Bundle path for an installed bridge (orphaned or not), or null if it isn't installed.
+   *  Rebuilt from the cache dir rather than read from the record: the record's path is absolute
+   *  and goes stale the moment the data dir moves (a data-location move, a copy from another OS). */
   async resolveBundle(bridgeId: string): Promise<string | null> {
     const installed = await this.opts.manifest.getInstalled(bridgeId);
-    return installed?.bundlePath ?? null;
+    return installed ? this.bridgeBundlePath(installed.id, installed.version) : null;
+  }
+
+  private bridgeBundlePath(bridgeId: string, version: string): string {
+    return join(this.opts.cacheDir, bridgeId, version, "bridge.js");
   }
 
   async allInstalled() {
@@ -315,7 +321,7 @@ export class RegistryManager {
     if (index.publicKey) dlOpts.publicKey = index.publicKey;
     const result = await downloadBundle(entry, dlOpts);
 
-    const bundlePath = join(this.opts.cacheDir, "trackers", trackerId, entry.version, "tracker.js");
+    const bundlePath = this.trackerBundlePath(trackerId, entry.version);
     await mkdir(dirname(bundlePath), { recursive: true });
     await writeFile(bundlePath, result.text, "utf8");
 
@@ -373,10 +379,14 @@ export class RegistryManager {
     return !reg;
   }
 
-  /** See `resolveBundle`: an orphaned tracker keeps working. */
+  /** See `resolveBundle`: an orphaned tracker keeps working, and the path is rebuilt the same way. */
   async resolveTrackerBundle(trackerId: string): Promise<string | null> {
     const installed = await this.opts.manifest.getInstalledTracker(trackerId);
-    return installed?.bundlePath ?? null;
+    return installed ? this.trackerBundlePath(installed.id, installed.version) : null;
+  }
+
+  private trackerBundlePath(trackerId: string, version: string): string {
+    return join(this.opts.cacheDir, "trackers", trackerId, version, "tracker.js");
   }
 
   async allInstalledTrackers() {

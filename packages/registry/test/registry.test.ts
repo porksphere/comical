@@ -412,6 +412,26 @@ describe("fetchIndex + RegistryManager", () => {
     expect(await mgr.checkUpdates()).toEqual([]);
   });
 
+  test("a manifest carried over from another data dir resolves its bundles in this one", async () => {
+    const manifest = new ManifestStore(join(DATA_DIR, "test-moved"));
+    const cacheDir = join(DATA_DIR, "cache-moved");
+    const mgr = new RegistryManager({ cacheDir, manifest });
+    const record = { contractVersion: "2.0.0", registryUrl, sha256: "a".repeat(64), installedAt: new Date().toISOString() };
+    await manifest.addInstalled({
+      ...record, id: "example", version: "1.0.0",
+      bundlePath: "D:\\Documents\\comical\\comical\\bridge-cache\\example\\1.0.0\\bridge.js",
+    });
+    await manifest.addInstalledTracker({
+      ...record, id: "trk", version: "0.2.3",
+      bundlePath: "/old/data/comical/bridge-cache/trackers/trk/0.2.3/tracker.js",
+    });
+
+    expect(await mgr.resolveBundle("example")).toBe(join(cacheDir, "example", "1.0.0", "bridge.js"));
+    expect(await mgr.resolveTrackerBundle("trk")).toBe(join(cacheDir, "trackers", "trk", "0.2.3", "tracker.js"));
+    expect(await mgr.resolveBundle("never-installed")).toBeNull();
+    expect(await mgr.resolveTrackerBundle("never-installed")).toBeNull();
+  });
+
   test("a second registry cannot overwrite an id installed from the first", async () => {
     // Two registries offering the same id — no hostility required, ids are only unique within a
     // registry. Installing the second used to upsert straight over the first's record: different

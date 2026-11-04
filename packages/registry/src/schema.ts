@@ -189,7 +189,8 @@ export const installedBridgeSchema = z.object({
   contractVersion: z.string(),
   /** URL of the registry this was installed from. null = locally built / no registry. */
   registryUrl: z.string().url().nullable(),
-  /** Absolute path to the cached bundle on disk. */
+  /** Where install wrote the bundle. Never read back (see `RegistryManager.resolveBundle`); kept
+   *  so a manifest stays readable by builds from before that. */
   bundlePath: z.string(),
   /** SHA-256 of the installed bundle (for integrity re-verification). */
   sha256: z.string(),
@@ -229,7 +230,8 @@ export const installedTrackerSchema = z.object({
   contractVersion: z.string(),
   /** URL of the registry this was installed from. null = locally built / no registry. */
   registryUrl: z.string().url().nullable(),
-  /** Absolute path to the cached bundle on disk. */
+  /** Where install wrote the bundle. Never read back (see `RegistryManager.resolveBundle`); kept
+   *  so a manifest stays readable by builds from before that. */
   bundlePath: z.string(),
   /** SHA-256 of the installed bundle (for integrity re-verification). */
   sha256: z.string(),
