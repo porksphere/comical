@@ -997,13 +997,18 @@ export class Library {
     await this.putSeriesItem({ ...rest, updatedAt: this.now() });
   }
 
-  /** Where to resume: the last-read chapter and the page within it. */
+  /**
+   * Where to resume: for a collected series read here, the first unread chapter in reading order
+   * (see `firstUnreadChapter`), at the page reached in it; failing that — nothing read yet,
+   * everything read, or no ordered chapter list — the last-opened chapter and page.
+   */
   async getResume(key: string): Promise<ResumePoint | undefined> {
     const entry = await this.getSeriesItem(key);
     if (entry?.lastReadChapterId) {
       const progress = await this.store.listProgress(key);
-      const p = progress.find((x) => x.chapterId === entry.lastReadChapterId);
-      return { chapterId: entry.lastReadChapterId, lastPage: p?.lastPage ?? 0 };
+      const chapterId = (await this.unreadResume(key, entry, progress))?.id ?? entry.lastReadChapterId;
+      const p = progress.find((x) => x.chapterId === chapterId);
+      return { chapterId, lastPage: p?.lastPage ?? 0 };
     }
     // Not in the library — resume from the reading log, which tracks the page for non-library reads.
     const { bridgeId, seriesId } = parseEntryKey(key);
@@ -1020,42 +1025,61 @@ export class Library {
    * list and filters them out of its history view itself.
    */
   async getHistory(limit = 50, opts: { includeHidden?: boolean } = {}): Promise<HistoryItem[]> {
-    const entries = await this.listSeriesItems();
-    const libraryItems = await Promise.all(
-      entries
-        .filter((e): e is CollectionSeriesItem & { lastReadAt: number } => e.lastReadAt !== undefined)
-        .map(async (e): Promise<HistoryItem> => {
-          // Surface the resume page/count for the last-read chapter so history renders "page X / N".
-          const p = e.lastReadChapterId === undefined
-            ? undefined
-            : (await this.store.listProgress(entryKey(e.bridgeId, e.seriesId)))
-                .find((x) => x.chapterId === e.lastReadChapterId);
-          return {
-            bridgeId: e.bridgeId,
-            seriesId: e.seriesId,
-            title: e.seriesTitle,
-            lastReadAt: e.lastReadAt,
-            ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
-            ...(e.lastReadChapterId !== undefined && { lastReadChapterId: e.lastReadChapterId }),
-            ...(e.lastReadChapterName !== undefined && { lastReadChapterName: e.lastReadChapterName }),
-            ...(p?.lastPage !== undefined && { lastPage: p.lastPage }),
-            ...(p?.pageCount !== undefined && { pageCount: p.pageCount }),
-          };
-        }),
+    const entries = (await this.listSeriesItems()).filter(
+      (e): e is CollectionSeriesItem & { lastReadAt: number } => e.lastReadAt !== undefined,
     );
-
-    const libraryKeys = new Set(libraryItems.map((i) => `${i.bridgeId}:${i.seriesId}`));
+    const libraryItems = new Map(entries.map((e) => [`${e.bridgeId}:${e.seriesId}`, e]));
     const logItems = (await this.store.listReadingLog())
-      .filter((i) => (opts.includeHidden || !i.hidden) && !libraryKeys.has(`${i.bridgeId}:${i.seriesId}`))
+      .filter((i) => (opts.includeHidden || !i.hidden) && !libraryItems.has(`${i.bridgeId}:${i.seriesId}`))
       .map(({ hidden, ...i }) => (opts.includeHidden && hidden ? { ...i, hidden } : i));
 
-    const merged = [...libraryItems, ...logItems];
+    const merged: (HistoryItem | (CollectionSeriesItem & { lastReadAt: number }))[] = [...entries, ...logItems];
     // Drop reads from bridges whose history tracking is turned off (covers both library and log rows).
     const muted = await this.historyDisabledBridges(merged.map((i) => i.bridgeId));
-    return merged
+    const rows = merged
       .filter((i) => !muted.has(i.bridgeId))
       .sort((a, b) => b.lastReadAt - a.lastReadAt)
       .slice(0, limit);
+    // Resolved only for the rows kept: each library row reads its progress and chapter list.
+    return Promise.all(rows.map((r) => ("type" in r ? this.libraryHistoryItem(r) : r)));
+  }
+
+  /** A collected series' history row: its resume chapter (as `getResume` picks it), with the page
+   *  reached in it and the chapter's page count so history renders "page X / N". */
+  private async libraryHistoryItem(e: CollectionSeriesItem & { lastReadAt: number }): Promise<HistoryItem> {
+    const key = entryKey(e.bridgeId, e.seriesId);
+    const progress = await this.store.listProgress(key);
+    const unread = await this.unreadResume(key, e, progress);
+    const chapterId = unread?.id ?? e.lastReadChapterId;
+    const chapterName = unread ? unread.name : e.lastReadChapterName;
+    const p = chapterId === undefined ? undefined : progress.find((x) => x.chapterId === chapterId);
+    return {
+      bridgeId: e.bridgeId,
+      seriesId: e.seriesId,
+      title: e.seriesTitle,
+      lastReadAt: e.lastReadAt,
+      ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
+      ...(chapterId !== undefined && { lastReadChapterId: chapterId }),
+      ...(chapterName !== undefined && { lastReadChapterName: chapterName }),
+      ...(p?.lastPage !== undefined && { lastPage: p.lastPage }),
+      ...(p?.pageCount !== undefined && { pageCount: p.pageCount }),
+    };
+  }
+
+  /**
+   * The first unread chapter of a collected series, from the cached chapter list (which carries
+   * names) or, failing that, the item's `knownChapters`. Only once it has been read HERE (it has a
+   * last-opened chapter): read marks that arrive without reading — a tracker pull, a dismissed feed
+   * item — don't make a resume point on their own, the same way they don't touch the pointer.
+   */
+  private async unreadResume(
+    key: string,
+    entry: CollectionSeriesItem,
+    progress: ChapterProgress[],
+  ): Promise<ResumeChapter | undefined> {
+    if (entry.lastReadChapterId === undefined) return undefined;
+    const chapters = (await this.getCachedChapters(key))?.chapters ?? entry.knownChapters;
+    return firstUnreadChapter(chapters, progress);
   }
 
   /** The subset of the given bridge ids whose `historyDisabled` pref is set. */
@@ -1978,6 +2002,77 @@ function logicalChapterTally(item: CollectionSeriesItem, progress: ChapterProgre
 
 function unreadLogicalCount(item: CollectionSeriesItem, progress: ChapterProgress[]): number {
   return logicalChapterTally(item, progress).unread;
+}
+
+/** A chapter as `firstUnreadChapter` sees it: a cached `Chapter` or a slim `KnownChapter`. */
+interface ResumeChapter {
+  id: string;
+  name?: string | undefined;
+  number?: number | undefined;
+  languageCode?: string | undefined;
+  group?: string | undefined;
+}
+
+/**
+ * Where reading picks up going by the read markers: the first logical chapter, in ascending number
+ * order, past the furthest one read. Reopening an early chapter (a re-read, a stray tap) therefore
+ * never drags resume back to it; only unmarking read chapters does.
+ *
+ * Past the furthest read, not simply the first unread (Mihon's rule): real read marks have gaps —
+ * a skipped prologue, extras, a stretch read elsewhere — and the first unread then sits hundreds of
+ * chapters behind where the reader actually is. A gap behind the furthest read is never offered.
+ *
+ * Read state collapses by logical chapter the way `logicalChapterTally` does, scoped to the
+ * languages the reader has read in. Of several copies of the chosen chapter, one already started
+ * wins, then one from the group of the most recently read chapter, then the first listed.
+ *
+ * Undefined — leaving the caller on the last-opened chapter — when nothing numbered is read yet,
+ * when nothing comes after the furthest read, or when no chapter carries a number: unnumbered
+ * chapters have no order of their own (sources list them newest-first as often as not), so they
+ * are never picked.
+ */
+function firstUnreadChapter(chapters: readonly ResumeChapter[], progress: ChapterProgress[]): ResumeChapter | undefined {
+  const read = progress.filter((p) => p.read);
+  if (read.length === 0) return undefined;
+  const languages = new Set(read.map((p) => p.languageCode).filter((l): l is string => l !== undefined));
+  const scoped = languages.size > 0;
+  const keyOf = (c: { number?: number | undefined; languageCode?: string | undefined }, id: string) =>
+    scoped ? logicalChapterKey(c, id) : logicalChapterKey({ number: c.number }, id);
+  const byId = new Map(chapters.map((c) => [c.id, c]));
+  // A read row without a number of its own still collapses through the chapter it belongs to.
+  const readAs = (p: ChapterProgress) => (p.number !== undefined ? p : (byId.get(p.chapterId) ?? p));
+  const readLogical = new Set(read.map((p) => keyOf(readAs(p), p.chapterId)));
+  const readNumbers = read.map((p) => readAs(p).number).filter((n): n is number => n !== undefined);
+  if (readNumbers.length === 0) return undefined;
+  const furthest = Math.max(...readNumbers);
+  const started = new Set(progress.map((p) => p.chapterId));
+  const latest = read.filter((p) => byId.has(p.chapterId)).sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  const group = latest ? byId.get(latest.chapterId)?.group : undefined;
+
+  const ordered = chapters
+    .map((c, i) => ({ c, i }))
+    .filter((x): x is { c: ResumeChapter & { number: number }; i: number } => x.c.number !== undefined && x.c.number > furthest)
+    .filter(({ c }) => !scoped || c.languageCode === undefined || languages.has(c.languageCode))
+    .sort((a, b) => a.c.number - b.c.number || a.i - b.i)
+    .map((x) => x.c);
+
+  let pick: ResumeChapter | undefined;
+  let pickKey: string | undefined;
+  for (const c of ordered) {
+    const k = keyOf(c, c.id);
+    if (readLogical.has(k)) continue;
+    if (pick === undefined) {
+      pick = c;
+      pickKey = k;
+      continue;
+    }
+    // Copies of one logical chapter sort together; past the last of them the choice is made.
+    if (c.number !== pick.number) break;
+    if (k !== pickKey) continue;
+    if (started.has(c.id) && !started.has(pick.id)) pick = c;
+    else if (!started.has(pick.id) && group !== undefined && c.group === group && pick.group !== group) pick = c;
+  }
+  return pick;
 }
 
 /**

@@ -869,7 +869,8 @@ describe("syncEntryWithTracker", () => {
     expect(updateCalls).toEqual([]);
     const read = new Set((await lib.getProgress("test:s1")).filter((p) => p.read).map((p) => p.chapterId));
     expect(read).toEqual(new Set(["c1"]));
-    expect(await lib.getResume("test:s1")).toEqual({ chapterId: "c1", lastPage: 0 });
+    // Resume goes by the local read marks — c1 is done, so c2 — not by the tracker's 3.
+    expect(await lib.getResume("test:s1")).toEqual({ chapterId: "c2", lastPage: 0 });
     // The watermark rose to the tracker's number, so reading c2 next pushes nothing: the tracker
     // already leads. Only passing it does.
     expect(await lib.getTrackerLink("test:s1", "anilist")).toMatchObject({ chaptersRead: 3 });

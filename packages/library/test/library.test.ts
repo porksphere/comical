@@ -2094,3 +2094,151 @@ describe("importLegacyEntries", () => {
     expect(item?.thumbnailUrl).toBeUndefined();
   });
 });
+
+describe("resume follows the read markers", () => {
+  const FOUR = [ch("c4", 4), ch("c3", 3), ch("c2", 2), ch("c1", 1)]; // newest-first, as sources list them
+
+  async function collected(chapters: Chapter[] = FOUR) {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, chapters);
+    return lib;
+  }
+
+  test("reopening an early chapter leaves resume on the first unread one", async () => {
+    const lib = await collected();
+    await lib.markRead(KEY, "c1", true, "Ch 1");
+    await lib.markRead(KEY, "c2", true, "Ch 2");
+    await lib.markRead(KEY, "c3", true, "Ch 3");
+    // A re-read (or a stray tap) of chapter 1 moves the last-opened pointer...
+    await lib.setProgress(KEY, "c1", 5, 20, "Ch 1");
+    expect((await lib.getSeries(KEY))?.lastReadChapterId).toBe("c1");
+    // ...but resume goes by what's read.
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c4", lastPage: 0 });
+    const [row] = await lib.getHistory();
+    expect(row).toMatchObject({ lastReadChapterId: "c4", lastReadChapterName: "Ch 4" });
+    expect(row?.lastPage).toBeUndefined();
+    expect(row?.pageCount).toBeUndefined();
+  });
+
+  test("a started chapter resumes at its page", async () => {
+    const lib = await collected();
+    await lib.markRead(KEY, "c1", true, "Ch 1");
+    await lib.markRead(KEY, "c2", true, "Ch 2");
+    await lib.setProgress(KEY, "c3", 6, 20, "Ch 3");
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c3", lastPage: 6 });
+    expect((await lib.getHistory())[0]).toMatchObject({ lastReadChapterId: "c3", lastPage: 6, pageCount: 20 });
+  });
+
+  test("a gap behind the furthest read chapter is not where resume goes", async () => {
+    const lib = await collected();
+    await lib.markRead(KEY, "c3", true);
+    await lib.markRead(KEY, "c1", true); // reopened last, and c2 was never read
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c4", lastPage: 0 });
+  });
+
+  test("a gap ahead of the furthest read is still read in order", async () => {
+    const lib = await collected([ch("c1", 1), ch("c2", 2), ch("c2.5", 2.5), ch("c3", 3)]);
+    await lib.markRead(KEY, "c2", true);
+    expect((await lib.getResume(KEY))?.chapterId).toBe("c2.5");
+  });
+
+  test("read marks with no chapter number leave resume on the last-opened chapter", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, FOUR);
+    // A read for a chapter the list no longer has, recorded without a number: nothing to order by.
+    await lib.markRead(KEY, "gone", true, "Old chapter");
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "gone", lastPage: 0 });
+  });
+
+  test("reads reconciled from a tracker count once the series is read here, not before", async () => {
+    const lib = await collected();
+    await lib.reconcileRead(KEY, [{ chapterId: "c1", number: 1 }, { chapterId: "c2", number: 2 }]);
+    // A pull alone makes no resume point...
+    expect(await lib.getResume(KEY)).toBeUndefined();
+    // ...but once reading happens here, resume skips past what the tracker marked.
+    await lib.setProgress(KEY, "c1", 3, 20, "Ch 1");
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c3", lastPage: 0 });
+  });
+
+  test("with everything read, resume stays on the last-opened chapter", async () => {
+    const lib = await collected();
+    for (const c of ["c1", "c2", "c4"]) await lib.markRead(KEY, c, true);
+    await lib.setProgress(KEY, "c3", 19, 20, "Ch 3"); // finishes it
+    await lib.setProgress(KEY, "c2", 4, 20, "Ch 2"); // then a re-read
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c2", lastPage: 4 });
+    expect((await lib.getHistory())[0]).toMatchObject({ lastReadChapterId: "c2", lastReadChapterName: "Ch 2" });
+  });
+
+  test("with nothing read, resume stays on the last-opened chapter", async () => {
+    const lib = await collected();
+    await lib.setProgress(KEY, "c3", 2, 20, "Ch 3");
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c3", lastPage: 2 });
+  });
+
+  test("without a numbered chapter list, resume stays on the last-opened chapter", async () => {
+    const lib = await collected([
+      { id: "x2", name: "Extra 2" },
+      { id: "x1", name: "Extra 1" },
+    ]);
+    await lib.markRead(KEY, "x1", true, "Extra 1");
+    await lib.setProgress(KEY, "x1", 3, 20, "Extra 1");
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "x1", lastPage: 3 });
+  });
+
+  test("unnumbered chapters are never picked", async () => {
+    const lib = await collected([{ id: "extra", name: "Extra" }, ch("c2", 2), ch("c1", 1)]);
+    await lib.markRead(KEY, "c1", true);
+    await lib.markRead(KEY, "c2", true);
+    // Every numbered chapter is read: back to the last-opened one, not the extra.
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c2", lastPage: 0 });
+  });
+
+  test("falls back to the item's known chapters when no chapter list is cached", async () => {
+    const store = new InMemoryLibraryStore();
+    const lib = new Library(store, { now: fakeClock() });
+    await lib.collectSeries(COORD, SNAP);
+    await lib.syncChapters(KEY, FOUR);
+    await store.deleteCachedChapters(KEY);
+    await lib.markRead(KEY, "c1", true, "Ch 1");
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "c2", lastPage: 0 });
+    // The slim list carries no names, so the row names no chapter rather than the wrong one.
+    const [row] = await lib.getHistory();
+    expect(row?.lastReadChapterId).toBe("c2");
+    expect(row?.lastReadChapterName).toBeUndefined();
+  });
+
+  test("of several copies, prefers the reader's group, and a started copy over that", async () => {
+    const lib = await collected([
+      chg("a1", 1, "GroupA", "en"),
+      chg("b1", 1, "GroupB", "en"),
+      chg("a2", 2, "GroupA", "en"),
+      chg("b2", 2, "GroupB", "en"),
+      chg("a3", 3, "GroupA", "en"),
+      chg("b3", 3, "GroupB", "en"),
+    ]);
+    await lib.markRead(KEY, "b1", true);
+    expect((await lib.getResume(KEY))?.chapterId).toBe("b2");
+    await lib.setProgress(KEY, "a2", 3, 20);
+    expect(await lib.getResume(KEY)).toEqual({ chapterId: "a2", lastPage: 3 });
+  });
+
+  test("stays in the languages the reader reads", async () => {
+    const lib = await collected([
+      chg("es1", 1, "G", "es"),
+      chg("en1", 1, "G", "en"),
+      chg("es2", 2, "G", "es"),
+      chg("en2", 2, "G", "en"),
+    ]);
+    await lib.markRead(KEY, "en1", true);
+    expect((await lib.getResume(KEY))?.chapterId).toBe("en2");
+  });
+
+  test("a read chapter's other copies count as read", async () => {
+    const lib = await collected([chg("a1", 1, "A", "en"), chg("b1", 1, "B", "en"), chg("a2", 2, "A", "en")]);
+    await lib.markRead(KEY, "a1", true);
+    expect((await lib.getResume(KEY))?.chapterId).toBe("a2");
+  });
+});

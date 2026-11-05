@@ -491,6 +491,12 @@ export interface HistoryItem {
   seriesId: string;
   title: string;
   thumbnailUrl?: string;
+  /**
+   * The resume chapter. A reading-log (non-library) row stores the last-opened chapter; for a
+   * library row `getHistory` puts the chapter `getResume` picks — the next one past the furthest
+   * read, once anything is read — so a stray reopen of an early chapter doesn't pull resume back to it.
+   * `lastReadChapterName` is that chapter's name, when known.
+   */
   lastReadChapterId?: string;
   lastReadChapterName?: string;
   /**
