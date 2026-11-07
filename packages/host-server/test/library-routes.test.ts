@@ -483,3 +483,30 @@ describe("collecting with a cover aspect", () => {
     await send("DELETE", "/library/collected/series/demo/aspect-2");
   });
 });
+
+describe("collecting with cover hints", () => {
+  test("valid hints are stored; malformed ones are dropped, not rejected", async () => {
+    const ok = await send("PUT", "/library/collected/series/demo/hints-1", {
+      seriesTitle: "Hints One",
+      coverForm: "sheets",
+      readingDirection: "rtl",
+    });
+    expect(ok.status).toBe(200);
+    const one = (await (await get("/library/collected/series/demo/hints-1")).json()) as { series: Record<string, unknown> };
+    expect(one.series.coverForm).toBe("sheets");
+    expect(one.series.readingDirection).toBe("rtl");
+
+    const bad = await send("PUT", "/library/collected/series/demo/hints-2", {
+      seriesTitle: "Hints Two",
+      coverForm: "scroll-of-doom",
+      readingDirection: 7,
+    });
+    expect(bad.status).toBe(200);
+    const two = (await (await get("/library/collected/series/demo/hints-2")).json()) as { series: Record<string, unknown> };
+    expect(two.series.coverForm).toBeUndefined();
+    expect(two.series.readingDirection).toBeUndefined();
+
+    await send("DELETE", "/library/collected/series/demo/hints-1");
+    await send("DELETE", "/library/collected/series/demo/hints-2");
+  });
+});

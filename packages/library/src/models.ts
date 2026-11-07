@@ -11,7 +11,14 @@
  * being "in the library" IS having a series item.
  */
 import { z } from "zod";
-import { chapterSchema, seriesInfoSchema, seriesRevisionSchema, thumbnailAspectSchema } from "@comical/contract";
+import {
+  chapterSchema,
+  coverFormSchema,
+  readingDirectionSchema,
+  seriesInfoSchema,
+  seriesRevisionSchema,
+  thumbnailAspectSchema,
+} from "@comical/contract";
 
 /** Stable, cross-bridge key for a tracked series. */
 export function entryKey(bridgeId: string, seriesId: string): string {
@@ -185,6 +192,11 @@ export const seriesItemSnapshotSchema = z.object({
   /** The cover's width / height, when the client knew it (a bridge's `thumbnailAspect`). Lets the
    *  library grid lay rows out at the covers' real height. Dropped whenever the cover changes. */
   thumbnailAspect: thumbnailAspectSchema.optional(),
+  /** The bridge's `coverForm` for this series, so a library card is drawn as the object it is
+   *  without asking the bridge again. Kept until the source says otherwise. */
+  coverForm: coverFormSchema.optional(),
+  /** The bridge's `readingDirection` for this series — see `coverForm`. */
+  readingDirection: readingDirectionSchema.optional(),
   author: z.string().optional(),
   /** Cross-service ids from `SeriesInfo.externalIds`, keyed by tracker id — persisted for
    *  auto-grouping and tracker sync matching. */
@@ -341,6 +353,10 @@ export const collectionSeriesItemSchema = z.object({
   /** `thumbnailUrl`'s width / height — see `seriesItemSnapshotSchema.thumbnailAspect`. Only ever
    *  describes the CURRENT cover: whatever replaces `thumbnailUrl` replaces (or drops) this too. */
   thumbnailAspect: thumbnailAspectSchema.optional().catch(undefined),
+  /** See `seriesItemSnapshotSchema.coverForm`. */
+  coverForm: coverFormSchema.optional().catch(undefined),
+  /** See `seriesItemSnapshotSchema.readingDirection`. */
+  readingDirection: readingDirectionSchema.optional().catch(undefined),
   author: z.string().optional(),
   updatedAt: z.number().int(),
   /** Resume cache, updated on every read so history/resume need no progress scan. */

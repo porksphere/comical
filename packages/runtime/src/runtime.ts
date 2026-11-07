@@ -14,7 +14,7 @@
  *     then bulk-add the caller's selection, grouping in any confirmed cross-bridge duplicates.
  *   - backgroundSync: iterate all library entries, pull fresh chapters, update knownChapters.
  */
-import type { Chapter, Cursor, LogCapability, PagedResults, SeriesEntry, SeriesInfo, SeriesRevision, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult, TrackerStatus } from "@comical/contract";
+import type { Chapter, CoverForm, Cursor, LogCapability, PagedResults, ReadingDirection, SeriesEntry, SeriesInfo, SeriesRevision, TrackerEntryUpdate, TrackerLibraryEntry, TrackerSearchResult, TrackerStatus } from "@comical/contract";
 import { MAX_UPDATE_CHECK_BATCH, parseSeriesGone, trackerEntryUpdateSchema } from "@comical/contract";
 import type { z } from "zod";
 import { matchSearchResults, sharesName, trackerEntryNames, type trackerImportItemSchema, type trackerImportResolveRequestSchema } from "./tracker-import.ts";
@@ -69,6 +69,8 @@ export interface FavoritesImportCandidate {
   thumbnailUrl?: string;
   /** `thumbnailUrl`'s width / height, when the bridge sent it. */
   thumbnailAspect?: number;
+  coverForm?: CoverForm;
+  readingDirection?: ReadingDirection;
   /**
    * `"in-library"` — already added FROM THIS BRIDGE, so there's nothing to import.
    * `"duplicate"` — a normalized-title match on ANOTHER bridge: importing adds a second source for
@@ -92,6 +94,8 @@ export interface FavoritesImportItem {
   thumbnailUrl?: string;
   /** `thumbnailUrl`'s width / height, when the bridge sent it. */
   thumbnailAspect?: number;
+  coverForm?: CoverForm;
+  readingDirection?: ReadingDirection;
   linkTo?: string;
 }
 
@@ -390,6 +394,8 @@ export class ComicalRuntime {
     let title = snap?.seriesTitle;
     let thumbnailUrl = snap?.thumbnailUrl;
     let thumbnailAspect = snap?.thumbnailAspect;
+    let coverForm = snap?.coverForm;
+    let readingDirection = snap?.readingDirection;
     let author = snap?.author;
     let externalIds = snap?.externalIds;
 
@@ -402,6 +408,8 @@ export class ComicalRuntime {
         thumbnailUrl = fetchedInfo.thumbnailUrl;
         thumbnailAspect = fetchedInfo.thumbnailAspect;
       }
+      coverForm ??= fetchedInfo.coverForm;
+      readingDirection ??= fetchedInfo.readingDirection;
       if (author === undefined && fetchedInfo.author !== undefined) author = fetchedInfo.author;
       if (externalIds === undefined && fetchedInfo.externalIds !== undefined) {
         externalIds = fetchedInfo.externalIds;
@@ -411,6 +419,8 @@ export class ComicalRuntime {
     const full: SeriesItemSnapshot = { seriesTitle: title };
     if (thumbnailUrl !== undefined) full.thumbnailUrl = thumbnailUrl;
     if (thumbnailUrl !== undefined && thumbnailAspect !== undefined) full.thumbnailAspect = thumbnailAspect;
+    if (coverForm !== undefined) full.coverForm = coverForm;
+    if (readingDirection !== undefined) full.readingDirection = readingDirection;
     if (author !== undefined) full.author = author;
     if (externalIds !== undefined) full.externalIds = externalIds;
     if (snap?.collectionIds !== undefined) full.collectionIds = snap.collectionIds;
@@ -582,6 +592,8 @@ export class ComicalRuntime {
     const candidate: FavoritesImportCandidate = { seriesId: entry.id, title: entry.title, status: "new" };
     if (entry.thumbnailUrl !== undefined) candidate.thumbnailUrl = entry.thumbnailUrl;
     if (entry.thumbnailUrl !== undefined && entry.thumbnailAspect !== undefined) candidate.thumbnailAspect = entry.thumbnailAspect;
+    if (entry.coverForm !== undefined) candidate.coverForm = entry.coverForm;
+    if (entry.readingDirection !== undefined) candidate.readingDirection = entry.readingDirection;
 
     if (await lib.getSeries(entryKey(bridgeId, entry.id))) {
       candidate.status = "in-library";
@@ -634,6 +646,8 @@ export class ComicalRuntime {
       const snap: SeriesItemSnapshot = { seriesTitle: item.title };
       if (item.thumbnailUrl !== undefined) snap.thumbnailUrl = item.thumbnailUrl;
       if (item.thumbnailUrl !== undefined && item.thumbnailAspect !== undefined) snap.thumbnailAspect = item.thumbnailAspect;
+      if (item.coverForm !== undefined) snap.coverForm = item.coverForm;
+      if (item.readingDirection !== undefined) snap.readingDirection = item.readingDirection;
       if (opts.collectionIds !== undefined) snap.collectionIds = opts.collectionIds;
       await lib.collectSeries({ bridgeId, seriesId: item.seriesId }, snap);
       imported++;
@@ -660,6 +674,8 @@ export class ComicalRuntime {
           title: entry.title,
           ...(entry.thumbnailUrl !== undefined && { thumbnailUrl: entry.thumbnailUrl }),
           ...(entry.thumbnailUrl !== undefined && entry.thumbnailAspect !== undefined && { thumbnailAspect: entry.thumbnailAspect }),
+          ...(entry.coverForm !== undefined && { coverForm: entry.coverForm }),
+          ...(entry.readingDirection !== undefined && { readingDirection: entry.readingDirection }),
         });
       }
       if (!result.nextCursor || page >= MAX_IMPORT_PAGES) break;
@@ -909,6 +925,8 @@ export class ComicalRuntime {
     const thumbnailUrl = info?.thumbnailUrl ?? item.thumbnailUrl;
     if (thumbnailUrl !== undefined) snap.thumbnailUrl = thumbnailUrl;
     if (info?.thumbnailUrl !== undefined && info.thumbnailAspect !== undefined) snap.thumbnailAspect = info.thumbnailAspect;
+    if (info?.coverForm !== undefined) snap.coverForm = info.coverForm;
+    if (info?.readingDirection !== undefined) snap.readingDirection = info.readingDirection;
     if (info?.author !== undefined) snap.author = info.author;
     if (info?.externalIds !== undefined) snap.externalIds = info.externalIds;
     if (collectionIds !== undefined) snap.collectionIds = collectionIds;

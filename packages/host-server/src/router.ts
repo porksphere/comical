@@ -12,12 +12,14 @@ import {
   bridgeSeriesStatusSchema,
   CONTENT_RATING_ORDER,
   CURSOR_MAX_LENGTH,
+  coverFormSchema,
   EXCLUDED_TAGS_KEY,
   isSecretSetting,
   MAX_CONTENT_RATING_KEY,
   parseLoginRequired,
   parseRateLimited,
   parseSeriesGone,
+  readingDirectionSchema,
   retryAfterMs,
   thumbnailAspectSchema,
 } from "@comical/contract";
@@ -1125,14 +1127,20 @@ ${url}`;
           seriesTitle?: string;
           thumbnailUrl?: string;
           thumbnailAspect?: number;
+          coverForm?: string;
+          readingDirection?: string;
           author?: string;
           externalIds?: Record<string, string | number>;
           collectionIds?: string[];
         }>(c)) ?? {};
+      const coverForm = coverFormSchema.safeParse(b.coverForm);
+      const readingDirection = readingDirectionSchema.safeParse(b.readingDirection);
       const snap = {
         ...(b.seriesTitle !== undefined && { seriesTitle: b.seriesTitle }),
         ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
         ...(isAspect(b.thumbnailAspect) && { thumbnailAspect: b.thumbnailAspect }),
+        ...(coverForm.success && { coverForm: coverForm.data }),
+        ...(readingDirection.success && { readingDirection: readingDirection.data }),
         ...(b.author !== undefined && { author: b.author }),
         ...(b.externalIds !== undefined && { externalIds: b.externalIds }),
         ...(b.collectionIds !== undefined && { collectionIds: b.collectionIds }),
@@ -1276,7 +1284,12 @@ ${url}`;
         }
         const items = b?.items
           ?.filter((i) => i && typeof i.seriesId === "string" && typeof i.title === "string")
-          .map(({ thumbnailAspect, ...i }) => (isAspect(thumbnailAspect) ? { ...i, thumbnailAspect } : i));
+          .map(({ thumbnailAspect, coverForm, readingDirection, ...i }) => ({
+            ...i,
+            ...(isAspect(thumbnailAspect) && { thumbnailAspect }),
+            ...(coverFormSchema.safeParse(coverForm).success && { coverForm }),
+            ...(readingDirectionSchema.safeParse(readingDirection).success && { readingDirection }),
+          }));
         return c.json(await runtime!.importBridgeFavorites(c.req.param("id"), items, {
           ...(b?.collectionIds !== undefined && { collectionIds: b.collectionIds }),
         }));

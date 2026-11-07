@@ -139,6 +139,61 @@ describe("cover aspect", () => {
   });
 });
 
+describe("cover hints", () => {
+  test("are stored from the snapshot and kept by a re-collect that names none", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, { ...SNAP, coverForm: "sheets", readingDirection: "rtl" });
+    let item = await lib.getSeries(KEY);
+    expect(item?.coverForm).toBe("sheets");
+    expect(item?.readingDirection).toBe("rtl");
+
+    await lib.collectSeries(COORD, SNAP);
+    item = await lib.getSeries(KEY);
+    expect(item?.coverForm).toBe("sheets");
+    expect(item?.readingDirection).toBe("rtl");
+
+    await lib.collectSeries(COORD, { ...SNAP, coverForm: "volume" });
+    expect((await lib.getSeries(KEY))?.coverForm).toBe("volume");
+  });
+
+  test("refreshSnapshot takes the source's hints, and keeps the stored ones when it gives none", async () => {
+    const lib = makeLibrary();
+    await lib.collectSeries(COORD, SNAP);
+    const before = await lib.getSeries(KEY);
+    expect(before?.coverForm).toBeUndefined();
+
+    await lib.refreshSnapshot(KEY, { id: "s1", title: before!.seriesTitle, coverForm: "issue", readingDirection: "ltr" });
+    let item = await lib.getSeries(KEY);
+    expect(item?.coverForm).toBe("issue");
+    expect(item?.readingDirection).toBe("ltr");
+
+    const stamped = item!.updatedAt;
+    await lib.refreshSnapshot(KEY, { id: "s1", title: before!.seriesTitle });
+    item = await lib.getSeries(KEY);
+    expect(item?.coverForm).toBe("issue");
+    expect(item?.updatedAt).toBe(stamped);
+  });
+
+  test("a corrupt stored hint parses as absent instead of failing the item", () => {
+    const parsed = collectionSeriesItemSchema.parse({
+      type: "series",
+      id: "x",
+      bridgeId: "demo",
+      seriesId: "s1",
+      seriesTitle: "T",
+      collectedAt: 1,
+      updatedAt: 1,
+      collectionIds: [],
+      knownChapters: [],
+      coverForm: "scroll-of-doom",
+      readingDirection: 3,
+    });
+    expect(parsed.coverForm).toBeUndefined();
+    expect(parsed.readingDirection).toBeUndefined();
+    expect(parsed.seriesTitle).toBe("T");
+  });
+});
+
 describe("offline metadata cache", () => {
   test("cacheSeriesDetail stores the full SeriesInfo for a library entry; no-op otherwise", async () => {
     const lib = makeLibrary();

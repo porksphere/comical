@@ -1,6 +1,6 @@
 /** ComicalRuntime — auto-tracker-linking, title-search suggestions, and read-sync. */
 import { describe, expect, test } from "bun:test";
-import type { Bridge, BridgeInfo, Chapter, PagedRequest, SeriesInfo, Tracker, TrackerEntryUpdate, TrackerInfo, TrackerLibraryEntry } from "@comical/contract";
+import type { Bridge, BridgeInfo, Chapter, PagedRequest, SeriesEntry, SeriesInfo, Tracker, TrackerEntryUpdate, TrackerInfo, TrackerLibraryEntry } from "@comical/contract";
 import { MAX_UPDATE_CHECK_BATCH, seriesGoneMessage, trackerEntryUpdateSchema } from "@comical/contract";
 import { entryKey, InMemoryLibraryStore, Library, type TrackerLink } from "@comical/library";
 import { ComicalRuntime, type BridgeProvider, type TrackerImportItem, type TrackerProvider } from "@comical/runtime";
@@ -2043,7 +2043,7 @@ describe("searchTracker", () => {
 // ── Favorites import ─────────────────────────────────────────────────────────
 
 /** A bridge whose favorites are served from a fixed list, paged `perPage` at a time. */
-function favoritesBridge(favorites: Array<{ id: string; title: string; thumbnailUrl?: string; thumbnailAspect?: number }>, perPage = 100): Bridge {
+function favoritesBridge(favorites: SeriesEntry[], perPage = 100): Bridge {
   return {
     info: { ...BRIDGE_INFO, capabilities: ["favorites"] },
     async getSeriesDetails() { return { id: "x", title: "x" }; },
@@ -2104,6 +2104,46 @@ describe("cover aspect reaches the library", () => {
 
     await runtime.importBridgeFavorites("test", [{ seriesId: "s3", title: "Third", thumbnailUrl: "http://x/3.jpg", thumbnailAspect: 1.2 }]);
     expect((await lib.getSeries("test:s3"))?.thumbnailAspect).toBe(1.2);
+  });
+});
+
+describe("cover hints reach the library", () => {
+  test("collectSeries keeps the caller's hints, or takes the fetched detail's", async () => {
+    const lib = makeLib();
+    const runtime = new ComicalRuntime({
+      bridges: mockBridgeProvider(mockBridge({ id: "s1", title: "One", coverForm: "scroll", readingDirection: "vertical" })),
+      library: lib,
+    });
+    await runtime.collectSeries("test", "s1");
+    let item = await lib.getSeries("test:s1");
+    expect(item?.coverForm).toBe("scroll");
+    expect(item?.readingDirection).toBe("vertical");
+
+    await runtime.collectSeries("test", "s2", { seriesTitle: "Two", coverForm: "sheets" });
+    item = await lib.getSeries("test:s2");
+    expect(item?.coverForm).toBe("sheets");
+    expect(item?.readingDirection).toBeUndefined();
+  });
+
+  test("a favorites import carries each favorite's hints, from the bridge or the confirmed selection", async () => {
+    const lib = makeLib();
+    const runtime = favoritesRuntime(
+      favoritesBridge([
+        { id: "s1", title: "First", coverForm: "issue", readingDirection: "rtl" },
+        { id: "s2", title: "Second" },
+      ]),
+      lib,
+    );
+    const preview = await runtime.previewBridgeFavoritesImport("test");
+    expect(preview.items.map((i) => i.coverForm)).toEqual(["issue", undefined]);
+
+    await runtime.importBridgeFavorites("test");
+    expect((await lib.getSeries("test:s1"))?.coverForm).toBe("issue");
+    expect((await lib.getSeries("test:s1"))?.readingDirection).toBe("rtl");
+    expect((await lib.getSeries("test:s2"))?.coverForm).toBeUndefined();
+
+    await runtime.importBridgeFavorites("test", [{ seriesId: "s3", title: "Third", coverForm: "sheets" }]);
+    expect((await lib.getSeries("test:s3"))?.coverForm).toBe("sheets");
   });
 });
 

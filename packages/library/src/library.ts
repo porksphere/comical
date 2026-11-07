@@ -234,6 +234,8 @@ export class Library {
       snap.thumbnailUrl === undefined || snap.thumbnailUrl === existing?.thumbnailUrl
         ? (snap.thumbnailAspect ?? existing?.thumbnailAspect)
         : snap.thumbnailAspect;
+    const coverForm = snap.coverForm ?? existing?.coverForm;
+    const readingDirection = snap.readingDirection ?? existing?.readingDirection;
     const author = snap.author ?? existing?.author;
     const externalIds = snap.externalIds ?? existing?.externalIds;
     const item: CollectionSeriesItem = {
@@ -247,6 +249,8 @@ export class Library {
       knownChapters: existing?.knownChapters ?? [],
       ...(thumbnailUrl !== undefined && { thumbnailUrl }),
       ...(thumbnailUrl !== undefined && thumbnailAspect !== undefined && { thumbnailAspect }),
+      ...(coverForm !== undefined && { coverForm }),
+      ...(readingDirection !== undefined && { readingDirection }),
       ...(author !== undefined && { author }),
       ...(externalIds !== undefined && { externalIds }),
       ...(existing?.chaptersSyncedAt !== undefined && { chaptersSyncedAt: existing.chaptersSyncedAt }),
@@ -575,6 +579,14 @@ export class Library {
       // Same cover, newly (or differently) measured — how a series saved before aspects existed
       // picks one up on its next visit.
       item.thumbnailAspect = info.thumbnailAspect;
+      changed = true;
+    }
+    if (info.coverForm !== undefined && info.coverForm !== item.coverForm) {
+      item.coverForm = info.coverForm;
+      changed = true;
+    }
+    if (info.readingDirection !== undefined && info.readingDirection !== item.readingDirection) {
+      item.readingDirection = info.readingDirection;
       changed = true;
     }
     if (info.author !== undefined && info.author !== item.author) {
