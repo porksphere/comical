@@ -1,0 +1,5 @@
+# The repo's toolchain: Bun (CI takes its latest release), and the JDK 17 native.yml builds the
+# Android host with.
+[tools]
+bun = "1.4.4"
+java = "temurin-17"
