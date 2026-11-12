@@ -234,8 +234,8 @@ export class Library {
       snap.thumbnailUrl === undefined || snap.thumbnailUrl === existing?.thumbnailUrl
         ? (snap.thumbnailAspect ?? existing?.thumbnailAspect)
         : snap.thumbnailAspect;
-    const coverForm = snap.coverForm ?? existing?.coverForm;
-    const readingDirection = snap.readingDirection ?? existing?.readingDirection;
+    const coverForm = snap.coverForm ?? existing?.coverForm ?? log?.coverForm;
+    const readingDirection = snap.readingDirection ?? existing?.readingDirection ?? log?.readingDirection;
     const author = snap.author ?? existing?.author;
     const externalIds = snap.externalIds ?? existing?.externalIds;
     const item: CollectionSeriesItem = {
@@ -559,7 +559,21 @@ export class Library {
    */
   async refreshSnapshot(key: string, info: SeriesInfo): Promise<void> {
     const item = await this.getSeriesItem(key);
-    if (!item) return;
+    if (!item) {
+      // An uncollected series' history row keeps what the series is as well: a row written before
+      // rows carried it, or by a read that didn't send it, picks it up on the next details visit.
+      const log = await this.getReadingLog(key);
+      const coverForm = info.coverForm ?? log?.coverForm;
+      const readingDirection = info.readingDirection ?? log?.readingDirection;
+      if (log && (coverForm !== log.coverForm || readingDirection !== log.readingDirection)) {
+        await this.store.upsertReadingLog({
+          ...log,
+          ...(coverForm !== undefined && { coverForm }),
+          ...(readingDirection !== undefined && { readingDirection }),
+        });
+      }
+      return;
+    }
     let changed = false;
     if (info.title && info.title !== item.seriesTitle) {
       item.seriesTitle = info.title;
@@ -1071,6 +1085,8 @@ export class Library {
       title: e.seriesTitle,
       lastReadAt: e.lastReadAt,
       ...(e.thumbnailUrl !== undefined && { thumbnailUrl: e.thumbnailUrl }),
+      ...(e.coverForm !== undefined && { coverForm: e.coverForm }),
+      ...(e.readingDirection !== undefined && { readingDirection: e.readingDirection }),
       ...(chapterId !== undefined && { lastReadChapterId: chapterId }),
       ...(chapterName !== undefined && { lastReadChapterName: chapterName }),
       ...(p?.lastPage !== undefined && { lastPage: p.lastPage }),
@@ -1108,7 +1124,16 @@ export class Library {
     const existing = await this.getSeriesItem(entryKey(item.bridgeId, item.seriesId));
     if (existing) return;
     if ((await this.getBridgePrefs(item.bridgeId)).historyDisabled) return;
-    await this.store.upsertReadingLog(item);
+    // What the series is doesn't change between reads: a read that doesn't say keeps what the row
+    // already knew, where the rest of the row is replaced by this read.
+    const log = await this.getReadingLog(entryKey(item.bridgeId, item.seriesId));
+    const coverForm = item.coverForm ?? log?.coverForm;
+    const readingDirection = item.readingDirection ?? log?.readingDirection;
+    await this.store.upsertReadingLog({
+      ...item,
+      ...(coverForm !== undefined && { coverForm }),
+      ...(readingDirection !== undefined && { readingDirection }),
+    });
   }
 
   /** Remove a series from reading history. For library entries, clears last-read fields; a log entry

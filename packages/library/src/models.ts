@@ -18,6 +18,8 @@ import {
   seriesInfoSchema,
   seriesRevisionSchema,
   thumbnailAspectSchema,
+  type CoverForm,
+  type ReadingDirection,
 } from "@comical/contract";
 
 /** Stable, cross-bridge key for a tracked series. */
@@ -507,6 +509,13 @@ export interface HistoryItem {
   seriesId: string;
   title: string;
   thumbnailUrl?: string;
+  /**
+   * The bridge's `coverForm` and `readingDirection` for this series, so a history row is drawn as
+   * the object it is without asking the bridge again — see `seriesItemSnapshotSchema.coverForm`.
+   * A reading-log (non-library) row stores what its last read sent; a library row's are its item's.
+   */
+  coverForm?: CoverForm;
+  readingDirection?: ReadingDirection;
   /**
    * The resume chapter. A reading-log (non-library) row stores the last-opened chapter; for a
    * library row `getHistory` puts the chapter `getResume` picks — the next one past the furthest

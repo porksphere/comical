@@ -239,6 +239,31 @@ describe("/library lifecycle", () => {
     expect(history2.find((h) => h.seriesId === "ext-1")?.lastPage).toBe(14);
   });
 
+  test("a history row keeps what its series is, in or out of the library", async () => {
+    type Row = { seriesId: string; coverForm?: string; readingDirection?: string; lastPage?: number };
+    const row = async (seriesId: string) =>
+      ((await (await get("/library/history?limit=50")).json()) as Row[]).find((h) => h.seriesId === seriesId);
+
+    await send("POST", "/reading-history", {
+      bridgeId: "demo", seriesId: "cg-1", title: "A CG set", chapterId: "c1", lastPage: 2, coverForm: "sheets", readingDirection: "ltr",
+    });
+    expect(await row("cg-1")).toMatchObject({ coverForm: "sheets", readingDirection: "ltr" });
+
+    // A later read that doesn't say what the series is moves the page and keeps what the row knew.
+    await send("POST", "/reading-history", { bridgeId: "demo", seriesId: "cg-1", title: "A CG set", chapterId: "c1", lastPage: 5 });
+    expect(await row("cg-1")).toMatchObject({ coverForm: "sheets", readingDirection: "ltr", lastPage: 5 });
+
+    // Anything that isn't one of the contract's words is dropped, not stored.
+    await send("POST", "/reading-history", { bridgeId: "demo", seriesId: "odd-1", title: "Odd", chapterId: "c1", coverForm: "scroll-ish" });
+    expect((await row("odd-1"))?.coverForm).toBeUndefined();
+
+    // Collected, the series' item is what answers, and it took the row's word with it.
+    const base = "/library/collected/series/demo/cg-1";
+    expect((await send("PUT", base, { seriesTitle: "A CG set" })).status).toBe(200);
+    expect((await send("PUT", `${base}/progress/c1`, { lastPage: 6, pageCount: 10 })).status).toBe(200);
+    expect(await row("cg-1")).toMatchObject({ coverForm: "sheets", readingDirection: "ltr" });
+  });
+
   test("validation: a library-only host must be told the title, since it can't ask a bridge", async () => {
     const manager = new BridgeManager({ bridgesDir: BRIDGES_DIR, dataDir: DATA_DIR, settings: new SettingsStore(DATA_DIR) });
     const library = new Library(new FileLibraryStore(join(DATA_DIR, "library-only")));

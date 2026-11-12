@@ -1576,6 +1576,17 @@ describe("read state for an uncollected series", () => {
     });
   });
 
+  test("a details visit tells an uncollected series' history row what the series is", async () => {
+    const lib = makeLibrary();
+    await lib.recordRead({ ...LOG, lastReadChapterId: "c1", lastPage: 3 });
+    expect((await lib.getHistory())[0]?.coverForm).toBeUndefined();
+    await lib.refreshSnapshot(KEY, { id: LOG.seriesId, title: LOG.title, coverForm: "sheets", readingDirection: "ltr" });
+    expect((await lib.getHistory())[0]).toMatchObject({ coverForm: "sheets", readingDirection: "ltr", lastPage: 3 });
+    // A later read that doesn't say keeps it.
+    await lib.recordRead({ ...LOG, lastReadChapterId: "c1", lastPage: 7 });
+    expect((await lib.getHistory())[0]).toMatchObject({ coverForm: "sheets", readingDirection: "ltr", lastPage: 7 });
+  });
+
   test("a nameless write to a different chapter drops the stale chapter name", async () => {
     const lib = makeLibrary();
     await lib.recordRead({ ...LOG, lastReadChapterId: "c1", lastReadChapterName: "Ch 1" });

@@ -979,14 +979,18 @@ ${url}`;
     });
 
     app.post("/reading-history", async (c) => {
-      const b = await body<{ bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string; chapterId?: string; chapterName?: string; lastPage?: number; pageCount?: number; lastReadAt?: number }>(c);
+      const b = await body<{ bridgeId?: string; seriesId?: string; title?: string; thumbnailUrl?: string; coverForm?: string; readingDirection?: string; chapterId?: string; chapterName?: string; lastPage?: number; pageCount?: number; lastReadAt?: number }>(c);
       if (!b?.bridgeId || !b.seriesId || !b.title) return c.json({ error: "bridgeId, seriesId, title required" }, 400);
+      const coverForm = coverFormSchema.safeParse(b.coverForm);
+      const readingDirection = readingDirectionSchema.safeParse(b.readingDirection);
       await lib.recordRead({
         bridgeId: b.bridgeId,
         seriesId: b.seriesId,
         title: b.title,
         lastReadAt: b.lastReadAt ?? Date.now(),
         ...(b.thumbnailUrl !== undefined && { thumbnailUrl: b.thumbnailUrl }),
+        ...(coverForm.success && { coverForm: coverForm.data }),
+        ...(readingDirection.success && { readingDirection: readingDirection.data }),
         ...(b.chapterId !== undefined && { lastReadChapterId: b.chapterId }),
         ...(b.chapterName !== undefined && { lastReadChapterName: b.chapterName }),
         ...(b.lastPage !== undefined && { lastPage: b.lastPage }),
