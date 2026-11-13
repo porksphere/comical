@@ -42,7 +42,7 @@ import { BridgeSettingsError } from "@comical/core/errors";
 import { ImageRequestRefusedError, resolveImageRequest, type ResolvedImageRequest } from "@comical/core/images";
 import { resolveLink } from "@comical/core/links";
 import { assetBudgetFor } from "@comical/core/net/asset-budget";
-import { RateLimiter } from "@comical/core/net/rate-limiter";
+import { DEFAULT_RATE_LIMIT, RateLimiter } from "@comical/core/net/rate-limiter";
 import { redactSettingSecrets, redactSettingsForm, validateSettingsInput } from "@comical/core/settings";
 import { entryKey, collectionItemId, LibraryBackupError, readLibraryBackup, type ChapterPageRef, type CollectionItemsQuery, type CollectionItemType, type Library, type LibraryBackupSources } from "@comical/library";
 import { contentTypeFor, extFor, sanitizeSegment } from "@comical/downloads";
@@ -56,6 +56,7 @@ import { TagLabelCache } from "./tag-label-cache.ts";
 import type { TrackerProvider } from "./tracker-provider.ts";
 import type { SyncBackend } from "@comical/sync";
 import { createSyncRoutes } from "./sync-routes.ts";
+import { AbandonedError, InterceptQueue } from "./intercept-queue.ts";
 export interface RouterOptions {
   /** CORS origin(s) allowed. Defaults to '*' for LAN use. */
   origin?: string;
@@ -362,6 +363,18 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
   const IMAGE_RESOLVE_TTL_MS = 10 * 60_000;
   const IMAGE_RESOLVE_MAX = 4096;
   const resolvedImages = new Map<string, { req: ResolvedImageRequest; expires: number }>();
+  // One line per bridge, as wide as the bridge runs requests at once — see `InterceptQueue`.
+  const interceptQueues = new Map<string, InterceptQueue>();
+  const interceptQueue = (id: string): InterceptQueue => {
+    let queue = interceptQueues.get(id);
+    if (!queue) {
+      queue = new InterceptQueue(
+        () => listingCache?.infos.get(id)?.rateLimit?.maxConcurrent ?? DEFAULT_RATE_LIMIT.maxConcurrent,
+      );
+      interceptQueues.set(id, queue);
+    }
+    return queue;
+  };
   app.get("/bridges/:id/image", async (c) => {
     const id = c.req.param("id");
     const url = c.req.query("url") ?? "";
@@ -377,13 +390,21 @@ ${url}`;
     if (!memo) {
       let req: ResolvedImageRequest;
       try {
-        req = await resolveImageRequest(info, url, async (u) => {
-          const bridge = await manager.get(id);
-          if (!bridge.interceptImageRequest) throw new ImageRequestRefusedError(`bridge "${id}" has no interceptImageRequest`);
-          return bridge.interceptImageRequest(u);
-        });
+        req = await resolveImageRequest(info, url, (u) =>
+          interceptQueue(id).run(
+            `${memoKey}${refresh ? "\nrefresh" : ""}`,
+            async () => {
+              const bridge = await manager.get(id);
+              if (!bridge.interceptImageRequest) throw new ImageRequestRefusedError(`bridge "${id}" has no interceptImageRequest`);
+              return bridge.interceptImageRequest(u);
+            },
+            c.req.raw.signal,
+          ),
+        );
       } catch (e) {
         if (e instanceof ImageRequestRefusedError) return c.text("Forbidden", 403);
+        // Nobody is left to answer.
+        if (e instanceof AbandonedError) return new Response(null, { status: 499 });
         return bridgeErrorResponse(c, e);
       }
       memo = { req, expires: now + IMAGE_RESOLVE_TTL_MS };

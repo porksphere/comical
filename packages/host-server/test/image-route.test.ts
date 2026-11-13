@@ -31,14 +31,14 @@ interface MockBridge {
 }
 
 /** A router over one listed bridge `img`, whose instance is only reachable through `get`. */
-function serve(images: BridgeImages | undefined, bridge: MockBridge = {}) {
+function serve(images: BridgeImages | undefined, bridge: MockBridge = {}, extraInfo: Record<string, unknown> = {}) {
   let loads = 0;
   const mgr = {
     list: async () => [
       {
         info: {
           id: "img", name: "Img", version: "1.0.0", contractVersion: "2.1.0",
-          languages: ["en"], nsfw: false, capabilities: [], ...(images ? { images } : {}),
+          languages: ["en"], nsfw: false, capabilities: [], ...(images ? { images } : {}), ...extraInfo,
         },
         settings: [], configured: true, missingRequired: [], source: "registry" as const,
       },
@@ -53,8 +53,8 @@ function serve(images: BridgeImages | undefined, bridge: MockBridge = {}) {
   } as unknown as BridgeManager;
   const srv = Bun.serve({ port: 0, fetch: createRouter(mgr).fetch });
   return {
-    get: (id: string, url: string, extra = "") =>
-      fetch(`http://localhost:${srv.port}${bridgeImagePath(id, url)}${extra}`, { redirect: "manual" }),
+    get: (id: string, url: string, extra = "", signal?: AbortSignal) =>
+      fetch(`http://localhost:${srv.port}${bridgeImagePath(id, url)}${extra}`, { redirect: "manual", ...(signal && { signal }) }),
     loads: () => loads,
     stop: () => srv.stop(true),
   };
@@ -218,6 +218,43 @@ describe("GET /bridges/:id/image", () => {
       const res = await s.get("img", `${origin}/a.png`);
       expect(res.status).toBe(500);
       expect(((await res.json()) as { error: string }).error).toContain("lookup page changed");
+    } finally {
+      s.stop();
+    }
+  });
+  test("interceptions wait their turn in arrival order, and one whose client hung up never runs", async () => {
+    const asked: string[] = [];
+    const releases: (() => void)[] = [];
+    const s = serve(
+      { hosts: ["127.0.0.1"], intercept: ["127.0.0.1"] },
+      {
+        interceptImageRequest: (u) => {
+          asked.push(new URL(u).pathname);
+          return new Promise((r) => releases.push(() => r({ url: u })));
+        },
+      },
+      { rateLimit: { maxConcurrent: 1, minIntervalMs: 0 } },
+    );
+    const until = async (cond: () => boolean) => {
+      for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+    };
+    try {
+      const p2 = s.get("img", `${origin}/2.png`);
+      await until(() => asked.length === 1);
+      const gone = new AbortController();
+      const p3 = s.get("img", `${origin}/3.png`, "", gone.signal).catch(() => "aborted");
+      const p4 = s.get("img", `${origin}/4.png`);
+      // Let both reach the queue before the client for page 3 hangs up.
+      await new Promise((r) => setTimeout(r, 50));
+      gone.abort();
+      await new Promise((r) => setTimeout(r, 50));
+      releases.shift()!();
+      expect((await p2).status).toBe(302);
+      await until(() => asked.length === 2);
+      releases.shift()!();
+      expect((await p4).status).toBe(302);
+      expect(await p3).toBe("aborted");
+      expect(asked).toEqual(["/2.png", "/4.png"]);
     } finally {
       s.stop();
     }
