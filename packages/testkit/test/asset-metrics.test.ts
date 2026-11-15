@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Bridge, BridgeInfo, SeriesEntry } from "@comical/contract";
 import { evaluateBridge } from "../src/conformance.ts";
-import { measureThumbnails, parseImageSize, type AssetFetcher } from "../src/asset-metrics.ts";
+import { measureThumbnails, parseImageSize, resolveThumbnail, type AssetFetcher } from "../src/asset-metrics.ts";
 
 // Minimal header fixtures, all encoding 100×150.
 function png(): Uint8Array {
@@ -116,5 +116,34 @@ describe("evaluateBridge — metrics integration", () => {
     expect(r.metrics?.sampled).toBe(1);
     expect(r.metrics?.bytes.avg).toBe(500);
     expect(r.summary.verdict).toBe("pass"); // metrics never affect the conformance verdict
+  });
+});
+
+describe("thumbnails behind the host's image route", () => {
+  const images = { hosts: ["cdn.site.test"], headers: { Referer: "https://site.test/" } };
+  const routed = `/bridges/t/image?url=${encodeURIComponent("https://img.cdn.site.test/a.webp")}`;
+
+  test("the route is unwrapped and the declared headers added, as the route would", () => {
+    expect(resolveThumbnail(routed, images)).toEqual({ url: "https://img.cdn.site.test/a.webp", headers: { Referer: "https://site.test/" } });
+    expect(resolveThumbnail("https://other.test/a.png", images)).toEqual({ url: "https://other.test/a.png" });
+    expect(resolveThumbnail(routed)).toEqual({ url: "https://img.cdn.site.test/a.webp" });
+  });
+
+  test("evaluateBridge samples a routed cover at its real URL with the bridge's headers", async () => {
+    const seen: { url: string; headers?: Record<string, string> }[] = [];
+    const bridge = {
+      info: { id: "t", name: "T", version: "0.0.0", contractVersion: "2.0.0", languages: ["en"], nsfw: false, capabilities: ["search"], images },
+      getSearchResults: async () => ({ items: [{ id: "a", title: "A", thumbnailUrl: routed }], hasNextPage: false }),
+      getSeriesDetails: async (id: string) => ({ id, title: "A" }),
+      getChapters: async () => [],
+    } as unknown as Bridge;
+    const r = await evaluateBridge(bridge, {
+      fetchAsset: async (url, init) => {
+        seen.push(init?.headers ? { url, headers: init.headers } : { url });
+        return { url, bytes: 300, width: 100, height: 150 };
+      },
+    });
+    expect(seen).toEqual([{ url: "https://img.cdn.site.test/a.webp", headers: { Referer: "https://site.test/" } }]);
+    expect(r.metrics?.sampled).toBe(1);
   });
 });

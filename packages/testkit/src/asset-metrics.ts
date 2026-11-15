@@ -11,7 +11,7 @@
  * host's `network.request` capability — its `body` is decoded TEXT, which would corrupt binary — so
  * the fetcher reads the raw `ArrayBuffer` itself.
  */
-import type { SeriesEntry } from "@comical/contract";
+import { type BridgeImages, parseBridgeImagePath, type SeriesEntry } from "@comical/contract";
 import { imageSize, type ImageFormat } from "@comical/core/page-images";
 
 export type { ImageFormat };
@@ -27,7 +27,30 @@ export interface AssetSample {
 }
 
 /** Fetch a single asset and report its size. Return `undefined` on a non-OK / failed fetch. */
-export type AssetFetcher = (url: string) => Promise<AssetSample | undefined>;
+/** What to send with an asset request: the headers a bridge declared for its image host. */
+export interface AssetRequest {
+  headers?: Record<string, string>;
+}
+
+export type AssetFetcher = (url: string, init?: AssetRequest) => Promise<AssetSample | undefined>;
+
+/**
+ * Where, and with which headers, the host's image route would fetch a thumbnail. A bridge whose images
+ * need headers gets its thumbnails rewritten to the route (`/bridges/:id/image?url=…`), a relative path
+ * nothing outside the host can fetch; this unwraps the original URL and adds the bridge's declared
+ * `images.headers` when its host is covered, as the route does. Any other URL is returned as is.
+ */
+export function resolveThumbnail(url: string, images?: BridgeImages): { url: string; headers?: Record<string, string> } {
+  const target = parseBridgeImagePath(url)?.url ?? url;
+  let host = "";
+  try {
+    host = new URL(target).hostname.toLowerCase();
+  } catch {
+    return { url: target };
+  }
+  const covered = images?.hosts.some((h) => host === h.toLowerCase() || host.endsWith(`.${h.toLowerCase()}`));
+  return covered && images?.headers ? { url: target, headers: images.headers } : { url: target };
+}
 
 export interface AssetMetrics {
   /** URLs we successfully fetched + measured. */
@@ -51,8 +74,8 @@ export interface AssetMetrics {
 export const parseImageSize: (b: Uint8Array) => { width: number; height: number; format: ImageFormat } | undefined = imageSize;
 
 /** Convenience fetcher (global `fetch`) — reads the raw bytes and parses dimensions. CI/test use only. */
-export const defaultAssetFetcher: AssetFetcher = async (url) => {
-  const res = await fetch(url, { headers: { "user-agent": "comical-testkit-audit/1.0" } });
+export const defaultAssetFetcher: AssetFetcher = async (url, init) => {
+  const res = await fetch(url, { headers: { "user-agent": "comical-testkit-audit/1.0", ...(init?.headers ?? {}) } });
   if (!res.ok) return undefined;
   const bytes = new Uint8Array(await res.arrayBuffer());
   const dim = parseImageSize(bytes);
@@ -82,7 +105,7 @@ const avg = (nums: number[]): number => (nums.length ? Math.round(nums.reduce((a
 export async function measureThumbnails(
   items: readonly SeriesEntry[],
   fetchAsset: AssetFetcher,
-  opts: { sampleSize?: number } = {},
+  opts: { sampleSize?: number; images?: BridgeImages } = {},
 ): Promise<AssetMetrics> {
   const sampleSize = opts.sampleSize ?? 8;
   const urls: string[] = [];
@@ -99,7 +122,8 @@ export async function measureThumbnails(
   let failed = 0;
   for (const url of urls) {
     try {
-      const s = await fetchAsset(url);
+      const resolved = resolveThumbnail(url, opts.images);
+      const s = await fetchAsset(resolved.url, resolved.headers ? { headers: resolved.headers } : undefined);
       if (s) samples.push(s);
       else failed++;
     } catch {

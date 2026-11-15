@@ -415,7 +415,10 @@ export async function evaluateBridge(
   // Optional thumbnail metrics — only when a fetcher is injected (a live audit passes one; unit tests
   // pass a mock). Measured over the items gathered from lists/search above.
   if (options.fetchAsset && sampledItems.length > 0) {
-    const assetOpts = options.assetSampleSize != null ? { sampleSize: options.assetSampleSize } : {};
+    const assetOpts = {
+      ...(options.assetSampleSize != null ? { sampleSize: options.assetSampleSize } : {}),
+      ...(bridge.info.images ? { images: bridge.info.images } : {}),
+    };
     report.metrics = await measureThumbnails(sampledItems, options.fetchAsset, assetOpts);
   }
   return report;
