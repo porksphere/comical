@@ -4,6 +4,7 @@
  * object actually handed to a bridge, so every bridge benefits uniformly regardless of platform.
  */
 import {
+  challengeMessage,
   rateLimitedMessage,
   retryAfterMs,
   type HttpRequest,
@@ -11,7 +12,7 @@ import {
   type NetworkCapability,
   type RateLimitRoute,
 } from "@comical/contract";
-import { CookieJar } from "./cookie-jar.ts";
+import { CookieJar, type ImportedCookie } from "./cookie-jar.ts";
 import { type RateLimitOptions, RateLimiter } from "./rate-limiter.ts";
 import { compilePathGlob, hostMatches, hostOf, pathOf } from "./url-match.ts";
 import { WindowLimiter } from "./window-limiter.ts";
@@ -20,6 +21,37 @@ export interface GatedNetworkOptions {
   rateLimit?: Partial<RateLimitOptions>;
   /** Overrides for how throttle responses are honored (defaults below; tests shrink them). */
   throttle?: Partial<ThrottleOptions>;
+  /**
+   * Where the cookie jar is kept between launches. The loader backs it with the bridge's secure
+   * storage; without one the jar lives as long as the bridge does.
+   */
+  cookieStore?: CookieStore;
+  /**
+   * The User-Agent the host's network sends when a request names none, so a challenge can tell the
+   * web view which one to use (the loader passes `getDefaultUserAgent()`).
+   */
+  defaultUserAgent?: string;
+  /** How long a challenged host's requests fail fast without reaching it (default 60 s). */
+  challengeHoldMs?: number;
+}
+
+/** Persistence for the gated network's cookie jar: one serialized string per bridge. */
+export interface CookieStore {
+  load(): Promise<string | undefined>;
+  save(serialized: string): Promise<void>;
+}
+
+/**
+ * The bridge's session as the host sees it: the cookies its requests carry, and the import a web
+ * check ends with. Exposed on the loaded bridge (see `LoadedBridge`) for the router.
+ */
+export interface BridgeSession {
+  /** The `Cookie` header and User-Agent to send for `url` outside the bridge's own requests (images). */
+  sessionCookies(url: string): Promise<{ cookie?: string; userAgent?: string }>;
+  /** Add cookies a person earned passing `url`'s site's check, with the User-Agent it ran with. */
+  importCookies(url: string, cookies: ImportedCookie[], userAgent?: string): Promise<void>;
+  /** Forget `url`'s site's cookies, or every cookie when `url` is absent. */
+  clearCookies(url?: string): Promise<void>;
 }
 
 export interface ThrottleOptions {
@@ -71,6 +103,13 @@ export interface GatedNetwork {
   held: () => number;
   /** When everything now held could have started (epoch ms; `now` when nothing is held). */
   heldClearsAt: () => number;
+  /** The bridge's cookies, for the host. */
+  session: BridgeSession;
+}
+
+/** Cloudflare's documented signal for a challenge page: `cf-mitigated: challenge`. */
+function isChallenge(res: HttpResponse): boolean {
+  return headerValue(res.headers, "cf-mitigated")?.toLowerCase() === "challenge";
 }
 
 interface Route {
@@ -85,7 +124,47 @@ export function createGatedNetwork(
   opts: GatedNetworkOptions = {},
 ): GatedNetwork {
   const limiter = new RateLimiter(opts.rateLimit);
-  const jar = new CookieJar();
+  // Saves are coalesced: a burst of Set-Cookie responses writes once.
+  let saving: Promise<void> | undefined;
+  const persist = () => {
+    if (!opts.cookieStore || saving) return;
+    saving = Promise.resolve().then(async () => {
+      saving = undefined;
+      try {
+        await opts.cookieStore!.save(jar.serialize());
+      } catch {
+        // A failed save only costs the next launch its cookies.
+      }
+    });
+  };
+  const jar = new CookieJar(persist);
+  let restored: Promise<void> | undefined;
+  const ready = () =>
+    (restored ??= opts.cookieStore
+      ? opts.cookieStore.load().then(
+          (s) => jar.restore(s),
+          () => {},
+        )
+      : Promise.resolve());
+  // Hosts whose challenge is waiting on a person: requests to them fail fast until it's passed (an
+  // import clears it) or the hold runs out, so ten requests don't each hit the check.
+  const challenged = new Map<string, { until: number; message: string }>();
+  const holdMs = opts.challengeHoldMs ?? 60_000;
+  const challengeFor = (req: HttpRequest): string => {
+    const method = (req.method ?? "GET").toUpperCase();
+    // A web view can only load a page with GET; for anything else the clearance is earned on the
+    // site's root, which covers the whole site.
+    let url = req.url;
+    if (method !== "GET") {
+      try {
+        url = `${new URL(req.url).origin}/`;
+      } catch {
+        // keep the request URL
+      }
+    }
+    const userAgent = headerValue(req.headers, "user-agent") ?? opts.defaultUserAgent;
+    return challengeMessage(userAgent ? { url, userAgent } : { url });
+  };
   const throttle = { ...DEFAULT_THROTTLE, ...opts.throttle };
   let routes: Route[] = [];
   let strikes = 0;
@@ -110,12 +189,17 @@ export function createGatedNetwork(
 
   const network: NetworkCapability = {
     async request(req: HttpRequest): Promise<HttpResponse> {
-      // Attach the session cookie for this host (unless the bridge set one explicitly).
-      const cookie = jar.header(req.url);
-      const gatedReq =
-        cookie && !hasHeader(req.headers, "cookie")
-          ? { ...req, headers: { ...(req.headers ?? {}), Cookie: cookie } }
-          : req;
+      await ready();
+      const host = hostOf(req.url);
+      const pending = host ? challenged.get(host) : undefined;
+      if (pending) {
+        if (pending.until > Date.now()) throw new Error(pending.message);
+        challenged.delete(host!);
+      }
+      // Attach the session's cookies for this host. A bridge that set its own Cookie header keeps
+      // it; only cookies imported from a web check are added to it (its own values win by name), so
+      // a site's clearance still travels with a bridge that manages its own session.
+      const gatedReq = withCookies(req, jar);
 
       const route = routeFor(req.url);
       const deadline = Date.now() + throttle.maxInlineWaitMs;
@@ -147,6 +231,12 @@ export function createGatedNetwork(
 
         if (response.setCookies && response.setCookies.length > 0) {
           jar.store(response.url || req.url, response.setCookies);
+        }
+
+        if (isChallenge(response)) {
+          const message = challengeFor(req);
+          if (host) challenged.set(host, { until: Date.now() + holdMs, message });
+          throw new Error(message);
         }
 
         const wait = throttleWait(response);
@@ -181,12 +271,58 @@ export function createGatedNetwork(
       const now = Date.now();
       return routes.reduce((at, r) => Math.max(at, r.limiter.clearsAt(now)), limiter.clearsAt(now));
     },
+    session: {
+      async sessionCookies(url) {
+        await ready();
+        const out: { cookie?: string; userAgent?: string } = {};
+        const cookie = jar.header(url);
+        const userAgent = jar.userAgent(url);
+        if (cookie) out.cookie = cookie;
+        if (userAgent) out.userAgent = userAgent;
+        return out;
+      },
+      async importCookies(url, cookies, userAgent) {
+        await ready();
+        jar.import(url, cookies, userAgent);
+        // The check is passed: let the site's requests through again.
+        const host = hostOf(url);
+        if (host) for (const h of [...challenged.keys()]) if (h === host || h.endsWith(`.${host}`) || host.endsWith(`.${h}`)) challenged.delete(h);
+      },
+      async clearCookies(url) {
+        await ready();
+        jar.clear(url);
+      },
+    },
   };
 }
 
-/** Case-insensitive header presence check (header records aren't normalized). */
-function hasHeader(headers: Record<string, string> | undefined, name: string): boolean {
-  if (!headers) return false;
+/** `req` with the jar's cookies for its URL attached (see the request path for the rule). */
+function withCookies(req: HttpRequest, jar: CookieJar): HttpRequest {
+  const own = headerEntry(req.headers, "cookie");
+  if (!own) {
+    const cookie = jar.header(req.url);
+    return cookie ? { ...req, headers: { ...(req.headers ?? {}), Cookie: cookie } } : req;
+  }
+  const imported = jar.header(req.url, { importedOnly: true });
+  if (!imported) return req;
+  const names = new Set(own[1].split(";").map((p) => p.split("=", 1)[0]!.trim()));
+  const extra = imported
+    .split("; ")
+    .filter((p) => !names.has(p.split("=", 1)[0]!.trim()))
+    .join("; ");
+  if (!extra) return req;
+  const headers = { ...(req.headers ?? {}) };
+  headers[own[0]] = `${own[1]}; ${extra}`;
+  return { ...req, headers };
+}
+
+function headerEntry(headers: Record<string, string> | undefined, name: string): [string, string] | undefined {
+  if (!headers) return undefined;
   const lower = name.toLowerCase();
-  return Object.keys(headers).some((k) => k.toLowerCase() === lower);
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === lower);
+  return key === undefined ? undefined : [key, headers[key]!];
+}
+
+function headerValue(headers: Record<string, string> | undefined, name: string): string | undefined {
+  return headerEntry(headers, name)?.[1];
 }

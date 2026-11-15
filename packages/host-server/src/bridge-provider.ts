@@ -36,6 +36,11 @@ export interface BridgeProvider {
   list(): Promise<BridgeSummary[]>;
   /** Load (or return cached) a bridge; throws an Error whose message includes "not found" for unknown ids. */
   get(id: string): Promise<LoadedBridge>;
+  /**
+   * The bridge if it's already loaded, without loading it (so a lookup on the image path never pays
+   * for a load). Optional: a provider without it just never has a session to add.
+   */
+  peek?(id: string): LoadedBridge | undefined;
   /** Required setting keys still unset for a bridge — empty means it can serve content. */
   missingRequired(id: string): Promise<string[]>;
   /** The bridge's persisted settings map (used to read reserved keys like excluded-tags). */

@@ -20,6 +20,8 @@ import {
   isSecretSetting,
   MAX_CONTENT_RATING_KEY,
   parseLoginRequired,
+  parseChallenge,
+  challengeMessage,
   parseRateLimited,
   parseSeriesGone,
   readingDirectionSchema,
@@ -302,6 +304,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       if (opts.userAgent) headers.set("User-Agent", opts.userAgent);
       for (const [k, v] of Object.entries(extra)) headers.set(k, v);
       const r = await fetch(target, { headers });
+      if (r.headers.get("cf-mitigated")?.toLowerCase() === "challenge") return imageChallenge(target, headers.get("User-Agent"));
       const bytes = await r.arrayBuffer();
       const out: Record<string, string> = {
         "Content-Type": r.headers.get("Content-Type") ?? "image/webp",
@@ -344,6 +347,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       if (opts.userAgent) headers.set("User-Agent", opts.userAgent);
       for (const [k, v] of Object.entries(req.headers)) headers.set(k, v);
       r = await fetch(req.url, { headers });
+      if (r.headers.get("cf-mitigated")?.toLowerCase() === "challenge") return imageChallenge(req.url, headers.get("User-Agent"));
       bytes = new Uint8Array(await r.arrayBuffer());
     } catch {
       return new Response("upstream error", { status: 502, headers: { "Cache-Control": "no-store" } });
@@ -428,6 +432,63 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }
     return queue;
   };
+  /** `req` with the bridge's session cookies and User-Agent for its URL, when it has any. */
+  const withSession = async (id: string, req: ResolvedImageRequest): Promise<ResolvedImageRequest> => {
+    let session: { cookie?: string; userAgent?: string } | undefined;
+    try {
+      session = await manager.peek?.(id)?.sessionCookies?.(req.url);
+    } catch {
+      return req;
+    }
+    if (!session?.cookie) return req;
+    const headers = { ...req.headers };
+    const has = (name: string) => Object.keys(headers).some((k) => k.toLowerCase() === name);
+    headers[has("cookie") ? Object.keys(headers).find((k) => k.toLowerCase() === "cookie")! : "Cookie"] = has("cookie")
+      ? `${Object.entries(headers).find(([k]) => k.toLowerCase() === "cookie")![1]}; ${session.cookie}`
+      : session.cookie;
+    if (session.userAgent && !has("user-agent")) headers["User-Agent"] = session.userAgent;
+    return { ...req, headers };
+  };
+
+  // ── Web checks: cookies a person earned passing a site's anti-bot check ─────
+  // A bridge call that met a check answers 403 `{ challenge: { url, userAgent } }` (see
+  // bridgeErrorResponse); the client opens `url` in a web view with that User-Agent, and once the
+  // person is through, posts the site's cookies here. They join the bridge's cookie jar, which every
+  // later request (and routed image) carries.
+  app.post("/bridges/:id/cookies", async (c) => {
+    const id = c.req.param("id");
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "expected a JSON body" }, 400);
+    }
+    const parsed = parseCookieImport(body);
+    if (!parsed.ok) return c.json({ error: "invalid cookie import", issues: parsed.issues }, 400);
+    try {
+      const bridge = await manager.get(id);
+      if (!bridge.importCookies) return c.json({ error: "this host can't import cookies for this bridge" }, 501);
+      await bridge.importCookies(parsed.data.url, parsed.data.cookies, parsed.data.userAgent);
+      return c.json({ ok: true });
+    } catch (e) {
+      return bridgeErrorResponse(c, e);
+    }
+  });
+
+  app.delete("/bridges/:id/cookies", async (c) => {
+    const id = c.req.param("id");
+    const url = c.req.query("url");
+    if (url !== undefined && !/^https?:\/\//i.test(url)) return c.json({ error: "url must be an http(s) URL" }, 400);
+    try {
+      const bridge = await manager.get(id);
+      if (!bridge.clearCookies) return c.json({ error: "this host can't clear cookies for this bridge" }, 501);
+      await bridge.clearCookies(url);
+      return c.json({ ok: true });
+    } catch (e) {
+      return bridgeErrorResponse(c, e);
+    }
+  });
+
   app.get("/bridges/:id/image", async (c) => {
     const id = c.req.param("id");
     const url = c.req.query("url") ?? "";
@@ -466,7 +527,9 @@ ${url}`;
       resolvedImages.set(memoKey, memo);
       while (resolvedImages.size > IMAGE_RESOLVE_MAX) resolvedImages.delete(resolvedImages.keys().next().value!);
     }
-    const { req } = memo;
+    // The bridge's session (cookies a person earned passing the site's check, and the User-Agent it
+    // ran with) travels with its images too; an image that needs them can't be a redirect.
+    const req = await withSession(id, memo.req);
     const process = info.images?.process ? parseBridgeImagePath(c.req.url)?.process : undefined;
     if (process) {
       try {
@@ -2357,6 +2420,53 @@ async function withBridge(
 
 /** A bridge failure as a JSON error response: 410 gone, 401 signed out, 404 missing bridge, 429 throttled, else 500. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+/** What a client posts after a web check: the site's cookies, and the User-Agent the check ran with. */
+interface CookieImport {
+  url: string;
+  userAgent?: string;
+  cookies: { name: string; value: string; domain?: string; path?: string; expires?: number }[];
+}
+
+/** The body as a {@link CookieImport}, or a list of what's wrong with it. */
+function parseCookieImport(body: unknown): { ok: true; data: CookieImport } | { ok: false; issues: string[] } {
+  const issues: string[] = [];
+  const b = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+  const str = (v: unknown, max: number) => typeof v === "string" && v.length <= max;
+  if (!str(b.url, 4096) || !/^https?:\/\//i.test(b.url as string)) issues.push("url must be an http(s) URL");
+  if (b.userAgent !== undefined && (!str(b.userAgent, 1024) || !(b.userAgent as string))) issues.push("userAgent must be a non-empty string");
+  if (!Array.isArray(b.cookies) || b.cookies.length > 200) issues.push("cookies must be a list of at most 200");
+  const cookies: CookieImport["cookies"] = [];
+  for (const [i, raw] of (Array.isArray(b.cookies) ? b.cookies : []).entries()) {
+    const c = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+    if (!str(c.name, 256) || !(c.name as string) || !str(c.value, 8192)) {
+      issues.push(`cookies[${i}] needs a name and a value`);
+      continue;
+    }
+    if (c.domain !== undefined && (!str(c.domain, 253) || !(c.domain as string))) issues.push(`cookies[${i}].domain is invalid`);
+    if (c.path !== undefined && (!str(c.path, 1024) || !(c.path as string).startsWith("/"))) issues.push(`cookies[${i}].path must start with /`);
+    if (c.expires !== undefined && !(typeof c.expires === "number" && Number.isFinite(c.expires) && c.expires > 0)) issues.push(`cookies[${i}].expires must be epoch ms`);
+    const cookie: CookieImport["cookies"][number] = { name: c.name as string, value: c.value as string };
+    if (typeof c.domain === "string") cookie.domain = c.domain;
+    if (typeof c.path === "string") cookie.path = c.path;
+    if (typeof c.expires === "number") cookie.expires = c.expires;
+    cookies.push(cookie);
+  }
+  if (issues.length) return { ok: false, issues };
+  const data: CookieImport = { url: b.url as string, cookies };
+  if (typeof b.userAgent === "string") data.userAgent = b.userAgent;
+  return { ok: true, data };
+}
+
+/** An image request that met an anti-bot check: the same 403 a bridge call answers, so a client can offer the check. */
+function imageChallenge(url: string, userAgent: string | null): Response {
+  const message = challengeMessage(userAgent ? { url, userAgent } : { url });
+  const challenge = parseChallenge(message);
+  return new Response(JSON.stringify({ error: message, challenge }), {
+    status: 403,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
 function bridgeErrorResponse(c: any, e: unknown): Response {
   const msg = e instanceof Error ? e.message : String(e);
   // The source says the series no longer exists (see `seriesGoneMessage`) — checked before the
@@ -2367,6 +2477,11 @@ function bridgeErrorResponse(c: any, e: unknown): Response {
   // fixes it, so a client can send the user there.
   const loginRequired = parseLoginRequired(msg);
   if (loginRequired) return c.json({ error: msg, loginRequired }, 401);
+  // The site answered with an anti-bot check a person has to pass (see `challengeMessage`): say
+  // where and with which User-Agent, so a client can open it in a web view and import the cookies.
+  // Before the rate-limited check: a call made while a check is pending may carry both.
+  const challenge = parseChallenge(msg);
+  if (challenge) return c.json({ error: msg, challenge }, 403);
   if (msg.includes("not found")) return c.json({ error: msg }, 404);
   // The source is throttling or has blocked us (see `rateLimitedMessage`): answer 429 with when to
   // come back, so clients and the download engine back off instead of retrying into it.

@@ -127,6 +127,10 @@ export class BridgeManager implements BridgeProvider {
     return results;
   }
 
+  peek(id: string): LoadedBridge | undefined {
+    return this.loaded.get(id);
+  }
+
   async get(id: string): Promise<LoadedBridge> {
     const cached = this.loaded.get(id);
     if (cached) return cached;

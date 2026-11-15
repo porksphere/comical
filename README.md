@@ -208,6 +208,20 @@ just from what it knew when it listed the pages. `@comical/sdk`'s `tileLayout` a
 build the two common layouts. Downloads keep the decoded bytes and the layout beside them, and a
 downloaded page's file is served with the same header.
 
+**Web checks.** Some sources answer with an anti-bot check that only a person can pass. The
+runtime's network layer recognizes one (Cloudflare's documented `cf-mitigated: challenge` header; a
+bridge's own detection can throw the same signal) and fails the call with
+`challengeMessage({ url, userAgent })`, carrying the page to open and the User-Agent the request sent.
+While a check is pending, that host's requests fail fast with the same signal. The router answers
+403 `{ challenge: { url, userAgent } }`; the client opens `url` in a web view **with that
+User-Agent** (a site's clearance is tied to the User-Agent and network that earned it), the person
+passes the check, and the client posts the site's cookies to `POST /bridges/:id/cookies`
+(`DELETE` forgets them). They join the bridge's cookie jar, which the runtime keeps per bridge in
+its secure storage, out of the bridge's own reach. It follows RFC 6265's domain, path and expiry
+rules, and every later request carries the cookies. A bridge that sets its own `Cookie` header keeps
+it, with imported cookies added. Routed images carry them too, with the User-Agent they were earned
+with, and a challenged image answers the same 403.
+
 **Links.** A bridge that can open web links to its source declares the sites in
 `BridgeInfo.linkHosts` (each matching its subdomains too) and implements
 `resolveUrl(url) → { seriesId, chapterId? } | null`, returning null for a page that isn't a series

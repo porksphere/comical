@@ -56,7 +56,7 @@ import {
 } from "./errors.ts";
 import type { BundleEvaluator } from "./evaluator.ts";
 import { createImageRouter } from "./images.ts";
-import { createGatedNetwork, type GatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
+import { type BridgeSession, createGatedNetwork, type GatedNetwork, type GatedNetworkOptions } from "./net/gated-network.ts";
 import type { RateLimitOptions } from "./net/rate-limiter.ts";
 import { normalizeSettingsForm, resolveSettings } from "./settings.ts";
 
@@ -127,8 +127,33 @@ export interface LoadBridgeOptions {
   runtimeContractVersion?: string;
 }
 
-/** A fully-wrapped bridge: same surface as `Bridge`, but timeout-bounded and output-validated. */
-export type LoadedBridge = Bridge;
+/**
+ * A fully-wrapped bridge: same surface as `Bridge`, but timeout-bounded and output-validated, plus
+ * the host-only session methods (the bridge's cookie jar; see `BridgeSession`). They're optional in
+ * the type because providers that wrap a bridge elsewhere (a native engine's proxy) may not offer them.
+ */
+export type LoadedBridge = Bridge & Partial<BridgeSession>;
+
+/** The secure-storage key the bridge's cookie jar is kept under; the bridge never sees it. */
+export const COOKIE_JAR_KEY = "comical:cookie-jar";
+
+/** `storage` with the cookie jar's key kept out of the bridge's reach. */
+function withoutJarKey(storage: HostCapabilities["storage"]): HostCapabilities["storage"] {
+  const secure = storage.secure;
+  if (!secure) return storage;
+  const guard = (key: string) => {
+    if (key === COOKIE_JAR_KEY) throw new Error(`storage key "${COOKIE_JAR_KEY}" is reserved`);
+  };
+  return {
+    ...storage,
+    secure: {
+      get: (key) => (key === COOKIE_JAR_KEY ? Promise.resolve(undefined) : secure.get(key)),
+      set: (key, value) => (guard(key), secure.set(key, value)),
+      delete: (key) => (guard(key), secure.delete(key)),
+      keys: async () => (await secure.keys()).filter((k) => k !== COOKIE_JAR_KEY),
+    },
+  };
+}
 
 export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge> {
   const limits = { ...DEFAULT_LIMITS, ...opts.limits };
@@ -148,10 +173,18 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   // 2. Gate the network capability (rate-limit + cache) before the bridge can touch it.
   //    `settings` is a mutable copy so defaults/coercions applied after instantiation are visible
   //    to the bridge, which reads `host.settings` lazily by reference.
-  const gatedNetwork = createGatedNetwork(opts.capabilities.network, opts.network ?? {});
+  // Older hosts and test doubles may hand over storage without its secure namespace.
+  const secure = opts.capabilities.storage?.secure as HostCapabilities["storage"]["secure"] | undefined;
+  const defaultUserAgent = opts.capabilities.getDefaultUserAgent?.();
+  const gatedNetwork = createGatedNetwork(opts.capabilities.network, {
+    ...(secure ? { cookieStore: { load: () => secure.get(COOKIE_JAR_KEY), save: (v: string) => secure.set(COOKIE_JAR_KEY, v) } } : {}),
+    ...(defaultUserAgent ? { defaultUserAgent } : {}),
+    ...(opts.network ?? {}),
+  });
   const gated: HostCapabilities = {
     ...opts.capabilities,
     network: gatedNetwork.network,
+    ...(opts.capabilities.storage ? { storage: withoutJarKey(opts.capabilities.storage) } : {}),
     settings: { ...opts.capabilities.settings },
   };
 
@@ -236,7 +269,11 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   }
 
   // 6. Wrap every method with timeout + output validation.
-  return wrapBridge(raw, info, limits, gatedNetwork, opts.capabilities.log);
+  const loaded = wrapBridge(raw, info, limits, gatedNetwork, opts.capabilities.log);
+  loaded.sessionCookies = (url) => gatedNetwork.session.sessionCookies(url);
+  loaded.importCookies = (url, cookies, userAgent) => gatedNetwork.session.importCookies(url, cookies, userAgent);
+  loaded.clearCookies = (url) => gatedNetwork.session.clearCookies(url);
+  return loaded;
 }
 
 function extractFactory(exports: unknown): BridgeFactory {

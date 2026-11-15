@@ -39,12 +39,15 @@ export const CAPABILITY_METHODS: Record<BridgeCapability, string[]> = {
 // getSeriesDetails is mandatory (non-optional in the Bridge contract); chapter reading has no
 // capability tag, so a non-"direct" bridge is assumed to serve chapters.
 const ALWAYS = ["getSeriesDetails"];
+// The loader's session methods (the bridge's cookie jar), on every loaded bridge rather than the
+// bridge's own: the web check imports into them, and routed images read them.
+const SESSION = ["sessionCookies", "importCookies", "clearCookies"];
 const CHAPTERED = ["getChapters", "getChapterPages"];
 
 /** The method names to expose on a proxy for a bridge with the given `info.capabilities`. */
 export function methodsForBridge(info: BridgeInfo): string[] {
   const caps = info.capabilities ?? [];
-  const methods = new Set<string>(ALWAYS);
+  const methods = new Set<string>([...ALWAYS, ...SESSION]);
   for (const cap of caps) for (const m of CAPABILITY_METHODS[cap] ?? []) methods.add(m);
   if (!caps.includes("direct")) for (const m of CHAPTERED) methods.add(m);
   // Data, not a capability: the loader refuses a bridge that declares interception without the method.

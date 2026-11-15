@@ -223,6 +223,10 @@ export class EmbeddedBridgeProvider implements BridgeProvider {
       });
   }
 
+  peek(id: string): LoadedBridge | undefined {
+    return this.loaded.get(id)?.bridge;
+  }
+
   async get(id: string): Promise<LoadedBridge> {
     return (await this.load(id)).bridge;
   }
