@@ -358,7 +358,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
         const wait = retryAfterMs(retryAfter ? { "retry-after": retryAfter } : undefined);
         if (wait !== undefined || r.status === 429) limiter.pauseUntil(Date.now() + (wait ?? 10_000));
       }
-      return new Response(bytes, { status: r.status, headers: out });
+      return new Response(bytes as unknown as ArrayBuffer, { status: r.status, headers: out });
     }
     const upstream: Record<string, string> = {};
     r.headers.forEach((v, k) => (upstream[k] = v));
@@ -368,7 +368,8 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       "Cache-Control": "private, max-age=86400",
     };
     if (processed.layout) out[PAGE_LAYOUT_HEADER] = encodePageLayout(processed.layout);
-    return new Response(processed.bytes, { status: 200, headers: out });
+    // Cast: see the downloaded-file route — DOM's BodyInit typing lags Uint8Array<ArrayBufferLike>.
+    return new Response(processed.bytes as unknown as ArrayBuffer, { status: 200, headers: out });
   };
 
   // One limiter per budget a bridge declares — its default, shared by every proxied host it doesn't
