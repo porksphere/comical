@@ -35,6 +35,8 @@ export interface BridgeManagerOptions {
   registry?: RegistryManager;
   /** Base URL of the host server. Forwarded to bridges as HostCapabilities.hostUrl. */
   hostUrl?: string;
+  /** The `fetch` bridges' requests go out through (see host-bun's `BunNetworkOptions.fetch`). */
+  fetch?: typeof fetch;
 }
 
 export class BridgeManager implements BridgeProvider {
@@ -143,6 +145,7 @@ export class BridgeManager implements BridgeProvider {
       settings: userSettings,
       dataDir: join(this.opts.dataDir, "bridge-storage"),
       ...(this.opts.hostUrl !== undefined && { hostUrl: this.opts.hostUrl }),
+      ...(this.opts.fetch && { fetch: this.opts.fetch }),
     });
 
     const bridge = await loadBridge({ code, capabilities, expectedId: id });

@@ -118,6 +118,8 @@ export interface RouterOptions {
   userAgent?: string;
   /** A sync hub — mounts `/sync/push` and `/sync/pull` (see `createSyncRoutes`) when provided. */
   sync?: SyncBackend;
+  /** The `fetch` routed images go out through (default: the runtime's; see `HostOptions.fetch`). */
+  fetch?: typeof fetch;
 }
 
 // ── OAuth callback state ──────────────────────────────────────────────────────
@@ -303,7 +305,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       const headers = new Headers();
       if (opts.userAgent) headers.set("User-Agent", opts.userAgent);
       for (const [k, v] of Object.entries(extra)) headers.set(k, v);
-      const r = await fetch(target, { headers });
+      const r = await (opts.fetch ?? fetch)(target, { headers });
       if (r.headers.get("cf-mitigated")?.toLowerCase() === "challenge") return imageChallenge(target, headers.get("User-Agent"));
       const bytes = await r.arrayBuffer();
       const out: Record<string, string> = {
@@ -346,7 +348,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
       const headers = new Headers();
       if (opts.userAgent) headers.set("User-Agent", opts.userAgent);
       for (const [k, v] of Object.entries(req.headers)) headers.set(k, v);
-      r = await fetch(req.url, { headers });
+      r = await (opts.fetch ?? fetch)(req.url, { headers });
       if (r.headers.get("cf-mitigated")?.toLowerCase() === "challenge") return imageChallenge(req.url, headers.get("User-Agent"));
       bytes = new Uint8Array(await r.arrayBuffer());
     } catch {

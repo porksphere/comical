@@ -20,6 +20,8 @@ export interface BunHostOptions {
   userAgent?: string;
   /** Base URL of the host server. Forwarded to the bridge via HostCapabilities.hostUrl. */
   hostUrl?: string;
+  /** The `fetch` the bridge's requests go out through (see `BunNetworkOptions.fetch`). */
+  fetch?: typeof fetch;
 }
 
 export const consoleLog: LogCapability = {
@@ -30,9 +32,10 @@ export const consoleLog: LogCapability = {
 };
 
 export function createBunHost(opts: BunHostOptions): HostCapabilities {
-  const network = createBunNetwork(
-    opts.userAgent !== undefined ? { userAgent: opts.userAgent } : {},
-  );
+  const network = createBunNetwork({
+    ...(opts.userAgent !== undefined ? { userAgent: opts.userAgent } : {}),
+    ...(opts.fetch ? { fetch: opts.fetch } : {}),
+  });
   const storage = asStorageCapability(
     opts.dataDir !== undefined
       ? new FileStorage(join(opts.dataDir), opts.bridgeId)

@@ -11,10 +11,17 @@ export const DEFAULT_USER_AGENT =
 
 export interface BunNetworkOptions {
   userAgent?: string;
+  /**
+   * The `fetch` requests go out through (default: the runtime's). The desktop app passes Chromium's,
+   * whose TLS fingerprint is a browser's: sites that check it turn Node's away, and a site's
+   * clearance earned in a browser window is honoured only from a matching one.
+   */
+  fetch?: typeof fetch;
 }
 
 export function createBunNetwork(opts: BunNetworkOptions = {}): NetworkCapability {
   const userAgent = opts.userAgent ?? DEFAULT_USER_AGENT;
+  const send = opts.fetch ?? fetch;
 
   return {
     async request(req: HttpRequest): Promise<HttpResponse> {
@@ -28,7 +35,7 @@ export function createBunNetwork(opts: BunNetworkOptions = {}): NetworkCapabilit
       };
       if (req.body !== undefined) init.body = req.body;
 
-      const res = await fetch(req.url, init);
+      const res = await send(req.url, init);
       // "base64": return raw bytes base64-encoded so a bridge can parse a binary resource without a
       // lossy UTF-8 decode (the default `res.text()` would corrupt it). Otherwise decode as text.
       const body =

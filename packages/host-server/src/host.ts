@@ -63,6 +63,12 @@ export interface HostOptions {
    * the `/trackers` endpoints are always mounted.
    */
   trackersDir?: string | string[];
+  /**
+   * The \`fetch\` bridges' requests and routed images go out through (default: the runtime's). The
+   * desktop app passes Chromium's, so the host meets sites as the browser windows it runs web
+   * checks in do.
+   */
+  fetch?: typeof fetch;
 }
 
 export interface ComicalHost {
@@ -95,6 +101,7 @@ export function createHost(opts: HostOptions): ComicalHost {
       settings,
       registry,
       hostUrl: opts.hostUrl ?? "http://localhost:3100",
+      ...(opts.fetch && { fetch: opts.fetch }),
     }),
     { library: () => lib, downloads: () => engine, log: console },
   );
@@ -108,6 +115,7 @@ export function createHost(opts: HostOptions): ComicalHost {
   if (opts.oauthRedirectUrl) routerOpts.oauthRedirectUrl = opts.oauthRedirectUrl;
   if (opts.origin) routerOpts.origin = opts.origin;
   if (opts.token) routerOpts.token = opts.token;
+  if (opts.fetch) routerOpts.fetch = opts.fetch;
 
   // Always create TrackerManager so that registry-installed trackers work
   // even when no local trackersDir is configured.
