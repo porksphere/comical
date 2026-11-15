@@ -48,3 +48,39 @@ describe("pageSchema thumbnail", () => {
     ).toThrow();
   });
 });
+
+describe("pageSchema scramble", () => {
+  const page = (scramble: unknown) => pageSchema.safeParse({ index: 0, imageUrl: "https://i.example.test/0.webp", scramble });
+
+  test("accepts a tile grid whose order is a permutation", () => {
+    const r = page({ kind: "tiles", cols: 2, rows: 2, order: [3, 2, 1, 0] });
+    expect(r.success).toBe(true);
+    expect(r.success && r.data.scramble).toEqual({ kind: "tiles", cols: 2, rows: 2, order: [3, 2, 1, 0] });
+  });
+
+  test("accepts strips", () => {
+    expect(page({ kind: "strips", order: [2, 1, 0] }).success).toBe(true);
+  });
+
+  test("parses when scramble is omitted (backward-compatible)", () => {
+    expect(pageSchema.parse({ index: 0, imageUrl: "https://i.example.test/0.webp" }).scramble).toBeUndefined();
+  });
+
+  test("rejects an order that isn't a permutation", () => {
+    for (const bad of [
+      { kind: "tiles", cols: 2, rows: 2, order: [0, 1, 2] }, // too short
+      { kind: "tiles", cols: 2, rows: 2, order: [0, 1, 2, 2] }, // repeat
+      { kind: "tiles", cols: 2, rows: 2, order: [0, 1, 2, 4] }, // out of range
+      { kind: "strips", order: [1, 1] },
+      { kind: "strips", order: [] },
+    ]) {
+      expect(page(bad).success).toBe(false);
+    }
+  });
+
+  test("rejects unknown kinds and absurd grids", () => {
+    expect(page({ kind: "spiral", order: [0] }).success).toBe(false);
+    expect(page({ kind: "tiles", cols: 0, rows: 2, order: [] }).success).toBe(false);
+    expect(page({ kind: "tiles", cols: 100, rows: 1, order: Array.from({ length: 100 }, (_, i) => i) }).success).toBe(false);
+  });
+});

@@ -14,6 +14,7 @@
  * path and `bytes` back via `recordPage`; on deletion the service returns the `file` paths for the
  * host to remove. Nothing here touches `fs`, `fetch`, or the DOM.
  */
+import { pageScrambleSchema } from "@comical/contract";
 import { z } from "zod";
 
 /** Stable, cross-bridge key for a downloaded series. Matches `@comical/library`'s `entryKey`. */
@@ -60,6 +61,11 @@ export const downloadedPageSchema = z.object({
   bytes: z.number().int().nonnegative().default(0),
   /** Per-page fetch headers from `Page.headers` (referer/auth). */
   headers: z.record(z.string(), z.string()).optional(),
+  /**
+   * `Page.scramble`, kept so offline serving can hand the client the same unscramble instructions:
+   * the stored bytes are the source's, still shuffled — the host does no image work.
+   */
+  scramble: pageScrambleSchema.optional(),
   state: downloadStateSchema,
 });
 export type DownloadedPage = z.infer<typeof downloadedPageSchema>;

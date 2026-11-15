@@ -430,3 +430,21 @@ describe("partial chapters (onlyPages)", () => {
     expect(resolved.state).toBe("complete");
   });
 });
+
+describe("scrambled pages", () => {
+  const SCRAMBLE = { kind: "tiles" as const, cols: 2, rows: 1, order: [1, 0] };
+
+  test("a page's scramble is recorded with it and survives a re-enqueue of completed bytes", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, [{ index: 0, sourceUrl: "/img/0", scramble: SCRAMBLE }, { index: 1, sourceUrl: "/img/1" }]);
+    let listed = await dl.getManifestPages(KEY, CH.chapterId);
+    expect(listed[0]!.scramble).toEqual(SCRAMBLE);
+    expect(listed[1]!.scramble).toBeUndefined();
+
+    await dl.recordPage(KEY, CH.chapterId, 0, "demo/s1/c1/0.webp", 10);
+    // The source now says something else, but the stored bytes were fetched under the old order.
+    await dl.enqueueChapter(SNAP, CH, [{ index: 0, sourceUrl: "/img/0", scramble: { kind: "strips", order: [0] } }]);
+    listed = await dl.getManifestPages(KEY, CH.chapterId);
+    expect(listed[0]!.scramble).toEqual(SCRAMBLE);
+  });
+});

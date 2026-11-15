@@ -14,6 +14,7 @@
  *
  * Identity is the cross-bridge pair `(bridgeId, seriesId)`, encoded via `entryKey`.
  */
+import type { PageScramble } from "@comical/contract";
 import {
   entryKey,
   parseEntryKey,
@@ -50,6 +51,8 @@ export interface DownloadPageInput {
   index: number;
   sourceUrl: string;
   headers?: Record<string, string>;
+  /** `Page.scramble`, recorded with the page (see `DownloadedPage.scramble`). */
+  scramble?: PageScramble;
 }
 
 /** How much of a chapter an enqueue asks for. */
@@ -459,11 +462,13 @@ export class Downloads {
         // Keep the downloaded bytes; just refresh the source in case it changed.
         const kept: DownloadedPage = { ...prior, sourceUrl: input.sourceUrl };
         if (input.headers !== undefined) kept.headers = input.headers;
+        // The bytes on disk are the ones fetched before; their scramble is the one recorded then.
         await this.store.putPage(key, chapterId, kept);
         continue;
       }
       const page: DownloadedPage = { index: input.index, sourceUrl: input.sourceUrl, file: "", bytes: 0, state: "queued" };
       if (input.headers !== undefined) page.headers = input.headers;
+      if (input.scramble !== undefined) page.scramble = input.scramble;
       await this.store.putPage(key, chapterId, page);
     }
   }

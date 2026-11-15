@@ -264,3 +264,21 @@ describe("rateLimitedFromResponse / rateLimitWaitOf", () => {
     expect(rateLimitWaitOf(err)).toBe(120_000);
   });
 });
+
+describe("router page resolver", () => {
+  test("carries Page.scramble into the download input", async () => {
+    const scramble = { kind: "strips" as const, order: [1, 0] };
+    const resolve = createRouterPageResolver(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => [
+        { index: 1, imageUrl: "/b.webp" },
+        { index: 0, imageUrl: "/a.webp", scramble },
+      ],
+    }));
+    expect(await resolve({ bridgeId: "b", seriesId: "s", chapterId: "c" })).toEqual([
+      { index: 0, sourceUrl: "/a.webp", scramble },
+      { index: 1, sourceUrl: "/b.webp" },
+    ]);
+  });
+});

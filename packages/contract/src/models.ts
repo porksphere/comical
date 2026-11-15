@@ -418,6 +418,61 @@ export const pageThumbnailSchema = z.discriminatedUnion("kind", [
 ]);
 export type PageThumbnail = z.infer<typeof pageThumbnailSchema>;
 
+/** True when `order` holds each of 0…n-1 exactly once. */
+function isPermutation(order: readonly number[], n: number): boolean {
+  if (order.length !== n) return false;
+  const seen = new Uint8Array(n);
+  for (const i of order) {
+    if (i < 0 || i >= n || seen[i]) return false;
+    seen[i] = 1;
+  }
+  return true;
+}
+
+/**
+ * How a source shuffled a page image's pixels, so a client can put them back. Some sources serve
+ * every page cut into pieces and reassembled out of order; the bridge reports the order as data and
+ * the client restores the picture natively once, where it decodes the image, so every surface that
+ * shows the page (reader, zoom, page curl, thumbnails) sees one ordinary bitmap. The host does no
+ * image work. Presentation-as-data, like `PageThumbnail`'s `sprite`.
+ *
+ * Geometry is relative to the image as decoded, since its pixel size isn't known up front:
+ *
+ *  - `tiles` — a `cols × rows` grid of `floor(W/cols) × floor(H/rows)` tiles, numbered row-major
+ *    from the top left. `order[d]` is the SOURCE tile drawn at destination tile `d`. Pixels to the
+ *    right of or below the grid (the remainder of the division) stay where they are; the output is
+ *    the same size as the input.
+ *  - `strips` — `order.length` horizontal strips, each `floor(H/n)` tall except the last source
+ *    strip, which also takes the remainder. `order[k]` is the SOURCE strip drawn k-th from the top;
+ *    strips keep their heights, so the output is the same size as the input.
+ *
+ * Both orders must be permutations.
+ */
+export const pageScrambleSchema = z
+  .discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("tiles"),
+      cols: z.number().int().min(1).max(64),
+      rows: z.number().int().min(1).max(64),
+      order: z.array(z.number().int().nonnegative()),
+    }),
+    z.object({
+      kind: z.literal("strips"),
+      order: z.array(z.number().int().nonnegative()).min(1).max(256),
+    }),
+  ])
+  .superRefine((s, ctx) => {
+    const n = s.kind === "tiles" ? s.cols * s.rows : s.order.length;
+    if (!isPermutation(s.order, n)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["order"],
+        message: `order must be a permutation of 0…${n - 1}`,
+      });
+    }
+  });
+export type PageScramble = z.infer<typeof pageScrambleSchema>;
+
 /**
  * A single readable page. A bridge emits the source's real `imageUrl` and declares what fetching it
  * needs in `BridgeInfo.images`; hosts may hand clients a server-relative path instead (the image
@@ -430,6 +485,8 @@ export const pageSchema = z.object({
   /** Optional cheaper preview variant (image URL or sprite-sheet slice metadata). */
   thumbnail: pageThumbnailSchema.optional(),
   headers: z.record(z.string(), z.string()).optional(),
+  /** Set when the source shuffles this page's pixels; the client unshuffles it. See {@link pageScrambleSchema}. */
+  scramble: pageScrambleSchema.optional(),
 });
 export type Page = z.infer<typeof pageSchema>;
 
