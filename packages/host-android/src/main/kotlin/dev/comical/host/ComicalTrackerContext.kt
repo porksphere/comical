@@ -282,7 +282,7 @@ class ComicalTrackerContext private constructor(
         }
 
         js.function("_native_get_default_user_agent") { _ ->
-            System.getProperty("http.agent") ?: ""
+            PlatformUserAgent.of(appContext)
         }
     }
 

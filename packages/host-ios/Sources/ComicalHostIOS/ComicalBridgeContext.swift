@@ -668,10 +668,12 @@ public final class ComicalBridgeContext {
         return items.compactMap { $0[kSecAttrAccount as String] as? String }
     }
 
-    /// The platform's real UA, built from the host app's bundle + OS version. Deliberately avoids
-    /// `WKWebView`'s UA (needs the main thread + a live web view) since this is read from arbitrary
-    /// `Task` contexts — real platform data beats a bridge's own hardcoded, staling default.
+    /// The platform's real UA: the web view's, once the app has read it (`ComicalPlatform`), so a
+    /// bridge that adopts it sends what the app's web check does; until then, one built from the host
+    /// app's bundle + OS version. Reading WKWebView's directly needs the main thread and a live web
+    /// view, and this is read from arbitrary `Task` contexts.
     private static var defaultUserAgent: String {
+        if let webView = ComicalPlatform.webViewUserAgent { return webView }
         let info = Bundle.main.infoDictionary
         let appName = (info?["CFBundleName"] as? String) ?? "Comical"
         let appVersion = (info?["CFBundleShortVersionString"] as? String) ?? "0.0"

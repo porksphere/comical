@@ -285,7 +285,7 @@ class ComicalBridgeContext private constructor(
         // The platform's real UA — the same default `java.net`/OkHttp would send absent an
         // explicit override. Sync (not async): JS reads it once at host construction.
         js.function("_native_get_default_user_agent") { _ ->
-            System.getProperty("http.agent") ?: ""
+            PlatformUserAgent.of(appContext)
         }
     }
 

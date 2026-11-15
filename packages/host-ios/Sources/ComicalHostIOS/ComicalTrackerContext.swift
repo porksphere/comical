@@ -638,6 +638,7 @@ public final class ComicalTrackerContext {
 
     /// See `ComicalBridgeContext.defaultUserAgent` for detail — keep the two in lockstep.
     private static var defaultUserAgent: String {
+        if let webView = ComicalPlatform.webViewUserAgent { return webView }
         let info = Bundle.main.infoDictionary
         let appName = (info?["CFBundleName"] as? String) ?? "Comical"
         let appVersion = (info?["CFBundleShortVersionString"] as? String) ?? "0.0"
