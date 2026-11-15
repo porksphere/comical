@@ -15,7 +15,7 @@
  * transitions, deletions, queue idle) instead of polling — the seam that feeds both an SSE stream
  * (remote clients) and direct in-process subscriptions (embedded clients).
  */
-import type { AssetRateLimit } from "@comical/contract";
+import type { AssetRateLimit, PageImageLayout } from "@comical/contract";
 import { assetBudgetFor } from "@comical/core/net/asset-budget";
 import { RateLimiter } from "@comical/core/net/rate-limiter";
 import { entryKey, parseEntryKey, type DownloadedChapter, type DownloadedPage } from "./models.ts";
@@ -36,6 +36,8 @@ import { rateLimitWaitOf } from "./rate-limited.ts";
 export interface FetchedPage {
   data: Uint8Array;
   contentType?: string;
+  /** A processed page's layout, from the response that carried `data` (`PAGE_LAYOUT_HEADER`). */
+  layout?: PageImageLayout;
 }
 
 /** Fetch one page's bytes. Throwing marks the attempt failed (the engine retries, then `failPage`s). */
@@ -618,7 +620,7 @@ export class DownloadEngine {
             }
             const relPath = relPathFor(bridgeId, seriesId, chapterId, page.index, extFor(fetched.contentType ?? page.sourceUrl));
             const { bytes } = await this.blobs.write(relPath, fetched.data);
-            const updated = await this.downloads.recordPage(key, chapterId, page.index, relPath, bytes);
+            const updated = await this.downloads.recordPage(key, chapterId, page.index, relPath, bytes, fetched.layout);
             stored = true;
             landed = true;
             this.emit({

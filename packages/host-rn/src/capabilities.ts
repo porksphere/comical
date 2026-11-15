@@ -49,6 +49,8 @@ export function methodsForBridge(info: BridgeInfo): string[] {
   if (!caps.includes("direct")) for (const m of CHAPTERED) methods.add(m);
   // Data, not a capability: the loader refuses a bridge that declares interception without the method.
   if (info.images?.intercept) methods.add("interceptImageRequest");
+  if (info.images?.process?.bytes) methods.add("decodePageImage");
+  if (info.images?.process?.layout) methods.add("layoutPageImage");
   if (info.linkHosts) methods.add("resolveUrl");
   if (info.migratesIds) methods.add("migrateIds");
   return [...methods];

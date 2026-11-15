@@ -12,6 +12,10 @@ import type {
   IdMigrationRequest,
   IdMigrationResult,
   ImageRequest,
+  PageByteTransform,
+  PageImageDecodeRequest,
+  PageImageLayout,
+  PageImageLayoutRequest,
   LinkTarget,
   Page,
   PageThumbnail,
@@ -153,6 +157,22 @@ export interface Bridge {
    * off, throw a `rateLimitedMessage` error, as from any other method.
    */
   interceptImageRequest?(url: string): Promise<ImageRequest>;
+
+  // ---- Page image processing (`BridgeInfo.images.process`) ----
+
+  /**
+   * How to decode the bytes of a page marked `Page.process`, given the response it came in: byte
+   * transforms the host applies in order (`images.process.bytes`). Null when this image needs none.
+   * Called once per fetch of the image, after it arrives and before it is measured.
+   */
+  decodePageImage?(req: PageImageDecodeRequest): Promise<PageByteTransform[] | null>;
+
+  /**
+   * How to draw a page marked `Page.process`, given its decoded pixel size and response
+   * (`images.process.layout`): the operations the client draws, natively, to show it. Null when this
+   * image is shown as is. Keep it to arithmetic: it runs once per fetch of the image.
+   */
+  layoutPageImage?(req: PageImageLayoutRequest): Promise<PageImageLayout | null>;
 
   // ---- Links ----
 

@@ -11,6 +11,7 @@
  * `getFetch` is late-bound because the router and the engine reference each other at composition
  * time (the router mounts the engine's routes; the engine resolves pages through the router).
  */
+import { decodePageLayout, PAGE_LAYOUT_HEADER } from "@comical/contract";
 import {
   createRouterPageResolver,
   rateLimitedFromResponse,
@@ -65,7 +66,10 @@ export function createServerPageFetcher(
       }
       if (!routed.ok) throw rateLimitedFromResponse(routed) ?? new Error(`page route failed: ${routed.status}`);
       const data = new Uint8Array(await routed.arrayBuffer());
-      return withContentType({ data }, routed.headers.get("Content-Type"));
+      const fetched = withContentType({ data }, routed.headers.get("Content-Type"));
+      const layout = decodePageLayout(routed.headers.get(PAGE_LAYOUT_HEADER));
+      if (layout) fetched.layout = layout;
+      return fetched;
     } catch (e) {
       failed.add(page.sourceUrl);
       throw e;

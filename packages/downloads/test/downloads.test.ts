@@ -431,20 +431,32 @@ describe("partial chapters (onlyPages)", () => {
   });
 });
 
-describe("scrambled pages", () => {
-  const SCRAMBLE = { kind: "tiles" as const, cols: 2, rows: 1, order: [1, 0] };
+describe("processed pages", () => {
+  const LAYOUT = { width: 20, height: 10, ops: [{ op: "copy" as const, src: { x: 0, y: 0, w: 10, h: 10 }, dst: { x: 10, y: 0, w: 10, h: 10 } }] };
 
-  test("a page's scramble is recorded with it and survives a re-enqueue of completed bytes", async () => {
+  test("a page's layout is recorded with its bytes and marks the chapter processed", async () => {
     const dl = makeDownloads();
-    await dl.enqueueChapter(SNAP, CH, [{ index: 0, sourceUrl: "/img/0", scramble: SCRAMBLE }, { index: 1, sourceUrl: "/img/1" }]);
-    let listed = await dl.getManifestPages(KEY, CH.chapterId);
-    expect(listed[0]!.scramble).toEqual(SCRAMBLE);
-    expect(listed[1]!.scramble).toBeUndefined();
+    await dl.enqueueChapter(SNAP, CH, pages(2));
+    await dl.recordPage(KEY, CH.chapterId, 0, "demo/s1/c1/0.webp", 10, LAYOUT);
+    await dl.recordPage(KEY, CH.chapterId, 1, "demo/s1/c1/1.webp", 10);
+    const listed = await dl.getManifestPages(KEY, CH.chapterId);
+    expect(listed[0]!.layout).toEqual(LAYOUT);
+    expect(listed[1]!.layout).toBeUndefined();
+    expect((await dl.getChapter(KEY, CH.chapterId))?.processed).toBe(true);
+    expect((await dl.localPageFor(SNAP.bridgeId, SNAP.seriesId, CH.chapterId, 0))?.layout).toEqual(LAYOUT);
+  });
 
-    await dl.recordPage(KEY, CH.chapterId, 0, "demo/s1/c1/0.webp", 10);
-    // The source now says something else, but the stored bytes were fetched under the old order.
-    await dl.enqueueChapter(SNAP, CH, [{ index: 0, sourceUrl: "/img/0", scramble: { kind: "strips", order: [0] } }]);
-    listed = await dl.getManifestPages(KEY, CH.chapterId);
-    expect(listed[0]!.scramble).toEqual(SCRAMBLE);
+  test("new bytes without a layout clear the old one", async () => {
+    const dl = makeDownloads();
+    await dl.enqueueChapter(SNAP, CH, pages(1));
+    await dl.recordPage(KEY, CH.chapterId, 0, "demo/s1/c1/0.webp", 10, LAYOUT);
+    await dl.recordPage(KEY, CH.chapterId, 0, "demo/s1/c1/0.webp", 12);
+    expect((await dl.getManifestPages(KEY, CH.chapterId))[0]!.layout).toBeUndefined();
+  });
+
+  test("a chapter never given a layout is not processed", async () => {
+    const dl = makeDownloads();
+    await completeChapter(dl, 2, 10);
+    expect((await dl.getChapter(KEY, CH.chapterId))?.processed).toBeUndefined();
   });
 });

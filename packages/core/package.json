@@ -15,7 +15,8 @@
     "./net/asset-budget": "./src/net/asset-budget.ts",
     "./net/refreshable-network": "./src/net/refreshable-network.ts",
     "./images": "./src/images.ts",
-    "./links": "./src/links.ts"
+    "./links": "./src/links.ts",
+    "./page-images": "./src/page-images.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {

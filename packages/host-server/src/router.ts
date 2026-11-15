@@ -13,6 +13,9 @@ import {
   CONTENT_RATING_ORDER,
   CURSOR_MAX_LENGTH,
   coverFormSchema,
+  encodePageLayout,
+  PAGE_LAYOUT_HEADER,
+  parseBridgeImagePath,
   EXCLUDED_TAGS_KEY,
   isSecretSetting,
   MAX_CONTENT_RATING_KEY,
@@ -40,6 +43,7 @@ import type {
 // (e.g. comical-app's embedded runtime on Hermes). See @comical/core/index.ts.
 import { BridgeSettingsError } from "@comical/core/errors";
 import { ImageRequestRefusedError, resolveImageRequest, type ResolvedImageRequest } from "@comical/core/images";
+import { processPageImage } from "@comical/core/page-images";
 import { resolveLink } from "@comical/core/links";
 import { assetBudgetFor } from "@comical/core/net/asset-budget";
 import { DEFAULT_RATE_LIMIT, RateLimiter } from "@comical/core/net/rate-limiter";
@@ -319,6 +323,54 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     }
   };
 
+  /**
+   * A page marked `Page.process`, fetched and processed: decoded bytes, plus the bridge's layout in
+   * `PAGE_LAYOUT_HEADER`. Never redirected (the bytes have to pass through here) and never cached
+   * by a shared cache, since the layout can depend on the response that carried the bytes.
+   */
+  const processedImage = async (
+    info: BridgeInfo,
+    url: string,
+    req: ResolvedImageRequest,
+    context: Record<string, string>,
+    limiter: RateLimiter | undefined,
+    load: () => Promise<Parameters<typeof processPageImage>[0]["bridge"]>,
+  ): Promise<Response> => {
+    const release = limiter ? await limiter.acquire() : undefined;
+    let r: Response;
+    let bytes: Uint8Array;
+    try {
+      const headers = new Headers();
+      if (opts.userAgent) headers.set("User-Agent", opts.userAgent);
+      for (const [k, v] of Object.entries(req.headers)) headers.set(k, v);
+      r = await fetch(req.url, { headers });
+      bytes = new Uint8Array(await r.arrayBuffer());
+    } catch {
+      return new Response("upstream error", { status: 502, headers: { "Cache-Control": "no-store" } });
+    } finally {
+      release?.();
+    }
+    if (!r.ok) {
+      const out: Record<string, string> = { "Cache-Control": "no-store" };
+      const retryAfter = r.headers.get("Retry-After");
+      if (retryAfter) out["Retry-After"] = retryAfter;
+      if (limiter && (r.status === 429 || r.status === 503)) {
+        const wait = retryAfterMs(retryAfter ? { "retry-after": retryAfter } : undefined);
+        if (wait !== undefined || r.status === 429) limiter.pauseUntil(Date.now() + (wait ?? 10_000));
+      }
+      return new Response(bytes, { status: r.status, headers: out });
+    }
+    const upstream: Record<string, string> = {};
+    r.headers.forEach((v, k) => (upstream[k] = v));
+    const processed = await processPageImage({ info, bridge: await load(), url, bytes, headers: upstream, context });
+    const out: Record<string, string> = {
+      "Content-Type": processed.format ? `image/${processed.format}` : (r.headers.get("Content-Type") ?? "application/octet-stream"),
+      "Cache-Control": "private, max-age=86400",
+    };
+    if (processed.layout) out[PAGE_LAYOUT_HEADER] = encodePageLayout(processed.layout);
+    return new Response(processed.bytes, { status: 200, headers: out });
+  };
+
   // One limiter per budget a bridge declares — its default, shared by every proxied host it doesn't
   // carve out, plus one per `byHost` group — reconfigured in place if a bridge update changes it.
   const proxyLimiters = new Map<string, RateLimiter>();
@@ -414,6 +466,16 @@ ${url}`;
       while (resolvedImages.size > IMAGE_RESOLVE_MAX) resolvedImages.delete(resolvedImages.keys().next().value!);
     }
     const { req } = memo;
+    const process = info.images?.process ? parseBridgeImagePath(c.req.url)?.process : undefined;
+    if (process) {
+      try {
+        return await processedImage(info, url, req, process.context ?? {}, proxyLimiter(id, info.assetRateLimit, req.url), () =>
+          manager.get(id),
+        );
+      } catch (e) {
+        return bridgeErrorResponse(c, e);
+      }
+    }
     if (Object.keys(req.headers).length === 0) {
       const maxAge = Math.max(0, Math.floor((memo.expires - now) / 1000));
       return new Response(null, { status: 302, headers: { Location: req.url, "Cache-Control": `private, max-age=${maxAge}` } });
@@ -1865,24 +1927,25 @@ ${url}`;
     const blobs = dlEngine?.blobs;
     if (dlEngine && blobs?.read) {
       app.get("/downloads/entries/:bridgeId/:seriesId/chapters/:chapterId/pages/:index/file", async (c) => {
-        const file = await downloads.localFileFor(
+        const page = await downloads.localPageFor(
           c.req.param("bridgeId"),
           c.req.param("seriesId"),
           c.req.param("chapterId"),
           Number(c.req.param("index")),
         );
-        if (!file) return c.json({ error: "page not downloaded" }, 404);
+        if (!page) return c.json({ error: "page not downloaded" }, 404);
+        const file = page.file;
         const data = await blobs.read!(file);
         if (!data) return c.json({ error: "blob missing" }, 404);
         // Cast: DOM's BodyInit typing lags Uint8Array<ArrayBufferLike> (this file also typechecks
         // under comical-app's DOM lib, where `BodyInit` itself isn't a global under Bun's types —
         // so cast to a member type both libs accept). Every runtime takes the bytes directly.
-        return new Response(data as unknown as ArrayBuffer, {
-          headers: {
-            "Content-Type": contentTypeFor(file),
-            "Cache-Control": "public, max-age=31536000, immutable",
-          },
-        });
+        const headers: Record<string, string> = {
+          "Content-Type": contentTypeFor(file),
+          "Cache-Control": "public, max-age=31536000, immutable",
+        };
+        if (page.layout) headers[PAGE_LAYOUT_HEADER] = encodePageLayout(page.layout);
+        return new Response(data as unknown as ArrayBuffer, { headers });
       });
     }
 

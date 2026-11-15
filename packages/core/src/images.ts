@@ -68,7 +68,8 @@ export function createImageRouter(info: Pick<BridgeInfo, "id" | "images">): Imag
     },
     pages(pages) {
       for (const p of pages) {
-        p.imageUrl = url(p.imageUrl);
+        // A page to process always goes through the route, which is where it is processed.
+        p.imageUrl = p.process && images.process ? bridgeImagePath(info.id, p.imageUrl, p.process) : url(p.imageUrl);
         if (p.thumbnail) thumbnail(p.thumbnail);
       }
       return pages;

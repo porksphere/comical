@@ -14,7 +14,7 @@
  * path and `bytes` back via `recordPage`; on deletion the service returns the `file` paths for the
  * host to remove. Nothing here touches `fs`, `fetch`, or the DOM.
  */
-import { pageScrambleSchema } from "@comical/contract";
+import { pageImageLayoutSchema } from "@comical/contract";
 import { z } from "zod";
 
 /** Stable, cross-bridge key for a downloaded series. Matches `@comical/library`'s `entryKey`. */
@@ -62,10 +62,11 @@ export const downloadedPageSchema = z.object({
   /** Per-page fetch headers from `Page.headers` (referer/auth). */
   headers: z.record(z.string(), z.string()).optional(),
   /**
-   * `Page.scramble`, kept so offline serving can hand the client the same unscramble instructions:
-   * the stored bytes are the source's, still shuffled — the host does no image work.
+   * A processed page's layout (`Page.process`), as the image route served it with these bytes: the
+   * bytes are stored decoded but not laid out — the host does no pixel work — so serving the file
+   * offline hands the client the same layout to draw.
    */
-  scramble: pageScrambleSchema.optional(),
+  layout: pageImageLayoutSchema.optional(),
   state: downloadStateSchema,
 });
 export type DownloadedPage = z.infer<typeof downloadedPageSchema>;
@@ -99,6 +100,11 @@ export const downloadedChapterSchema = z.object({
    * enqueue drops the marker and fills in the rest, keeping the bytes already on disk.
    */
   onlyPages: z.array(z.number().int().nonnegative()).optional(),
+  /**
+   * Set once any of the chapter's pages was stored with a layout, so a client serving it from a
+   * summary (by page count, without the manifest) knows its pages need drawing.
+   */
+  processed: z.boolean().optional(),
   /** Pages with bytes on disk so far — the numerator for a progress radial (denominator `pageCount`). */
   completedPages: z.number().int().nonnegative().default(0),
   /** Rolled-up total bytes across this chapter's pages. */

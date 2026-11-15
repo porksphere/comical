@@ -60,6 +60,27 @@ describe("CAPABILITY_METHODS", () => {
     expect(methodsForBridge({ ...info, images: { hosts: ["a.example"] } })).not.toContain("interceptImageRequest");
   });
 
+  test("a bridge that processes page images gets exactly the steps it declares", () => {
+    const info = {
+      id: "x",
+      name: "X",
+      version: "1.0.0",
+      contractVersion: "2.1.0",
+      languages: ["en"],
+      nsfw: false,
+      capabilities: ["search" as const],
+    };
+    const both = methodsForBridge({ ...info, images: { hosts: ["a.example"], process: { bytes: true, layout: true } } });
+    expect(both).toContain("decodePageImage");
+    expect(both).toContain("layoutPageImage");
+    const layoutOnly = methodsForBridge({ ...info, images: { hosts: ["a.example"], process: { layout: true } } });
+    expect(layoutOnly).toContain("layoutPageImage");
+    expect(layoutOnly).not.toContain("decodePageImage");
+    const none = methodsForBridge({ ...info, images: { hosts: ["a.example"] } });
+    expect(none).not.toContain("decodePageImage");
+    expect(none).not.toContain("layoutPageImage");
+  });
+
   test("a bridge that opens links gets resolveUrl, and one that doesn't, not", () => {
     const info = {
       id: "x",

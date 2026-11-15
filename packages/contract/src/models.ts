@@ -418,60 +418,20 @@ export const pageThumbnailSchema = z.discriminatedUnion("kind", [
 ]);
 export type PageThumbnail = z.infer<typeof pageThumbnailSchema>;
 
-/** True when `order` holds each of 0…n-1 exactly once. */
-function isPermutation(order: readonly number[], n: number): boolean {
-  if (order.length !== n) return false;
-  const seen = new Uint8Array(n);
-  for (const i of order) {
-    if (i < 0 || i >= n || seen[i]) return false;
-    seen[i] = 1;
-  }
-  return true;
-}
-
 /**
- * How a source shuffled a page image's pixels, so a client can put them back. Some sources serve
- * every page cut into pieces and reassembled out of order; the bridge reports the order as data and
- * the client restores the picture natively once, where it decodes the image, so every surface that
- * shows the page (reader, zoom, page curl, thumbnails) sees one ordinary bitmap. The host does no
- * image work. Presentation-as-data, like `PageThumbnail`'s `sprite`.
+ * Marks a page whose image needs processing before it can be shown — a source that serves its page
+ * images encrypted, or cut up and reassembled out of order. The image is fetched through the host's
+ * image route, which hands it to the bridge's `decodePageImage` / `layoutPageImage` (declared in
+ * `BridgeInfo.images.process`) and serves it decoded with a layout for the client to draw. See
+ * {@link pageImageLayoutSchema}.
  *
- * Geometry is relative to the image as decoded, since its pixel size isn't known up front:
- *
- *  - `tiles` — a `cols × rows` grid of `floor(W/cols) × floor(H/rows)` tiles, numbered row-major
- *    from the top left. `order[d]` is the SOURCE tile drawn at destination tile `d`. Pixels to the
- *    right of or below the grid (the remainder of the division) stay where they are; the output is
- *    the same size as the input.
- *  - `strips` — `order.length` horizontal strips, each `floor(H/n)` tall except the last source
- *    strip, which also takes the remainder. `order[k]` is the SOURCE strip drawn k-th from the top;
- *    strips keep their heights, so the output is the same size as the input.
- *
- * Both orders must be permutations.
+ * `context` is whatever the bridge will want then, set while it builds the page list (an id, a key,
+ * a server-supplied order); it comes back verbatim with every processing call for this page.
  */
-export const pageScrambleSchema = z
-  .discriminatedUnion("kind", [
-    z.object({
-      kind: z.literal("tiles"),
-      cols: z.number().int().min(1).max(64),
-      rows: z.number().int().min(1).max(64),
-      order: z.array(z.number().int().nonnegative()),
-    }),
-    z.object({
-      kind: z.literal("strips"),
-      order: z.array(z.number().int().nonnegative()).min(1).max(256),
-    }),
-  ])
-  .superRefine((s, ctx) => {
-    const n = s.kind === "tiles" ? s.cols * s.rows : s.order.length;
-    if (!isPermutation(s.order, n)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["order"],
-        message: `order must be a permutation of 0…${n - 1}`,
-      });
-    }
-  });
-export type PageScramble = z.infer<typeof pageScrambleSchema>;
+export const pageProcessSchema = z.object({
+  context: z.record(z.string(), z.string()).optional(),
+});
+export type PageProcess = z.infer<typeof pageProcessSchema>;
 
 /**
  * A single readable page. A bridge emits the source's real `imageUrl` and declares what fetching it
@@ -485,8 +445,8 @@ export const pageSchema = z.object({
   /** Optional cheaper preview variant (image URL or sprite-sheet slice metadata). */
   thumbnail: pageThumbnailSchema.optional(),
   headers: z.record(z.string(), z.string()).optional(),
-  /** Set when the source shuffles this page's pixels; the client unshuffles it. See {@link pageScrambleSchema}. */
-  scramble: pageScrambleSchema.optional(),
+  /** Set when the page's image needs processing before display. See {@link pageProcessSchema}. */
+  process: pageProcessSchema.optional(),
 });
 export type Page = z.infer<typeof pageSchema>;
 
@@ -1017,6 +977,15 @@ export const bridgeImagesSchema = z
     hosts: z.array(z.string().min(1)).min(1),
     headers: z.record(z.string(), z.string()).optional(),
     intercept: z.array(z.string().min(1)).min(1).optional(),
+    /**
+     * Which processing steps this bridge implements for pages marked `Page.process`: `bytes` —
+     * `decodePageImage`, `layout` — `layoutPageImage`. Declared, not sniffed, because a host may
+     * reach the bridge through a proxy on which every method looks present.
+     */
+    process: z
+      .object({ bytes: z.boolean().optional(), layout: z.boolean().optional() })
+      .refine((p) => p.bytes === true || p.layout === true, { message: "images.process must enable bytes or layout" })
+      .optional(),
   })
   .refine(
     (v) => (v.intercept ?? []).every((i) => v.hosts.some((h) => coversHost(i.toLowerCase(), h.toLowerCase()))),
@@ -1037,6 +1006,87 @@ export const imageRequestSchema = z.object({
   headers: z.record(z.string(), z.string()).optional(),
 });
 export type ImageRequest = z.infer<typeof imageRequestSchema>;
+
+/** Largest processed image a layout may produce, per side, in pixels. */
+export const MAX_PAGE_IMAGE_SIDE = 32_768;
+/** Most draw operations one layout may hold — it travels in a response header (see `PAGE_LAYOUT_HEADER`). */
+export const MAX_PAGE_IMAGE_OPS = 256;
+
+const base64Schema = z.string().regex(/^[A-Za-z0-9+/]*={0,2}$/, "must be base64");
+
+/**
+ * One step of decoding a page image's bytes (`Bridge.decodePageImage`), applied by the host in
+ * order, before the image is measured or laid out. Data, not code, so every host runs the same
+ * arithmetic: `xor` with a key repeated across the range (a key as long as the range is a keystream),
+ * `aes-ctr` (AES in counter mode, 128/192/256-bit key, a 16-byte initial counter block, incremented
+ * as a big-endian 128-bit integer). `offset`/`length` limit the range; by default, the whole file.
+ */
+export const pageByteTransformSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("xor"),
+    key: base64Schema.min(1),
+    offset: z.number().int().nonnegative().optional(),
+    length: z.number().int().nonnegative().optional(),
+  }),
+  z.object({
+    kind: z.literal("aes-ctr"),
+    key: base64Schema.min(1),
+    counter: base64Schema.min(1),
+    offset: z.number().int().nonnegative().optional(),
+    length: z.number().int().nonnegative().optional(),
+  }),
+]);
+export type PageByteTransform = z.infer<typeof pageByteTransformSchema>;
+
+/** A pixel rectangle, integers from the top left. */
+export const imageRectSchema = z.object({
+  x: z.number().int().nonnegative(),
+  y: z.number().int().nonnegative(),
+  w: z.number().int().positive(),
+  h: z.number().int().positive(),
+});
+export type ImageRect = z.infer<typeof imageRectSchema>;
+
+/**
+ * One draw operation of a {@link pageImageLayoutSchema}. `copy` draws the `src` rectangle of the
+ * decoded image into `dst` on the output (scaled if the sizes differ). New operations are new
+ * variants; a client that meets one it doesn't know shows the image unprocessed.
+ */
+export const pageImageOpSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("copy"), src: imageRectSchema, dst: imageRectSchema }),
+]);
+export type PageImageOp = z.infer<typeof pageImageOpSchema>;
+
+/**
+ * How to draw a processed page (`Bridge.layoutPageImage`): an output of `width × height`, blank,
+ * with `ops` drawn onto it in order. The client draws it natively, once, where it decodes the image,
+ * so every surface showing the page sees one ordinary bitmap; the host does no pixel work, it only
+ * carries the layout. Every rectangle must lie inside its image — the host checks before serving.
+ */
+export const pageImageLayoutSchema = z.object({
+  width: z.number().int().positive().max(MAX_PAGE_IMAGE_SIDE),
+  height: z.number().int().positive().max(MAX_PAGE_IMAGE_SIDE),
+  ops: z.array(pageImageOpSchema).max(MAX_PAGE_IMAGE_OPS),
+});
+export type PageImageLayout = z.infer<typeof pageImageLayoutSchema>;
+
+/** What `Bridge.decodePageImage` is asked with: the image as fetched, before any decoding. */
+export const pageImageDecodeRequestSchema = z.object({
+  /** The page's `imageUrl`, as the bridge emitted it. */
+  url: z.string().min(1),
+  /** The image response's headers, names lowercased. */
+  headers: z.record(z.string(), z.string()),
+  /** `Page.process.context`, or empty. */
+  context: z.record(z.string(), z.string()),
+});
+export type PageImageDecodeRequest = z.infer<typeof pageImageDecodeRequestSchema>;
+
+/** What `Bridge.layoutPageImage` is asked with: the decoded image's pixel size, plus the decode request. */
+export const pageImageLayoutRequestSchema = pageImageDecodeRequestSchema.extend({
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+});
+export type PageImageLayoutRequest = z.infer<typeof pageImageLayoutRequestSchema>;
 
 /**
  * What `Bridge.resolveUrl` returns for a link it recognizes: the series it opens and, when the link

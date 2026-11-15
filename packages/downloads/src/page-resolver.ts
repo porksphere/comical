@@ -5,7 +5,6 @@
  * so bridge lookup, configuration checks, and the reserved direct-chapter mapping are reused, never
  * reimplemented. Platform-agnostic: the host supplies the fetch; nothing here touches the network.
  */
-import type { PageScramble } from "@comical/contract";
 import type { DownloadPageInput } from "./downloads.ts";
 import type { PageResolver } from "./engine.ts";
 import { DIRECT_CHAPTER_ID } from "./paths.ts";
@@ -24,7 +23,6 @@ interface WirePage {
   index: number;
   imageUrl: string;
   headers?: Record<string, string>;
-  scramble?: PageScramble;
 }
 
 /**
@@ -54,7 +52,6 @@ export function createRouterPageResolver(
           index: p.index,
           sourceUrl: p.imageUrl,
           ...(p.headers && { headers: p.headers }),
-          ...(p.scramble && { scramble: p.scramble }),
         }),
       );
   };

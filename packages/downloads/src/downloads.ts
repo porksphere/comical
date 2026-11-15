@@ -14,7 +14,7 @@
  *
  * Identity is the cross-bridge pair `(bridgeId, seriesId)`, encoded via `entryKey`.
  */
-import type { PageScramble } from "@comical/contract";
+import type { PageImageLayout } from "@comical/contract";
 import {
   entryKey,
   parseEntryKey,
@@ -51,8 +51,6 @@ export interface DownloadPageInput {
   index: number;
   sourceUrl: string;
   headers?: Record<string, string>;
-  /** `Page.scramble`, recorded with the page (see `DownloadedPage.scramble`). */
-  scramble?: PageScramble;
 }
 
 /** How much of a chapter an enqueue asks for. */
@@ -240,12 +238,22 @@ export class Downloads {
    * Mark one page complete with its on-disk `file` path and byte size, then roll up the chapter and
    * series totals (chapter → `complete` once every page has bytes). Throws if the chapter isn't known.
    */
-  async recordPage(key: string, chapterId: string, index: number, file: string, bytes: number): Promise<DownloadedChapter> {
-    await this.requireChapter(key, chapterId);
+  async recordPage(
+    key: string,
+    chapterId: string,
+    index: number,
+    file: string,
+    bytes: number,
+    layout?: PageImageLayout,
+  ): Promise<DownloadedChapter> {
+    const chapter = await this.requireChapter(key, chapterId);
     const pages = await this.store.listPages(key, chapterId);
     const page = pages.find((p) => p.index === index);
     if (!page) throw new Error(`page not downloaded: ${chapterId}#${index}`);
-    await this.store.putPage(key, chapterId, { ...page, file, bytes, state: "complete" });
+    // A layout belongs to the bytes it came with: new bytes without one clear the old.
+    const { layout: _old, ...rest } = page;
+    await this.store.putPage(key, chapterId, { ...rest, file, bytes, state: "complete", ...(layout && { layout }) });
+    if (layout && !chapter.processed) await this.store.putChapter({ ...chapter, processed: true });
     return this.recomputeChapter(key, chapterId);
   }
 
@@ -356,9 +364,13 @@ export class Downloads {
    * run-to-run).
    */
   async localFileFor(bridgeId: string, seriesId: string, chapterId: string, index: number): Promise<string | undefined> {
+    return (await this.localPageFor(bridgeId, seriesId, chapterId, index))?.file;
+  }
+
+  /** The complete, on-disk page at `index` — its file and, for a processed page, its layout. */
+  async localPageFor(bridgeId: string, seriesId: string, chapterId: string, index: number): Promise<DownloadedPage | undefined> {
     const pages = await this.store.listPages(entryKey(bridgeId, seriesId), chapterId);
-    const page = pages.find((p) => p.index === index && p.state === "complete" && p.file);
-    return page?.file;
+    return pages.find((p) => p.index === index && p.state === "complete" && p.file);
   }
 
   /** Whether a chapter is fully downloaded (every page complete). */
@@ -462,13 +474,11 @@ export class Downloads {
         // Keep the downloaded bytes; just refresh the source in case it changed.
         const kept: DownloadedPage = { ...prior, sourceUrl: input.sourceUrl };
         if (input.headers !== undefined) kept.headers = input.headers;
-        // The bytes on disk are the ones fetched before; their scramble is the one recorded then.
         await this.store.putPage(key, chapterId, kept);
         continue;
       }
       const page: DownloadedPage = { index: input.index, sourceUrl: input.sourceUrl, file: "", bytes: 0, state: "queued" };
       if (input.headers !== undefined) page.headers = input.headers;
-      if (input.scramble !== undefined) page.scramble = input.scramble;
       await this.store.putPage(key, chapterId, page);
     }
   }

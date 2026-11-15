@@ -184,6 +184,30 @@ The route redirects when the resolved request needs no headers and proxies when 
 any URL (original or intercepted) off `images.hosts`, and maps a `rateLimitedMessage` thrown by the
 interceptor to a 429. `images` supersedes `assetProxy` and `resolvePage`, which keep working.
 
+**Processed page images.** Some sources serve page images that can't be shown as fetched:
+encrypted, or cut into pieces and reassembled out of order. A bridge marks such a page
+`Page.process` (with an optional `context` of strings it wants back later) and declares which steps
+it implements in `images.process`:
+
+```ts
+images: { hosts: ["cdn.example.com"], process: { bytes: true, layout: true } }
+
+decodePageImage({ url, headers, context }) → PageByteTransform[] | null      // images.process.bytes
+layoutPageImage({ url, width, height, headers, context }) → PageImageLayout | null  // .layout
+```
+
+A marked page always goes through the image route, which fetches it, applies the byte transforms
+(`xor`, `aes-ctr` — data the core runs in plain JS, identically on every host), reads the decoded
+image's size from its header, asks for the layout, checks every rectangle lies inside its image,
+and serves the decoded bytes with the layout in the `Comical-Page-Layout` header
+(`encodePageLayout` / `decodePageLayout`). A layout is an output size and a list of draw operations
+(`copy` a source rectangle to a destination rectangle; new operations are new variants). The
+**client** draws it, natively, once, where it decodes the image; the host does no pixel work.
+`headers` are the image response's own, so a bridge can lay out from what the response says, not
+just from what it knew when it listed the pages. `@comical/sdk`'s `tileLayout` and `stripLayout`
+build the two common layouts. Downloads keep the decoded bytes and the layout beside them, and a
+downloaded page's file is served with the same header.
+
 **Links.** A bridge that can open web links to its source declares the sites in
 `BridgeInfo.linkHosts` (each matching its subdomains too) and implements
 `resolveUrl(url) → { seriesId, chapterId? } | null`, returning null for a page that isn't a series

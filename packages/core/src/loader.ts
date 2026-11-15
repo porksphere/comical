@@ -8,6 +8,7 @@ import {
   type BridgeFactory,
   type BridgeInfo,
   type ListRequest,
+  type Page,
   type PagedRequest,
   type SearchRequest,
   type SeriesEntry,
@@ -18,6 +19,10 @@ import {
   filterSchema,
   filterValueSchema,
   imageRequestSchema,
+  pageByteTransformSchema,
+  pageImageDecodeRequestSchema,
+  pageImageLayoutRequestSchema,
+  pageImageLayoutSchema,
   linkTargetSchema,
   idMigrationRequestSchema,
   idMigrationResultSchema,
@@ -188,6 +193,12 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   if (info.images?.intercept && typeof raw.interceptImageRequest !== "function") {
     throw new BridgeContractError(`bridge "${info.id}" declares images.intercept but no interceptImageRequest`);
   }
+  if (info.images?.process?.bytes && typeof raw.decodePageImage !== "function") {
+    throw new BridgeContractError(`bridge "${info.id}" declares images.process.bytes but no decodePageImage`);
+  }
+  if (info.images?.process?.layout && typeof raw.layoutPageImage !== "function") {
+    throw new BridgeContractError(`bridge "${info.id}" declares images.process.layout but no layoutPageImage`);
+  }
   if (info.linkHosts && typeof raw.resolveUrl !== "function") {
     throw new BridgeContractError(`bridge "${info.id}" declares linkHosts but no resolveUrl`);
   }
@@ -277,6 +288,14 @@ function wrapBridge(
   const images = createImageRouter(info);
   const routed = <T>(result: Promise<T>, rewrite: (value: T) => T): Promise<T> =>
     images ? result.then(rewrite) : result;
+  // A page marked for processing by a bridge that declares no processing is just a page.
+  const pageList = (result: Promise<Page[]>): Promise<Page[]> =>
+    info.images?.process
+      ? result
+      : result.then((pages) => {
+          for (const p of pages) delete p.process;
+          return pages;
+        });
   const routeEntries = <T extends { items: SeriesEntry[] }>(page: T): T => {
     for (const item of page.items) images!.entry(item);
     return page;
@@ -306,7 +325,7 @@ function wrapBridge(
     bridge.getChapters = (id) =>
       call("getChapters", z.array(chapterSchema), () => raw.getChapters!(id));
     bridge.getChapterPages = (m, c) =>
-      routed(call("getChapterPages", z.array(pageSchema), () => raw.getChapterPages!(m, c)), (p) => images!.pages(p));
+      routed(pageList(call("getChapterPages", z.array(pageSchema), () => raw.getChapterPages!(m, c))), (p) => images!.pages(p));
 
     if (raw.checkForUpdates) {
       bridge.checkForUpdates = async (seriesIds) => {
@@ -405,7 +424,7 @@ function wrapBridge(
   }
   if (raw.getSeriesPages) {
     bridge.getSeriesPages = (id) =>
-      routed(call("getSeriesPages", z.array(pageSchema), () => raw.getSeriesPages!(id)), (p) => images!.pages(p));
+      routed(pageList(call("getSeriesPages", z.array(pageSchema), () => raw.getSeriesPages!(id))), (p) => images!.pages(p));
   }
   if (raw.resolvePage) {
     bridge.resolvePage = (seriesId, hash, gidRef) =>
@@ -422,6 +441,19 @@ function wrapBridge(
     bridge.interceptImageRequest = (url) =>
       call("interceptImageRequest", imageRequestSchema, () =>
         raw.interceptImageRequest!(validateInput(z.string().min(1), url, "image url")),
+      );
+  }
+  // Declared, not sniffed: an undeclared processing method is never called.
+  if (info.images?.process?.bytes && raw.decodePageImage) {
+    bridge.decodePageImage = (req) =>
+      call("decodePageImage", z.array(pageByteTransformSchema).nullable(), () =>
+        raw.decodePageImage!(validateInput(pageImageDecodeRequestSchema, req, "page image decode request")),
+      );
+  }
+  if (info.images?.process?.layout && raw.layoutPageImage) {
+    bridge.layoutPageImage = (req) =>
+      call("layoutPageImage", pageImageLayoutSchema.nullable(), () =>
+        raw.layoutPageImage!(validateInput(pageImageLayoutRequestSchema, req, "page image layout request")),
       );
   }
   if (raw.resolveUrl) {
