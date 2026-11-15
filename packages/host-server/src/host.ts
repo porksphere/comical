@@ -69,6 +69,8 @@ export interface HostOptions {
    * checks in do.
    */
   fetch?: typeof fetch;
+  /** The platform User-Agent bridges are given and the host's own requests send (see `BridgeManagerOptions.userAgent`). */
+  userAgent?: string;
 }
 
 export interface ComicalHost {
@@ -102,6 +104,7 @@ export function createHost(opts: HostOptions): ComicalHost {
       registry,
       hostUrl: opts.hostUrl ?? "http://localhost:3100",
       ...(opts.fetch && { fetch: opts.fetch }),
+      ...(opts.userAgent && { userAgent: opts.userAgent }),
     }),
     { library: () => lib, downloads: () => engine, log: console },
   );
@@ -110,7 +113,7 @@ export function createHost(opts: HostOptions): ComicalHost {
 
   const routerOpts: RouterOptions = {
     registry,
-    userAgent: DEFAULT_USER_AGENT,
+    userAgent: opts.userAgent ?? DEFAULT_USER_AGENT,
   };
   if (opts.oauthRedirectUrl) routerOpts.oauthRedirectUrl = opts.oauthRedirectUrl;
   if (opts.origin) routerOpts.origin = opts.origin;

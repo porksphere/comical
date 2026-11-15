@@ -37,6 +37,12 @@ export interface BridgeManagerOptions {
   hostUrl?: string;
   /** The `fetch` bridges' requests go out through (see host-bun's `BunNetworkOptions.fetch`). */
   fetch?: typeof fetch;
+  /**
+   * The User-Agent bridges are told is the platform's (`getDefaultUserAgent`), and requests without
+   * one send. A host whose web checks run in a browser engine passes that engine's, so a bridge that
+   * adopts it meets a site exactly as the web check did (default: host-bun's).
+   */
+  userAgent?: string;
 }
 
 export class BridgeManager implements BridgeProvider {
@@ -146,6 +152,7 @@ export class BridgeManager implements BridgeProvider {
       dataDir: join(this.opts.dataDir, "bridge-storage"),
       ...(this.opts.hostUrl !== undefined && { hostUrl: this.opts.hostUrl }),
       ...(this.opts.fetch && { fetch: this.opts.fetch }),
+      ...(this.opts.userAgent && { userAgent: this.opts.userAgent }),
     });
 
     const bridge = await loadBridge({ code, capabilities, expectedId: id });
