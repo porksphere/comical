@@ -1,6 +1,7 @@
 /** The loaded bridge's session methods and the jar's place in the bridge's secure storage. */
 import { describe, expect, test } from "bun:test";
 import type { HostCapabilities, HttpRequest, HttpResponse, KeyValueStore } from "@comical/contract";
+import { webCheckStorageKey } from "@comical/contract";
 import { COOKIE_JAR_KEY, loadBridge } from "../src/index.ts";
 
 const BRIDGE = `module.exports = { default: (host) => ({
@@ -74,5 +75,19 @@ describe("loaded bridge session", () => {
     expect(Object.entries(seen[0]!.headers ?? {}).find(([k]) => k.toLowerCase() === "cookie")?.[1]).toBe("cf_clearance=kept");
     await bridge.clearCookies!();
     expect(await bridge.sessionCookies!("https://www.s.test/")).toEqual({});
+  });
+
+  test("values read from the page's storage are kept where the bridge reads them, and cleared with the session", async () => {
+    const { capabilities, secure } = caps(() => false);
+    secure.data.set("bridge-own", "1");
+    const bridge = await loadBridge({ code: BRIDGE, capabilities, network: { rateLimit: { minIntervalMs: 0 } } });
+    await bridge.importCookies!("https://www.s.test/", [], "Host/1", { clearance: "tok" });
+    expect(secure.data.get(webCheckStorageKey("clearance"))).toBe("tok");
+    const info = JSON.parse((await bridge.getSeriesDetails("3")).title);
+    expect(info.keys).toEqual(["bridge-own", webCheckStorageKey("clearance")]);
+
+    await bridge.clearCookies!();
+    expect(secure.data.has(webCheckStorageKey("clearance"))).toBe(false);
+    expect(secure.data.get("bridge-own")).toBe("1");
   });
 });

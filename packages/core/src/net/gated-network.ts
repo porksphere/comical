@@ -48,8 +48,12 @@ export interface CookieStore {
 export interface BridgeSession {
   /** The `Cookie` header and User-Agent to send for `url` outside the bridge's own requests (images). */
   sessionCookies(url: string): Promise<{ cookie?: string; userAgent?: string }>;
-  /** Add cookies a person earned passing `url`'s site's check, with the User-Agent it ran with. */
-  importCookies(url: string, cookies: ImportedCookie[], userAgent?: string): Promise<void>;
+  /**
+   * Add cookies a person earned passing `url`'s site's check, with the User-Agent it ran with, and
+   * any values the check read from the page's localStorage (`Challenge.storage`). The network keeps
+   * the cookies; the loader keeps the values where the bridge reads them (`webCheckStorageKey`).
+   */
+  importCookies(url: string, cookies: ImportedCookie[], userAgent?: string, values?: Record<string, string>): Promise<void>;
   /** Forget `url`'s site's cookies, or every cookie when `url` is absent. */
   clearCookies(url?: string): Promise<void>;
 }

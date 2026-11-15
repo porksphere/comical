@@ -470,7 +470,7 @@ export function createRouter(manager: BridgeProvider, opts: RouterOptions = {}):
     try {
       const bridge = await manager.get(id);
       if (!bridge.importCookies) return c.json({ error: "this host can't import cookies for this bridge" }, 501);
-      await bridge.importCookies(parsed.data.url, parsed.data.cookies, parsed.data.userAgent);
+      await bridge.importCookies(parsed.data.url, parsed.data.cookies, parsed.data.userAgent, parsed.data.values);
       return c.json({ ok: true });
     } catch (e) {
       return bridgeErrorResponse(c, e);
@@ -2427,6 +2427,8 @@ interface CookieImport {
   url: string;
   userAgent?: string;
   cookies: { name: string; value: string; domain?: string; path?: string; expires?: number }[];
+  /** Values the check read from the page's localStorage, by key (`Challenge.storage`). */
+  values?: Record<string, string>;
 }
 
 /** The body as a {@link CookieImport}, or a list of what's wrong with it. */
@@ -2453,9 +2455,22 @@ function parseCookieImport(body: unknown): { ok: true; data: CookieImport } | { 
     if (typeof c.expires === "number") cookie.expires = c.expires;
     cookies.push(cookie);
   }
+  let values: Record<string, string> | undefined;
+  if (b.values !== undefined) {
+    const entries = typeof b.values === "object" && b.values !== null && !Array.isArray(b.values) ? Object.entries(b.values) : null;
+    if (!entries || entries.length > 20) issues.push("values must be an object of at most 20 entries");
+    else {
+      values = {};
+      for (const [k, v] of entries) {
+        if (!k || k.length > 256 || !str(v, 16384)) issues.push(`values.${k.slice(0, 64)} must be a string`);
+        else values[k] = v as string;
+      }
+    }
+  }
   if (issues.length) return { ok: false, issues };
   const data: CookieImport = { url: b.url as string, cookies };
   if (typeof b.userAgent === "string") data.userAgent = b.userAgent;
+  if (values && Object.keys(values).length) data.values = values;
   return { ok: true, data };
 }
 

@@ -11,6 +11,11 @@ describe("challenge marker", () => {
     expect(parseChallenge(challengeMessage({ url: "https://x.test/" }))).toEqual({ url: "https://x.test/", reason: "the site wants to check this is a person" });
   });
 
+  test("page-storage keys ride along, with or without a User-Agent", () => {
+    expect(parseChallenge(challengeMessage({ url: "https://x.test/", storage: ["clearance", "a,b"] }))).toEqual({ url: "https://x.test/", storage: ["clearance", "a,b"], reason: "the site wants to check this is a person" });
+    expect(parseChallenge(challengeMessage({ url: "https://x.test/", userAgent: "UA", storage: ["t"] }))).toMatchObject({ userAgent: "UA", storage: ["t"] });
+  });
+
   test("anything else is not a challenge", () => {
     expect(parseChallenge("plain error")).toBeNull();
     expect(parseChallenge("[challenge:notaurl] x")).toBeNull();

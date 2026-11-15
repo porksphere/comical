@@ -4,6 +4,7 @@
  * timeout and output validation.
  */
 import {
+  webCheckStorageKey,
   type Bridge,
   type BridgeFactory,
   type BridgeInfo,
@@ -271,8 +272,15 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   // 6. Wrap every method with timeout + output validation.
   const loaded = wrapBridge(raw, info, limits, gatedNetwork, opts.capabilities.log);
   loaded.sessionCookies = (url) => gatedNetwork.session.sessionCookies(url);
-  loaded.importCookies = (url, cookies, userAgent) => gatedNetwork.session.importCookies(url, cookies, userAgent);
-  loaded.clearCookies = (url) => gatedNetwork.session.clearCookies(url);
+  loaded.importCookies = async (url, cookies, userAgent, values) => {
+    await gatedNetwork.session.importCookies(url, cookies, userAgent);
+    if (values && secure) for (const [name, value] of Object.entries(values)) await secure.set(webCheckStorageKey(name), value);
+  };
+  loaded.clearCookies = async (url) => {
+    await gatedNetwork.session.clearCookies(url);
+    // Page-storage values aren't kept per site; forgetting a site's session forgets them all.
+    if (secure) for (const key of await secure.keys()) if (key.startsWith(webCheckStorageKey(""))) await secure.delete(key);
+  };
   return loaded;
 }
 

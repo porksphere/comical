@@ -33,8 +33,8 @@ function serve(opts: { peek?: boolean } = {}) {
     getSeriesDetails: async () => {
       throw new Error(`getSeriesDetails threw: ${challengeMessage({ url: "https://s.test/series/1", userAgent: "UA/1" })}`);
     },
-    importCookies: async (url: string, cookies: unknown[], userAgent?: string) => {
-      imported.push({ url, cookies, userAgent });
+    importCookies: async (url: string, cookies: unknown[], userAgent?: string, values?: Record<string, string>) => {
+      imported.push(values ? { url, cookies, userAgent, values } : { url, cookies, userAgent });
       session = { cookie: "cf_clearance=ok", userAgent: userAgent ?? "" };
     },
     clearCookies: async (url?: string) => void cleared.push(url),
@@ -84,6 +84,17 @@ describe("web checks", () => {
       });
       expect(ok.status).toBe(200);
       expect(s.imported).toEqual([{ url: "https://s.test/", userAgent: "UA/1", cookies: [{ name: "cf_clearance", value: "ok", domain: ".s.test", expires: expect.any(Number) }] }]);
+
+      const withValues = await fetch(`${s.base}/bridges/wc/cookies`, {
+        method: "POST",
+        body: JSON.stringify({ url: "https://s.test/", cookies: [], values: { clearance: "tok" } }),
+      });
+      expect(withValues.status).toBe(200);
+      expect(s.imported.at(-1)).toEqual({ url: "https://s.test/", cookies: [], userAgent: undefined, values: { clearance: "tok" } });
+      const badValues = await fetch(`${s.base}/bridges/wc/cookies`, { method: "POST", body: JSON.stringify({ url: "https://s.test/", cookies: [], values: { clearance: 1 } }) });
+      expect(badValues.status).toBe(400);
+      expect(((await badValues.json()) as { issues: string[] }).issues).toEqual(["values.clearance must be a string"]);
+      expect((await fetch(`${s.base}/bridges/wc/cookies`, { method: "POST", body: JSON.stringify({ url: "https://s.test/", cookies: [], values: ["x"] }) })).status).toBe(400);
 
       const bad = await fetch(`${s.base}/bridges/wc/cookies`, { method: "POST", body: JSON.stringify({ url: "ftp://x", cookies: [{ name: "" }] }) });
       expect(bad.status).toBe(400);

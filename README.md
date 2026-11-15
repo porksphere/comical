@@ -222,6 +222,12 @@ rules, and every later request carries the cookies. A bridge that sets its own `
 it, with imported cookies added. Routed images carry them too, with the User-Agent they were earned
 with, and a challenged image answers the same 403.
 
+Some sites leave their clearance in the page's localStorage for their own script to send, not in a
+cookie. A bridge for one names the keys in `challengeMessage({ url, userAgent, storage })`: the
+client's check is done once they're all set, and it posts their values with the cookies
+(`values: { key: value }`). The runtime keeps them in the bridge's secure storage under
+`webCheckStorageKey(key)`, where the bridge reads them, and forgets them with the cookies.
+
 **Links.** A bridge that can open web links to its source declares the sites in
 `BridgeInfo.linkHosts` (each matching its subdomains too) and implements
 `resolveUrl(url) → { seriesId, chapterId? } | null`, returning null for a page that isn't a series
