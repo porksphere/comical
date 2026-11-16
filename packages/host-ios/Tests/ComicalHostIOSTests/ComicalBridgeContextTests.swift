@@ -119,6 +119,28 @@ final class ComicalBridgeContextTests: XCTestCase {
         XCTAssertEqual(dict?["title"] as? String, "example.test:8443|example.test|/api/favorites|https://example.test:8443")
     }
 
+    func testTextDecoderKeepsAViewsOffsetAcrossContexts() async throws {
+        // The bundle runs in its own context, so its Uint8Array isn't the polyfill's: an instanceof
+        // check fails and a view was decoded from its whole buffer (MANGA Plus page URLs came out as
+        // the entire protobuf message). ArrayBuffer.isView keeps the view's offset and length.
+        let bundle = """
+        module.exports = { default: function(host) { return {
+          info: { id: "t", name: "T", version: "0", contractVersion: "2.0.0",
+                  languages: ["en"], nsfw: false, capabilities: ["search"] },
+          getSeriesDetails: async function(id) {
+            var all = new TextEncoder().encode("xxhttps://a.test/p.jpgyy");
+            return { id: id, title: new TextDecoder().decode(all.subarray(2, all.length - 2)) };
+          },
+          getChapters: async function() { return []; },
+          getChapterPages: async function() { return []; },
+          getSearchResults: async function() { return { items: [] }; },
+        }; } };
+        """
+        let ctx = try await ComicalBridgeContext(bridgeBundle: bundle)
+        let result = try await ctx.call("getSeriesDetails", args: ["x"])
+        XCTAssertEqual((result as? [String: Any])?["title"] as? String, "https://a.test/p.jpg")
+    }
+
     func testFetchIsUnavailableToBridgeCode() async throws {
         // A bridge that tries to use fetch() directly must get undefined.
         let bundle = """

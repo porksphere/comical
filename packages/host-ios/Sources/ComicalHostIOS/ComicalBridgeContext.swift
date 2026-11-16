@@ -499,7 +499,9 @@ public final class ComicalBridgeContext {
           globalThis.TextDecoder = class TextDecoder {
             decode(buf) {
               if (!buf) return "";
-              const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer || buf);
+              // ArrayBuffer.isView, not instanceof: a bridge runs in its own context, whose Uint8Array
+              // isn't this one's, and a view's offset and length must be kept.
+              const bytes = ArrayBuffer.isView(buf) ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) : new Uint8Array(buf);
               let out = "", i = 0;
               while (i < bytes.length) {
                 const b = bytes[i++];
