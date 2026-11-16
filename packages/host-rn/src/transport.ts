@@ -10,7 +10,7 @@
  * Native — which silently empties the body. Disabling CORS keeps the original string-bodied Response.
  *
  * Body read-back: read the response body once as bytes and return a minimal response whose
- * `json()`/`text()`/`arrayBuffer()` serve that buffer, avoiding RN `Response` body quirks. Bytes
+ * `json()`/`text()`/`arrayBuffer()` (and `clone()`) serve that buffer, avoiding RN `Response` body quirks. Bytes
  * (not text) are read because some routes return binary — `resolveAssetSource` proxies image bytes
  * through `/img-proxy` and inlines them as a `data:` URI, which a `.text()` read would corrupt.
  * `headers` is passed through verbatim so callers can read `Location` (redirect assets) and
@@ -70,17 +70,23 @@ export function createEmbeddedTransport(
     // Decode lazily and only when a text/JSON consumer asks — binary asset routes read
     // `arrayBuffer()` instead and must never pay a (lossy) text decode.
     const decodeText = () => (buffer.byteLength ? new TextDecoder().decode(buffer) : "");
-    return {
-      ok: routed.status >= 200 && routed.status < 300,
-      status: routed.status,
-      statusText: routed.statusText,
-      headers: routed.headers,
-      json: async () => {
-        const text = decodeText();
-        return text ? JSON.parse(text) : undefined;
-      },
-      text: async () => decodeText(),
-      arrayBuffer: async () => buffer,
-    } as unknown as Response;
+    // The body is already buffered, so a clone is the same view again: callers that peek at a
+    // response before handing it on (the app reads a 403's challenge, then returns the 403) need
+    // `clone()`, and without it every challenged call on a phone threw "undefined is not a function".
+    const make = (): Response =>
+      ({
+        ok: routed.status >= 200 && routed.status < 300,
+        status: routed.status,
+        statusText: routed.statusText,
+        headers: routed.headers,
+        json: async () => {
+          const text = decodeText();
+          return text ? JSON.parse(text) : undefined;
+        },
+        text: async () => decodeText(),
+        arrayBuffer: async () => buffer,
+        clone: () => make(),
+      }) as unknown as Response;
+    return make();
   };
 }

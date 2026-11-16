@@ -46,6 +46,13 @@ describe("embedded transport — synthetic response shape", () => {
     expect(new TextDecoder().decode(bytes)).toContain("<svg");
   });
 
+  test("clone() gives the same buffered body, so a caller can peek and still hand the response on", async () => {
+    const res = await makeTransport()("/health");
+    expect(await res.clone().json()).toEqual({ ok: true });
+    expect(res.clone().status).toBe(200);
+    expect(await res.text()).toBe(JSON.stringify({ ok: true }));
+  });
+
   test("still serves json()/text() for the API routes", async () => {
     const res = await makeTransport()("/health");
     expect(res.status).toBe(200);
