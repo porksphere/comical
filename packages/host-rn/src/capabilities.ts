@@ -26,6 +26,7 @@ export const CAPABILITY_METHODS: Record<BridgeCapability, string[]> = {
   "read-sync": ["getReadChapters", "markChapterRead", "markChapterUnread", "setSeriesStatus"],
   "resolve-tags": ["resolveTags"],
   "related-series": ["getRelatedSeries"],
+  comments: ["getComments"],
   // Host-injected into query options; the bridge exposes no dedicated method for it.
   "exclude-tags": [],
   // Data-only: the bridge fills `contentRating` on entries/details it already returns from other

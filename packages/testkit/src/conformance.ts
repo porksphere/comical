@@ -90,6 +90,7 @@ const CAPABILITY_METHOD: Partial<Record<BridgeCapability, keyof Bridge>> = {
   favorites: "getFavorites",
   direct: "getSeriesPages",
   "read-sync": "markChapterRead",
+  comments: "getComments",
 };
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -392,6 +393,50 @@ export async function evaluateBridge(
     }
   } else if (has("search") || has("lists")) {
     warn("core", "read.noSample", "no item available to sample the read path (search/lists returned nothing)");
+  }
+
+  // ── Comments (read-only probe; capability "comments") ──────────────────────
+  if (has("comments") && bridge.getComments) {
+    exercised.add("comments");
+    const scopes = bridge.info.comments?.scopes ?? [];
+    const target = !firstId
+      ? undefined
+      : scopes.includes("series")
+        ? { seriesId: firstId }
+        : sampledChapterId
+          ? { seriesId: firstId, chapterId: sampledChapterId }
+          : undefined;
+    const scope = target && "chapterId" in target ? "chapter" : "series";
+    if (!target) {
+      skip("comments", "comments.read", "no sampled series/chapter to read a thread from");
+    } else {
+      try {
+        const page = await bridge.getComments({ target });
+        const seen = new Set<string>();
+        for (const c of page.items) {
+          if (seen.has(c.id)) fail("comments", "comments.item.id", `comment id "${c.id}" appears twice on one page`);
+          seen.add(c.id);
+        }
+        pass("comments", "comments.read", `getComments returned ${page.items.length} comment(s) from the ${scope} thread`);
+        // Replies the page only counted must be fetchable by parentId.
+        const parent = page.items.find((c) => (c.replyCount ?? 0) > (c.replies?.length ?? 0));
+        if (parent) {
+          const replies = await bridge.getComments({ target, parentId: parent.id });
+          if (replies.items.length === 0) {
+            warn("comments", "comments.replies", `comment "${parent.id}" counts ${parent.replyCount} replies but parentId returned none`);
+          } else {
+            pass("comments", "comments.replies", `parentId returned ${replies.items.length} repl${replies.items.length === 1 ? "y" : "ies"}`);
+          }
+        }
+        await probeCursor("comments", page, (cursor) => bridge.getComments!({ target, cursor }), { warn, pass, fail });
+      } catch (e) {
+        if (isAuthRequiredError(e)) {
+          skip("comments", "comments.read", `getComments needs credentials (none configured) — skipped: ${msg(e)}`);
+        } else {
+          rec("comments", isTransientError(e) ? "warn" : "fail", "comments.read", `getComments threw: ${msg(e)}`);
+        }
+      }
+    }
   }
 
   // ── Summary ────────────────────────────────────────────────────────────────

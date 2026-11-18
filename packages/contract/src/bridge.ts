@@ -7,6 +7,8 @@ import type {
   BridgeInfo,
   BridgeSeriesStatus,
   Chapter,
+  CommentPage,
+  CommentsRequest,
   Filter,
   FilterValue,
   IdMigrationRequest,
@@ -276,6 +278,21 @@ export interface Bridge {
    * failure such as a rejected login. Throw only for what isn't an answer.
    */
   runSettingAction?(key: string): Promise<SettingActionResult>;
+
+  // ---- Comments — capability "comments" (contract 2.2) ----
+
+  /**
+   * One page of a source's comment thread: the series thread (`target` without `chapterId`) or a
+   * chapter's, each only where `info.comments.scopes` says threads exist. With `parentId`, the
+   * replies to that comment instead. Omit `cursor` for the first page and pass back `nextCursor`;
+   * `sort` is one of `info.comments.sorts` (absent = the first).
+   *
+   * Read-only and anonymous where the source allows: a thread that needs a signed-in user throws
+   * `loginRequiredMessage`. A thread that doesn't exist yet is an empty page, not an error. Image
+   * URLs (avatars, inline images) must be on `info.images.hosts` when they need headers, like any
+   * other image the bridge emits.
+   */
+  getComments?(req: CommentsRequest): Promise<CommentPage>;
 
   // ---- Favorites — capability "favorites" ----
   // Backed by the backend's own account bookmarks/follows, so these need auth: the bridge declares

@@ -8,6 +8,10 @@ import {
   type Bridge,
   type BridgeFactory,
   type BridgeInfo,
+  type Comment,
+  type CommentNode,
+  type CommentPage,
+  type CommentsRequest,
   type ListRequest,
   type Page,
   type PagedRequest,
@@ -16,6 +20,8 @@ import {
   bridgeInfoSchema,
   CONTRACT_VERSION,
   chapterSchema,
+  commentPageSchema,
+  commentsRequestSchema,
   cursorSchema,
   filterSchema,
   filterValueSchema,
@@ -53,6 +59,7 @@ import {
   BridgeLoadError,
   BridgeRuntimeError,
   BridgeTimeoutError,
+  BridgeValidationError,
   ComicalError,
 } from "./errors.ts";
 import type { BundleEvaluator } from "./evaluator.ts";
@@ -208,11 +215,16 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   }
 
   // 4. Validate self-description and contract compatibility.
-  const info: BridgeInfo = validate(
-    bridgeInfoSchema,
-    (raw as { info?: unknown } | null | undefined)?.info,
-    "BridgeInfo",
-  );
+  const rawInfo = (raw as { info?: unknown } | null | undefined)?.info;
+  const info: BridgeInfo = validate(bridgeInfoSchema, rawInfo, "BridgeInfo");
+  // Capabilities newer than this runtime are dropped by the schema, not fatal: say which.
+  const declaredCaps = (rawInfo as { capabilities?: unknown }).capabilities;
+  const unknownCaps = Array.isArray(declaredCaps)
+    ? declaredCaps.filter((c) => !(info.capabilities as string[]).includes(c as string))
+    : [];
+  if (unknownCaps.length > 0) {
+    opts.capabilities.log.warn(`bridge "${info.id}": ignoring capabilities this runtime doesn't know: ${unknownCaps.join(", ")}`);
+  }
   if (opts.expectedId !== undefined && info.id !== opts.expectedId) {
     throw new BridgeContractError(
       `bridge id mismatch: expected "${opts.expectedId}", got "${info.id}"`,
@@ -238,6 +250,19 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
   }
   if (info.migratesIds && typeof raw.migrateIds !== "function") {
     throw new BridgeContractError(`bridge "${info.id}" declares migratesIds but no migrateIds`);
+  }
+  // Capability "comments" and `info.comments` go together: the capability says threads exist, the
+  // declaration says where and what they look like — a client can't show either half alone.
+  const hasCommentsCap = info.capabilities.includes("comments");
+  if (hasCommentsCap !== (info.comments !== undefined)) {
+    throw new BridgeContractError(
+      hasCommentsCap
+        ? `bridge "${info.id}" has capability "comments" but no info.comments`
+        : `bridge "${info.id}" declares info.comments without capability "comments"`,
+    );
+  }
+  if (hasCommentsCap && typeof raw.getComments !== "function") {
+    throw new BridgeContractError(`bridge "${info.id}" has capability "comments" but no getComments`);
   }
 
   // 4b. Apply the bridge's declared rate limit as the default. Precedence per key:
@@ -282,6 +307,25 @@ export async function loadBridge(opts: LoadBridgeOptions): Promise<LoadedBridge>
     if (secure) for (const key of await secure.keys()) if (key.startsWith(webCheckStorageKey(""))) await secure.delete(key);
   };
   return loaded;
+}
+
+/**
+ * A comments request, validated against the bridge's declaration before the bridge sees it: the
+ * thread's scope must be one the bridge has, and the sort one it offers. Both are host bugs, so they
+ * reject rather than reach a bridge that never promised to handle them.
+ */
+function commentsRequest(declared: NonNullable<BridgeInfo["comments"]>, req: unknown): CommentsRequest {
+  const parsed = validateInput(commentsRequestSchema, req, "comments request") as CommentsRequest;
+  const scope = parsed.target.chapterId === undefined ? "series" : "chapter";
+  const issues: string[] = [];
+  if (!declared.scopes.includes(scope)) issues.push(`this bridge has no ${scope} threads`);
+  if (parsed.sort !== undefined && !declared.sorts?.some((s) => s.id === parsed.sort)) {
+    issues.push(`"${parsed.sort}" is not one of this bridge's comment sorts`);
+  }
+  if (issues.length > 0) {
+    throw new BridgeValidationError(`comments request: rejected before calling the bridge — ${issues.join("; ")}`, []);
+  }
+  return parsed;
 }
 
 function extractFactory(exports: unknown): BridgeFactory {
@@ -505,6 +549,29 @@ function wrapBridge(
     bridge.resolveUrl = (url) =>
       call("resolveUrl", linkTargetSchema.nullable(), () =>
         raw.resolveUrl!(validateInput(z.string().min(1), url, "link url")),
+      );
+  }
+  // Declared, not sniffed: comments are called only on a bridge that declares where threads are.
+  const commentsInfo = info.comments;
+  if (commentsInfo && raw.getComments) {
+    const routeNode = (n: CommentNode): void => {
+      if (n.type === "image") n.url = images!.url(n.url);
+      else if (n.type === "quote") for (const child of n.children) routeNode(child);
+    };
+    const routeComments = (items: Comment[]): void => {
+      for (const c of items) {
+        if (c.author.avatar !== undefined) c.author.avatar = images!.url(c.author.avatar);
+        for (const n of c.body) routeNode(n);
+        if (c.replies) routeComments(c.replies);
+      }
+    };
+    bridge.getComments = (req) =>
+      routed(
+        call("getComments", commentPageSchema, () => raw.getComments!(commentsRequest(commentsInfo, req))),
+        (page: CommentPage) => {
+          routeComments(page.items);
+          return page;
+        },
       );
   }
   // The flag, not the method, is what hosts check before migrating, so an undeclared one is dropped.

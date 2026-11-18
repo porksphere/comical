@@ -332,3 +332,55 @@ describe("example-bridge", () => {
     });
   });
 });
+
+describe("example-bridge comments", () => {
+  test("reads the series thread a page at a time, pinned first", async () => {
+    const bridge = await load();
+    const first = await bridge.getComments!({ target: { seriesId: "sherlock" } });
+    expect(first.items).toHaveLength(10);
+    expect(first.total).toBe(25);
+    expect(first.items[0]!.pinned).toBe(true);
+    expect(first.items[0]!.votes).toEqual({ up: expect.any(Number), down: expect.any(Number) });
+    expect(first.webUrl).toEndWith("/series/sherlock#comments");
+    const second = await bridge.getComments!({ target: { seriesId: "sherlock" }, cursor: first.nextCursor! });
+    const third = await bridge.getComments!({ target: { seriesId: "sherlock" }, cursor: second.nextCursor! });
+    expect(third.items).toHaveLength(5);
+    expect(third.nextCursor).toBeUndefined();
+    const ids = [...first.items, ...second.items, ...third.items].map((c) => c.id);
+    expect(new Set(ids).size).toBe(25);
+  });
+
+  test("top sort orders by net votes after the pinned comment", async () => {
+    const bridge = await load();
+    const top = await bridge.getComments!({ target: { seriesId: "sherlock" }, sort: "top" });
+    expect(top.items[0]!.pinned).toBe(true);
+    const net = top.items.slice(1).map((c) => c.votes!.up! - c.votes!.down!);
+    expect(net).toEqual([...net].sort((a, b) => b - a));
+  });
+
+  test("replies load by parentId", async () => {
+    const bridge = await load();
+    const page = await bridge.getComments!({ target: { seriesId: "sherlock" } });
+    const parent = page.items.find((c) => c.replyCount)!;
+    expect(parent.replyCount).toBe(3);
+    const replies = await bridge.getComments!({ target: { seriesId: "sherlock" }, parentId: parent.id });
+    expect(replies.items).toHaveLength(3);
+    expect(replies.items.every((r) => r.parentId === parent.id)).toBe(true);
+    expect(replies.total).toBeUndefined();
+  });
+
+  test("a chapter has its own thread", async () => {
+    const bridge = await load();
+    const page = await bridge.getComments!({ target: { seriesId: "sherlock", chapterId: "sherlock-1" } });
+    expect(page.total).toBe(4);
+    expect(page.items[0]!.id).toStartWith("sherlock/sherlock-1:");
+    expect(page.webUrl).toEndWith("/series/sherlock/chapter/sherlock-1#comments");
+  });
+
+  test("multi-paragraph text becomes text and break nodes", async () => {
+    const bridge = await load();
+    const page = await bridge.getComments!({ target: { seriesId: "sherlock" } });
+    const multi = page.items.find((c) => c.body.some((n) => n.type === "break"))!;
+    expect(multi.body.map((n) => n.type)).toEqual(["text", "break", "break", "text"]);
+  });
+});
