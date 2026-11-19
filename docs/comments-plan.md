@@ -1,8 +1,9 @@
 # Comments — plan
 
-Status: **phase 1 built** (2026-11-18): contract 2.2, the core, the host route, the testkit and the
-example bridge. The code is the reference for exact shapes; where this plan and the code differ, the
-code wins. Phases 2–3 (app, bridges) are next.
+Status: **phases 1 and 2 built** (2026-11-18): contract 2.2, the core, the host route, the testkit
+and the example bridge here; the read-only thread, its entry points and its switches in the app. The
+code is the reference for exact shapes; where this plan and the code differ, the code wins, and
+"As built in the app" below lists where the app does. Phase 3 (more bridges) is next.
 
 Read a source's comments in the app, reply, and vote. This adds an optional bridge capability,
 `"comments"`. The source keeps its own accounts and its own moderation: Comical never hosts a
@@ -287,14 +288,29 @@ on the site. Add these if the app ever ships through a store that reviews user-g
 a build-time flag in `commentsStatusOf`. It must not be a remote toggle, which stores count as a
 hidden feature. Sideloaded and APK builds need neither.
 
+### As built in the app (phase 2)
+
+Where the first app build differs from the description above:
+
+- **Chapter rows show no count.** The row's date column is a fixed width with no room for one; the
+  count is in the chapter menu's row instead ("Comments · 12").
+- **The reader has the toolbar button only.** The end-of-chapter footer button is not built: in the
+  continuous reader that footer is also what loads the next chapter as it scrolls into view.
+- **The thread is not virtualized.** It is a plain scroller that draws thirty comments at a time,
+  which covers a source that returns a whole thread in one answer.
+- **No overflow menu on a comment.** A comment with a permalink has an "open on the site" button;
+  its text is selectable, which stands in for "Copy text" without a clipboard dependency.
+- **Images stay thumbnails.** There is no full-screen view of a comment's image yet.
+- **The count over a thread is a line of its own** ("73 comments") under the bar's "Comments"
+  title, since the bar's title is also the system navigation bar's on one platform.
+
 ## Phases
 
 1. **Contract and host, read-only** (built). Tolerant capabilities and a 2.2.0 bump, the models and
    `getComments`, the count fields, loader wrapping, the GET route, the testkit and example bridge,
    kit body helpers, and README rows.
-2. **App, read-only.** The data layer, the three entry points, the thread screen and sheet, the
-   global and per-bridge toggles. Build it against the mock source
-   and the example bridge, plus a Maestro flow.
+2. **App, read-only** (built). The data layer, the three entry points, the thread screen and
+   sheet, the global and per-bridge toggles, mock threads for the demo bridges, and a Maestro flow.
 3. **Bridges, read-only.** Start with sources that have clean JSON APIs and both scopes, then the
    shared engines (one engine covers several sites), then HTML-scraped sources. The bridge repos'
    survey lists the order.
