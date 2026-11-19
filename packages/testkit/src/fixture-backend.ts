@@ -44,6 +44,74 @@ export interface FixtureSeries {
   chapters: FixtureChapter[];
 }
 
+/** One comment as the fixture's comment API serves it. */
+export interface FixtureComment {
+  id: string;
+  user: string;
+  avatar: string;
+  text: string;
+  up: number;
+  down: number;
+  /** Epoch ms. */
+  at: number;
+  pinned: boolean;
+  spoiler: boolean;
+  /** How many replies it has (fetch them with `?parent=`). */
+  replies: number;
+}
+
+/** A page of the fixture's comment API. */
+export interface FixtureCommentPage {
+  total: number;
+  comments: FixtureComment[];
+  next: number | null;
+}
+
+const COMMENT_EPOCH = Date.UTC(2026, 0, 1);
+const COMMENT_PAGE_SIZE = 10;
+
+/**
+ * A synthetic thread for `key` (a series id, or `seriesId/chapterId`), deterministic so snapshots
+ * hold: `size` top-level comments, the first pinned, every fifth from the second with three replies.
+ */
+export function fixtureComments(
+  key: string,
+  opts: { parent?: string | null; sort: "new" | "top"; page: number; size: number },
+): FixtureCommentPage {
+  const make = (id: string, i: number, replies: number): FixtureComment => ({
+    id,
+    user: `reader${(i * 7 + key.length) % 13}`,
+    avatar: `https://picsum.photos/seed/avatar-${(i * 7 + key.length) % 13}/64`,
+    text: i % 6 === 3 ? `Comment ${i + 1} on ${key}.\n\nIt has a second paragraph.` : `Comment ${i + 1} on ${key}.`,
+    up: (i * 37 + key.length) % 100,
+    down: (i * 11) % 20,
+    at: COMMENT_EPOCH - i * 3_600_000,
+    pinned: false,
+    spoiler: i % 9 === 4,
+    replies,
+  });
+  let all: FixtureComment[];
+  if (opts.parent) {
+    const match = /^c(\d+)$/.exec(opts.parent.split(":").pop() ?? "");
+    const parentIndex = match ? Number(match[1]) : -1;
+    if (parentIndex < 0 || parentIndex >= opts.size || parentIndex % 5 !== 1) return { total: 0, comments: [], next: null };
+    all = Array.from({ length: 3 }, (_, j) => make(`${opts.parent}:r${j}`, parentIndex * 10 + j, 0));
+  } else {
+    all = Array.from({ length: opts.size }, (_, i) => make(`${key}:c${i}`, i, i % 5 === 1 ? 3 : 0));
+    if (all[0]) all[0].pinned = true;
+    if (opts.sort === "top") {
+      const [pinned, ...rest] = all;
+      all = [...(pinned ? [pinned] : []), ...rest.sort((a, b) => b.up - b.down - (a.up - a.down))];
+    }
+  }
+  const start = (opts.page - 1) * COMMENT_PAGE_SIZE;
+  return {
+    total: all.length,
+    comments: all.slice(start, start + COMMENT_PAGE_SIZE),
+    next: start + COMMENT_PAGE_SIZE < all.length ? opts.page + 1 : null,
+  };
+}
+
 /** Public-domain works, presented as a small comic library. */
 /** Two generic chapters for a series id (keeps the catalog terse without hand-writing each). */
 function chaps(id: string, n = 2): FixtureChapter[] {
@@ -439,6 +507,26 @@ export class FixtureBackend {
         .filter((s): s is FixtureSeries => s !== undefined);
       return this.html(
         layout("Favorites", `<section class="favorites">${series.map(seriesCard).join("")}</section>`),
+      );
+    }
+
+    // Comment threads (capability "comments") — public JSON, like most sources' comment APIs:
+    // `/series/:id/comments` is the series thread, `?chapter=` a chapter's, `?parent=` one comment's
+    // replies; `?sort=new|top`, 10 per `?page=`. Threads are synthesized deterministically from the id.
+    const commentsMatch = /^\/series\/([^/]+)\/comments$/.exec(path);
+    if (commentsMatch) {
+      const s = this.find(decodeURIComponent(commentsMatch[1]!));
+      const chapterId = url.searchParams.get("chapter");
+      if (!s || (chapterId && !s.chapters.some((ch) => ch.id === chapterId))) {
+        return this.json({ error: "not found" }, 404);
+      }
+      return this.json(
+        fixtureComments(chapterId ? `${s.id}/${chapterId}` : s.id, {
+          parent: url.searchParams.get("parent"),
+          sort: url.searchParams.get("sort") === "top" ? "top" : "new",
+          page: Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1),
+          size: chapterId ? 4 : 25,
+        }),
       );
     }
 

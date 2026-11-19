@@ -79,6 +79,7 @@ export function entryToInfo(e: RegistryBridgeEntry): BridgeInfo {
     ...(e.assetRateLimit !== undefined ? { assetRateLimit: e.assetRateLimit } : {}),
     ...(e.images !== undefined ? { images: e.images } : {}),
     ...(e.linkHosts !== undefined ? { linkHosts: e.linkHosts } : {}),
+    ...(e.comments !== undefined ? { comments: e.comments } : {}),
   };
 }
 

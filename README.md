@@ -143,6 +143,7 @@ interface (from `@comical/contract`) defines:
 | `getTags()` | optional | `tags` | Tag/genre catalog |
 | `getSettings()` | optional | `settings` | Declarative settings (backend URL, credentials) |
 | `loadSettings()` / `runSettingAction(key)` | optional | — | Live settings form + action buttons (contract 2.1) |
+| `getComments(req)` | optional | `comments` | A page of the source's series or chapter comment thread, read-only (contract 2.2) |
 
 Only the read path (details/chapters/pages) is mandatory. **Browse** and **search** are separate
 optional capabilities — a bridge may offer lists, search, both, or neither.
@@ -343,6 +344,40 @@ Over REST: `GET /bridges/:id/favorites?page=`, `PUT /bridges/:id/favorites/:seri
 `DELETE /bridges/:id/favorites/:seriesId` (remove). Via the CLI: `comical favorites`,
 `comical favorite <id>`, `comical unfavorite <id>` (with `--set sessionToken=…`). The evaluator probes
 `getFavorites` read-only and **never** auto-calls the mutations (they hit a real account).
+
+### Comments
+
+A bridge with the `comments` capability reads the **source's own comment threads**. Comical hosts
+no comments, so the source's accounts and moderation stay the source's. Threads hang off a series,
+a chapter, or both; no source attaches comments to a page. The bridge declares which, up front, in
+`BridgeInfo.comments`:
+
+- `scopes`: series threads, chapter threads, or both;
+- `sorts`: the source's orderings, default first;
+- `votes`: how votes read;
+- `reactions`: an emoji palette, if any;
+- `maxDepth`: how deep replies nest.
+
+The capability and the declaration go together, and the loader refuses a bridge that has only one of
+them. `registry publish` copies the declaration into the bridge's index entry: a device lists its
+installed bridges from the index without loading them, so that entry is where a client on a device
+learns a source has threads at all.
+
+`getComments({ target: { seriesId, chapterId? }, sort?, cursor?, parentId? })` returns a page of
+`Comment`s, or a comment's replies when `parentId` is given. Before the bridge runs, the core rejects
+a scope or sort the bridge didn't declare.
+
+A comment's body is `CommentNode[]` — text runs (bold, italic, strike, code, spoiler), links,
+mentions, inline images, quotes and breaks. It is data, never HTML, so clients render it with native
+text and image views. The SDK's `textToCommentBody` and `commentBodyExcerpt` cover plain-text
+sources. Avatars and inline images go through the image route like any other bridge image.
+
+`Chapter.commentCount` and `SeriesInfo.commentCount` carry a count only when the source already
+returned it; a bridge never makes a separate request just for a count.
+
+Over REST: `GET /bridges/:id/series/:seriesId/comments?chapterId=&sort=&parentId=&cursor=`. A sort or
+scope the bridge doesn't have is a 400, and a thread that needs sign-in is a 401 with `loginRequired`.
+The evaluator reads one thread, one comment's replies and the next page; it never writes.
 
 ### Host capability API
 
@@ -636,7 +671,7 @@ class MyBridge extends BridgeBase<Settings> {
     id: "my-bridge",
     name: "My Bridge",
     version: "0.1.0",
-    contractVersion: "2.1.0",
+    contractVersion: "2.2.0",
     languages: ["en"],
     nsfw: false,
     capabilities: ["lists", "settings"],

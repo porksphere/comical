@@ -32,6 +32,7 @@ import type {
   AssetRateLimit,
   BridgeInfo,
   Chapter,
+  CommentsRequest,
   ContentRating,
   Cursor,
   FilterValue,
@@ -964,6 +965,36 @@ ${url}`;
     withContentBridge(c, async (bridge) => {
       if (!bridge.getRelatedSeries) return c.json([]);
       return c.json(await bridge.getRelatedSeries(c.req.param("seriesId")));
+    }),
+  );
+
+  // ── Comments (capability "comments") — the source's own threads, read-only ─────────────────────
+  // `?chapterId=` picks a chapter's thread (absent = the series thread), `?parentId=` lists one
+  // comment's replies, `?sort=` is one of `info.comments.sorts`, `?cursor=` resumes.
+
+  app.get("/bridges/:id/series/:seriesId/comments", (c) =>
+    withContentBridge(c, async (bridge) => {
+      if (!bridge.getComments) return c.json({ error: "not supported" }, 400);
+      const cursor = cursorParam(c);
+      if (typeof cursor === "object") return c.json({ error: "cursor too long" }, 400);
+      const chapterId = c.req.query("chapterId");
+      const sort = c.req.query("sort");
+      const parentId = c.req.query("parentId");
+      const req: CommentsRequest = {
+        target: { seriesId: c.req.param("seriesId"), ...(chapterId ? { chapterId } : {}) },
+        ...(sort ? { sort } : {}),
+        ...(parentId ? { parentId } : {}),
+        ...(cursor ? { cursor } : {}),
+      };
+      try {
+        return c.json(await bridge.getComments(req));
+      } catch (e) {
+        // A request the core refused before the bridge ran (a scope or sort this bridge doesn't
+        // have) is the caller's mistake. Sniffed by message so it holds across proxied bridges too.
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("rejected before calling the bridge")) return c.json({ error: msg }, 400);
+        throw e;
+      }
     }),
   );
 

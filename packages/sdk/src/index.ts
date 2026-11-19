@@ -8,6 +8,7 @@ export * from "./tracker-base.ts";
 export * from "./settings.ts";
 export * from "./base64.ts";
 export * from "./cursor.ts";
+export * from "./comment-body.ts";
 export * from "./lang.ts";
 export * from "./lock.ts";
 export * from "./page-layout.ts";

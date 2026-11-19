@@ -13,6 +13,9 @@ import {
   type CardBadgePosition,
   type Chapter,
   type CheerioRoot,
+  type Comment,
+  type CommentPage,
+  type CommentsRequest,
   type Filter,
   type InferSettings,
   type InfoCell,
@@ -37,6 +40,7 @@ import {
   defineSettings,
   nextPageCursor,
   pageFromCursor,
+  textToCommentBody,
 } from "@comical/sdk";
 
 const STATUSES: ReadonlySet<string> = new Set<SeriesStatus>([
@@ -82,10 +86,21 @@ class ExampleBridge extends BridgeBase<Settings> {
     id: "example",
     name: "Example (Demo Library)",
     version: "0.2.0",
-    contractVersion: "2.0.0",
+    contractVersion: "2.2.0",
     languages: ["en"],
     nsfw: false,
-    capabilities: ["lists", "search", "filters", "sort", "settings", "favorites", "exclude-tags", "resolve-tags"],
+    capabilities: ["lists", "search", "filters", "sort", "settings", "favorites", "exclude-tags", "resolve-tags", "comments"],
+    // The demo library has a thread on every series and every chapter, with likes and dislikes and
+    // one level of replies.
+    comments: {
+      scopes: ["series", "chapter"],
+      sorts: [
+        { id: "new", label: "Newest" },
+        { id: "top", label: "Top" },
+      ],
+      votes: "up-down",
+      maxDepth: 2,
+    },
     // Entries carry an author subtitle (see `entry.subtitle` below) — clients reserve the card
     // sub-line for this bridge's grids.
     cardSubtitles: true,
@@ -401,6 +416,43 @@ class ExampleBridge extends BridgeBase<Settings> {
       .toArray()
       .map((el, index) => ({ index, imageUrl: this.resolve(base, $(el).attr("src") ?? "") }))
       .filter((p) => p.imageUrl.length > 0);
+  }
+
+  // ── Comments (capability "comments") — the library's public comment API, read-only ──
+
+  override async getComments(req: CommentsRequest): Promise<CommentPage> {
+    const { seriesId, chapterId } = req.target;
+    const page = pageFromCursor(req.cursor);
+    const params = new URLSearchParams({ sort: req.sort ?? "new", page: String(page) });
+    if (chapterId) params.set("chapter", chapterId);
+    if (req.parentId) params.set("parent", req.parentId);
+    const data = await this.fetchJson<{
+      total?: number;
+      next?: number | null;
+      comments?: Array<{
+        id: string; user: string; avatar?: string; text: string; up: number; down: number;
+        at: number; pinned?: boolean; spoiler?: boolean; replies?: number;
+      }>;
+    }>(`${this.base()}/series/${encodeURIComponent(seriesId)}/comments?${params.toString()}`);
+    const items: Comment[] = (data.comments ?? []).map((c) => ({
+      id: c.id,
+      ...(req.parentId ? { parentId: req.parentId } : {}),
+      author: { name: c.user, ...(c.avatar ? { avatar: c.avatar } : {}) },
+      body: textToCommentBody(c.text),
+      createdAt: c.at,
+      ...(c.pinned ? { pinned: true } : {}),
+      ...(c.spoiler ? { spoiler: true } : {}),
+      votes: { up: c.up, down: c.down },
+      ...(c.replies ? { replyCount: c.replies } : {}),
+    }));
+    const threadUrl = `${this.base()}/series/${encodeURIComponent(seriesId)}${chapterId ? `/chapter/${encodeURIComponent(chapterId)}` : ""}#comments`;
+    const nextCursor = nextPageCursor(page, Boolean(data.next));
+    return {
+      items,
+      ...(nextCursor ? { nextCursor } : {}),
+      ...(typeof data.total === "number" && !req.parentId ? { total: data.total } : {}),
+      webUrl: threadUrl,
+    };
   }
 
   // ── Favorites (capability "favorites") — backend-synced, requires the sessionToken setting ──

@@ -335,6 +335,11 @@ export const seriesInfoSchema = z.object({
    * share sheet). Distinct from any bridge-internal id — this must be a URL a browser can open.
    */
   shareUrl: z.string().min(1).optional(),
+  /**
+   * How many comments this series' thread has (capability "comments"), only when the source already
+   * returned the number with the details. Absent means unknown, not zero.
+   */
+  commentCount: z.number().int().nonnegative().optional(),
 });
 export type SeriesInfo = z.infer<typeof seriesInfoSchema>;
 
@@ -353,6 +358,12 @@ export const chapterSchema = z.object({
   pageCount: z.number().int().nonnegative().optional(),
   /** Publication time as epoch milliseconds. */
   publishedAt: z.number().int().optional(),
+  /**
+   * How many comments this chapter's thread has (capability "comments"), only when the source
+   * already returned the number with the chapter list — never fetched separately for it. Absent
+   * means unknown, not zero.
+   */
+  commentCount: z.number().int().nonnegative().optional(),
 });
 export type Chapter = z.infer<typeof chapterSchema>;
 
@@ -856,8 +867,18 @@ export const bridgeCapabilitySchema = z.enum([
    * needs no bridge cooperation to enforce, unlike tag exclusion.
    */
   "content-rating",
+  /**
+   * Reads the source's own comment threads via `getComments` — a series thread, a thread per
+   * chapter, or both, as `BridgeInfo.comments` declares (it is required alongside this). Read-only:
+   * Comical hosts no comments, and the source's accounts and moderation stay the source's.
+   */
+  "comments",
 ]);
 export type BridgeCapability = z.infer<typeof bridgeCapabilitySchema>;
+
+const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set(bridgeCapabilitySchema.options);
+/** Whether `value` is a capability this build of the contract knows. */
+export const isBridgeCapability = (value: string): value is BridgeCapability => KNOWN_CAPABILITIES.has(value);
 
 /**
  * Reserved per-bridge settings key under which the host persists the user's tag exclusions
@@ -1137,6 +1158,224 @@ export const idMigrationResultSchema = z.object({
 });
 export type IdMigrationResult = z.infer<typeof idMigrationResultSchema>;
 
+// ── Comments (capability "comments") ────────────────────────────────────────────────────────────
+
+/**
+ * Bounds on what a bridge may return for comments. Generous for any real thread, but finite, so a
+ * runaway scrape can't hand a client an unrenderable page.
+ */
+export const COMMENT_LIMITS = {
+  /** Characters in one text run, link text, quote excerpt, … */
+  textLength: 20_000,
+  /** Nodes in one comment body. */
+  bodyNodes: 500,
+  /** Comments in one page, counting every embedded reply. */
+  pageComments: 1_000,
+  /** Sort options a bridge may offer. */
+  sorts: 8,
+} as const;
+
+const commentText = z.string().max(COMMENT_LIMITS.textLength);
+
+/**
+ * One run of a comment body. A comment is a list of these: presentation as data, so every client
+ * renders it with native text spans and images and nobody parses a source's HTML or markdown.
+ * Bridges convert whatever the source uses (plain text, a markdown dialect, sanitized HTML, forum
+ * BBCode) into these, dropping anything without an equivalent down to its text.
+ */
+const commentInlineNodeSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("text"),
+    text: commentText,
+    bold: z.boolean().optional(),
+    italic: z.boolean().optional(),
+    strike: z.boolean().optional(),
+    code: z.boolean().optional(),
+    /** Hidden until the reader taps it. */
+    spoiler: z.boolean().optional(),
+  }),
+  z.object({ type: z.literal("link"), text: commentText, url: z.string().min(1) }),
+  /** A reference to another user ("@name"). */
+  z.object({ type: z.literal("mention"), name: z.string().min(1).max(200), url: z.string().min(1).optional() }),
+  /** An inline image: a picture, sticker or GIF. Routed like any other bridge image. */
+  z.object({
+    type: z.literal("image"),
+    url: z.string().min(1),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+    /** An animated image (GIF, animated WebP), so clients can choose to hold it still. */
+    animated: z.boolean().optional(),
+    alt: z.string().max(500).optional(),
+  }),
+  /** A line break; two in a row separate paragraphs. */
+  z.object({ type: z.literal("break") }),
+]);
+export type CommentInlineNode = z.infer<typeof commentInlineNodeSchema>;
+
+/**
+ * A run of a comment body: the inline nodes, plus a quote of another comment. Quotes hold inline
+ * nodes only — a bridge flattens a quote inside a quote into the outer one.
+ */
+export const commentNodeSchema = z.union([
+  commentInlineNodeSchema,
+  z.object({
+    type: z.literal("quote"),
+    author: z.string().max(200).optional(),
+    children: z.array(commentInlineNodeSchema).max(COMMENT_LIMITS.bodyNodes),
+  }),
+]);
+export type CommentNode = z.infer<typeof commentNodeSchema>;
+
+/** Whom a comment answers, for a reply shown away from its parent (flattened past `maxDepth`). */
+export const commentReplyToSchema = z.object({
+  name: z.string().min(1).max(200),
+  /** The start of the parent comment, as plain text. */
+  excerpt: z.string().max(500).optional(),
+});
+
+/** Who wrote a comment. */
+export const commentAuthorSchema = z.object({
+  name: z.string().min(1).max(200),
+  avatar: z.string().min(1).optional(),
+  /** The author's profile on the source. */
+  url: z.string().min(1).optional(),
+  /** A role the source marks: the work's creator, the site's staff, or a moderator. */
+  role: z.enum(["creator", "staff", "moderator"]).optional(),
+  /** The source's other badges for this user, as short labels. */
+  badges: z.array(z.string().min(1).max(40)).max(8).optional(),
+});
+export type CommentAuthor = z.infer<typeof commentAuthorSchema>;
+
+/** A comment's votes, as the source reports them. Which fields mean anything is `BridgeInfo.comments.votes`. */
+export const commentVotesSchema = z.object({
+  up: z.number().int().nonnegative().optional(),
+  down: z.number().int().nonnegative().optional(),
+  /** A single net score, for a source that reports only that. */
+  score: z.number().int().optional(),
+  /** How the signed-in user voted, when the source says. */
+  mine: z.enum(["up", "down"]).optional(),
+});
+export type CommentVotes = z.infer<typeof commentVotesSchema>;
+
+/** One emoji reaction's count on a comment; `id` is from `BridgeInfo.comments.reactions`. */
+export const commentReactionSchema = z.object({
+  id: z.string().min(1),
+  count: z.number().int().nonnegative(),
+  mine: z.boolean().optional(),
+});
+export type CommentReaction = z.infer<typeof commentReactionSchema>;
+
+const commentBaseSchema = z.object({
+  /** Stable within its thread. */
+  id: z.string().min(1),
+  /** The comment this one replies to, when it is a reply. */
+  parentId: z.string().min(1).optional(),
+  /** A link to this comment on the source, for "open on site". */
+  url: z.string().min(1).optional(),
+  author: commentAuthorSchema,
+  body: z.array(commentNodeSchema).max(COMMENT_LIMITS.bodyNodes),
+  /** When it was posted, as epoch milliseconds (as `Chapter.publishedAt`). */
+  createdAt: z.number().int().optional(),
+  /**
+   * The source's own wording for when it was posted ("3 hours ago"), for a source that gives no
+   * date a bridge can parse. Clients prefer `createdAt`.
+   */
+  createdLabel: z.string().min(1).max(100).optional(),
+  edited: z.boolean().optional(),
+  /** Pinned to the top of its thread by the source. */
+  pinned: z.boolean().optional(),
+  /** The whole comment is a spoiler: clients hide it until tapped. */
+  spoiler: z.boolean().optional(),
+  /** Written by the signed-in user. */
+  mine: z.boolean().optional(),
+  /** The source's own chips on this comment (e.g. "Top"), as short labels. */
+  labels: z.array(z.string().min(1).max(40)).max(4).optional(),
+  replyTo: commentReplyToSchema.optional(),
+  /** The chapter a comment belongs to, when a series thread mixes in chapter comments. */
+  chapter: z.object({ id: z.string().min(1), name: z.string().min(1) }).optional(),
+  votes: commentVotesSchema.optional(),
+  reactions: z.array(commentReactionSchema).max(32).optional(),
+  /**
+   * How many replies it has in all. When `replies` holds fewer, clients fetch the rest with
+   * `getComments({ parentId })`.
+   */
+  replyCount: z.number().int().nonnegative().optional(),
+});
+
+/** One comment, with any replies the source returned alongside it. */
+export type Comment = z.infer<typeof commentBaseSchema> & { replies?: Comment[] | undefined };
+export const commentSchema: z.ZodType<Comment, z.ZodTypeDef, unknown> = commentBaseSchema.extend({
+  /** Replies embedded with their parent, oldest first unless the sort says otherwise. */
+  replies: z.lazy(() => z.array(commentSchema)).optional(),
+});
+
+/** Which thread: a series' own, or one of its chapters'. */
+export const commentTargetSchema = z.object({
+  seriesId: z.string().min(1),
+  /** Set for a chapter's thread; absent for the series thread. */
+  chapterId: z.string().min(1).optional(),
+});
+export type CommentTarget = z.infer<typeof commentTargetSchema>;
+
+/** A read of one page of a thread, or of one comment's replies. */
+export const commentsRequestSchema = pagedRequestSchema.extend({
+  target: commentTargetSchema,
+  /** One of `BridgeInfo.comments.sorts`' ids. Absent = the first (the source's default). */
+  sort: z.string().min(1).max(64).optional(),
+  /** List this comment's replies instead of the thread's top-level comments. */
+  parentId: z.string().min(1).optional(),
+});
+export type CommentsRequest = z.infer<typeof commentsRequestSchema>;
+
+const countComments = (items: Comment[]): number =>
+  items.reduce((n, c) => n + 1 + (c.replies ? countComments(c.replies) : 0), 0);
+
+/** One page of a thread. */
+export const commentPageSchema = pagedResultsSchema(commentSchema)
+  .extend({
+    /** How many comments the whole thread has, when the source says. */
+    total: z.number().int().nonnegative().optional(),
+    /** The thread on the source, for reading or posting there. */
+    webUrl: z.string().min(1).optional(),
+    /** The source has closed this thread to new comments. */
+    closed: z.boolean().optional(),
+  })
+  .refine((page) => countComments(page.items) <= COMMENT_LIMITS.pageComments, {
+    message: `a comment page holds at most ${COMMENT_LIMITS.pageComments} comments, replies included`,
+  });
+export type CommentPage = z.infer<typeof commentPageSchema>;
+
+/**
+ * What a bridge's comments look like, declared up front (with capability "comments") so a client
+ * knows which entry points and controls to show before it asks for any thread.
+ */
+export const bridgeCommentsSchema = z.object({
+  /** Where threads exist: on series, on chapters, or both. */
+  scopes: z.array(z.enum(["series", "chapter"])).min(1),
+  /**
+   * The source's orderings, the default first. Omitted = one fixed order, and clients show no sort
+   * control.
+   */
+  sorts: z
+    .array(z.object({ id: z.string().min(1).max(64), label: z.string().min(1).max(40) }))
+    .min(1)
+    .max(COMMENT_LIMITS.sorts)
+    .optional(),
+  /** How votes read: likes only, likes and dislikes, or one net score. Omitted = no votes. */
+  votes: z.enum(["up", "up-down", "score"]).optional(),
+  /** The source's emoji reactions, in display order. Omitted = none. */
+  reactions: z
+    .array(z.object({ id: z.string().min(1), emoji: z.string().min(1).max(16), label: z.string().max(40).optional() }))
+    .max(32)
+    .optional(),
+  /**
+   * How deep the source nests replies: 1 = no replies, 2 = one level of replies, … Omitted = flat
+   * or unknown. Clients may show fewer levels and flatten the rest using `replyTo`.
+   */
+  maxDepth: z.number().int().positive().optional(),
+});
+export type BridgeComments = z.infer<typeof bridgeCommentsSchema>;
+
 /**
  * Self-description of a bridge. Note there is deliberately NO backend URL here — the address
  * and credentials of the user's backend arrive at runtime through settings.
@@ -1154,7 +1393,12 @@ export const bridgeInfoSchema = z.object({
   contractVersion: z.string(),
   languages: z.array(z.string()).min(1),
   nsfw: z.boolean(),
-  capabilities: z.array(bridgeCapabilitySchema),
+  /**
+   * What this bridge can do. Capabilities this runtime doesn't know are dropped rather than
+   * rejected (the loader logs them), so a bridge that adopts a newer optional capability still loads
+   * — without it — on an older app, instead of failing its whole self-description.
+   */
+  capabilities: z.array(z.string()).transform((caps) => caps.filter(isBridgeCapability)),
   /**
    * Whether this bridge's series entries carry a `subtitle` (the secondary line under a card's
    * title — latest chapter, author, …). A presentation-layout hint, not a behaviour switch: card
@@ -1251,6 +1495,11 @@ export const bridgeInfoSchema = z.object({
    * changes the ids the bridge gives its series or chapters. Requires `migrateIds`.
    */
   migratesIds: z.boolean().optional(),
+  /**
+   * The shape of this bridge's comments (capability "comments" — the two go together). See
+   * {@link bridgeCommentsSchema}.
+   */
+  comments: bridgeCommentsSchema.optional(),
 });
 export type BridgeInfo = z.infer<typeof bridgeInfoSchema>;
 

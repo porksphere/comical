@@ -16,6 +16,8 @@ import type {
   BridgeInfo,
   BridgeSeriesStatus,
   Chapter,
+  CommentPage,
+  CommentsRequest,
   HostCapabilities,
   HttpRequest,
   HttpResponse,
@@ -156,6 +158,9 @@ export abstract class BridgeBase<
 
   // Direct-read path (capability "direct"): override when the series has no chapter structure.
   getSeriesPages?(_seriesId: string): Promise<Page[]>;
+
+  // Comments (capability "comments", with `info.comments`): override to read the source's threads.
+  getComments?(_req: CommentsRequest): Promise<CommentPage>;
 
   // Read-sync path (capability "read-sync"): override to push progress back to the source.
   markChapterRead?(_seriesId: string, _chapterId: string): Promise<void>;
