@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
+import type { BridgeComments } from "@comical/contract";
 import { join } from "node:path";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import {
@@ -127,6 +128,22 @@ describe("registryBridgeEntrySchema linkHosts", () => {
 
   test("rejects an empty list", () => {
     expect(registryBridgeEntrySchema.safeParse({ ...BASE_ENTRY, linkHosts: [] }).success).toBe(false);
+  });
+});
+
+describe("registryBridgeEntrySchema comments", () => {
+  const comments: BridgeComments = { scopes: ["series", "chapter"], sorts: [{ id: "top", label: "Best" }], votes: "up-down", maxDepth: 2 };
+
+  test("carries the bridge's comments declaration", () => {
+    expect(registryBridgeEntrySchema.parse({ ...BASE_ENTRY, comments }).comments).toEqual(comments);
+  });
+
+  test("is absent for a bridge without comments", () => {
+    expect("comments" in registryBridgeEntrySchema.parse({ ...BASE_ENTRY })).toBe(false);
+  });
+
+  test("rejects a declaration with no scope", () => {
+    expect(registryBridgeEntrySchema.safeParse({ ...BASE_ENTRY, comments: { scopes: [] } }).success).toBe(false);
   });
 });
 

@@ -512,6 +512,30 @@ describe("EmbeddedRegistryProvider", () => {
     expect(changed).toBe(1);
   });
 
+  test("a record lists the bridge's comments declaration, from the install and from a later index", async () => {
+    // A device offers comment threads from its listing alone, so the declaration has to reach the
+    // record: at install, and afterwards for a record made before the index carried it.
+    const comments = { scopes: ["series" as const, "chapter" as const], votes: "up-down" as const, maxDepth: 2 };
+    const indexes = { [REG_A]: index([entry({ capabilities: ["lists", "comments"], comments })]) };
+    const { provider, installed } = setup(indexes);
+    await provider.install(REG_A, "demo");
+    expect((await installed.get("demo"))?.info.comments).toEqual(comments);
+
+    const bare = { [REG_A]: index([entry({ capabilities: ["lists", "comments"] })]) };
+    const earlier = setup(bare);
+    await earlier.provider.install(REG_A, "demo");
+    expect((await earlier.installed.get("demo"))?.info.comments).toBeUndefined();
+    bare[REG_A] = indexes[REG_A]!;
+    const p2 = new EmbeddedRegistryProvider({
+      registries: new MemRegistryStore(),
+      installed: earlier.installed,
+      installedTrackers: new MemInstalledTrackerStore(),
+      fetcher: fakeFetcher(bare),
+    });
+    expect(await p2.checkUpdates()).toEqual([]);
+    expect((await earlier.installed.get("demo"))?.info.comments).toEqual(comments);
+  });
+
   test("checkUpdates() leaves a record's info alone when the index describes a different version", async () => {
     const indexes = { [REG_A]: index([entry()]) };
     const { provider, installed } = setup(indexes);

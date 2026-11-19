@@ -581,6 +581,7 @@ async function publishRegistry({ baseUrl, outDir, keyFile, bridgesDir, trackersD
     if (b.info.assetRateLimit) entry.assetRateLimit = b.info.assetRateLimit;
     if (b.info.images) entry.images = b.info.images;
     if (b.info.linkHosts) entry.linkHosts = b.info.linkHosts;
+    if (b.info.comments) entry.comments = b.info.comments;
     if (sig) entry.signature = sig;
     bridgeEntries.push(entry);
     console.log(`bridge  ✓ ${b.info.id} v${b.info.version}  sha256:${hash.slice(0, 12)}…`);

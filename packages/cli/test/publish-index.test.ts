@@ -40,5 +40,10 @@ describe("registry publish", () => {
     expect(direct).toBeDefined();
     expect("cardSubtitles" in direct!).toBe(false);
     expect("ratings" in direct!).toBe(false);
+
+    // Likewise where a source's comment threads are: the example bridge has them, the direct one none.
+    expect(byId.get("example")?.comments?.scopes).toEqual(["series", "chapter"]);
+    expect(byId.get("example")?.comments?.sorts?.map((s) => s.id)).toEqual(["new", "top"]);
+    expect("comments" in direct!).toBe(false);
   });
 });

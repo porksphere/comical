@@ -359,7 +359,9 @@ a chapter, or both; no source attaches comments to a page. The bridge declares w
 - `maxDepth`: how deep replies nest.
 
 The capability and the declaration go together, and the loader refuses a bridge that has only one of
-them.
+them. `registry publish` copies the declaration into the bridge's index entry: a device lists its
+installed bridges from the index without loading them, so that entry is where a client on a device
+learns a source has threads at all.
 
 `getComments({ target: { seriesId, chapterId? }, sort?, cursor?, parentId? })` returns a page of
 `Comment`s, or a comment's replies when `parentId` is given. Before the bridge runs, the core rejects

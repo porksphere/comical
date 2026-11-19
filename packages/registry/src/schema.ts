@@ -9,7 +9,7 @@
  * GitHub repo URLs are auto-resolved to their raw content (see url.ts).
  */
 import { z } from "zod";
-import { BRIDGE_ID_PATTERN, bridgeImagesSchema } from "@comical/contract";
+import { BRIDGE_ID_PATTERN, bridgeCommentsSchema, bridgeImagesSchema } from "@comical/contract";
 
 /** A single bridge entry in the registry index. */
 export const registryBridgeEntrySchema = z.object({
@@ -73,6 +73,12 @@ export const registryBridgeEntrySchema = z.object({
    * device's listing knows which bridge to ask about a pasted link without loading every bundle.
    */
   linkHosts: z.array(z.string().min(1)).min(1).optional(),
+  /**
+   * Mirror of `BridgeInfo.comments` — where the source keeps comment threads and how they read. In
+   * the index for the reason `ratings` is: a device lists its installed bridges from here, and a
+   * client decides from that listing alone whether to offer a thread at all.
+   */
+  comments: bridgeCommentsSchema.optional(),
   /** Absolute URL to the CJS bridge bundle. */
   url: z.string().url(),
   /** Lowercase hex SHA-256 of the bundle content. Always required. */
